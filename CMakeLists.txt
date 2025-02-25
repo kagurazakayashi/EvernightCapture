@@ -12,7 +12,8 @@ endif()
 add_executable(ecapture
   src/Main.cpp
   src/CliOptions.cpp
-  src/Help.cpp
+  src/Json.cpp
+  src/Report.cpp
 )
 
 target_compile_features(ecapture PRIVATE cxx_std_20)
