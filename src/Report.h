@@ -18,7 +18,9 @@
 // 3 --help / 4 无匹配 / 5 多匹配 / 6 受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常。
 // 通道：默认全部写 stdout；一旦 -o -（图片占用标准输出）JSON 改走 stderr。
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "CliOptions.h"
 
@@ -39,5 +41,6 @@ std::wstring VersionText();
 
 bool EmitStdout(const std::wstring& text);
 bool EmitStderrRaw(const std::wstring& text);
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes);
 
 }  // namespace ecapture

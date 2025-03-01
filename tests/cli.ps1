@@ -1,6 +1,10 @@
 <#
 .SYNOPSIS
     ECAPTURE.EXE 输出契约回归测试：文本（help/version）与精简 JSON（结果/错误）。
+.DESCRIPTION
+    这些用例只验证参数解析与输出契约，一律带 --dry-run，不截图也不写文件。
+    需要"必然存在"的窗口做锚点时统一用任务栏 --class Shell_TrayWnd。
+    真机截图（含像素内容校验）在 tests\smoke.ps1。
 .EXAMPLE
     .\tests\cli.ps1
     .\tests\cli.ps1 -Exe build\Debug\ecapture.exe -ShowAll
@@ -48,6 +52,7 @@ function Invoke-Ecapture([string[]]$Arguments) {
 
 function Codes($list) { if ($null -eq $list) { @() } else { @($list | ForEach-Object { $_.code }) } }
 
+$ANCHOR = @('--class', 'Shell_TrayWnd', '--dry-run')     # 必然存在的窗口，且不截图不写文件
 $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contains','--title-regex','--class')
 
 $cases = @(
@@ -57,76 +62,106 @@ $cases = @(
     @{ Name = '--help 文本且含全部条件'; A = @('--help'); Exit = 3; Text = $true
        Has = (@('用法:') + $MATCH_FLAGS) }
     @{ Name = '/help 斜杠形式'; A = @('/help'); Exit = 3; Text = $true; Has = @('窗口匹配条件') }
-    @{ Name = '帮助体积受控（<6KB）'; A = @('--version'); Exit = 0; Text = $true
-       Has = @('EvernightCapture') }
+    @{ Name = '帮助体积受控（<6KB）'; A = @('--version'); Exit = 0; Text = $true; Has = @('EvernightCapture') }
+    @{ Name = '帮助含取图方式一节'; A = @('--help'); Exit = 3; Text = $true
+       Has = @('取图方式', 'Windows.Graphics.Capture', 'printwindow', 'DXGI', 'magnification') }
 
-    # ---------- 成功：精简 JSON ----------
-    @{ Name = '解析通过 -> 只有 captured/images'; A = @('--process','notepad.exe','out.png')
-       Exit = 0; Json = $true
+    # ---------- 解析通过（锚点窗口 + dry-run）----------
+    @{ Name = 'dry-run 只报告候选不截图'; A = ($ANCHOR + @('out.png')); Exit = 0; Json = $true
+       Notes = @('note.dry_run')
        Check = { param($o) $o.captured -eq 0 -and @($o.images).Count -eq 0 -and
-                            -not $o.PSObject.Properties.Name.Contains('errors') -and
-                            -not $o.PSObject.Properties.Name.Contains('input') -and
-                            -not $o.PSObject.Properties.Name.Contains('tool') -and
-                            -not $o.PSObject.Properties.Name.Contains('version') -and
-                            -not $o.PSObject.Properties.Name.Contains('schema') } }
-    @{ Name = '8 个条件同时给出仍是通过'; A = @('--hwnd','0x10','--pid','1','--process','p.exe','--exe','D:\e.exe',
-                                                '--title','t','--title-contains','c','--title-regex','r','--class','k','out.png')
-       Exit = 0; Json = $true }
-    @{ Name = '同类多值 OR'; A = @('--title','A','--title','B','out.png'); Exit = 0; Json = $true }
-    @{ Name = '重复取值 -> note'; A = @('--title','A','--title','A','out.png'); Exit = 0; Json = $true
-       Notes = @('note.duplicate_value') }
-    @{ Name = '短选项 -p/-o 与格式推断'; A = @('-p','notepad.exe','-o','out.jpg'); Exit = 0; Json = $true }
-    @{ Name = '--opt=value'; A = @('--process=notepad.exe','--format=png','out.x'); Exit = 0; Json = $true }
-    @{ Name = '选项名忽略大小写'; A = @('--TITLE','X','out.png'); Exit = 0; Json = $true }
-    @{ Name = '值以 - 开头'; A = @('--title-regex','-abc','out.png'); Exit = 0; Json = $true }
-    @{ Name = '中文标题'; A = @('--title','无期迷途 主线 12-3','out.png'); Exit = 0; Json = $true }
-    @{ Name = '标准输出'; A = @('--pid','1','-o','-'); Exit = 0; Json = $true
+                            -not $o.PSObject.Properties.Name.Contains('errors') } }
+    @{ Name = 'JSON 里没有元信息键'; A = ($ANCHOR + @('out.png')); Exit = 0; Json = $true
+       Check = { param($o) foreach ($k in @('tool','version','schema','stage','kind','request','ok','message')) {
+                            if ($o.PSObject.Properties.Name.Contains($k)) { return $false } }
+                            return $true } }
+    @{ Name = '短选项 -o 与扩展名推断格式'; A = ($ANCHOR + @('-o','out.jpg')); Exit = 0; Json = $true }
+    @{ Name = '短选项 -p 解析通过'; A = @('-p','notepad.exe','--dry-run','out.jpg'); Exit = @(0,4) }
+    @{ Name = '--opt=value'; A = ($ANCHOR + @('--format=png','out.x')); Exit = 0; Json = $true }
+    @{ Name = '标准输出'; A = ($ANCHOR + @('-o','-')); Exit = 0; Json = $true
        Notes = @('note.pipe_default_format') }
-    @{ Name = '-- 结束选项解析'; A = @('--pid','1','--','--weird.png'); Exit = 0; Json = $true }
-    @{ Name = '--all 无占位符 -> note'; A = @('--pid','1','--all','out.png'); Exit = 0; Json = $true
+    @{ Name = '--all 无占位符 -> note'; A = ($ANCHOR + @('--all','out.png')); Exit = 0
        Notes = @('note.all_without_placeholder') }
-    @{ Name = '非 jpeg 时 quality -> note'; A = @('--pid','1','--quality','50','out.png'); Exit = 0
+    @{ Name = '非 jpeg 时 quality -> note'; A = ($ANCHOR + @('--quality','50','out.png')); Exit = 0
        Notes = @('note.quality_ignored') }
-    @{ Name = '--json 是兼容空开关'; A = @('--json','--pid','1','out.png'); Exit = 0
+    @{ Name = 'jpeg 时 quality 不告警'; A = ($ANCHOR + @('--quality','50','out.jpg')); Exit = 0; Notes = @() }
+    @{ Name = '--json 是兼容空开关'; A = ($ANCHOR + @('--json','out.png')); Exit = 0
        Notes = @('note.json_flag_deprecated') }
+    @{ Name = '--quiet 抑制 notes'; A = ($ANCHOR + @('-q','out.png')); Exit = 0
+       Check = { param($o) -not $o.PSObject.Properties.Name.Contains('notes') } }
+    @{ Name = '--verbose 追加 input 段'; A = @('-v','--hwnd','0x1A0B4C','--dry-run','out.png'); Exit = 4
+       Check = { param($o) $o.input.hwnd[0].hex -eq '0x001A0B4C' -and
+                            $o.input.hwnd[0].decimal -eq 1706828 -and $o.input.output -like '*out.png' -and
+                            $o.input.format -eq 'png' -and $o.input.policy -eq 'ask' -and
+                            $o.input.capture -eq 'wgc' } }
+    @{ Name = '默认取图方式是 wgc'; A = ($ANCHOR + @('-v','out.png')); Exit = 0
+       Check = { param($o) $o.input.capture -eq 'wgc' -and $o.input.captureGiven -eq $false } }
+    @{ Name = '--capture 取值被接受（未实现的通道报 unsupported）'
+       A = ($ANCHOR + @('-v','--capture','dwm','out.png')); Exit = 7
+       Check = { param($o) $o.input.capture -eq 'dwm' -and $o.input.captureGiven -eq $true -and
+                            (@($o.errors | ForEach-Object code) -contains 'capture.unsupported') } }
+    @{ Name = '短选项 -C auto'; A = ($ANCHOR + @('-v','-C','auto','out.png')); Exit = 0
+       Check = { param($o) $o.input.capture -eq 'auto' } }
+    @{ Name = '-vq 时 notes 保留'; A = @('-vq','--exe','a.exe','--dry-run','out.png'); Exit = 4
+       Notes = @('note.exe_path_looks_like_name') }
 
-    # ---------- 错误：JSON + code ----------
-    @{ Name = 'HWND 非法'; A = @('--hwnd','zzz','out.png'); Exit = 1; Json = $true
-       Errors = @('cli.invalid_number')
+    # ---------- 匹配条件被正确解析（必然无窗口命中 -> exit 4）----------
+    @{ Name = '8 个条件同时给出被接受'; A = @('--hwnd','0x10','--pid','1','--process','p.exe','--exe','D:\e.exe',
+                                              '--title','t','--title-contains','c','--title-regex','r','--class','k','out.png')
+       Exit = 4; Json = $true; Errors = @('match.no_window') }
+    @{ Name = '同类多值 OR'; A = @('--title','A','--title','B','out.png'); Exit = 4
+       Errors = @('match.no_window') }
+    @{ Name = '重复取值 -> note 且仍解析通过'; A = @('--title','A','--title','A','out.png'); Exit = 4
+       Notes = @('note.duplicate_value'); Errors = @('match.no_window') }
+    @{ Name = '选项名忽略大小写'; A = @('--TITLE','X','out.png'); Exit = 4; Errors = @('match.no_window') }
+    @{ Name = '值以 - 开头'; A = @('--title-regex','-abc','out.png'); Exit = 4; Errors = @('match.no_window') }
+    @{ Name = '中文标题原样匹配'; A = @('--title','无期迷途 主线 12-3','out.png'); Exit = 4
+       Errors = @('match.no_window') }
+    @{ Name = 'HWND 含字母按十六进制'; A = @('-v','--hwnd','001A0B4C','out.png'); Exit = 4
+       Check = { param($o) $o.input.hwnd[0].decimal -eq 1706828 } }
+    @{ Name = 'HWND 纯数字按十进制'; A = @('-v','--hwnd','1706828','out.png'); Exit = 4
+       Check = { param($o) $o.input.hwnd[0].hex -eq '0x001A0B4C' } }
+    @{ Name = '-- 结束选项解析'; A = @('--pid','1','--','--weird.png'); Exit = 4
+       Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') -or
+                            $o.errors[0].code -eq 'match.no_window' } }
+    @{ Name = 'index 越界'; A = @('--class','Shell_TrayWnd','--index','99','out.png'); Exit = 1
+       Errors = @('match.index_out_of_range') }
+
+    # ---------- 参数错误 ----------
+    @{ Name = 'HWND 非法'; A = @('--hwnd','zzz','out.png'); Exit = 1; Errors = @('cli.invalid_number')
        Check = { param($o) $o.errors[0].option -eq '--hwnd' -and $o.errors[0].value -eq 'zzz' -and
                             $o.errors[0].message -and $o.errors[0].hint } }
-    @{ Name = 'PID 为 0'; A = @('--pid','0','out.png'); Exit = 1; Errors = @('cli.invalid_number'); Json = $true }
+    @{ Name = 'PID 为 0'; A = @('--pid','0','out.png'); Exit = 1; Errors = @('cli.invalid_number') }
     @{ Name = 'process 带路径'; A = @('--process','D:\a.exe','out.png'); Exit = 1
-       Errors = @('cli.invalid_value'); Json = $true }
-    @{ Name = 'exe 只有文件名 -> note'; A = @('--exe','a.exe','out.png'); Exit = 0
-       Notes = @('note.exe_path_looks_like_name'); Json = $true }
-    @{ Name = '正则非法'; A = @('--title-regex','[bad(','out.png'); Exit = 1
-       Errors = @('cli.invalid_regex'); Json = $true }
-    @{ Name = '缺少输出路径'; A = @('--pid','1'); Exit = 1; Errors = @('cli.missing_output'); Json = $true }
+       Errors = @('cli.invalid_value') }
+    @{ Name = 'exe 只有文件名 -> note'; A = @('--exe','a.exe','--dry-run','out.png'); Exit = 4
+       Notes = @('note.exe_path_looks_like_name') }
+    @{ Name = '正则非法'; A = @('--title-regex','[bad(','out.png'); Exit = 1; Errors = @('cli.invalid_regex') }
+    @{ Name = '缺少输出路径'; A = @('--pid','1'); Exit = 1; Errors = @('cli.missing_output') }
     @{ Name = '扩展名无法判定'; A = @('--pid','1','out.unknown'); Exit = 1
-       Errors = @('cli.unrecognized_extension'); Json = $true }
+       Errors = @('cli.unrecognized_extension') }
     @{ Name = '--out 与位置参数冲突'; A = @('--pid','1','out.png','--out','b.png'); Exit = 1
-       Errors = @('cli.duplicate_output'); Json = $true }
+       Errors = @('cli.duplicate_output') }
     @{ Name = '选择策略互斥'; A = @('--index','2','--newest','out.png'); Exit = 1
-       Errors = @('cli.conflicting_options'); Json = $true }
-    @{ Name = '未知选项带纠正 hint'; A = @('--titel','x','out.png'); Exit = 1; Json = $true
+       Errors = @('cli.conflicting_options') }
+    @{ Name = '未知选项带纠正 hint'; A = @('--titel','x','out.png'); Exit = 1
        Check = { param($o) (@($o.errors | ForEach-Object code) -contains 'cli.unknown_option') -and
                             (@($o.errors | Where-Object { $_.code -eq 'cli.unknown_option' }).hint) -eq '--title' } }
     @{ Name = '开关不接受取值'; A = @('--json=maybe','--pid','1','out.png'); Exit = 1
-       Errors = @('cli.switch_takes_no_value'); Json = $true }
+       Errors = @('cli.switch_takes_no_value') }
     @{ Name = '多余位置参数'; A = @('--pid','1','a.png','b.png'); Exit = 1
-       Errors = @('cli.unexpected_positional'); Json = $true }
+       Errors = @('cli.unexpected_positional') }
+    @{ Name = '未知取图方式'; A = @('--capture','waiwang','--pid','1','out.png'); Exit = 1
+       Errors = @('cli.unknown_capture_method')
+       Check = { param($o) $o.errors[0].hint -like '*wgc, dwm, printwindow*' } }
+    @{ Name = '显式 --help 时忽略其余参数'; A = @('--help','--hwnd','zzz'); Exit = 3; Text = $true }
 
-    # ---------- --verbose / --quiet 的形状差异 ----------
-    @{ Name = '--verbose 追加 input 段'; A = @('-v','--pid','12','--hwnd','0x1A0B4C','out.png'); Exit = 0
-       Check = { param($o) $o.input.pid[0] -eq 12 -and $o.input.hwnd[0].hex -eq '0x001A0B4C' -and
-                            $o.input.hwnd[0].decimal -eq 1706828 -and $o.input.output -like '*out.png' -and
-                            $o.input.format -eq 'png' -and $o.input.policy -eq 'ask' } }
-    @{ Name = '--quiet 抑制 notes 但保留 errors'; A = @('-q','--hwnd','zzz','out.png'); Exit = 1
+    # ---------- 尚未实现的通道 ----------
+    @{ Name = '未实现的取图方式报错'; A = @('--class','Shell_TrayWnd','--capture','bitblt','out.png')
+       Exit = 7; Errors = @('capture.unsupported') }
+    @{ Name = '--quiet 也要保留 errors'; A = @('-q','--hwnd','zzz','out.png'); Exit = 1
        Errors = @('cli.invalid_number')
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('notes') } }
-    @{ Name = '-vq 时 notes 保留'; A = @('-vq','--exe','a.exe','out.png'); Exit = 0
-       Notes = @('note.exe_path_looks_like_name') }
 )
 
 $results = @()
@@ -172,7 +207,10 @@ foreach ($r in $results) {
         }
     }
 
-    if ($r.Exit -ne $c.Exit) { $problems += "退出码 $($r.Exit) 期望 $($c.Exit)" }
+    $allowed = @($c.Exit)
+    if ($allowed -notcontains $r.Exit) {
+        $problems += ("退出码 {0} 期望 {1}" -f $r.Exit, ($allowed -join '/'))
+    }
     # 文本与 JSON 默认都走 stdout；只有 -o - 时 JSON 才改走 stderr（此时 stdout 必须空）
     $expectStderr = ($c.A -contains '-' -and $c.A -contains '-o')
     if ($expectStderr) {
@@ -200,8 +238,9 @@ if ($fail) { exit 1 }
 
 # ---------------------------------------------------------------------------
 # 通道分离：-o - 时 stdout 必须只留给图片字节，JSON 整体走 stderr
+# （这里用 dry-run，所以 stdout 应该是空的，JSON 在 stderr）
 # ---------------------------------------------------------------------------
-$r = Invoke-Ecapture @('--pid', '1', '--format', 'png', '-o', '-')
+$r = Invoke-Ecapture ($ANCHOR + @('--format', 'png', '-o', '-'))
 $o = $null
 try { $o = $r.Stderr | ConvertFrom-Json } catch { }
 if ($r.Stdout.Trim() -eq '' -and $o -and $o.captured -eq 0 -and $r.Exit -eq 0) {

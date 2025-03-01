@@ -9,7 +9,8 @@ $template = @'
 
 命令行窗口截图工具（`ECAPTURE.EXE`）：按条件筛出窗口，用 Windows.Graphics.Capture 把那个窗口画面存成图片文件。
 
-当前版本 0.3.0 只完成命令行解析与校验，窗口枚举和截图尚未实现（因此 `captured` 恒为 0、`images` 恒为空数组）。
+当前版本 0.4.0：取图通道已实现 `--capture wgc`（Windows.Graphics.Capture，也是默认与 `auto` 的实际行为）；
+`dwm` / `printwindow` / `bitblt` / `duplication` / `magnification` 参数已就位，运行时返回 `capture.unsupported`。
 
 ## 构建与测试
 
@@ -19,7 +20,8 @@ $template = @'
 .\build.ps1                # Release，产物 build\ecapture.exe
 .\build.ps1 -Config Debug
 .\build.ps1 -Clean
-.\tests\cli.ps1            # 输出契约回归测试
+.\tests\cli.ps1            # 输出契约回归测试（47 例，一律 --dry-run，不截图）
+.\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
 ```
 
 产物是单文件：静态链接 CRT，目标机器不需要装 VC++ 运行时。
@@ -36,7 +38,7 @@ $template = @'
 
 `--help`、`--version`、以及不给任何条件时是纯文本。其余一律 JSON，只装捕获到的窗口信息与保存的文件信息，不带工具名/版本/输入回显等元信息。
 
-成功（截图实现后的形状）：
+成功（真实输出的形状，数值为一次实际截取的例子）：
 
 ```json
 {

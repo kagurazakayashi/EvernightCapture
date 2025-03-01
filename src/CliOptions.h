@@ -43,6 +43,17 @@ enum class MultiMatch {
     kAll,     // --all，每个窗口各存一张
 };
 
+// 取图方式。--capture 选择，默认 wgc；互不替代，能力差别见帮助文本。
+enum class CaptureMethod {
+    kWgc,           // Windows.Graphics.Capture：DWM 合成后的窗口面，被遮挡也能截
+    kPrintWindow,   // PrintWindow + PW_RENDERFULLCONTENT：让窗口自绘到 DC
+    kBitBlt,        // BitBlt 屏幕 DC：拷屏幕上该窗口矩形，只截得到可见部分
+    kDwmThumbnail,  // DwmRegisterThumbnail：DWM 缓存表面，能截被遮挡窗口（Win7+）
+    kDuplication,   // DXGI Desktop Duplication：抓显示器合成分再按矩形裁
+    kMagnification, // Magnification API：系统放大镜同款取图通道
+    kAuto,          // 按 wgc -> dwm -> printwindow -> bitblt 依次回退
+};
+
 struct Options {
     MatchOptions match;
 
@@ -53,6 +64,9 @@ struct Options {
 
     MultiMatch multi = MultiMatch::kAsk;
     int index = 1;                    // multi == kIndex 时有效
+
+    CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
+    bool captureExplicit = false;                  // 是否显式指定过 --capture
 
     bool dryRun = false;              // --dry-run：只解析并打印候选信息（本阶段的默认行为）
     bool json = false;                // --json
@@ -84,6 +98,7 @@ inline constexpr const wchar_t* kUnexpectedPositional = L"cli.unexpected_positio
 inline constexpr const wchar_t* kMissingOutput = L"cli.missing_output";
 inline constexpr const wchar_t* kDuplicateOutput = L"cli.duplicate_output";
 inline constexpr const wchar_t* kConflictingOptions = L"cli.conflicting_options";
+inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_method";
 inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
 // 参数层（退出码 2 / 3）
 inline constexpr const wchar_t* kNoCondition = L"cli.no_condition";
@@ -97,13 +112,18 @@ inline constexpr const wchar_t* kAllWithoutPlaceholder = L"note.all_without_plac
 inline constexpr const wchar_t* kFlagOverridesQuiet = L"note.flag_overrides_quiet";
 inline constexpr const wchar_t* kPipeDefaultFormat = L"note.pipe_default_format";
 inline constexpr const wchar_t* kJsonFlagDeprecated = L"note.json_flag_deprecated";
+inline constexpr const wchar_t* kDryRun = L"note.dry_run";
 inline constexpr const wchar_t* kHelpIgnoredArguments = L"note.help_ignored_arguments";
 // 后续阶段
 inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
+inline constexpr const wchar_t* kIndexOutOfRange = L"match.index_out_of_range";
 inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
+inline constexpr const wchar_t* kUnsupported = L"capture.unsupported";
+inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavailable";
 inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";
 inline constexpr const wchar_t* kWriteFailed = L"io.write_failed";
+inline constexpr const wchar_t* kFileExists = L"io.file_exists";
 }  // namespace codes
 
 // option / value 为空时序列化为 null；hint 用于"是不是想输入 --title"这类纠正建议。
@@ -153,12 +173,16 @@ enum ExitCode : int {
 };
 
 // 版本与阶段：只在 --version 文本里出现；JSON 不携带任何程序元信息
-inline constexpr const wchar_t* kVersion = L"0.3.0";
-// 本阶段只到参数解析；截图实现后改成 "capture"
-inline constexpr const wchar_t* kStage = L"cli-parsing-only";
+inline constexpr const wchar_t* kVersion = L"0.4.0";
+// 已实现的取图通道
+inline constexpr const wchar_t* kStage = L"capture-wgc";
 
 const wchar_t* FormatName(ImageFormat format);  // "png" / "jpeg" / ...
 const wchar_t* MultiKey(MultiMatch m);          // "ask" / "index" / "newest" / "oldest" / "all"
 const wchar_t* MultiDescription(MultiMatch m);  // 中文说明，用于人读字段
+
+// 取图方式：机器名（--capture 的取值）与中文说明
+const wchar_t* CaptureMethodName(CaptureMethod m);
+const wchar_t* CaptureMethodDescription(CaptureMethod m);
 
 }  // namespace ecapture

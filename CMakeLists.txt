@@ -14,6 +14,10 @@ add_executable(ecapture
   src/CliOptions.cpp
   src/Json.cpp
   src/Report.cpp
+  src/WindowMatch.cpp
+  src/Capture.cpp
+  src/CaptureWgc.cpp
+  src/Encoder.cpp
 )
 
 target_compile_features(ecapture PRIVATE cxx_std_20)
@@ -32,7 +36,12 @@ set_target_properties(ecapture PROPERTIES OUTPUT_NAME "ecapture" SUFFIX ".exe")
 #   * 所需符号全部由 windowsapp.lib 提供
 #   * 新版 C++/WinRT 的 winrt::init_apartment() 返回 void，不要再套 check_hresult()
 # ---------------------------------------------------------------------------
-target_link_libraries(ecapture PRIVATE windowsapp.lib)
+target_link_libraries(ecapture PRIVATE
+  windowsapp.lib         # WinRT：Graphics.Capture / Graphics.Imaging / Storage.Streams
+  d3d11.lib              # D3D11 设备与纹理拷贝
+  dxgi.lib               # IDXGIDevice / IDXGISurface 互操作
+  ole32.lib              # COM 套间与流
+  user32.lib kernel32.lib advapi32.lib gdi32.lib)
 
 # WinRT 异常需要 /EHsc；CRT 静态链接，避免目标机器缺少 VC++ 运行时（单文件交付）
 target_compile_options(ecapture PRIVATE /EHsc)

@@ -105,6 +105,9 @@ bool ParseBool(const std::wstring& raw, bool* out) {
 constexpr const wchar_t* kFormatValues[] = {
     L"auto", L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", L"webp", L"ico", nullptr};
 
+constexpr const wchar_t* kCaptureValues[] = {
+    L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"magnification", L"auto", nullptr};
+
 struct OptionSpec {
     const wchar_t* name;        // 规范名（不含前导 -）
     const wchar_t* shortName;   // 单字母别名，可为空
@@ -139,6 +142,11 @@ constexpr OptionSpec kOptions[] = {
     {L"newest", L"", false, L"pick", L"", nullptr, L"取最后创建的窗口"},
     {L"oldest", L"", false, L"pick", L"", nullptr, L"取最早创建的窗口"},
     {L"all", L"a", false, L"pick", L"", nullptr, L"每个匹配窗口各存一张"},
+    // ---- 取图方式 ----
+    {L"capture", L"C", true, L"capture", L"<method>", kCaptureValues,
+     L"wgc(默认，被遮挡也能截) / dwm(DWM 缩略图) / printwindow(窗口自绘) / "
+     L"bitblt(拷屏幕可见像素) / duplication(DXGI 桌面复制) / magnification(放大镜 API) / "
+     L"auto(按 wgc-dwm-printwindow-bitblt 回退)"},
     // ---- 输出 ----
     {L"out", L"o", true, L"output", L"<path|->", nullptr,
      L"输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数"},
@@ -240,6 +248,39 @@ const wchar_t* MultiKey(MultiMatch m) {
         case MultiMatch::kNewest: return L"newest";
         case MultiMatch::kOldest: return L"oldest";
         case MultiMatch::kAll: return L"all";
+    }
+    return L"?";
+}
+
+const wchar_t* CaptureMethodName(CaptureMethod m) {
+    switch (m) {
+        case CaptureMethod::kWgc: return L"wgc";
+        case CaptureMethod::kDwmThumbnail: return L"dwm";
+        case CaptureMethod::kPrintWindow: return L"printwindow";
+        case CaptureMethod::kBitBlt: return L"bitblt";
+        case CaptureMethod::kDuplication: return L"duplication";
+        case CaptureMethod::kMagnification: return L"magnification";
+        case CaptureMethod::kAuto: return L"auto";
+    }
+    return L"?";
+}
+
+const wchar_t* CaptureMethodDescription(CaptureMethod m) {
+    switch (m) {
+        case CaptureMethod::kWgc:
+            return L"Windows.Graphics.Capture：取 DWM 合成后的窗口面，被遮挡/在后台也能截";
+        case CaptureMethod::kDwmThumbnail:
+            return L"DwmRegisterThumbnail：DWM 缓存表面，可截被遮挡窗口，带合成效果";
+        case CaptureMethod::kPrintWindow:
+            return L"PrintWindow(PW_RENDERFULLCONTENT)：让窗口自绘到 DC，硬件加速内容常为黑";
+        case CaptureMethod::kBitBlt:
+            return L"BitBlt 屏幕 DC：拷屏幕上该窗口矩形，只能拿到当前可见部分";
+        case CaptureMethod::kDuplication:
+            return L"DXGI Desktop Duplication：抓显示器合成分后按窗口矩形裁，须可见";
+        case CaptureMethod::kMagnification:
+            return L"Magnification API：系统放大镜的取图通道，抓合成后画面";
+        case CaptureMethod::kAuto:
+            return L"按 wgc -> dwm -> printwindow -> bitblt 依次回退，取第一个成功的";
     }
     return L"?";
 }
@@ -434,6 +475,34 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (name == L"newest") { multiFlag = MultiMatch::kNewest; pickFlags.push_back(L"--newest"); return; }
         if (name == L"oldest") { multiFlag = MultiMatch::kOldest; pickFlags.push_back(L"--oldest"); return; }
         if (name == L"all")    { multiFlag = MultiMatch::kAll;    pickFlags.push_back(L"--all"); return; }
+
+        // ---- 取图方式 ----
+        if (name == L"capture") {
+            const std::wstring v = ToLower(Trim(value));
+            const wchar_t* const* allowed = kCaptureValues;
+            bool known = false;
+            for (; *allowed; ++allowed) {
+                if (v == *allowed) { known = true; break; }
+            }
+            if (!known) {
+                std::wstring list;
+                for (const wchar_t* const* p = kCaptureValues; *p; ++p) {
+                    if (p != kCaptureValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kUnknownCaptureMethod, L"--capture 取值不在允许列表内", L"--capture", value, list);
+                return;
+            }
+            if (v == L"wgc") opt.capture = CaptureMethod::kWgc;
+            else if (v == L"dwm") opt.capture = CaptureMethod::kDwmThumbnail;
+            else if (v == L"printwindow") opt.capture = CaptureMethod::kPrintWindow;
+            else if (v == L"bitblt") opt.capture = CaptureMethod::kBitBlt;
+            else if (v == L"duplication") opt.capture = CaptureMethod::kDuplication;
+            else if (v == L"magnification") opt.capture = CaptureMethod::kMagnification;
+            else opt.capture = CaptureMethod::kAuto;
+            opt.captureExplicit = true;
+            return;
+        }
 
         // ---- 输出 ----
         if (name == L"out") {

@@ -10,6 +10,7 @@
 #include <windows.h>
 
 #include "Json.h"
+#include "Capture.h"
 
 namespace ecapture {
 namespace {
@@ -60,11 +61,25 @@ void DiagnosticArray(Json& j, const std::vector<Diagnostic>& items) {
 }
 
 // ---------------------------------------------------------------------------
-// images：捕获结果。截图尚未实现，因此这里只有字段定义，实际总是空数组。
-// 一旦实现，每条按下面的键写入（不存在的键省略）。
+// images：每条 = 一次成功捕获。空字段省略。
 // ---------------------------------------------------------------------------
-void WriteImages(Json& j) {
+void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
     j.Arr();
+    for (const auto& img : images) {
+        j.Obj();
+        OptString(j, L"file", img.file);
+        j.Key(L"bytes").Value(static_cast<long long>(img.bytes));
+        j.Key(L"width").Value(static_cast<long long>(img.width));
+        j.Key(L"height").Value(static_cast<long long>(img.height));
+        OptString(j, L"format", img.format);
+        OptString(j, L"hwnd", img.hwndHex);
+        j.Key(L"pid").Value(static_cast<long long>(img.pid));
+        OptString(j, L"title", img.title);
+        OptString(j, L"class", img.windowClass);
+        OptString(j, L"image", img.imageName);
+        j.Key(L"elapsedMs").Value(static_cast<long long>(img.elapsedMs));
+        j.End();
+    }
     j.End();
 }
 
@@ -92,6 +107,8 @@ void WriteInputEcho(Json& j, const Options& opt) {
     OptString(j, L"output", AbsoluteOf(opt.output));
     j.Key(L"toStdout").Value(opt.output == L"-");
     j.Key(L"format").Value(FormatName(opt.format));
+    j.Key(L"capture").Value(CaptureMethodName(opt.capture));
+    j.Key(L"captureGiven").Value(opt.captureExplicit);
     j.Key(L"policy").Value(MultiKey(opt.multi));
     if (opt.multi == MultiMatch::kIndex) j.Key(L"index").Value(opt.index);
     j.End();
@@ -100,6 +117,7 @@ void WriteInputEcho(Json& j, const Options& opt) {
 const wchar_t* GroupTitle(const std::wstring& group) {
     if (group == L"match") return L"窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）";
     if (group == L"pick") return L"匹配到多个窗口时（互斥）";
+    if (group == L"capture") return L"取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）";
     if (group == L"output") return L"输出";
     return L"其它";
 }
@@ -124,7 +142,7 @@ std::wstring HelpText() {
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
-    const wchar_t* groups[] = {L"match", L"pick", L"output", L"behavior"};
+    const wchar_t* groups[] = {L"match", L"pick", L"capture", L"output", L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);
@@ -150,7 +168,7 @@ std::wstring HelpText() {
     t += L"      --help / --version 以及不给条件时是文本\r\n";
     t += L"退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /\r\n";
     t += L"        6 目标受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常\r\n";
-    t += L"当前构建: 只完成参数解析，所以 captured 恒为 0、images 恒为空数组，不会写出任何图片\r\n";
+    t += L"当前构建: 已实现 --capture wgc（auto 同样走 wgc），其他方式返回 capture.unsupported；输出目录必须已存在\r\n";
     t += L"\r\n";
     t += L"示例:\r\n";
     t += L"  ECAPTURE.EXE --process notepad.exe D:\\shots\\epad.png\r\n";
@@ -191,11 +209,28 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     Json j;
     std::vector<Diagnostic> errors = parse.errors;
     std::vector<Diagnostic> notes = parse.warnings;
+    std::vector<CapturedImage> images;
+    int code = parse.ok ? EX_OK : EX_USAGE;
+
+    if (parse.ok) {
+        if (opt.capture != CaptureMethod::kWgc && opt.capture != CaptureMethod::kAuto) {
+            errors.push_back(Diagnostic{codes::kUnsupported, L"该取图方式尚未实现", L"--capture",
+                                        CaptureMethodName(opt.capture),
+                                        L"目前只实现 wgc（auto 等同 wgc），其他方式在按通道补齐"});
+            code = EX_CAPTURE_FAILED;
+        } else {
+            CaptureOutcome outcome = RunCapture(opt);
+            images = std::move(outcome.images);
+            for (auto& e : outcome.errors) errors.push_back(std::move(e));
+            for (auto& n : outcome.notes) notes.push_back(std::move(n));
+            code = outcome.exitCode;
+        }
+    }
 
     j.Obj();
-    j.Key(L"captured").Value(0);          // 截图未实现，恒为 0
+    j.Key(L"captured").Value(static_cast<long long>(images.size()));
     j.Key(L"images");
-    WriteImages(j);
+    WriteImages(j, images);
     // errors 不受 --quiet 影响：调用方失败时必须能看到原因
     if (!errors.empty()) {
         j.Key(L"errors");
@@ -212,7 +247,6 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     j.End();
     out->body = j.Str();
 
-    const int code = parse.ok ? EX_OK : EX_USAGE;
     out->exitCode = code;
     // 图片要占用 stdout 时，JSON 改走 stderr，两个通道永不混流
     out->toStderr = (opt.output == L"-");
@@ -257,5 +291,20 @@ bool WriteHandle(DWORD which, const std::wstring& text) {
 bool EmitStdout(const std::wstring& text) { return WriteHandle(STD_OUTPUT_HANDLE, text); }
 
 bool EmitStderrRaw(const std::wstring& text) { return WriteHandle(STD_ERROR_HANDLE, text); }
+
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes) {
+    HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!handle || handle == INVALID_HANDLE_VALUE) return false;
+    size_t offset = 0;
+    while (offset < bytes.size()) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(bytes.size() - offset, 1u << 20));
+        DWORD written = 0;
+        if (!WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr) ||
+            written != chunk)
+            return false;
+        offset += written;
+    }
+    return true;
+}
 
 }  // namespace ecapture
