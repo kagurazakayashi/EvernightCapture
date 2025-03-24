@@ -44,13 +44,14 @@ enum class MultiMatch {
 };
 
 // 取图方式。--capture 选择，默认 wgc；互不替代，能力差别见帮助文本。
+// 曾经有 duplication（DXGI 桌面复制后裁剪）与 magnification（Magnification API），
+// 前者没做，后者在 Win11 上已无离屏读图路线（magnification.dll 不再导出 MagGetImage）、
+// 只能拷屏幕且画面与 bitblt 等价，都不值得占一个选项值，已删除。
 enum class CaptureMethod {
     kWgc,           // Windows.Graphics.Capture：DWM 合成后的窗口面，被遮挡也能截
     kPrintWindow,   // PrintWindow + PW_RENDERFULLCONTENT：让窗口自绘到 DC
     kBitBlt,        // BitBlt 屏幕 DC：拷屏幕上该窗口矩形，只截得到可见部分
     kDwmThumbnail,  // DwmRegisterThumbnail：DWM 缓存表面，能截被遮挡窗口（Win7+）
-    kDuplication,   // DXGI Desktop Duplication：抓显示器合成分再按矩形裁
-    kMagnification, // Magnification API：系统放大镜同款取图通道
     kAuto,          // 按 wgc -> dwm -> printwindow -> bitblt 依次回退
 };
 
@@ -114,6 +115,7 @@ inline constexpr const wchar_t* kPipeDefaultFormat = L"note.pipe_default_format"
 inline constexpr const wchar_t* kJsonFlagDeprecated = L"note.json_flag_deprecated";
 inline constexpr const wchar_t* kDryRun = L"note.dry_run";
 inline constexpr const wchar_t* kHelpIgnoredArguments = L"note.help_ignored_arguments";
+inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
 // 后续阶段
 inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
@@ -175,7 +177,7 @@ enum ExitCode : int {
 // 版本与阶段：只在 --version 文本里出现；JSON 不携带任何程序元信息
 inline constexpr const wchar_t* kVersion = L"0.4.0";
 // 已实现的取图通道
-inline constexpr const wchar_t* kStage = L"capture-wgc";
+inline constexpr const wchar_t* kStage = L"capture-channels";
 
 const wchar_t* FormatName(ImageFormat format);  // "png" / "jpeg" / ...
 const wchar_t* MultiKey(MultiMatch m);          // "ask" / "index" / "newest" / "oldest" / "all"

@@ -11,6 +11,10 @@
 #include <windows.h>
 
 #include "CaptureWgc.h"
+#include "CaptureBitBlt.h"
+#include "CaptureCommon.h"
+#include "CaptureDwm.h"
+#include "CapturePrintWindow.h"
 #include "Encoder.h"
 #include "Report.h"
 #include "WindowMatch.h"
@@ -165,10 +169,68 @@ std::wstring HwndHexOf(uint64_t hwnd) {
     return buf;
 }
 
+// 单个通道的取帧入口
+bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
+                       Diagnostic* err) {
+    switch (method) {
+        case CaptureMethod::kWgc:
+            return CaptureWindowWgc(hwnd, timeoutMs, out, err);
+        case CaptureMethod::kDwmThumbnail:
+            return CaptureWindowDwmThumbnail(hwnd, timeoutMs, out, err);
+        case CaptureMethod::kPrintWindow:
+            return CaptureWindowPrintWindow(hwnd, timeoutMs, out, err);
+        case CaptureMethod::kBitBlt:
+            return CaptureWindowBitBlt(hwnd, timeoutMs, out, err);
+        case CaptureMethod::kAuto:
+            break;  // auto 由 CaptureWithMethod 展开成回退链
+    }
+    if (err) *err = Diagnostic{codes::kUnsupported, L"该取图方式尚未实现", L"--capture",
+                               CaptureMethodName(method), std::wstring()};
+    return false;
+}
+
+// --capture 分派。auto 按 wgc -> dwm -> printwindow -> bitblt 依次试，取第一个成功的；
+// 实际用的通道不是 wgc 时留一条 note，让调用方知道画面来路不同。
+// 显式指定的通道绝不回退：用户要哪个就要哪个。
+bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
+                       Diagnostic* err, std::vector<Diagnostic>* notes) {
+    if (method != CaptureMethod::kAuto) return CaptureOneChannel(hwnd, method, timeoutMs, out, err);
+
+    static const CaptureMethod kChain[] = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
+                                           CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
+    std::wstring tried;
+    Diagnostic last{};
+    for (const CaptureMethod m : kChain) {
+        CapturedFrame attempt;
+        Diagnostic attemptErr{};
+        if (CaptureOneChannel(hwnd, m, timeoutMs, &attempt, &attemptErr)) {
+            *out = std::move(attempt);
+            if (m != CaptureMethod::kWgc && notes) {
+                notes->push_back(Diagnostic{codes::kCaptureChannel,
+                                            L"auto：wgc 不可用，改用 " +
+                                                std::wstring(CaptureMethodName(m)),
+                                            L"--capture", L"auto", std::wstring()});
+            }
+            return true;
+        }
+        if (!tried.empty()) tried += L", ";
+        tried += CaptureMethodName(m);
+        last = std::move(attemptErr);
+    }
+    if (err) {
+        *err = Diagnostic{codes::kCaptureFailed, L"auto 的回退通道全部失败（" + tried + L"）",
+                          L"--capture", L"auto", last.message};
+    }
+    return false;
+}
+
 }  // namespace
 
 CaptureOutcome RunCapture(const Options& opt) {
     CaptureOutcome outcome;
+
+    // 屏幕矩形必须与物理像素一致，否则 GDI 通道会截偏
+    EnsureDpiAware();
 
     std::vector<WindowInfo> targets = SelectWindows(opt, &outcome.errors, &outcome.notes);
     if (!outcome.errors.empty()) {
@@ -215,7 +277,8 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         CapturedFrame frame;
         Diagnostic capErr;
-        if (!CaptureWindowWgc(w.hwnd, kFrameTimeoutMs, &frame, &capErr)) {
+        if (!CaptureWithMethod(w.hwnd, opt.capture, kFrameTimeoutMs, &frame, &capErr,
+                               &outcome.notes)) {
             outcome.errors.push_back(std::move(capErr));
             continue;
         }

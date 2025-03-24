@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "CaptureWgc.h"
+#include "CaptureCommon.h"
 #include "CliOptions.h"
 
 namespace ecapture {

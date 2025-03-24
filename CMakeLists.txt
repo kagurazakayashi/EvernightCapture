@@ -16,7 +16,11 @@ add_executable(ecapture
   src/Report.cpp
   src/WindowMatch.cpp
   src/Capture.cpp
+  src/CaptureCommon.cpp
   src/CaptureWgc.cpp
+  src/CaptureDwm.cpp
+  src/CapturePrintWindow.cpp
+  src/CaptureBitBlt.cpp
   src/Encoder.cpp
 )
 
@@ -41,6 +45,7 @@ target_link_libraries(ecapture PRIVATE
   d3d11.lib              # D3D11 设备与纹理拷贝
   dxgi.lib               # IDXGIDevice / IDXGISurface 互操作
   ole32.lib              # COM 套间与流
+  dwmapi.lib             # DwmRegisterThumbnail 通道 + DWMWA_EXTENDED_FRAME_BOUNDS
   user32.lib kernel32.lib advapi32.lib gdi32.lib)
 
 # WinRT 异常需要 /EHsc；CRT 静态链接，避免目标机器缺少 VC++ 运行时（单文件交付）

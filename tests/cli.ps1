@@ -64,7 +64,7 @@ $cases = @(
     @{ Name = '/help 斜杠形式'; A = @('/help'); Exit = 3; Text = $true; Has = @('窗口匹配条件') }
     @{ Name = '帮助体积受控（<6KB）'; A = @('--version'); Exit = 0; Text = $true; Has = @('EvernightCapture') }
     @{ Name = '帮助含取图方式一节'; A = @('--help'); Exit = 3; Text = $true
-       Has = @('取图方式', 'Windows.Graphics.Capture', 'printwindow', 'DXGI', 'magnification') }
+       Has = @('取图方式', 'Windows.Graphics.Capture', 'printwindow', 'bitblt', 'auto') }
 
     # ---------- 解析通过（锚点窗口 + dry-run）----------
     @{ Name = 'dry-run 只报告候选不截图'; A = ($ANCHOR + @('out.png')); Exit = 0; Json = $true
@@ -96,12 +96,19 @@ $cases = @(
                             $o.input.capture -eq 'wgc' } }
     @{ Name = '默认取图方式是 wgc'; A = ($ANCHOR + @('-v','out.png')); Exit = 0
        Check = { param($o) $o.input.capture -eq 'wgc' -and $o.input.captureGiven -eq $false } }
-    @{ Name = '--capture 取值被接受（未实现的通道报 unsupported）'
-       A = ($ANCHOR + @('-v','--capture','dwm','out.png')); Exit = 7
-       Check = { param($o) $o.input.capture -eq 'dwm' -and $o.input.captureGiven -eq $true -and
-                            (@($o.errors | ForEach-Object code) -contains 'capture.unsupported') } }
+    # 取图通道：--capture 的每个取值都必须被接受（dry-run 在取帧前就返回，不会真截图）
     @{ Name = '短选项 -C auto'; A = ($ANCHOR + @('-v','-C','auto','out.png')); Exit = 0
        Check = { param($o) $o.input.capture -eq 'auto' } }
+    @{ Name = '通道 dwm 已实现且不再报 unsupported'
+       A = ($ANCHOR + @('-v','--capture','dwm','out.png')); Exit = 0
+       Check = { param($o) $o.input.capture -eq 'dwm' -and $o.input.captureGiven -eq $true -and
+                            -not (@($o.errors | ForEach-Object code) -contains 'capture.unsupported') } }
+    @{ Name = '通道 printwindow 已实现且不再报 unsupported'
+       A = ($ANCHOR + @('-v','--capture','printwindow','out.png')); Exit = 0
+       Check = { param($o) $o.input.capture -eq 'printwindow' } }
+    @{ Name = '通道 bitblt 已实现且不再报 unsupported'
+       A = ($ANCHOR + @('-v','--capture','bitblt','out.png')); Exit = 0
+       Check = { param($o) $o.input.capture -eq 'bitblt' } }
     @{ Name = '-vq 时 notes 保留'; A = @('-vq','--exe','a.exe','--dry-run','out.png'); Exit = 4
        Notes = @('note.exe_path_looks_like_name') }
 
@@ -157,8 +164,11 @@ $cases = @(
     @{ Name = '显式 --help 时忽略其余参数'; A = @('--help','--hwnd','zzz'); Exit = 3; Text = $true }
 
     # ---------- 尚未实现的通道 ----------
-    @{ Name = '未实现的取图方式报错'; A = @('--class','Shell_TrayWnd','--capture','bitblt','out.png')
-       Exit = 7; Errors = @('capture.unsupported') }
+    @{ Name = '已删除的通道取值在解析期就被拒绝'
+       A = @('--class','Shell_TrayWnd','--capture','duplication','out.png')
+       Exit = 1; Errors = @('cli.unknown_capture_method')
+       Check = { param($o) $o.errors[0].value -eq 'duplication' -and
+                            $o.errors[0].hint -notmatch 'duplication|magnification' } }
     @{ Name = '--quiet 也要保留 errors'; A = @('-q','--hwnd','zzz','out.png'); Exit = 1
        Errors = @('cli.invalid_number')
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('notes') } }

@@ -168,7 +168,8 @@ std::wstring HelpText() {
     t += L"      --help / --version 以及不给条件时是文本\r\n";
     t += L"退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /\r\n";
     t += L"        6 目标受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常\r\n";
-    t += L"当前构建: 已实现 --capture wgc（auto 同样走 wgc），其他方式返回 capture.unsupported；输出目录必须已存在\r\n";
+    t += L"当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt，"
+         L"auto 按 wgc-dwm-printwindow-bitblt 回退）；输出目录必须已存在\r\n";
     t += L"\r\n";
     t += L"示例:\r\n";
     t += L"  ECAPTURE.EXE --process notepad.exe D:\\shots\\epad.png\r\n";
@@ -213,18 +214,12 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     int code = parse.ok ? EX_OK : EX_USAGE;
 
     if (parse.ok) {
-        if (opt.capture != CaptureMethod::kWgc && opt.capture != CaptureMethod::kAuto) {
-            errors.push_back(Diagnostic{codes::kUnsupported, L"该取图方式尚未实现", L"--capture",
-                                        CaptureMethodName(opt.capture),
-                                        L"目前只实现 wgc（auto 等同 wgc），其他方式在按通道补齐"});
-            code = EX_CAPTURE_FAILED;
-        } else {
-            CaptureOutcome outcome = RunCapture(opt);
-            images = std::move(outcome.images);
-            for (auto& e : outcome.errors) errors.push_back(std::move(e));
-            for (auto& n : outcome.notes) notes.push_back(std::move(n));
-            code = outcome.exitCode;
-        }
+        // --capture 的取值在解析期就已限定为已实现的通道，这里不再做能力判断
+        CaptureOutcome outcome = RunCapture(opt);
+        images = std::move(outcome.images);
+        for (auto& e : outcome.errors) errors.push_back(std::move(e));
+        for (auto& n : outcome.notes) notes.push_back(std::move(n));
+        code = outcome.exitCode;
     }
 
     j.Obj();
