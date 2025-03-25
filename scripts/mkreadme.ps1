@@ -10,8 +10,9 @@ $template = @'
 命令行窗口截图工具（`ECAPTURE.EXE`）：按条件筛出窗口，用 Windows.Graphics.Capture 把那个窗口画面存成图片文件。
 
 当前版本 0.4.0：`--capture` 的取值全部可用——`wgc`（Windows.Graphics.Capture，默认，也是 `auto` 的首选）、
-`dwm`（DWM 缩略图）、`printwindow`（窗口自绘）、`bitblt`（拷屏幕可见像素）、`auto`（按前四者回退）。
-曾计划过的 `duplication` 与 `magnification` 已删除，理由见 AGENTS.md。
+`dwm`（DWM 缩略图）、`printwindow`（窗口自绘）、`bitblt`（拷屏幕可见像素）、
+`duplication`（DXGI 桌面复制整屏帧后按窗口矩形裁剪）、`auto`（按 wgc→dwm→printwindow→bitblt 回退）。
+曾实现过的 `magnification` 已删除，理由见 AGENTS.md。
 
 ## 构建与测试
 
@@ -21,7 +22,7 @@ $template = @'
 .\build.ps1                # Release，产物 build\ecapture.exe
 .\build.ps1 -Config Debug
 .\build.ps1 -Clean
-.\tests\cli.ps1            # 输出契约回归测试（49 例，一律 --dry-run，不截图）
+.\tests\cli.ps1            # 输出契约回归测试（50 例，一律 --dry-run，不截图）
 .\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
 .\tests\channels.ps1       # 真机通道对比：每条通道逐个截图 + 遮挡对照
 .\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 截图 -> 打开图片 -> 结束进程

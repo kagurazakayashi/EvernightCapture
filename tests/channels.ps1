@@ -99,9 +99,9 @@ try {
 
     # 支持的通道清单（与 src/CliOptions.cpp 的 kCaptureValues 手工保持一致；
     # 下面那步会用 --help 的实际输出核对，漏改就在这里失败）
-    $channels = @('wgc', 'dwm', 'printwindow', 'bitblt', 'auto')
+    $channels = @('wgc', 'dwm', 'printwindow', 'bitblt', 'duplication', 'auto')
     $advertised = ((& $Exe --help) | Select-String -Pattern '--capture, -C' | ForEach-Object { $_.Line }) `
-        | ForEach-Object { [regex]::Matches($_, '(?<=\s|^)(wgc|dwm|printwindow|bitblt|auto)(?=[\s/(])') } |
+        | ForEach-Object { [regex]::Matches($_, '(?<=\s|^)(wgc|dwm|printwindow|bitblt|duplication|auto)(?=[\s/(])') } |
         ForEach-Object { $_.Value } | Select-Object -Unique
     Write-Host ("--help 声明的通道：{0}" -f ($advertised -join ', '))
     Assert (@(Compare-Object $channels $advertised).Count -eq 0) `
@@ -146,7 +146,7 @@ $f.Show()
     Write-Host "`n=== 已遮挡：目标窗口被纯红窗口完全盖住 ==="
 
     $seeThrough = @('wgc', 'dwm', 'printwindow')   # 拿的是窗口自己的画面，不该看到红色
-    $screenOnly = @('bitblt')                      # 拿的是屏幕合成画面，应该全是遮挡物
+    $screenOnly = @('bitblt', 'duplication')       # 拿的是屏幕合成画面，应该全是遮挡物
     $grouped = (($seeThrough + $screenOnly + 'auto') | Sort-Object) -join ','
     Assert ($grouped -eq (($channels | Sort-Object) -join ',')) `
         "遮挡分组没覆盖全部通道：$grouped"
@@ -168,7 +168,7 @@ $f.Show()
 
     # 已删除的方案必须在解析期就拒绝，不能留一个"能传但截不出东西"的取值
     Write-Host "`n=== 已删除的取值必须被拒绝 ==="
-    foreach ($gone in 'duplication', 'magnification') {
+    foreach ($gone in 'magnification') {
         $path = Join-Path $outDir "removed_$gone.png"
         $r = Invoke-Cap $gone $path
         Write-Host ("  {0,-14} exit={1} -> {2}" -f $gone, $r.Exit, ($r.Json -replace '\s+', ' ').Trim())

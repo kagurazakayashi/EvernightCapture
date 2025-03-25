@@ -20,6 +20,8 @@
 
 #include <wrl/client.h>
 
+#include "D3dDevice.h"
+
 namespace winrt_impl = winrt::impl;
 namespace wgc = winrt::Windows::Graphics::Capture;
 namespace wdx = winrt::Windows::Graphics::DirectX;
@@ -56,21 +58,7 @@ bool Fail(Diagnostic* err, const wchar_t* what, HRESULT hr) {
 }
 
 ComPtr<ID3D11Device> CreateDevice() {
-    // WGC 要求设备支持 BGRA 且能拿到 DXGI 接口；先试硬件，再退 WARP（远程桌面/无 GPU 环境）
-    const UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    D3D_FEATURE_LEVEL level{};
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    if (SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr, 0,
-                                    D3D11_SDK_VERSION, &device, &level, &context))) {
-        ComPtr<IDXGIDevice> dxgi;
-        if (SUCCEEDED(device.As(&dxgi))) return device;
-        device.Reset();
-    }
-    if (SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, flags, nullptr, 0,
-                                    D3D11_SDK_VERSION, &device, &level, &context)))
-        return device;
-    return nullptr;
+    return CreateCaptureDevice();  // 与桌面复制通道共用一套设备创建策略
 }
 
 wdx11::IDirect3DDevice WrapDevice(ID3D11Device* device) {

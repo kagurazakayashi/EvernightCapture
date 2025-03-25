@@ -14,6 +14,7 @@
 #include <winrt/Windows.Storage.Streams.h>
 
 #include "CaptureWgc.h"
+#include "ImageOps.h"
 
 namespace wgi = winrt::Windows::Graphics::Imaging;
 namespace wss = winrt::Windows::Storage::Streams;
@@ -50,17 +51,6 @@ winrt::guid EncoderIdFor(ImageFormat fmt) {
 }
 
 const wchar_t* FormatLabel(ImageFormat fmt) { return FormatName(fmt); }
-
-// WGC 给的行距可能大于 width*4，编码接口要求紧凑行，先重排
-std::vector<uint8_t> PackTight(const CapturedFrame& frame) {
-    const size_t rowBytes = static_cast<size_t>(frame.width) * 4u;
-    std::vector<uint8_t> tight(rowBytes * frame.height);
-    for (uint32_t y = 0; y < frame.height; ++y) {
-        std::memcpy(tight.data() + y * rowBytes,
-                    frame.pixels.data() + static_cast<size_t>(y) * frame.stride, rowBytes);
-    }
-    return tight;
-}
 
 }  // namespace
 

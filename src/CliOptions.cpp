@@ -106,7 +106,7 @@ constexpr const wchar_t* kFormatValues[] = {
     L"auto", L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", L"webp", L"ico", nullptr};
 
 constexpr const wchar_t* kCaptureValues[] = {
-    L"wgc", L"dwm", L"printwindow", L"bitblt", L"auto", nullptr};
+    L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
 
 struct OptionSpec {
     const wchar_t* name;        // 规范名（不含前导 -）
@@ -145,7 +145,8 @@ constexpr OptionSpec kOptions[] = {
     // ---- 取图方式 ----
     {L"capture", L"C", true, L"capture", L"<method>", kCaptureValues,
      L"wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / "
-     L"printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / auto(按 wgc-dwm-printwindow-bitblt 回退)"},
+     L"printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / "
+     L"auto(按 wgc-dwm-printwindow-bitblt 回退)"},
     // ---- 输出 ----
     {L"out", L"o", true, L"output", L"<path|->", nullptr,
      L"输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数"},
@@ -257,6 +258,7 @@ const wchar_t* CaptureMethodName(CaptureMethod m) {
         case CaptureMethod::kDwmThumbnail: return L"dwm";
         case CaptureMethod::kPrintWindow: return L"printwindow";
         case CaptureMethod::kBitBlt: return L"bitblt";
+        case CaptureMethod::kDuplication: return L"duplication";
         case CaptureMethod::kAuto: return L"auto";
     }
     return L"?";
@@ -272,6 +274,8 @@ const wchar_t* CaptureMethodDescription(CaptureMethod m) {
             return L"PrintWindow(PW_RENDERFULLCONTENT)：让窗口自绘到 DC，硬件加速内容常为黑";
         case CaptureMethod::kBitBlt:
             return L"BitBlt 屏幕 DC：拷屏幕上该窗口矩形，只能拿到当前可见部分";
+        case CaptureMethod::kDuplication:
+            return L"DXGI Desktop Duplication：取整张显示器的合成分再按窗口矩形裁，须可见；远程桌面不支持";
         case CaptureMethod::kAuto:
             return L"按 wgc -> dwm -> printwindow -> bitblt 依次回退，取第一个成功的";
     }
@@ -490,6 +494,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             else if (v == L"dwm") opt.capture = CaptureMethod::kDwmThumbnail;
             else if (v == L"printwindow") opt.capture = CaptureMethod::kPrintWindow;
             else if (v == L"bitblt") opt.capture = CaptureMethod::kBitBlt;
+            else if (v == L"duplication") opt.capture = CaptureMethod::kDuplication;
             else opt.capture = CaptureMethod::kAuto;  // 取值已在上面按 kCaptureValues 校验过
             opt.captureExplicit = true;
             return;

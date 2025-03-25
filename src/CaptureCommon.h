@@ -1,7 +1,7 @@
 #pragma once
 // 取帧通道的公共件：帧的内存形状、GDI 位图、窗口矩形、屏幕取图、消息泵。
-// 每个通道自己一个文件（CaptureWgc / CaptureDwm / CapturePrintWindow / CaptureBitBlt），
-// 它们都产出同一种 CapturedFrame，下游编码与落盘不需要区分来源。
+// 每个通道自己一个文件（CaptureWgc / CaptureDwm / CapturePrintWindow / CaptureBitBlt /
+// CaptureDuplication），像素级处理在 ImageOps，D3D 设备在 D3dDevice。
 
 #include <cstdint>
 #include <string>
@@ -69,12 +69,6 @@ private:
 RECT WindowFullRect(HWND hwnd);
 // 用户实际看到的矩形：优先 DWMWA_EXTENDED_FRAME_BOUNDS，否则退回完整矩形
 RECT WindowScreenRect(HWND hwnd);
-
-// 就地裁剪；范围越界时不改动并返回 false
-bool CropFrame(CapturedFrame* frame, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
-
-// 整幅画面只有一个颜色：说明内容根本没被合成出来，不能算取到了画面
-bool FrameIsFlat(const CapturedFrame& frame);
 
 // 从屏幕 DC 取一块矩形（超出虚拟屏幕的部分被丢掉）
 bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out, Diagnostic* err);

@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "ImageOps.h"
+
 namespace ecapture {
 namespace {
 

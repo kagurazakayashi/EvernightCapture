@@ -168,7 +168,7 @@ std::wstring HelpText() {
     t += L"      --help / --version 以及不给条件时是文本\r\n";
     t += L"退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /\r\n";
     t += L"        6 目标受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常\r\n";
-    t += L"当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt，"
+    t += L"当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，"
          L"auto 按 wgc-dwm-printwindow-bitblt 回退）；输出目录必须已存在\r\n";
     t += L"\r\n";
     t += L"示例:\r\n";

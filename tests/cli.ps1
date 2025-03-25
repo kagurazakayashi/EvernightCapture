@@ -109,6 +109,9 @@ $cases = @(
     @{ Name = '通道 bitblt 已实现且不再报 unsupported'
        A = ($ANCHOR + @('-v','--capture','bitblt','out.png')); Exit = 0
        Check = { param($o) $o.input.capture -eq 'bitblt' } }
+    @{ Name = '通道 duplication 已实现且不再报 unsupported'
+       A = ($ANCHOR + @('-v','--capture','duplication','out.png')); Exit = 0
+       Check = { param($o) $o.input.capture -eq 'duplication' } }
     @{ Name = '-vq 时 notes 保留'; A = @('-vq','--exe','a.exe','--dry-run','out.png'); Exit = 4
        Notes = @('note.exe_path_looks_like_name') }
 
@@ -165,10 +168,11 @@ $cases = @(
 
     # ---------- 尚未实现的通道 ----------
     @{ Name = '已删除的通道取值在解析期就被拒绝'
-       A = @('--class','Shell_TrayWnd','--capture','duplication','out.png')
+       A = @('--class','Shell_TrayWnd','--capture','magnification','out.png')
        Exit = 1; Errors = @('cli.unknown_capture_method')
-       Check = { param($o) $o.errors[0].value -eq 'duplication' -and
-                            $o.errors[0].hint -notmatch 'duplication|magnification' } }
+       Check = { param($o) $o.errors[0].value -eq 'magnification' -and
+                            $o.errors[0].hint -notmatch 'magnification' -and
+                            $o.errors[0].hint -match 'duplication' } }
     @{ Name = '--quiet 也要保留 errors'; A = @('-q','--hwnd','zzz','out.png'); Exit = 1
        Errors = @('cli.invalid_number')
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('notes') } }

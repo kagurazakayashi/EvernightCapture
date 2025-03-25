@@ -17,10 +17,13 @@ add_executable(ecapture
   src/WindowMatch.cpp
   src/Capture.cpp
   src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/D3dDevice.cpp
   src/CaptureWgc.cpp
   src/CaptureDwm.cpp
   src/CapturePrintWindow.cpp
   src/CaptureBitBlt.cpp
+  src/CaptureDuplication.cpp
   src/Encoder.cpp
 )
 

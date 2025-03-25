@@ -44,14 +44,15 @@ enum class MultiMatch {
 };
 
 // 取图方式。--capture 选择，默认 wgc；互不替代，能力差别见帮助文本。
-// 曾经有 duplication（DXGI 桌面复制后裁剪）与 magnification（Magnification API），
-// 前者没做，后者在 Win11 上已无离屏读图路线（magnification.dll 不再导出 MagGetImage）、
-// 只能拷屏幕且画面与 bitblt 等价，都不值得占一个选项值，已删除。
+// magnification（Magnification API）实现过又被删了：Win11 的 magnification.dll 不再导出
+// MagGetImage，没有离屏读图路线，只能把放大镜控件窗口摆到屏幕上抢 z 序，而拿到的画面与
+// bitblt 等价，代价换不到收益。
 enum class CaptureMethod {
     kWgc,           // Windows.Graphics.Capture：DWM 合成后的窗口面，被遮挡也能截
     kPrintWindow,   // PrintWindow + PW_RENDERFULLCONTENT：让窗口自绘到 DC
     kBitBlt,        // BitBlt 屏幕 DC：拷屏幕上该窗口矩形，只截得到可见部分
     kDwmThumbnail,  // DwmRegisterThumbnail：DWM 缓存表面，能截被遮挡窗口（Win7+）
+    kDuplication,   // DXGI Desktop Duplication：整张显示器合成分，再按窗口矩形裁剪（Win8+）
     kAuto,          // 按 wgc -> dwm -> printwindow -> bitblt 依次回退
 };
 

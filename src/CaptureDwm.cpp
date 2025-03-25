@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "CaptureCommon.h"
+#include "ImageOps.h"
 
 namespace ecapture {
 namespace {

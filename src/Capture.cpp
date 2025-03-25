@@ -14,6 +14,7 @@
 #include "CaptureBitBlt.h"
 #include "CaptureCommon.h"
 #include "CaptureDwm.h"
+#include "CaptureDuplication.h"
 #include "CapturePrintWindow.h"
 #include "Encoder.h"
 #include "Report.h"
@@ -181,6 +182,8 @@ bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
             return CaptureWindowPrintWindow(hwnd, timeoutMs, out, err);
         case CaptureMethod::kBitBlt:
             return CaptureWindowBitBlt(hwnd, timeoutMs, out, err);
+        case CaptureMethod::kDuplication:
+            return CaptureWindowDuplication(hwnd, timeoutMs, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureWithMethod 展开成回退链
     }

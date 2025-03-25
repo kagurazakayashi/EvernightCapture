@@ -3,8 +3,9 @@
 命令行窗口截图工具（`ECAPTURE.EXE`）：按条件筛出窗口，用 Windows.Graphics.Capture 把那个窗口画面存成图片文件。
 
 当前版本 0.4.0：`--capture` 的取值全部可用——`wgc`（Windows.Graphics.Capture，默认，也是 `auto` 的首选）、
-`dwm`（DWM 缩略图）、`printwindow`（窗口自绘）、`bitblt`（拷屏幕可见像素）、`auto`（按前四者回退）。
-曾计划过的 `duplication` 与 `magnification` 已删除，理由见 AGENTS.md。
+`dwm`（DWM 缩略图）、`printwindow`（窗口自绘）、`bitblt`（拷屏幕可见像素）、
+`duplication`（DXGI 桌面复制整屏帧后按窗口矩形裁剪）、`auto`（按 wgc→dwm→printwindow→bitblt 回退）。
+曾实现过的 `magnification` 已删除，理由见 AGENTS.md。
 
 ## 构建与测试
 
@@ -14,7 +15,7 @@
 .\build.ps1                # Release，产物 build\ecapture.exe
 .\build.ps1 -Config Debug
 .\build.ps1 -Clean
-.\tests\cli.ps1            # 输出契约回归测试（49 例，一律 --dry-run，不截图）
+.\tests\cli.ps1            # 输出契约回归测试（50 例，一律 --dry-run，不截图）
 .\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
 .\tests\channels.ps1       # 真机通道对比：每条通道逐个截图 + 遮挡对照
 .\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 截图 -> 打开图片 -> 结束进程
@@ -49,7 +50,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --all, -a                   每个匹配窗口各存一张
 
 取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）
-  --capture, -C <method>      wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / auto(按 wgc-dwm-printwindow-bitblt 回退)
+  --capture, -C <method>      wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 回退)
 
 输出
   --out, -o <path|->          输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数
@@ -70,7 +71,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
       --help / --version 以及不给条件时是文本
 退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
         6 目标受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常
-当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt，auto 按 wgc-dwm-printwindow-bitblt 回退）；输出目录必须已存在
+当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退）；输出目录必须已存在
 
 示例:
   ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
