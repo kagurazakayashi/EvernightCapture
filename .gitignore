@@ -6,6 +6,3 @@ out/
 .vs/
 CMakeUserPresets.json
 A*.md
-
-# 本机测试截图，不入库
-蓝色星原

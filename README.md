@@ -18,7 +18,7 @@
 .\tests\cli.ps1            # 输出契约回归测试（50 例，一律 --dry-run，不截图）
 .\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
 .\tests\channels.ps1       # 真机通道对比：每条通道逐个截图 + 遮挡对照
-.\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 截图 -> 打开图片 -> 结束进程
+.\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 逐通道截图并校验画面 -> 打开截图目录 -> 结束进程
 ```
 
 产物是单文件：静态链接 CRT，目标机器不需要装 VC++ 运行时。
