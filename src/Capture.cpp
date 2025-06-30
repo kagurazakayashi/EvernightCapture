@@ -75,8 +75,6 @@ std::wstring ExtensionFor(ImageFormat fmt) {
         case ImageFormat::kBmp: return L".bmp";
         case ImageFormat::kTiff: return L".tif";
         case ImageFormat::kGif: return L".gif";
-        case ImageFormat::kWebp: return L".webp";
-        case ImageFormat::kIco: return L".ico";
         default: return L".png";
     }
 }
@@ -276,7 +274,15 @@ CaptureOutcome RunCapture(const Options& opt) {
         } else {
             img.file = Expand(opt.output, w, 1);
         }
-        if (img.file != L"-" && !HasExtension(img.file)) img.file += ExtensionFor(opt.format);
+        if (img.file != L"-" && !HasExtension(img.file)) {
+            img.file += ExtensionFor(opt.format);
+            // 文件名被改了要说一声，否则调用方按自己给的名字去找会找不到
+            if (i == 0) {
+                outcome.notes.push_back(Diagnostic{codes::kOutputExtensionAppended,
+                                                   L"输出名没有扩展名，已按所选格式补上", L"--out",
+                                                   opt.output, L"实际写成 " + img.file});
+            }
+        }
 
         CapturedFrame frame;
         Diagnostic capErr;

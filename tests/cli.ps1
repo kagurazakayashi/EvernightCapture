@@ -147,9 +147,18 @@ $cases = @(
     @{ Name = 'exe 只有文件名 -> note'; A = @('--exe','a.exe','--dry-run','out.png'); Exit = 4
        Notes = @('note.exe_path_looks_like_name') }
     @{ Name = '正则非法'; A = @('--title-regex','[bad(','out.png'); Exit = 1; Errors = @('cli.invalid_regex') }
-    @{ Name = '缺少输出路径'; A = @('--pid','1'); Exit = 1; Errors = @('cli.missing_output') }
-    @{ Name = '扩展名无法判定'; A = @('--pid','1','out.unknown'); Exit = 1
-       Errors = @('cli.unrecognized_extension') }
+    @{ Name = '不给输出路径 -> 按 --out - 处理（PNG 写标准输出）'
+       A = ($ANCHOR + @('-v')); Exit = 0; ToStderr = $true; Notes = @('note.output_defaulted_stdout')
+       Check = { param($o) $o.input.output -eq '-' -and $o.input.toStdout -eq $true -and
+                            $o.input.format -eq 'png' -and $o.input.formatGiven -eq $false } }
+    @{ Name = '不给输出路径且未出图 -> 只报 cli.missing_output'
+       A = @('--pid','1'); Exit = 1; ToStderr = $true; Errors = @('cli.missing_output')
+       Check = { param($o) @($o.errors).Count -eq 1 -and @($o.images).Count -eq 0 } }
+    @{ Name = '扩展名判不出格式 -> png + note（不再报错）'
+       A = ($ANCHOR + @('out.unknown')); Exit = 0; Notes = @('note.format_defaulted_png') }
+    @{ Name = '--format 拒绝没有编码器的取值'
+       A = @('--pid','1','--format','webp','out.png'); Exit = 1; Errors = @('cli.invalid_format')
+       Check = { param($o) $o.errors[0].hint -notmatch 'webp|ico|auto' } }
     @{ Name = '--out 与位置参数冲突'; A = @('--pid','1','out.png','--out','b.png'); Exit = 1
        Errors = @('cli.duplicate_output') }
     @{ Name = '选择策略互斥'; A = @('--index','2','--newest','out.png'); Exit = 1
@@ -225,8 +234,9 @@ foreach ($r in $results) {
     if ($allowed -notcontains $r.Exit) {
         $problems += ("退出码 {0} 期望 {1}" -f $r.Exit, ($allowed -join '/'))
     }
-    # 文本与 JSON 默认都走 stdout；只有 -o - 时 JSON 才改走 stderr（此时 stdout 必须空）
-    $expectStderr = ($c.A -contains '-' -and $c.A -contains '-o')
+    # 文本与 JSON 默认都走 stdout；JSON 改走 stderr 有两种情况：显式 -o -，
+    # 以及根本没给输出路径（此时 stdout 留给图片字节，用例要标 ToStderr）
+    $expectStderr = [bool]$c.ToStderr -or ($c.A -contains '-' -and $c.A -contains '-o')
     if ($expectStderr) {
         if ($r.Out.Trim() -ne '') { $problems += '-o - 时 stdout 必须为空' }
     } elseif ($r.Out.Trim() -eq '') {

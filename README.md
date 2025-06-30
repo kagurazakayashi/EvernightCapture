@@ -15,7 +15,7 @@
 .\build.ps1                # Release，产物 build\ecapture.exe
 .\build.ps1 -Config Debug
 .\build.ps1 -Clean
-.\tests\cli.ps1            # 输出契约回归测试（50 例，一律 --dry-run，不截图）
+.\tests\cli.ps1            # 输出契约回归测试（52 例，一律 --dry-run，不截图）
 .\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
 .\tests\channels.ps1       # 真机通道对比：每条通道逐个截图 + 遮挡对照
 .\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 逐通道截图并校验画面 -> 打开截图目录 -> 结束进程
@@ -32,6 +32,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
 
 用法: ECAPTURE.EXE [条件...] <输出路径>        不给任何条件 => 显示本帮助
       ECAPTURE.EXE [条件...] --out <路径>      路径写 - 表示把图片字节输出到标准输出
+      ECAPTURE.EXE [条件...]                   不给输出路径 => 图片按 png 写标准输出
 
 窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）
   --hwnd <handle>             窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x
@@ -53,9 +54,9 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --capture, -C <method>      wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 回退)
 
 输出
-  --out, -o <path|->          输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数
-  --format, -f <name>         强制编码格式，默认由输出文件扩展名推断
-  --quality <1-100>           JPEG 质量，默认 90
+  --out, -o <path|->          输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -
+  --format, -f <name>         强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png
+  --quality <1-100>           JPEG 质量，默认 100
   --no-overwrite              目标已存在时不覆盖，报错退出
 
 其它

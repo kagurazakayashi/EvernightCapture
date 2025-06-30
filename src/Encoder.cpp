@@ -45,9 +45,8 @@ winrt::guid EncoderIdFor(ImageFormat fmt) {
         case ImageFormat::kBmp: return wgi::BitmapEncoder::BmpEncoderId();
         case ImageFormat::kTiff: return wgi::BitmapEncoder::TiffEncoderId();
         case ImageFormat::kGif: return wgi::BitmapEncoder::GifEncoderId();
-        case ImageFormat::kIco: return wgi::BitmapEncoder::JpegXREncoderId();  // 占位，稍后判失败
-        default: return winrt::guid{};
     }
+    return winrt::guid{};
 }
 
 const wchar_t* FormatLabel(ImageFormat fmt) { return FormatName(fmt); }
@@ -63,10 +62,6 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality,
     const std::wstring label = FormatLabel(fmt);
     if (frame.width == 0 || frame.height == 0)
         return Err(err, codes::kCaptureFailed, L"帧尺寸为 0，无法编码", label, std::wstring());
-
-    if (fmt == ImageFormat::kIco || fmt == ImageFormat::kWebp)
-        return Err(err, codes::kEncoderUnavailable, L"该格式没有可用的编码器", label,
-                   L"ICO/WebP 需要额外的系统组件");
 
     try {
         EnsureWinrtInitialized();

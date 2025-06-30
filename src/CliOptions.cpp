@@ -103,7 +103,7 @@ bool ParseBool(const std::wstring& raw, bool* out) {
 // ---------------------------------------------------------------------------
 
 constexpr const wchar_t* kFormatValues[] = {
-    L"auto", L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", L"webp", L"ico", nullptr};
+    L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", nullptr};
 
 constexpr const wchar_t* kCaptureValues[] = {
     L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
@@ -149,10 +149,10 @@ constexpr OptionSpec kOptions[] = {
      L"auto(按 wgc-dwm-printwindow-bitblt 回退)"},
     // ---- 输出 ----
     {L"out", L"o", true, L"output", L"<path|->", nullptr,
-     L"输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数"},
+     L"输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -"},
     {L"format", L"f", true, L"output", L"<name>", kFormatValues,
-     L"强制编码格式，默认由输出文件扩展名推断"},
-    {L"quality", L"", true, L"output", L"<1-100>", nullptr, L"JPEG 质量，默认 90"},
+     L"强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png"},
+    {L"quality", L"", true, L"output", L"<1-100>", nullptr, L"JPEG 质量，默认 100"},
     {L"no-overwrite", L"", false, L"output", L"", nullptr, L"目标已存在时不覆盖，报错退出"},
     // ---- 行为 ----
     {L"dry-run", L"d", false, L"behavior", L"", nullptr,
@@ -213,14 +213,11 @@ std::optional<std::wstring> ClosestOption(const std::wstring& name) {
 
 std::optional<ImageFormat> ParseFormat(const std::wstring& raw) {
     const std::wstring v = ToLower(Trim(raw));
-    if (v == L"auto") return ImageFormat::kAuto;
     if (v == L"png") return ImageFormat::kPng;
     if (v == L"jpg" || v == L"jpeg") return ImageFormat::kJpeg;
     if (v == L"bmp") return ImageFormat::kBmp;
     if (v == L"tif" || v == L"tiff") return ImageFormat::kTiff;
     if (v == L"gif") return ImageFormat::kGif;
-    if (v == L"webp") return ImageFormat::kWebp;
-    if (v == L"ico") return ImageFormat::kIco;
     return std::nullopt;
 }
 
@@ -229,14 +226,11 @@ std::optional<ImageFormat> ParseFormat(const std::wstring& raw) {
 // 以下为 ecapture 命名空间的公开辅助函数（供 main.cpp 复用）
 const wchar_t* FormatName(ImageFormat f) {
     switch (f) {
-        case ImageFormat::kAuto: return L"auto";
         case ImageFormat::kPng: return L"png";
         case ImageFormat::kJpeg: return L"jpeg";
         case ImageFormat::kBmp: return L"bmp";
         case ImageFormat::kTiff: return L"tiff";
         case ImageFormat::kGif: return L"gif";
-        case ImageFormat::kWebp: return L"webp";
-        case ImageFormat::kIco: return L"ico";
     }
     return L"?";
 }
@@ -338,8 +332,6 @@ std::optional<ImageFormat> FormatFromExtension(const std::wstring& ext) {
     if (ext == L"bmp") return ImageFormat::kBmp;
     if (ext == L"tif" || ext == L"tiff") return ImageFormat::kTiff;
     if (ext == L"gif") return ImageFormat::kGif;
-    if (ext == L"webp") return ImageFormat::kWebp;
-    if (ext == L"ico") return ImageFormat::kIco;
     return std::nullopt;
 }
 
@@ -520,6 +512,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 return;
             }
             opt.format = *f;
+            opt.formatExplicit = true;
             formatExplicit = true;
             return;
         }
@@ -668,27 +661,44 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
 
     // ---- 输出与格式 ----
     if (!opt.showHelp && !versionFlag) {
+        // 没给输出路径不再算错：按 "--out -" 处理，图片走 stdout，JSON 走 stderr
         if (opt.output.empty()) {
-            Err(codes::kMissingOutput,
-                L"缺少输出路径：把它作为最后一个位置参数，或用 --out <路径>（`-` 表示写到标准输出）");
+            opt.output = L"-";
+            opt.outputImplicitStdout = true;
+            if (!formatExplicit) opt.format = ImageFormat::kPng;
+            Note(codes::kOutputDefaultedStdout,
+                 L"未给输出路径：按 --out - 处理，图片写标准输出、JSON 写 stderr", L"--out", L"-",
+                 L"要文件就显式给路径，例如 shot.png");
+        }
+
+        if (opt.output == L"-" && !opt.outputImplicitStdout) {
+            if (!formatExplicit) {
+                opt.format = ImageFormat::kPng;
+                Note(codes::kPipeDefaultFormat, L"输出到标准输出且未指定 --format，按 png 编码", L"--out",
+                     L"-");
+            }
         } else if (opt.output != L"-") {
             const std::wstring ext = ExtensionOf(opt.output);
             const auto fromExt = FormatFromExtension(ext);
-            if (formatExplicit && fromExt && *fromExt != opt.format) {
-                Note(codes::kFormatExtensionMismatch,
-                     std::wstring(L"--format 与文件扩展名不一致，按 --format 编码") +
-                         L"（文件名保持不变）", L"--format",
-                     std::wstring(FormatName(opt.format)) + L" vs ." + ext);
-            } else if (!formatExplicit && fromExt) {
+            if (formatExplicit) {
+                if (fromExt && *fromExt != opt.format) {
+                    Note(codes::kFormatExtensionMismatch,
+                         std::wstring(L"--format 与文件扩展名不一致，按 --format 编码") +
+                             L"（文件名保持不变）", L"--format",
+                         std::wstring(FormatName(opt.format)) + L" vs ." + ext);
+                }
+            } else if (fromExt) {
                 opt.format = *fromExt;
-            } else if (!formatExplicit && !fromExt) {
-                Err(codes::kUnrecognizedExtension,
-                    L"无法从输出文件名确定图片格式：加已知扩展名，或用 --format 指定", L"--out",
-                    opt.output, L"png / jpg / bmp / tiff / gif / webp / ico");
+            } else {
+                opt.format = ImageFormat::kPng;
+                if (!ext.empty()) {
+                    Note(codes::kFormatDefaultedPng,
+                         L"输出文件扩展名无法判定格式，按 png 编码（文件名保持不变）", L"--out",
+                         opt.output, L"已知扩展名：png / jpg / jpeg / bmp / tif / tiff / gif");
+                }
+                // 扩展名为空时不在此处提示：真正补 .png 的动作在 Capture.cpp 里，
+                // 那里会发 note.output_extension_appended
             }
-        } else if (!formatExplicit) {
-            opt.format = ImageFormat::kPng;
-            Note(codes::kPipeDefaultFormat, L"输出到标准输出且未指定 --format，按 png 编码", L"--out", L"-");
         }
 
         if (qualityExplicit && opt.format != ImageFormat::kJpeg)

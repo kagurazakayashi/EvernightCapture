@@ -31,8 +31,11 @@ struct MatchOptions {
     std::size_t CountValues() const;  // 条件值总数
 };
 
+// 编码格式。没有"auto"这个取值：不给 --format 就由输出文件扩展名决定，
+// 扩展名也判不出时用 png（见 note.format_defaulted_png）。
+// webp / ico 曾列在取值里，但当前 SDK 的 BitmapEncoder 没有对应编码器，已删除。
 enum class ImageFormat {
-    kAuto, kPng, kJpeg, kBmp, kTiff, kGif, kWebp, kIco,
+    kPng, kJpeg, kBmp, kTiff, kGif,
 };
 
 enum class MultiMatch {
@@ -60,8 +63,10 @@ struct Options {
     MatchOptions match;
 
     std::wstring output;              // 位置参数或 --out；"-" 表示写标准输出
-    ImageFormat format = ImageFormat::kAuto;
-    int jpegQuality = 90;             // --quality
+    bool outputImplicitStdout = false;  // 未给输出路径 => 按 "--out -" 处理，PNG 写标准输出
+    ImageFormat format = ImageFormat::kPng;
+    bool formatExplicit = false;      // 是否显式指定过 --format
+    int jpegQuality = 100;            // --quality
     bool overwrite = true;            // --no-overwrite 置 false
 
     MultiMatch multi = MultiMatch::kAsk;
@@ -109,6 +114,9 @@ inline constexpr const wchar_t* kDuplicateValue = L"note.duplicate_value";
 inline constexpr const wchar_t* kExtensionAppended = L"note.extension_appended";
 inline constexpr const wchar_t* kExeLooksLikeName = L"note.exe_path_looks_like_name";
 inline constexpr const wchar_t* kFormatExtensionMismatch = L"note.format_extension_mismatch";
+inline constexpr const wchar_t* kFormatDefaultedPng = L"note.format_defaulted_png";
+inline constexpr const wchar_t* kOutputDefaultedStdout = L"note.output_defaulted_stdout";
+inline constexpr const wchar_t* kOutputExtensionAppended = L"note.output_extension_appended";
 inline constexpr const wchar_t* kQualityIgnored = L"note.quality_ignored";
 inline constexpr const wchar_t* kAllWithoutPlaceholder = L"note.all_without_placeholder";
 inline constexpr const wchar_t* kFlagOverridesQuiet = L"note.flag_overrides_quiet";

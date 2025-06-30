@@ -177,6 +177,18 @@ $f.Show()
         Assert (-not (Test-Path $path)) "$gone 不该写出文件"
     }
 
+    # 输出名没有扩展名时工具会补一个（ne2 -> ne2.png），改了文件名就必须发 note
+    Write-Host "`n=== 补扩展名不能静默改文件名 ==="
+    $noext = Join-Path $outDir 'nofmt'
+    Remove-Item $noext, "$noext.png" -ErrorAction SilentlyContinue
+    $json = & $Exe --process fontview.exe --class FontViewWClass --newest --out $noext 2>&1 | Out-String
+    Assert ((Test-Path "$noext.png") -and ($json -match 'output_extension_appended')) `
+        '没写出 nofmt.png 或没发 note.output_extension_appended'
+    Assert (-not (Test-Path $noext)) '不该留下没有扩展名的同名文件'
+    Write-Host ("  nofmt.png={0} note={1} 原始名残留={2}" -f (Test-Path "$noext.png"),
+                [bool]($json -match 'output_extension_appended'), (Test-Path $noext))
+    if (-not $Keep) { Remove-Item "$noext.png" -ErrorAction SilentlyContinue }
+
     Write-Host ''
     if ($fails.Count) {
         Write-Host "通道测试失败：$($fails.Count) 项" -ForegroundColor Red

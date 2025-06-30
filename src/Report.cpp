@@ -107,6 +107,7 @@ void WriteInputEcho(Json& j, const Options& opt) {
     OptString(j, L"output", AbsoluteOf(opt.output));
     j.Key(L"toStdout").Value(opt.output == L"-");
     j.Key(L"format").Value(FormatName(opt.format));
+    j.Key(L"formatGiven").Value(opt.formatExplicit);
     j.Key(L"capture").Value(CaptureMethodName(opt.capture));
     j.Key(L"captureGiven").Value(opt.captureExplicit);
     j.Key(L"policy").Value(MultiKey(opt.multi));
@@ -139,6 +140,7 @@ std::wstring HelpText() {
     t += L"\r\n";
     t += L"用法: ECAPTURE.EXE [条件...] <输出路径>        不给任何条件 => 显示本帮助\r\n";
     t += L"      ECAPTURE.EXE [条件...] --out <路径>      路径写 - 表示把图片字节输出到标准输出\r\n";
+    t += L"      ECAPTURE.EXE [条件...]                   不给输出路径 => 图片按 png 写标准输出\r\n";
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
@@ -220,6 +222,17 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         for (auto& e : outcome.errors) errors.push_back(std::move(e));
         for (auto& n : outcome.notes) notes.push_back(std::move(n));
         code = outcome.exitCode;
+    }
+
+    // 没给输出路径时图片字节已经占了 stdout，这条"偷懒路径"失败就只回一条
+    // cli.missing_output：让调用方补 --out 比堆一串原因更有用（用户明确要求）。
+    if (opt.outputImplicitStdout && code != EX_OK) {
+        images.clear();
+        notes.clear();
+        errors = {Diagnostic{codes::kMissingOutput,
+                             L"缺少输出路径，且默认写标准输出时未能出图", L"--out", L"-",
+                             L"显式给 --out <路径>，或用 --dry-run 先看窗口是否命中"}};
+        code = EX_USAGE;
     }
 
     j.Obj();
