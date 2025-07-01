@@ -21,7 +21,7 @@ bool CaptureWindowPrintWindow(uint64_t hwndValue, uint32_t /*timeoutMs*/, Captur
     const int width = full.right - full.left;
     const int height = full.bottom - full.top;
     if (width <= 0 || height <= 0) {
-        CaptureError(err, kChannel, L"窗口矩形为空，无法绘制", L"窗口可能被最小化或已关闭");
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty_draw"), Msg(L"cap.window_gone"));
         return false;
     }
 
@@ -30,9 +30,8 @@ bool CaptureWindowPrintWindow(uint64_t hwndValue, uint32_t /*timeoutMs*/, Captur
         return false;
 
     if (!PrintWindow(hwnd, dib.dc(), kPwRenderFullContent) && !PrintWindow(hwnd, dib.dc(), 0)) {
-        CaptureError(err, kChannel, L"PrintWindow 失败",
-                     L"该窗口可能不接受 WM_PRINT（DirectComposition / 游戏窗口），或已关闭。" +
-                         Win32ErrorText());
+        CaptureError(err, kChannel, Msg(L"cap.pw.failed"),
+                     Msgf(L"cap.pw.failed_hint", Win32ErrorText()));
         return false;
     }
     dib.ToFrame(kChannel, out);

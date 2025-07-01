@@ -22,7 +22,7 @@ std::wstring EmergencyDoc(const char* what) {
     ecapture::Json j;
     j.Obj().Key(L"captured").Value(0).Key(L"images").Arr().End().Key(L"errors").Arr().Obj()
         .Key(L"code").Value(ecapture::codes::kInternalError)
-        .Key(L"message").Value(detail.empty() ? std::wstring(L"未预期的内部异常") : detail)
+        .Key(L"message").Value(detail.empty() ? ecapture::Msg(L"cli.internal_error") : detail)
         .End()
         .End()
         .End();

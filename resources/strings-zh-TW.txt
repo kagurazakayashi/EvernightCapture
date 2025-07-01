@@ -1,0 +1,217 @@
+# EvernightCapture 繁體中文（台灣）文案
+# 格式：key <TAB> 文字，一行一條；# 開頭是註解；空行忽略。
+# 佔位符 %1 .. %9 按位置代入（不同語言可換順序）；要輸出字面百分號寫 %%，
+# 檔案名模板裡的 %i / %h 這類不是佔位符，會原樣保留。
+# 四份語言檔案的 key 必須完全一致，跑 .\scripts\check-lang.ps1 校驗。
+
+# ---------------------------------------------------------------------------
+# 說明文字（由 src/Report.cpp 的 HelpText 排版，縮排寫在每行文字裡）
+# ---------------------------------------------------------------------------
+help.header	EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Graphics.Capture
+help.usage1	用法: ECAPTURE.EXE [條件...] <輸出路徑>        不給任何條件 => 顯示本說明
+help.usage2	      ECAPTURE.EXE [條件...] --out <路徑>      路徑寫 - 表示把圖片位元組輸出到標準輸出
+help.usage3	      ECAPTURE.EXE [條件...]                   不給輸出路徑 => 圖片按 png 寫標準輸出
+help.syntax	寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析
+help.output1	輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
+help.output2	      --help / --version 以及不給條件時是文字
+help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
+help.exit2	        6 目標受保護 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
+help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回）；輸出目錄必須已存在
+help.examples	示例:
+help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
+help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
+help.example3	ECAPTURE.EXE --pid 12345 --title-contains 報告 --all D:\shots\rpt_%i.png
+help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
+help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
+help.no_condition	未指定任何匹配條件，因此顯示說明。
+grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
+grp.pick	匹配到多個視窗時（互斥）
+grp.capture	取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
+grp.output	輸出
+grp.behavior	其他
+
+# ---------------------------------------------------------------------------
+# 選項說明（kOptions 目錄，依選項名取 key）
+# ---------------------------------------------------------------------------
+opt.hwnd	視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x
+opt.pid	處理程序 ID，十進位且大於 0
+opt.process	映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
+opt.exe	映像完整路徑，忽略大小寫
+opt.title	視窗標題精確匹配
+opt.title-contains	視窗標題包含子字串
+opt.title-regex	視窗標題正則匹配，ECMAScript 語法，解析期即校驗
+opt.class	視窗類名，忽略大小寫，如 Notepad / CabinetWClass
+opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
+opt.newest	取最後建立的視窗
+opt.oldest	取最早建立的視窗
+opt.all	每個匹配視窗各存一張
+opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回)
+opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -
+opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
+opt.quality	JPEG 品質，預設 100
+opt.no-overwrite	目標已存在時不覆蓋，報錯退出
+opt.dry-run	只解析並列出候選視窗，不截圖不寫檔案
+opt.json	已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
+opt.verbose	JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
+opt.quiet	省略 notes；errors 無論如何都會返回
+opt.lang	文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
+opt.help	輸出文字說明（本段）
+opt.version	輸出版本與階段
+
+# ---------------------------------------------------------------------------
+# 解析期診斷（src/CliOptions.cpp）
+# ---------------------------------------------------------------------------
+cli.hwnd_value	--hwnd 需要有效的句柄值（十進位，或帶 0x 前綴的十六進位）
+cli.hwnd_hint	純數字按十進位解析；十六進位請寫成 0x……，或含 a-f 時自動按十六進位
+cli.pid_value	--pid 需要有效的處理程序 ID（十進位，> 0）
+cli.process_empty	--process 不能為空
+cli.process_path	--process 只接受映像檔案名（例如 notepad.exe），完整路徑請用 --exe
+cli.process_path_hint	--exe "D:\App\notepad.exe"
+cli.exe_empty	--exe 不能為空
+cli.exe_no_path	--exe 取值不含路徑分隔符，看起來只是檔案名；若只要檔案名請改用 --process
+cli.class_empty	--class 不能為空
+cli.regex_invalid	--title-regex 正則運算式無效 (regex_error code=%1): %2
+cli.regex_hint	ECMAScript 語法；量詞前要有可重複項，字元類別裡的 [ 需要配對
+cli.regex_late	正則運算式在該階段重新編譯失敗
+cli.index_value	--index 是從 1 開始的序號
+cli.unknown_capture_method	--capture 取值不在允許清單內
+cli.unknown_language	--lang 取值不在支援清單內
+cli.duplicate_output	重複的 --out，輸出路徑只能有一個
+cli.output_duplicate_positional	輸出路徑重複：--out 與位置參數只能給一個
+cli.format_value	--format 取值不在允許清單內
+cli.quality_value	--quality 需要在 1..100 之間
+cli.switch_no_value	該開關不接受取值，直接寫選項名即可
+cli.switch_no_value_hint	%1（開）或 %1=false（關）
+cli.unknown_option	未知選項
+cli.missing_value	該選項需要一個取值
+cli.unexpected_positional	多餘的位置參數：只有第一個位置參數當作輸出路徑，其餘條件請用選項給出
+cli.conflicting_options	這些選擇策略互斥，只能選一個
+cli.conflicting_hint	例如只保留 --index 2
+cli.unhandled_option	內部錯誤：目錄中存在但解析器未處理的選項
+cli.missing_output	缺少輸出路徑，且預設寫標準輸出時未能出圖
+cli.missing_output_hint	顯式給 --out <路徑>，或用 --dry-run 先看視窗是否命中
+cli.internal_error	未預期的內部異常
+
+# ---------------------------------------------------------------------------
+# 提示（note.*，不影響退出碼）
+# ---------------------------------------------------------------------------
+note.duplicate_value	同一選項內重複的取值已忽略 %1
+note.extension_appended	--process 取值沒有副檔名，匹配時按 .exe 處理
+note.output_defaulted_stdout	未給輸出路徑：按 --out - 處理，圖片寫標準輸出、JSON 寫 stderr
+note.output_defaulted_stdout_hint	要檔案就顯式給路徑，例如 shot.png
+note.pipe_default_format	輸出到標準輸出且未指定 --format，按 png 編碼
+note.format_extension_mismatch	--format 與檔案副檔名不一致，按 --format 編碼（檔案名保持不變）
+note.format_defaulted_png	輸出檔案副檔名無法判定格式，按 png 編碼（檔案名保持不變）
+note.format_defaulted_png_hint	已知副檔名：png / jpg / jpeg / bmp / tif / tiff / gif
+note.quality_ignored	--quality 只對 jpeg 有效，目前格式下會被忽略
+note.all_without_placeholder	--all 且輸出名沒有佔位符時，會在檔案名後自動追加序號，可能不符合預期
+note.all_without_placeholder_hint	例如 shot_%i_%h.png
+note.json_flag_deprecated	輸出恆為 JSON，--json 已成為無副作用的相容開關
+note.flag_overrides_quiet	--verbose 與 --quiet 同時給出時按 --verbose 處理
+note.dry_run	--dry-run：已選出 %1 個視窗，未截圖也未寫檔案
+note.output_extension_appended	輸出名沒有副檔名，已按所選格式補上
+note.output_extension_hint	實際寫成 %1
+note.capture_channel	auto：%1 不可用，改用 %2
+
+# ---------------------------------------------------------------------------
+# 視窗匹配（src/WindowMatch.cpp）
+# ---------------------------------------------------------------------------
+match.no_window	沒有視窗滿足全部條件
+match.no_window_hint	確認視窗已顯示且沒被別的處理程序獨佔；最小化的視窗無法擷取
+match.iconic_hint	有 %1 個視窗命中條件但處於最小化，無法擷取：%2
+match.index_out_of_range	--index 超出匹配視窗數量
+match.index_hint	共 %1 個候選：%2
+match.ambiguous	匹配到多個視窗，需要消歧
+match.ambiguous_hint	用 --index/--newest/--oldest/--all 或補充條件。候選（按 Z 序）：%1
+match.untitled	(無標題)
+
+# ---------------------------------------------------------------------------
+# 流程與寫檔（src/Capture.cpp）
+# ---------------------------------------------------------------------------
+io.file_exists	目標檔案已存在（--no-overwrite）
+io.file_exists_hint	去掉該選項以覆蓋，或換輸出檔案名
+io.open_failed	無法開啟輸出檔案
+io.open_failed_hint	上層目錄是否存在？路徑是否合法（錯誤碼 %1）
+io.dir_missing	輸出目錄不存在，請先建立目錄
+io.write_interrupted	寫檔案中斷
+io.stdout_failed	寫標準輸出失敗
+
+# ---------------------------------------------------------------------------
+# 取圖通道（src/CaptureCommon.cpp 與各 CaptureXxx.cpp）
+# ---------------------------------------------------------------------------
+err.win32_code	錯誤碼 %1
+cap.rect_empty	視窗矩形為空
+cap.rect_empty_draw	視窗矩形為空，無法繪製
+cap.rect_empty_screen	視窗在螢幕上的矩形為空
+cap.window_gone	視窗可能被最小化或已關閉
+cap.dib_size	視窗尺寸無法配置點陣圖
+cap.dib_size_hint	尺寸 %1，視窗可能已最小化或正在退出
+cap.create_compat_dc	CreateCompatibleDC 失敗
+cap.create_dib_section	CreateDIBSection 失敗
+cap.offscreen	視窗完全在螢幕之外，取不到像素
+cap.visible_only	該通道只能拷螢幕上可見的部分
+cap.bitblt_failed	BitBlt 螢幕失敗
+cap.unsupported	該取圖方式尚未實現
+cap.auto_failed	auto 的退回通道全部失敗（%1）
+cap.hresult	HRESULT %1
+
+cap.wgc.failed	%1 失敗 (HRESULT %2)
+cap.wgc.hint	該視窗可能受保護、已關閉，或系統不支援 Windows.Graphics.Capture
+cap.wgc.step.device	建立 D3D11 裝置
+cap.wgc.step.wrap	包裝 Direct3D 裝置
+cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
+cap.wgc.step.staging	建立 staging 紋理
+cap.wgc.step.map	鎖定 staging 紋理
+cap.wgc.step.session	建立擷取工作階段
+cap.wgc.step.access	取影格表面存取子
+cap.wgc.step.surface	取影格表面
+cap.wgc.step.texture	影格表面轉紋理
+cap.wgc.frame_zero	取到的影格尺寸為 0
+cap.wgc.frame_zero_hint	視窗可能已最小化或剛被關閉
+cap.wgc.size_zero	視窗目前尺寸為 0，無法擷取
+cap.wgc.timeout	逾時未收到影格（%1 ms）
+cap.wgc.timeout_hint	視窗可能沒有內容更新，或受 DRM/安全策略保護而拒絕被擷取
+
+cap.dwm.register_class	註冊縮圖目標視窗類別失敗
+cap.dwm.create_host	建立縮圖目標視窗失敗
+cap.dwm.register_thumb	DwmRegisterThumbnail 失敗
+cap.dwm.register_thumb_hint	%1；視窗可能已關閉，或系統未開啟桌面合成
+cap.dwm.update_props	DwmUpdateThumbnailProperties 失敗
+cap.dwm.host_zero	縮圖宿主視窗尺寸為空
+cap.dwm.pw_failed	對縮圖宿主視窗呼叫 PrintWindow 失敗
+cap.dwm.not_composed	縮圖未被合成，且無法把宿主視窗置頂
+cap.dwm.not_composed_hint	螢幕上另有更高層的置頂視窗；改用 wgc 或 printwindow 通道
+
+cap.pw.failed	PrintWindow 失敗
+cap.pw.failed_hint	該視窗可能不接受 WM_PRINT（DirectComposition / 遊戲視窗），或已關閉。%1
+
+cap.dup.adapter	取顯示卡配接器失敗
+cap.dup.no_output	視窗不在任何顯示器範圍內
+cap.dup.no_output_hint	該通道取的是顯示器合成分，視窗必須至少有一部分在螢幕上
+cap.dup.hint_unsupported	DXGI_ERROR_UNSUPPORTED：遠端桌面 / 部分虛擬機器與基本顯示驅動程式不支援桌面複製
+cap.dup.hint_denied	E_ACCESSDENIED：內容受保護，或目前處於安全桌面（UAC）
+cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：裝置與輸出不匹配，或該輸出已被別的處理程序複製
+cap.dup.hint_timeout	逾時都沒有新影格：桌面完全靜止時可能不發影格，讓目標視窗動一下再試
+cap.dup.to_texture	桌面影格轉紋理失敗
+cap.dup.format	桌面影格不是 BGRA8 格式
+cap.dup.format_hint	HDR / 10 位顯示模式下取不到普通 BGRA 影格，請在系統設定裡關掉 HDR
+cap.dup.staging	建立 staging 紋理失敗
+cap.dup.map	鎖定桌面影格失敗
+cap.dup.device	建立 D3D11 裝置失敗
+cap.dup.dxgi	裝置不支援 DXGI
+cap.dup.duplicate	DuplicateOutput 失敗 (HRESULT %1)
+cap.dup.acquire	AcquireNextFrame 失敗 (HRESULT %1)
+cap.dup.timeout	逾時未取到桌面影格（%1 ms）
+cap.dup.flat	桌面複製取到的整幅畫面是單色：LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat_hint	該工作階段的顯示卡驅動程式可能不向桌面複製輸出內容（遠端桌面 / 基本顯示驅動程式 / 受保護內容被屏蔽），改用 wgc 或 bitblt
+cap.dup.not_in_frame	視窗不在這塊顯示器的桌面影格內
+cap.dup.not_in_frame_hint	視窗可能剛被移到別的顯示器或已關閉
+
+# ---------------------------------------------------------------------------
+# 編碼（src/Encoder.cpp）
+# ---------------------------------------------------------------------------
+enc.available	目前可用：%1
+enc.detail	%1（%2）
+enc.size_zero	影格尺寸為 0，無法編碼
+enc.failed	編碼失敗
+enc.exception	編碼時發生未預期的異常

@@ -130,8 +130,8 @@ bool WriteAll(const std::wstring& path, const std::vector<uint8_t>& bytes, bool 
     if (!overwrite) {
         const DWORD attr = GetFileAttributesW(path.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES) {
-            if (err) *err = Diagnostic{codes::kFileExists, L"目标文件已存在（--no-overwrite）",
-                                       L"--no-overwrite", path, L"去掉该选项以覆盖，或换输出文件名"};
+            if (err) *err = Diagnostic{codes::kFileExists, Msg(L"io.file_exists"),
+                                       L"--no-overwrite", path, Msg(L"io.file_exists_hint")};
             return false;
         }
     }
@@ -139,9 +139,10 @@ bool WriteAll(const std::wstring& path, const std::vector<uint8_t>& bytes, bool 
                                 FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         const DWORD gle = GetLastError();
-        std::wstring hint = L"父目录是否存在？路径是否合法（错误码 " + std::to_wstring(gle) + L"）";
-        if (gle == ERROR_PATH_NOT_FOUND) hint = L"输出目录不存在，请先建好目录";
-        if (err) *err = Diagnostic{codes::kWriteFailed, L"无法打开输出文件", L"--out", path, hint};
+        const std::wstring hint = gle == ERROR_PATH_NOT_FOUND
+                                      ? Msg(L"io.dir_missing")
+                                      : Msgf(L"io.open_failed_hint", Msgf(L"err.win32_code", gle));
+        if (err) *err = Diagnostic{codes::kWriteFailed, Msg(L"io.open_failed"), L"--out", path, hint};
         return false;
     }
     size_t offset = 0;
@@ -151,8 +152,8 @@ bool WriteAll(const std::wstring& path, const std::vector<uint8_t>& bytes, bool 
         DWORD written = 0;
         if (!WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr) || written != chunk) {
             CloseHandle(handle);
-            if (err) *err = Diagnostic{codes::kWriteFailed, L"写文件中断", L"--out", path,
-                                       L"错误码 " + std::to_wstring(GetLastError())};
+            if (err) *err = Diagnostic{codes::kWriteFailed, Msg(L"io.write_interrupted"),
+                                       L"--out", path, Msgf(L"err.win32_code", GetLastError())};
             DeleteFileW(path.c_str());
             return false;
         }
@@ -185,7 +186,7 @@ bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureWithMethod 展开成回退链
     }
-    if (err) *err = Diagnostic{codes::kUnsupported, L"该取图方式尚未实现", L"--capture",
+    if (err) *err = Diagnostic{codes::kUnsupported, Msg(L"cap.unsupported"), L"--capture",
                                CaptureMethodName(method), std::wstring()};
     return false;
 }
@@ -208,8 +209,7 @@ bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
             *out = std::move(attempt);
             if (m != CaptureMethod::kWgc && notes) {
                 notes->push_back(Diagnostic{codes::kCaptureChannel,
-                                            L"auto：wgc 不可用，改用 " +
-                                                std::wstring(CaptureMethodName(m)),
+                                            Msgf(L"note.capture_channel", L"wgc", CaptureMethodName(m)),
                                             L"--capture", L"auto", std::wstring()});
             }
             return true;
@@ -219,8 +219,8 @@ bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
         last = std::move(attemptErr);
     }
     if (err) {
-        *err = Diagnostic{codes::kCaptureFailed, L"auto 的回退通道全部失败（" + tried + L"）",
-                          L"--capture", L"auto", last.message};
+        *err = Diagnostic{codes::kCaptureFailed, Msgf(L"cap.auto_failed", tried), L"--capture",
+                          L"auto", last.message};
     }
     return false;
 }
@@ -248,9 +248,7 @@ CaptureOutcome RunCapture(const Options& opt) {
             if (!list.empty()) list += L" | ";
             list += DescribeWindow(w);
         }
-        outcome.notes.push_back(Diagnostic{codes::kDryRun,
-                                           L"--dry-run：已选出 " + std::to_wstring(targets.size()) +
-                                               L" 个窗口，未截图也未写文件",
+        outcome.notes.push_back(Diagnostic{codes::kDryRun, Msgf(L"note.dry_run", targets.size()),
                                            L"--dry-run", list, std::wstring()});
         return outcome;
     }
@@ -279,8 +277,8 @@ CaptureOutcome RunCapture(const Options& opt) {
             // 文件名被改了要说一声，否则调用方按自己给的名字去找会找不到
             if (i == 0) {
                 outcome.notes.push_back(Diagnostic{codes::kOutputExtensionAppended,
-                                                   L"输出名没有扩展名，已按所选格式补上", L"--out",
-                                                   opt.output, L"实际写成 " + img.file});
+                                                   Msg(L"note.output_extension_appended"), L"--out",
+                                                   opt.output, Msgf(L"note.output_extension_hint", img.file)});
             }
         }
 
@@ -303,8 +301,8 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         if (img.file == L"-") {
             if (!EmitStdoutBytes(bytes)) {
-                outcome.errors.push_back(Diagnostic{codes::kWriteFailed, L"写标准输出失败", L"--out",
-                                                    L"-", std::wstring()});
+                outcome.errors.push_back(Diagnostic{codes::kWriteFailed, Msg(L"io.stdout_failed"),
+                                                    L"--out", L"-", std::wstring()});
                 continue;
             }
         } else {

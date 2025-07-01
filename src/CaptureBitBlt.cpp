@@ -17,7 +17,7 @@ bool CaptureWindowBitBlt(uint64_t hwndValue, uint32_t /*timeoutMs*/, CapturedFra
 
     const RECT rect = WindowScreenRect(hwnd);
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
-        CaptureError(err, kChannel, L"窗口矩形为空", L"窗口可能被最小化或已关闭");
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
         return false;
     }
     return GrabScreenRect(rect, kChannel, out, err);

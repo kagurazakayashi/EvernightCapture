@@ -1,0 +1,217 @@
+# EvernightCapture English strings
+# Format: key <TAB> text, one per line; lines starting with # are comments; blank lines ignored.
+# Placeholders %1 .. %9 are filled by position (each language may reorder them); write %% for a
+# literal percent. %i / %h in file-name templates are not placeholders and stay as they are.
+# All four language files must define exactly the same keys - run .\scripts\check-lang.ps1.
+
+# ---------------------------------------------------------------------------
+# Help text (rendered by HelpText in src/Report.cpp; layout comes from code)
+# ---------------------------------------------------------------------------
+help.header	EvernightCapture (ECAPTURE.EXE) - capture a window selected by conditions, built on Windows.Graphics.Capture
+help.usage1	Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all => this help
+help.usage2	       ECAPTURE.EXE [conditions...] --out <path>      "-" means image bytes go to stdout
+help.usage3	       ECAPTURE.EXE [conditions...]                    No output path => png bytes to stdout
+help.syntax	Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --
+help.output1	Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
+help.output2	       --help / --version and the no-conditions case are plain text
+help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
+help.exit2	        6 target protected / 7 capture failed / 8 write failed / 9 internal error
+help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt); the output directory must already exist
+help.examples	Examples:
+help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
+help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
+help.example3	ECAPTURE.EXE --pid 12345 --title-contains Report --all D:\shots\rpt_%i.png
+help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
+help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
+help.no_condition	No match condition was given, so this help is shown.
+grp.match	Window match conditions (repeat one option for OR, combine different options with AND)
+grp.pick	When several windows match (mutually exclusive)
+grp.capture	Capture channel (default wgc; may fail because of the OS version or the window itself)
+grp.output	Output
+grp.behavior	Miscellaneous
+
+# ---------------------------------------------------------------------------
+# Option descriptions (kOptions, keyed by option name)
+# ---------------------------------------------------------------------------
+opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x
+opt.pid	Process id, decimal and greater than 0
+opt.process	Image file name (no path), case-insensitive; without an extension .exe is assumed
+opt.exe	Full image path, case-insensitive
+opt.title	Window title, exact match
+opt.title-contains	Window title contains this substring
+opt.title-regex	Window title regular-expression match (ECMAScript), validated while parsing
+opt.class	Window class name, case-insensitive, e.g. Notepad / CabinetWClass
+opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
+opt.newest	Take the most recently created window
+opt.oldest	Take the oldest created window
+opt.all	Save one image per matched window
+opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt)
+opt.out	Output path; the special value - writes image bytes to stdout. A positional argument works too; giving none is the same as --out -
+opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
+opt.quality	JPEG quality, default 100
+opt.no-overwrite	Fail instead of overwriting an existing target
+opt.dry-run	Parse and list candidate windows only - no capture, no file written
+opt.json	Deprecated compatibility switch, no effect: success and errors are already JSON
+opt.verbose	Add the input section to the JSON (all input, normalized) and keep notes
+opt.quiet	Drop notes; errors are always returned whatever this says
+opt.lang	Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
+opt.help	Print this text help
+opt.version	Print version and stage
+
+# ---------------------------------------------------------------------------
+# Parse-time diagnostics (src/CliOptions.cpp)
+# ---------------------------------------------------------------------------
+cli.hwnd_value	--hwnd needs a valid handle value (decimal, or hexadecimal with a 0x prefix)
+cli.hwnd_hint	Plain digits parse as decimal; write hexadecimal as 0x..., or it is taken as hexadecimal when it contains a-f
+cli.pid_value	--pid needs a valid process id (decimal, greater than 0)
+cli.process_empty	--process must not be empty
+cli.process_path	--process takes an image file name only (e.g. notepad.exe); use --exe for a full path
+cli.process_path_hint	--exe "D:\App\notepad.exe"
+cli.exe_empty	--exe must not be empty
+cli.exe_no_path	--exe value has no path separator and looks like a bare file name; use --process if that is what you meant
+cli.class_empty	--class must not be empty
+cli.regex_invalid	--title-regex pattern is invalid (regex_error code=%1): %2
+cli.regex_hint	ECMAScript syntax; a quantifier needs something to repeat, and [ inside a character class must be paired
+cli.regex_late	The regular expression failed to compile again at this stage
+cli.index_value	--index is a 1-based ordinal
+cli.unknown_capture_method	--capture value is not in the allowed list
+cli.unknown_language	--lang value is not a supported language
+cli.duplicate_output	Duplicate --out: there can be only one output path
+cli.output_duplicate_positional	Duplicate output path: give either --out or the positional argument, not both
+cli.format_value	--format value is not in the allowed list
+cli.quality_value	--quality must be between 1 and 100
+cli.switch_no_value	This switch takes no value; just write the option name
+cli.switch_no_value_hint	%1 (on) or %1=false (off)
+cli.unknown_option	Unknown option
+cli.missing_value	This option requires a value
+cli.unexpected_positional	Extra positional argument: only the first one is the output path, give every other condition as an option
+cli.conflicting_options	These selection strategies are mutually exclusive; pick one
+cli.conflicting_hint	e.g. keep only --index 2
+cli.unhandled_option	Internal error: option is in the catalog but the parser does not handle it
+cli.missing_output	No output path was given, and writing to stdout by default produced no image
+cli.missing_output_hint	Give --out <path> explicitly, or use --dry-run first to check whether a window matches
+cli.internal_error	Unexpected internal error
+
+# ---------------------------------------------------------------------------
+# Notes (note.*, they never change the exit code)
+# ---------------------------------------------------------------------------
+note.duplicate_value	Duplicate value within the same option was ignored %1
+note.extension_appended	The --process value has no extension, so it is matched as .exe
+note.output_defaulted_stdout	No output path: treated as --out -, image bytes go to stdout and the JSON goes to stderr
+note.output_defaulted_stdout_hint	for a file, give a path explicitly, e.g. shot.png
+note.pipe_default_format	Writing to stdout without --format, so encoded as png
+note.format_extension_mismatch	--format disagrees with the file extension; encoding follows --format (file name unchanged)
+note.format_defaulted_png	The output file extension does not identify a format, so encoded as png (file name unchanged)
+note.format_defaulted_png_hint	known extensions: png / jpg / jpeg / bmp / tif / tiff / gif
+note.quality_ignored	--quality only applies to jpeg and is ignored for the current format
+note.all_without_placeholder	With --all and no placeholder in the output name, an ordinal is appended to the file name, which may not be what you want
+note.all_without_placeholder_hint	e.g. shot_%i_%h.png
+note.json_flag_deprecated	Output is always JSON, so --json is now a switch with no side effect
+note.flag_overrides_quiet	--verbose and --quiet together are handled as --verbose
+note.dry_run	--dry-run: selected %1 window(s), nothing captured and no file written
+note.output_extension_appended	The output name had no extension, so one was added for the chosen format
+note.output_extension_hint	actually written as %1
+note.capture_channel	auto: %1 was unavailable, used %2 instead
+
+# ---------------------------------------------------------------------------
+# Window matching (src/WindowMatch.cpp)
+# ---------------------------------------------------------------------------
+match.no_window	No window satisfies all conditions
+match.no_window_hint	Confirm the window is shown and not held exclusively by another process; minimized windows cannot be captured
+match.iconic_hint	%1 window(s) match the conditions but are minimized and cannot be captured: %2
+match.index_out_of_range	--index is beyond the number of matched windows
+match.index_hint	%1 candidate(s) total: %2
+match.ambiguous	Several windows matched, disambiguation required
+match.ambiguous_hint	Use --index/--newest/--oldest/--all or add conditions. Candidates (z-order): %1
+match.untitled	(no title)
+
+# ---------------------------------------------------------------------------
+# Pipeline and file writing (src/Capture.cpp)
+# ---------------------------------------------------------------------------
+io.file_exists	Target file already exists (--no-overwrite)
+io.file_exists_hint	Drop that option to overwrite, or choose another output name
+io.open_failed	Cannot open the output file
+io.open_failed_hint	Does the parent directory exist? Is the path valid (%1)
+io.dir_missing	Output directory does not exist - create it first
+io.write_interrupted	Write to file interrupted
+io.stdout_failed	Failed to write to stdout
+
+# ---------------------------------------------------------------------------
+# Capture channels (src/CaptureCommon.cpp and each CaptureXxx.cpp)
+# ---------------------------------------------------------------------------
+err.win32_code	error code %1
+cap.rect_empty	Window rectangle is empty
+cap.rect_empty_draw	Window rectangle is empty, cannot paint
+cap.rect_empty_screen	The window's rectangle on screen is empty
+cap.window_gone	The window may be minimized or already closed
+cap.dib_size	Cannot allocate a bitmap for this window size
+cap.dib_size_hint	size %1; the window may be minimized or exiting
+cap.create_compat_dc	CreateCompatibleDC failed
+cap.create_dib_section	CreateDIBSection failed
+cap.offscreen	The window is entirely off screen, no pixels to take
+cap.visible_only	This channel can only copy the visible part of the screen
+cap.bitblt_failed	BitBlt from the screen DC failed
+cap.unsupported	This capture method is not implemented
+cap.auto_failed	Every auto fallback channel failed (%1)
+cap.hresult	HRESULT %1
+
+cap.wgc.failed	%1 failed (HRESULT %2)
+cap.wgc.hint	The window may be protected or closed, or the system does not support Windows.Graphics.Capture
+cap.wgc.step.device	create the D3D11 device
+cap.wgc.step.wrap	wrap the Direct3D device
+cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
+cap.wgc.step.staging	create the staging texture
+cap.wgc.step.map	map the staging texture
+cap.wgc.step.session	create the capture session
+cap.wgc.step.access	get the frame surface accessor
+cap.wgc.step.surface	get the frame surface
+cap.wgc.step.texture	convert the frame surface to a texture
+cap.wgc.frame_zero	The captured frame has size 0
+cap.wgc.frame_zero_hint	The window may be minimized or just closed
+cap.wgc.size_zero	The window currently has size 0 and cannot be captured
+cap.wgc.timeout	No frame received within %1 ms
+cap.wgc.timeout_hint	The window may have no content updates, or DRM/security policy refuses to let it be captured
+
+cap.dwm.register_class	Failed to register the thumbnail target window class
+cap.dwm.create_host	Failed to create the thumbnail target window
+cap.dwm.register_thumb	DwmRegisterThumbnail failed
+cap.dwm.register_thumb_hint	%1; the window may be closed, or desktop composition is off
+cap.dwm.update_props	DwmUpdateThumbnailProperties failed
+cap.dwm.host_zero	The thumbnail host window has an empty size
+cap.dwm.pw_failed	PrintWindow on the thumbnail host window failed
+cap.dwm.not_composed	The thumbnail was never composed and the host window could not be brought to the top
+cap.dwm.not_composed_hint	A higher topmost window covers that spot on screen; use the wgc or printwindow channel
+
+cap.pw.failed	PrintWindow failed
+cap.pw.failed_hint	The window may not accept WM_PRINT (DirectComposition / game window), or it has closed. %1
+
+cap.dup.adapter	Failed to get the display adapter
+cap.dup.no_output	The window is not inside any monitor
+cap.dup.no_output_hint	This channel takes the composed output of a monitor, so at least part of the window must be on screen
+cap.dup.hint_unsupported	DXGI_ERROR_UNSUPPORTED: remote desktop / some virtual machines and basic display drivers do not support desktop duplication
+cap.dup.hint_denied	E_ACCESSDENIED: the content is protected, or the secure desktop (UAC) is current
+cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL: device and output do not match, or this output is already duplicated by another process
+cap.dup.hint_timeout	No new frame before the timeout: a completely static desktop may stop presenting - make the target window redraw and try again
+cap.dup.to_texture	Failed to get the desktop frame as a texture
+cap.dup.format	The desktop frame is not in BGRA8 format
+cap.dup.format_hint	HDR / 10-bit display modes give no plain BGRA frame - turn HDR off in system settings
+cap.dup.staging	Failed to create the staging texture
+cap.dup.map	Failed to map the desktop frame
+cap.dup.device	Failed to create the D3D11 device
+cap.dup.dxgi	The device does not support DXGI
+cap.dup.duplicate	DuplicateOutput failed (HRESULT %1)
+cap.dup.acquire	AcquireNextFrame failed (HRESULT %1)
+cap.dup.timeout	No desktop frame within %1 ms
+cap.dup.flat	The whole desktop-duplication frame is a single colour: LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat_hint	The display driver in this session may not feed content to desktop duplication (remote desktop / basic display driver / protected content masked out); use wgc or bitblt
+cap.dup.not_in_frame	The window is not inside this monitor's desktop frame
+cap.dup.not_in_frame_hint	The window may have just moved to another monitor or closed
+
+# ---------------------------------------------------------------------------
+# Encoding (src/Encoder.cpp)
+# ---------------------------------------------------------------------------
+enc.available	currently available: %1
+enc.detail	%1 (%2)
+enc.size_zero	Frame has size 0, cannot encode
+enc.failed	Encoding failed
+enc.exception	Unexpected exception while encoding

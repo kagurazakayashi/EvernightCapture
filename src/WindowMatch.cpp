@@ -154,7 +154,7 @@ std::wstring BriefList(const std::vector<WindowInfo>& items, size_t limit) {
         swprintf(buf, 96, L"0x%08X", static_cast<unsigned>(items[i].hwnd));
         s += buf;
         s += L" ";
-        s += items[i].title.empty() ? L"(无标题)" : items[i].title;
+        s += items[i].title.empty() ? Msg(L"match.untitled") : items[i].title;
         if (!items[i].imageName.empty()) s += L" [" + items[i].imageName + L"]";
     }
     if (items.size() > limit) s += L" …";
@@ -192,7 +192,7 @@ std::vector<WindowInfo> SelectWindows(const Options& opt, std::vector<Diagnostic
         try {
             c.titleRegexes.emplace_back(expr, std::regex_constants::ECMAScript);
         } catch (const std::regex_error&) {
-            Diagnostic d{codes::kInvalidRegex, L"正则在该阶段重新编译失败", L"--title-regex", expr, L""};
+            Diagnostic d{codes::kInvalidRegex, Msg(L"cli.regex_late"), L"--title-regex", expr, L""};
             errors->push_back(std::move(d));
             return {};
         }
@@ -212,12 +212,9 @@ std::vector<WindowInfo> SelectWindows(const Options& opt, std::vector<Diagnostic
     };
 
     if (hits.empty()) {
-        std::wstring hint = L"确认窗口已显示且没被别的进程独占；最小化的窗口无法采集";
-        if (!iconic.empty()) {
-            hint = L"有 " + std::to_wstring(iconic.size()) + L" 个窗口命中条件但处于最小化，无法采集：" +
-                   BriefList(iconic, 3);
-        }
-        return fail(Diagnostic{codes::kNoWindow, L"没有窗口满足全部条件", L"", L"", hint});
+        std::wstring hint = Msg(L"match.no_window_hint");
+        if (!iconic.empty()) hint = Msgf(L"match.iconic_hint", iconic.size(), BriefList(iconic, 3));
+        return fail(Diagnostic{codes::kNoWindow, Msg(L"match.no_window"), L"", L"", std::move(hint)});
     }
 
     switch (opt.multi) {
@@ -230,22 +227,18 @@ std::vector<WindowInfo> SelectWindows(const Options& opt, std::vector<Diagnostic
         case MultiMatch::kIndex: {
             const size_t n = static_cast<size_t>(opt.index);
             if (n > hits.size()) {
-                return fail(Diagnostic{codes::kIndexOutOfRange,
-                                       L"--index 超出匹配窗口数量", L"--index",
-                                       std::to_wstring(opt.index),
-                                       L"共 " + std::to_wstring(hits.size()) + L" 个候选：" +
-                                           BriefList(hits, 8)});
+                return fail(Diagnostic{codes::kIndexOutOfRange, Msg(L"match.index_out_of_range"),
+                                       L"--index", std::to_wstring(opt.index),
+                                       Msgf(L"match.index_hint", hits.size(), BriefList(hits, 8))});
             }
             return {hits[n - 1]};
         }
         case MultiMatch::kAsk:
         default:
             if (hits.size() == 1) return hits;
-            return fail(Diagnostic{codes::kAmbiguousWindow,
-                                   L"匹配到多个窗口，需要消歧", L"",
+            return fail(Diagnostic{codes::kAmbiguousWindow, Msg(L"match.ambiguous"), L"",
                                    std::to_wstring(hits.size()),
-                                   L"用 --index/--newest/--oldest/--all 或补充条件。候选（按 Z 序）：" +
-                                       BriefList(hits, 8)});
+                                   Msgf(L"match.ambiguous_hint", BriefList(hits, 8))});
     }
 }
 

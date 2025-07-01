@@ -11,6 +11,7 @@
 
 #include "Json.h"
 #include "Capture.h"
+#include "Lang.h"
 
 namespace ecapture {
 namespace {
@@ -110,17 +111,18 @@ void WriteInputEcho(Json& j, const Options& opt) {
     j.Key(L"formatGiven").Value(opt.formatExplicit);
     j.Key(L"capture").Value(CaptureMethodName(opt.capture));
     j.Key(L"captureGiven").Value(opt.captureExplicit);
+    j.Key(L"lang").Value(LanguageTag(CurrentLanguage()));
     j.Key(L"policy").Value(MultiKey(opt.multi));
     if (opt.multi == MultiMatch::kIndex) j.Key(L"index").Value(opt.index);
     j.End();
 }
 
 const wchar_t* GroupTitle(const std::wstring& group) {
-    if (group == L"match") return L"窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）";
-    if (group == L"pick") return L"匹配到多个窗口时（互斥）";
-    if (group == L"capture") return L"取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）";
-    if (group == L"output") return L"输出";
-    return L"其它";
+    if (group == L"match") return L"grp.match";
+    if (group == L"pick") return L"grp.pick";
+    if (group == L"capture") return L"grp.capture";
+    if (group == L"output") return L"grp.output";
+    return L"grp.behavior";
 }
 
 std::wstring FlagColumn(const OptionInfo& o) {
@@ -132,15 +134,16 @@ std::wstring FlagColumn(const OptionInfo& o) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// 纯文本帮助：由选项目录生成，所以不会和实现脱节
+// 纯文本帮助：骨架由选项目录生成，所以不会和实现脱节；每一句文案都取自资源（见 Lang.h），
+// 换行与缩进写在文案里，好让每种语言自己安排对齐。
 // ---------------------------------------------------------------------------
 std::wstring HelpText() {
     std::wstring t;
-    t += L"EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Graphics.Capture\r\n";
+    t += Msg(L"help.header") + L"\r\n";
     t += L"\r\n";
-    t += L"用法: ECAPTURE.EXE [条件...] <输出路径>        不给任何条件 => 显示本帮助\r\n";
-    t += L"      ECAPTURE.EXE [条件...] --out <路径>      路径写 - 表示把图片字节输出到标准输出\r\n";
-    t += L"      ECAPTURE.EXE [条件...]                   不给输出路径 => 图片按 png 写标准输出\r\n";
+    t += Msg(L"help.usage1") + L"\r\n";
+    t += Msg(L"help.usage2") + L"\r\n";
+    t += Msg(L"help.usage3") + L"\r\n";
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
@@ -152,7 +155,7 @@ std::wstring HelpText() {
         width = std::max(width, col.size());
     }
     for (const wchar_t* g : groups) {
-        t += GroupTitle(g);
+        t += Msg(GroupTitle(g));
         t += L"\r\n";
         for (const auto& o : catalog) {
             if (o.group != g) continue;
@@ -160,25 +163,23 @@ std::wstring HelpText() {
             if (!o.valueHint.empty()) col += L" " + o.valueHint;
             col = L"  " + col;
             col.append(width + 3 - col.size(), L' ');
-            t += col + o.description + L"\r\n";
+            t += col + Msg(o.messageKey.c_str()) + L"\r\n";
         }
         t += L"\r\n";
     }
 
-    t += L"写法: --opt=value / -opt / /opt 都接受；取值本身以 - 开头时写成 --title=-x，或用 -- 结束选项解析\r\n";
-    t += L"输出: 成功与错误都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）\r\n";
-    t += L"      --help / --version 以及不给条件时是文本\r\n";
-    t += L"退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /\r\n";
-    t += L"        6 目标受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常\r\n";
-    t += L"当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，"
-         L"auto 按 wgc-dwm-printwindow-bitblt 回退）；输出目录必须已存在\r\n";
+    t += Msg(L"help.syntax") + L"\r\n";
+    t += Msg(L"help.output1") + L"\r\n";
+    t += Msg(L"help.output2") + L"\r\n";
+    t += Msg(L"help.exit1") + L"\r\n";
+    t += Msg(L"help.exit2") + L"\r\n";
+    t += Msg(L"help.status") + L"\r\n";
     t += L"\r\n";
-    t += L"示例:\r\n";
-    t += L"  ECAPTURE.EXE --process notepad.exe D:\\shots\\epad.png\r\n";
-    t += L"  ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\\shots\\game.png\r\n";
-    t += L"  ECAPTURE.EXE --pid 12345 --title-contains 报告 --all D:\\shots\\rpt_%i.png\r\n";
-    t += L"  ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png\r\n";
-    t += L"  ECAPTURE.EXE --process notepad.exe --out - > snap.png\r\n";
+    t += Msg(L"help.examples") + L"\r\n";
+    for (const wchar_t* key : {L"help.example1", L"help.example2", L"help.example3", L"help.example4",
+                               L"help.example5"}) {
+        t += L"  " + Msg(key) + L"\r\n";
+    }
     return t;
 }
 
@@ -202,7 +203,7 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     }
     if (opt.showHelp) {
         if (!opt.helpReason.empty())
-            out->body += L"未指定任何匹配条件，因此显示帮助。\r\n\r\n";
+            out->body += Msg(L"help.no_condition") + L"\r\n\r\n";
         out->body += HelpText();
         const int code = opt.helpReason.empty() ? EX_HELP : EX_NO_CONDITION;
         out->exitCode = code;
@@ -229,9 +230,8 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     if (opt.outputImplicitStdout && code != EX_OK) {
         images.clear();
         notes.clear();
-        errors = {Diagnostic{codes::kMissingOutput,
-                             L"缺少输出路径，且默认写标准输出时未能出图", L"--out", L"-",
-                             L"显式给 --out <路径>，或用 --dry-run 先看窗口是否命中"}};
+        errors = {Diagnostic{codes::kMissingOutput, Msg(L"cli.missing_output"), L"--out", L"-",
+                             Msg(L"cli.missing_output_hint")}};
         code = EX_USAGE;
     }
 

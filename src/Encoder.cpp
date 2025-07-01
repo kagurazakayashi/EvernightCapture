@@ -32,9 +32,9 @@ std::wstring HresultText(winrt::hresult hr) {
 bool Err(Diagnostic* out, const wchar_t* code, std::wstring message, const std::wstring& format,
          const std::wstring& detail) {
     if (!out) return false;
-    std::wstring hint = L"当前可用：" + AvailableFormats();
+    const std::wstring hint = Msgf(L"enc.available", AvailableFormats());
     *out = Diagnostic{code, std::move(message), L"--format", format,
-                      detail.empty() ? hint : hint + L"（" + detail + L"）"};
+                      detail.empty() ? hint : Msgf(L"enc.detail", hint, detail)};
     return false;
 }
 
@@ -61,7 +61,7 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality,
                  std::vector<uint8_t>* bytes, Diagnostic* err) {
     const std::wstring label = FormatLabel(fmt);
     if (frame.width == 0 || frame.height == 0)
-        return Err(err, codes::kCaptureFailed, L"帧尺寸为 0，无法编码", label, std::wstring());
+        return Err(err, codes::kCaptureFailed, Msg(L"enc.size_zero"), label, std::wstring());
 
     try {
         EnsureWinrtInitialized();
@@ -95,9 +95,10 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality,
         }
         return !bytes->empty();
     } catch (const winrt::hresult_error& e) {
-        return Err(err, codes::kEncoderUnavailable, L"编码失败", label, L"HRESULT " + HresultText(e.code()));
+        return Err(err, codes::kEncoderUnavailable, Msg(L"enc.failed"), label,
+                     Msgf(L"cap.hresult", HresultText(e.code())));
     } catch (const std::exception&) {
-        return Err(err, codes::kEncoderUnavailable, L"编码时发生未预期的异常", label, std::wstring());
+        return Err(err, codes::kEncoderUnavailable, Msg(L"enc.exception"), label, std::wstring());
     }
 }
 

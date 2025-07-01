@@ -68,7 +68,7 @@ bool PickOutput(IDXGIDevice* device, const RECT& window, PickedOutput* out, Diag
     ComPtr<IDXGIAdapter> adapter;
     HRESULT hr = device->GetAdapter(&adapter);
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, L"取显卡适配器失败", L"HRESULT " + HResultText(hr));
+        CaptureError(err, kChannel, Msg(L"cap.dup.adapter"), Msgf(L"cap.hresult", HResultText(hr)));
         return false;
     }
     long long best = 0;
@@ -86,8 +86,7 @@ bool PickOutput(IDXGIDevice* device, const RECT& window, PickedOutput* out, Diag
         out->desc = desc;
     }
     if (!out->output1 || best <= 0) {
-        CaptureError(err, kChannel, L"窗口不在任何显示器范围内",
-                     L"该通道取的是显示器合成分，窗口必须至少有一部分在屏幕上");
+        CaptureError(err, kChannel, Msg(L"cap.dup.no_output"), Msg(L"cap.dup.no_output_hint"));
         return false;
     }
     return true;
@@ -95,16 +94,16 @@ bool PickOutput(IDXGIDevice* device, const RECT& window, PickedOutput* out, Diag
 
 std::wstring DuplicationHint(HRESULT hr) {
     if (hr == DXGI_ERROR_UNSUPPORTED) {
-        return L"DXGI_ERROR_UNSUPPORTED：远程桌面 / 部分虚拟机与基本显示驱动不支持桌面复制";
+        return Msg(L"cap.dup.hint_unsupported");
     }
     if (hr == E_ACCESSDENIED) {
-        return L"E_ACCESSDENIED：内容受保护，或当前处于安全桌面（UAC）";
+        return Msg(L"cap.dup.hint_denied");
     }
     if (hr == DXGI_ERROR_INVALID_CALL) {
-        return L"DXGI_ERROR_INVALID_CALL：设备与输出不匹配，或该输出已被别的进程复制";
+        return Msg(L"cap.dup.hint_invalid_call");
     }
     if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
-        return L"超时都没有新帧：桌面完全静止时可能不发帧，让目标窗口动一下再试";
+        return Msg(L"cap.dup.hint_timeout");
     }
     return std::wstring();
 }
@@ -116,14 +115,13 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     ComPtr<ID3D11Texture2D> desktop;
     HRESULT hr = resource->QueryInterface(IID_PPV_ARGS(&desktop));
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, L"桌面帧转纹理失败", L"HRESULT " + HResultText(hr));
+        CaptureError(err, kChannel, Msg(L"cap.dup.to_texture"), Msgf(L"cap.hresult", HResultText(hr)));
         return false;
     }
     D3D11_TEXTURE2D_DESC src{};
     desktop->GetDesc(&src);
     if (src.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
-        CaptureError(err, kChannel, L"桌面帧不是 BGRA8 格式",
-                     L"HDR / 10 位显示模式下取不到普通 BGRA 帧，请在系统设置里关掉 HDR");
+        CaptureError(err, kChannel, Msg(L"cap.dup.format"), Msg(L"cap.dup.format_hint"));
         return false;
     }
 
@@ -134,7 +132,7 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     stagingDesc.MiscFlags = 0;
     ComPtr<ID3D11Texture2D> staging;
     if (FAILED(device->CreateTexture2D(&stagingDesc, nullptr, &staging))) {
-        CaptureError(err, kChannel, L"创建 staging 纹理失败", std::wstring());
+        CaptureError(err, kChannel, Msg(L"cap.dup.staging"), std::wstring());
         return false;
     }
     ComPtr<ID3D11DeviceContext> context;
@@ -144,7 +142,7 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     D3D11_MAPPED_SUBRESOURCE mapped{};
     hr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, L"锁定桌面帧失败", L"HRESULT " + HResultText(hr));
+        CaptureError(err, kChannel, Msg(L"cap.dup.map"), Msgf(L"cap.hresult", HResultText(hr)));
         return false;
     }
     out->width = src.Width;
@@ -172,18 +170,18 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
 
     const RECT ext = WindowScreenRect(hwnd);
     if (ext.right <= ext.left || ext.bottom <= ext.top) {
-        CaptureError(err, kChannel, L"窗口矩形为空", L"窗口可能被最小化或已关闭");
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
         return false;
     }
 
     ComPtr<ID3D11Device> device = CreateCaptureDevice();
     if (!device) {
-        CaptureError(err, kChannel, L"创建 D3D11 设备失败", std::wstring());
+        CaptureError(err, kChannel, Msg(L"cap.dup.device"), std::wstring());
         return false;
     }
     ComPtr<IDXGIDevice> dxgiDevice;
     if (FAILED(device.As(&dxgiDevice))) {
-        CaptureError(err, kChannel, L"设备不支持 DXGI", std::wstring());
+        CaptureError(err, kChannel, Msg(L"cap.dup.dxgi"), std::wstring());
         return false;
     }
 
@@ -193,7 +191,7 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
     ComPtr<IDXGIOutputDuplication> dup;
     HRESULT hr = picked.output1->DuplicateOutput(device.Get(), &dup);
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, L"DuplicateOutput 失败 (HRESULT " + HResultText(hr) + L")",
+        CaptureError(err, kChannel, Msgf(L"cap.dup.duplicate", HResultText(hr)),
                      DuplicationHint(hr));
         return false;
     }
@@ -209,7 +207,7 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
     while (!have) {
         const int32_t remaining = static_cast<int32_t>(deadline - GetTickCount());
         if (remaining <= 0) {
-            CaptureError(err, kChannel, L"超时未取到桌面帧（" + std::to_wstring(timeoutMs) + L" ms）",
+            CaptureError(err, kChannel, Msgf(L"cap.dup.timeout", timeoutMs),
                          DuplicationHint(DXGI_ERROR_WAIT_TIMEOUT));
             return false;
         }
@@ -217,7 +215,7 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
                                    &resource);
         if (hr == DXGI_ERROR_WAIT_TIMEOUT || hr == S_FALSE) continue;
         if (FAILED(hr)) {
-            CaptureError(err, kChannel, L"AcquireNextFrame 失败 (HRESULT " + HResultText(hr) + L")",
+            CaptureError(err, kChannel, Msgf(L"cap.dup.acquire", HResultText(hr)),
                          DuplicationHint(hr));
             return false;
         }
@@ -242,13 +240,9 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
     // 判整幅而不是判裁剪后的窗口区域：窗口本身可能就是一块纯黑内容。
     if (FrameIsFlat(desktop)) {
         CaptureError(err, kChannel,
-                     L"桌面复制取到的整幅画面是单色：LastPresentTime=" +
-                         std::to_wstring(info.LastPresentTime.QuadPart) +
-                         L" AccumulatedFrames=" + std::to_wstring(info.AccumulatedFrames) +
-                         L" ProtectedContentMaskedOut=" +
-                         std::to_wstring(info.ProtectedContentMaskedOut ? 1 : 0),
-                     L"该会话的显卡驱动可能不向桌面复制输出内容（远程桌面 / 基本显示驱动 / "
-                     L"受保护内容被屏蔽），改用 wgc 或 bitblt");
+                     Msgf(L"cap.dup.flat", info.LastPresentTime.QuadPart, info.AccumulatedFrames,
+                          info.ProtectedContentMaskedOut ? 1 : 0),
+                     Msg(L"cap.dup.flat_hint"));
         return false;
     }
 
@@ -261,8 +255,8 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
     const int visibleH = std::min(static_cast<int>(desktop.height),
                                  y + static_cast<int>(ext.bottom - ext.top));
     if (visibleW <= cropX || visibleH <= cropY) {
-        CaptureError(err, kChannel, L"窗口不在这块显示器的桌面帧内",
-                     L"窗口可能刚被移到别的显示器或已关闭");
+        CaptureError(err, kChannel, Msg(L"cap.dup.not_in_frame"),
+                     Msg(L"cap.dup.not_in_frame_hint"));
         return false;
     }
     desktop.source = kChannel;

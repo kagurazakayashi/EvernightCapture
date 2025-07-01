@@ -47,12 +47,12 @@ std::wstring HResultText(HRESULT hr) {
     return buf;
 }
 
-bool Fail(Diagnostic* err, const wchar_t* what, HRESULT hr) {
+// stepKey 指向 resources 里"某一步失败"的文案（cap.wgc.step.*），套进统一的失败句式
+bool Fail(Diagnostic* err, const wchar_t* stepKey, HRESULT hr) {
     if (err) {
         *err = Diagnostic{codes::kCaptureFailed,
-                          std::wstring(what) + L" 失败 (HRESULT " + HResultText(hr) + L")",
-                          L"--capture", L"wgc",
-                          L"该窗口可能受保护、已关闭，或系统不支持 Windows.Graphics.Capture"};
+                          Msgf(L"cap.wgc.failed", Msg(stepKey), HResultText(hr)), L"--capture", L"wgc",
+                          Msg(L"cap.wgc.hint")};
     }
     return false;
 }
@@ -90,8 +90,8 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
     D3D11_TEXTURE2D_DESC desc{};
     src->GetDesc(&desc);
     if (desc.Width == 0 || desc.Height == 0) {
-        if (err) *err = Diagnostic{codes::kCaptureFailed, L"取到的帧尺寸为 0", L"--capture", L"wgc",
-                                   L"窗口可能已最小化或刚被关闭"};
+        if (err) *err = Diagnostic{codes::kCaptureFailed, Msg(L"cap.wgc.frame_zero"), L"--capture",
+                                   L"wgc", Msg(L"cap.wgc.frame_zero_hint")};
         return false;
     }
 
@@ -102,7 +102,7 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
     stagingDesc.MiscFlags = 0;
     ComPtr<ID3D11Texture2D> staging;
     if (FAILED(device->CreateTexture2D(&stagingDesc, nullptr, &staging)))
-        return Fail(err, L"创建 staging 纹理", E_FAIL);
+        return Fail(err, L"cap.wgc.step.staging", E_FAIL);
 
     ComPtr<ID3D11DeviceContext> context;
     device->GetImmediateContext(&context);
@@ -110,7 +110,7 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     const HRESULT mapHr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(mapHr)) return Fail(err, L"锁定 staging 纹理", mapHr);
+    if (FAILED(mapHr)) return Fail(err, L"cap.wgc.step.map", mapHr);
 
     out->width = desc.Width;
     out->height = desc.Height;
@@ -136,18 +136,18 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
     out->width = out->height = out->stride = 0;
 
     ComPtr<ID3D11Device> device = CreateDevice();
-    if (!device) return Fail(err, L"创建 D3D11 设备", E_FAIL);
+    if (!device) return Fail(err, L"cap.wgc.step.device", E_FAIL);
 
     const auto winrtDevice = WrapDevice(device.Get());
-    if (!winrtDevice) return Fail(err, L"包装 Direct3D 设备", E_FAIL);
+    if (!winrtDevice) return Fail(err, L"cap.wgc.step.wrap", E_FAIL);
 
     auto item = CreateItem(hwnd);
-    if (!item) return Fail(err, L"GraphicsCaptureItem.CreateForWindow", E_NOINTERFACE);
+    if (!item) return Fail(err, L"cap.wgc.step.item", E_NOINTERFACE);
 
     const auto size = item.Size();
     if (size.Width <= 0 || size.Height <= 0) {
-        if (err) *err = Diagnostic{codes::kCaptureFailed, L"窗口当前尺寸为 0，无法采集", L"--capture",
-                                   L"wgc", L"窗口可能被最小化或正在退出"};
+        if (err) *err = Diagnostic{codes::kCaptureFailed, Msg(L"cap.wgc.size_zero"), L"--capture",
+                                   L"wgc", Msg(L"cap.window_gone")};
         return false;
     }
 
@@ -163,7 +163,7 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
             s3->put_IsBorderRequired(FALSE);
         session.StartCapture();
     } catch (const winrt::hresult_error& e) {
-        return Fail(err, L"创建采集会话", e.code());
+        return Fail(err, L"cap.wgc.step.session", e.code());
     }
 
     // 轮询等帧：一次性截图用事件反而麻烦，FreeThreaded 池允许任意线程取帧
@@ -194,10 +194,8 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
     } closer{&session, &pool};
 
     if (!frame) {
-        if (err) *err = Diagnostic{codes::kCaptureFailed,
-                                   L"超时未收到帧（" + std::to_wstring(timeoutMs) + L" ms）",
-                                   L"--capture", L"wgc",
-                                   L"窗口可能没有内容更新，或受 DRM/安全策略保护而拒绝被采集"};
+        if (err) *err = Diagnostic{codes::kCaptureFailed, Msgf(L"cap.wgc.timeout", timeoutMs),
+                                   L"--capture", L"wgc", Msg(L"cap.wgc.timeout_hint")};
         return false;
     }
 
@@ -207,13 +205,13 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
         ComPtr<::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess> access;
         auto* surfaceAbi = static_cast<IInspectable*>(winrt::get_abi(frame.Surface()));
         HRESULT hr = surfaceAbi->QueryInterface(IID_PPV_ARGS(&access));
-        if (FAILED(hr)) return Fail(err, L"取帧表面访问器", hr);
+        if (FAILED(hr)) return Fail(err, L"cap.wgc.step.access", hr);
         hr = access->GetInterface(IID_PPV_ARGS(&dxgiSurface));
-        if (FAILED(hr)) return Fail(err, L"取帧表面", hr);
+        if (FAILED(hr)) return Fail(err, L"cap.wgc.step.surface", hr);
     }
     ComPtr<ID3D11Texture2D> texture;
     const HRESULT qhr = dxgiSurface->QueryInterface(IID_PPV_ARGS(&texture));
-    if (FAILED(qhr)) return Fail(err, L"帧表面转纹理", qhr);
+    if (FAILED(qhr)) return Fail(err, L"cap.wgc.step.texture", qhr);
 
     return CopyToCpu(device.Get(), texture.Get(), out, err);
 }

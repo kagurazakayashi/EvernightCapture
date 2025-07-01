@@ -1,7 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $root = (Get-Item -LiteralPath "$PSScriptRoot\..").FullName
 $exe = Join-Path $root 'build\ecapture.exe'
-$help = (& $exe --help 2>$null) -join "`r`n"
+# README 里的帮助段固定用简体中文：换一台英文系统的机器跑本脚本，产出也必须一模一样
+$help = (& $exe --help --lang zh-CN 2>$null) -join "`r`n"
 if (-not $help) { throw '取不到 --help 输出' }
 
 $template = @'
@@ -22,13 +23,20 @@ $template = @'
 .\build.ps1                # Release，产物 build\ecapture.exe
 .\build.ps1 -Config Debug
 .\build.ps1 -Clean
-.\tests\cli.ps1            # 输出契约回归测试（52 例，一律 --dry-run，不截图）
+.\tests\cli.ps1            # 输出契约回归测试（61 例 + 多语言检查，一律 --dry-run，不截图）
+.\scripts\check-lang.ps1   # 四种语言文案的 key / 占位符对齐检查，并确认 exe 里真有四份资源
 .\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
 .\tests\channels.ps1       # 真机通道对比：每条通道逐个截图 + 遮挡对照
 .\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 逐通道截图并校验画面 -> 打开截图目录 -> 结束进程
 ```
 
 产物是单文件：静态链接 CRT，目标机器不需要装 VC++ 运行时。
+
+## 文案语言
+
+`--lang`（短形式 `-l`）选文案语言：`zh-CN` / `zh-TW` / `en` / `ja`，不给或给 `auto` 时跟随系统显示语言，
+系统语言不支持时用 `en`。文案是 exe 自带的嵌入资源（`resources/strings-<语言>.txt` 按语言编成四份
+`RCDATA`），包括 `--help` 全文与每条诊断的 message/hint；`code`、JSON 键名、取值枚举不随语言变化。
 
 ## 帮助
 

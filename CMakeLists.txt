@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 project(EvernightCapture
         VERSION 0.1.0
         DESCRIPTION "CLI screenshot tool built on Windows.Graphics.Capture"
-        LANGUAGES CXX)
+        LANGUAGES CXX RC)
 
 if(NOT MSVC)
   message(FATAL_ERROR "EvernightCapture 需要 MSVC（Windows.Graphics.Capture / C++/WinRT 依赖 Windows SDK）")
@@ -12,6 +12,7 @@ endif()
 add_executable(ecapture
   src/Main.cpp
   src/CliOptions.cpp
+  src/Lang.cpp
   src/Json.cpp
   src/Report.cpp
   src/WindowMatch.cpp
@@ -25,7 +26,21 @@ add_executable(ecapture
   src/CaptureBitBlt.cpp
   src/CaptureDuplication.cpp
   src/Encoder.cpp
+  resources/ecapture.rc
 )
+
+# rc.exe 按当前目录解析 RCDATA 的文件名，而 Ninja 的工作目录是 build 目录：
+# 把 resources 目录加进包含路径，文案文件按裸文件名即可命中。
+target_include_directories(ecapture PRIVATE resources)
+
+# RC_DEPENDS 实测不会触发重编（改 .txt 后 ninja 说没活干），用 OBJECT_DEPENDS 才可靠：
+# 文案文件必须列成 .rc 的依赖，否则改完文案要 clean 重编才生效。
+set(ECAPTURE_STRINGS
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-zh-CN.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-zh-TW.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-en.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-ja.txt")
+set_source_files_properties(resources/ecapture.rc PROPERTIES OBJECT_DEPENDS "${ECAPTURE_STRINGS}")
 
 target_compile_features(ecapture PRIVATE cxx_std_20)
 set_target_properties(ecapture PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

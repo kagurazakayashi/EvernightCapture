@@ -65,14 +65,14 @@ private:
 
 bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
     if (!RegisterHostClassOnce()) {
-        CaptureError(err, kChannel, L"注册缩略图目标窗口类失败", Win32ErrorText());
+        CaptureError(err, kChannel, Msg(L"cap.dwm.register_class"), Win32ErrorText());
         return false;
     }
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kHostClass, L"", WS_POPUP, x_, y_,
                             at.right - at.left, at.bottom - at.top, nullptr, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
     if (!hwnd_) {
-        CaptureError(err, kChannel, L"创建缩略图目标窗口失败", Win32ErrorText());
+        CaptureError(err, kChannel, Msg(L"cap.dwm.create_host"), Win32ErrorText());
         return false;
     }
     // 必须真的可见，DWM 才会往它的表面合成；SW_SHOWNA 显示但不抢焦点
@@ -80,8 +80,8 @@ bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
 
     HRESULT hr = DwmRegisterThumbnail(hwnd_, src, &thumb_);
     if (FAILED(hr) || !thumb_) {
-        CaptureError(err, kChannel, L"DwmRegisterThumbnail 失败",
-                     L"HRESULT " + HResultText(hr) + L"；窗口可能已关闭，或系统未开启桌面合成");
+        CaptureError(err, kChannel, Msg(L"cap.dwm.register_thumb"),
+                     Msgf(L"cap.dwm.register_thumb_hint", Msgf(L"cap.hresult", HResultText(hr))));
         return false;
     }
 
@@ -99,7 +99,8 @@ bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
     props.rcDestination = RECT{0, 0, rc.right - rc.left, rc.bottom - rc.top};
     hr = DwmUpdateThumbnailProperties(thumb_, &props);
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, L"DwmUpdateThumbnailProperties 失败", L"HRESULT " + HResultText(hr));
+        CaptureError(err, kChannel, Msg(L"cap.dwm.update_props"),
+                     Msgf(L"cap.hresult", HResultText(hr)));
         return false;
     }
     return true;
@@ -135,7 +136,7 @@ bool GrabViaPrintWindow(const ThumbHost& host, CapturedFrame* out, Diagnostic* e
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) {
-        CaptureError(err, kChannel, L"缩略图宿主窗口尺寸为空", std::wstring());
+        CaptureError(err, kChannel, Msg(L"cap.dwm.host_zero"), std::wstring());
         return false;
     }
     Dib dib;
@@ -143,7 +144,7 @@ bool GrabViaPrintWindow(const ThumbHost& host, CapturedFrame* out, Diagnostic* e
         return false;
     if (!PrintWindow(host.hwnd(), dib.dc(), kPwRenderFullContent) &&
         !PrintWindow(host.hwnd(), dib.dc(), 0)) {
-        CaptureError(err, kChannel, L"对缩略图宿主窗口调用 PrintWindow 失败", Win32ErrorText());
+        CaptureError(err, kChannel, Msg(L"cap.dwm.pw_failed"), Win32ErrorText());
         return false;
     }
     dib.ToFrame(kChannel, out);
@@ -160,7 +161,7 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedF
 
     const RECT at = WindowScreenRect(src);
     if (at.right <= at.left || at.bottom <= at.top) {
-        CaptureError(err, kChannel, L"窗口矩形为空", L"窗口可能被最小化或已关闭");
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
         return false;
     }
 
@@ -184,9 +185,8 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedF
     if (!host.OnTopOfItsRect()) {
         if (err) {
             *err = firstErr.message.empty()
-                       ? Diagnostic{codes::kCaptureFailed, L"缩略图未被合成，且无法把宿主窗口置顶",
-                                    L"--capture", kChannel,
-                                    L"屏幕上另有更高层的置顶窗口；改用 wgc 或 printwindow 通道"}
+                       ? Diagnostic{codes::kCaptureFailed, Msg(L"cap.dwm.not_composed"), L"--capture",
+                                    kChannel, Msg(L"cap.dwm.not_composed_hint")}
                        : firstErr;
         }
         return false;

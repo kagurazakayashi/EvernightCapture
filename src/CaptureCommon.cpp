@@ -29,7 +29,7 @@ void EnsureDpiAware() {
     (void)done;
 }
 
-std::wstring Win32ErrorText() { return L"错误码 " + std::to_wstring(GetLastError()); }
+std::wstring Win32ErrorText() { return Msgf(L"err.win32_code", GetLastError()); }
 
 std::wstring HResultText(HRESULT hr) {
     wchar_t buf[40];
@@ -63,16 +63,16 @@ void Dib::Destroy() {
 bool Dib::Create(uint32_t width, uint32_t height, Diagnostic* err, const wchar_t* channel) {
     Destroy();
     if (width == 0 || height == 0 || width > 16384u || height > 16384u) {
-        CaptureError(err, channel, L"窗口尺寸无法分配位图",
-                     L"尺寸 " + std::to_wstring(width) + L"x" + std::to_wstring(height) +
-                         L"，窗口可能已最小化或正在退出");
+        CaptureError(err, channel, Msg(L"cap.dib_size"),
+                     Msgf(L"cap.dib_size_hint",
+                          std::to_wstring(width) + L"x" + std::to_wstring(height)));
         return false;
     }
     const HDC screen = GetDC(nullptr);
     HDC dc = CreateCompatibleDC(screen);
     ReleaseDC(nullptr, screen);
     if (!dc) {
-        CaptureError(err, channel, L"CreateCompatibleDC 失败", Win32ErrorText());
+        CaptureError(err, channel, Msg(L"cap.create_compat_dc"), Win32ErrorText());
         return false;
     }
 
@@ -88,7 +88,7 @@ bool Dib::Create(uint32_t width, uint32_t height, Diagnostic* err, const wchar_t
     HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bitmap || !bits) {
         DeleteDC(dc);
-        CaptureError(err, channel, L"CreateDIBSection 失败", Win32ErrorText());
+        CaptureError(err, channel, Msg(L"cap.create_dib_section"), Win32ErrorText());
         return false;
     }
     dc_ = dc;
@@ -140,7 +140,7 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out
     const int width = rect.right - rect.left;
     const int height = rect.bottom - rect.top;
     if (width <= 0 || height <= 0) {
-        CaptureError(err, channel, L"窗口在屏幕上的矩形为空", L"窗口可能被最小化或已关闭");
+        CaptureError(err, channel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.window_gone"));
         return false;
     }
     // 与虚拟屏幕求交：多显示器时虚拟屏幕原点可能在负坐标
@@ -153,8 +153,7 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out
     const int cw = clip.right - clip.left;
     const int ch = clip.bottom - clip.top;
     if (cw <= 0 || ch <= 0) {
-        CaptureError(err, channel, L"窗口完全在屏幕之外，取不到像素",
-                     L"该通道只能拷屏幕上可见的部分");
+        CaptureError(err, channel, Msg(L"cap.offscreen"), Msg(L"cap.visible_only"));
         return false;
     }
 
@@ -165,7 +164,7 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out
     const BOOL blt = BitBlt(dib.dc(), 0, 0, cw, ch, screen, clip.left, clip.top, SRCCOPY | CAPTUREBLT);
     ReleaseDC(nullptr, screen);
     if (!blt) {
-        CaptureError(err, channel, L"BitBlt 屏幕失败", Win32ErrorText());
+        CaptureError(err, channel, Msg(L"cap.bitblt_failed"), Win32ErrorText());
         return false;
     }
     dib.ToFrame(channel, out);

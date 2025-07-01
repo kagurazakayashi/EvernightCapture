@@ -1,0 +1,19 @@
+// EvernightCapture 多语言文案资源
+//
+// 四种语言的文本各一份 UTF-8 文件，整份编进 exe；运行时由 src/Lang.cpp 用
+// FindResourceW + LoadResource 取出对应那一份，解析成 key -> 文案 的表。
+//
+// 为什么用 RCDATA 嵌文件而不是 STRINGTABLE：
+//   * rc.exe 会解释字符串字面量里的转义（"\r" 变回车、"\u" 被吃掉、引号要写成 ""），
+//     而文案里有大量 Windows 路径（D:\shots\epad.png）和带引号的提示；按字节嵌文件没有这个坑。
+//   * rc.exe 的 LANGUAGE 子句不接受"文件名形式的数据"，而 CMake 的 RC 规则又会吞掉 rc 的 /l
+//     开关，所以四份文案没法在同一个 .rc 里按 LANGUAGE 分开。改用资源名区分，
+//     资源名本身就写明了语言，用资源编辑器看也比 LANGUAGE 号直观。
+//
+// 文件路径相对本 .rc 解析（CMake 已把 resources 目录给 rc 的搜索路径）。
+#pragma code_page(65001)
+
+ECP_TEXT_ZH_CN RCDATA "strings-zh-CN.txt"
+ECP_TEXT_ZH_TW RCDATA "strings-zh-TW.txt"
+ECP_TEXT_EN    RCDATA "strings-en.txt"
+ECP_TEXT_JA    RCDATA "strings-ja.txt"

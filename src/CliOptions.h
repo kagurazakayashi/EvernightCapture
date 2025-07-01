@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "Lang.h"
+
 namespace ecapture {
 
 // ---------------------------------------------------------------------------
@@ -106,6 +108,7 @@ inline constexpr const wchar_t* kMissingOutput = L"cli.missing_output";
 inline constexpr const wchar_t* kDuplicateOutput = L"cli.duplicate_output";
 inline constexpr const wchar_t* kConflictingOptions = L"cli.conflicting_options";
 inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_method";
+inline constexpr const wchar_t* kUnknownLanguage = L"cli.unknown_language";
 inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
 // 参数层（退出码 2 / 3）
 inline constexpr const wchar_t* kNoCondition = L"cli.no_condition";
@@ -153,15 +156,16 @@ struct ParseResult {
     std::vector<Diagnostic> warnings;
 };
 
-// 选项目录：--help 的 JSON 与人类可读文本都由它生成，是 CLI 契约的唯一来源。
+// 选项目录：--help 的文本由它生成，是 CLI 契约的唯一来源。
+// 说明文案不写字面量，只写资源 key（"opt.<名字>"），文案本体在 resources/strings-*.txt。
 struct OptionInfo {
     std::wstring name;         // 规范长名，不含前导 -
     std::wstring shortName;    // 单字母别名，可为空
     bool takesValue = false;
     std::wstring group;        // match / pick / output / behavior
-    std::wstring valueHint;    // 例如 "<完整路径>"；开关为空
+    std::wstring valueHint;    // 例如 "<full-path>"；开关为空。各语言共用，故保持 ASCII
     std::vector<std::wstring> allowedValues;  // 取值枚举，可为空
-    std::wstring description;
+    std::wstring messageKey;   // 说明文案的资源 key
 };
 
 const std::vector<OptionInfo>& OptionCatalog();
@@ -190,10 +194,8 @@ inline constexpr const wchar_t* kStage = L"capture-channels";
 
 const wchar_t* FormatName(ImageFormat format);  // "png" / "jpeg" / ...
 const wchar_t* MultiKey(MultiMatch m);          // "ask" / "index" / "newest" / "oldest" / "all"
-const wchar_t* MultiDescription(MultiMatch m);  // 中文说明，用于人读字段
 
-// 取图方式：机器名（--capture 的取值）与中文说明
+// 取图方式的机器名（--capture 的取值）。能力差别写在 --capture 的选项说明里。
 const wchar_t* CaptureMethodName(CaptureMethod m);
-const wchar_t* CaptureMethodDescription(CaptureMethod m);
 
 }  // namespace ecapture

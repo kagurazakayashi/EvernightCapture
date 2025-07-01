@@ -5,12 +5,16 @@
     这些用例只验证参数解析与输出契约，一律带 --dry-run，不截图也不写文件。
     需要"必然存在"的窗口做锚点时统一用任务栏 --class Shell_TrayWnd。
     真机截图（含像素内容校验）在 tests\smoke.ps1。
+    断言的文案是简体中文，所以整轮都强制 --lang zh-CN：换一台英文系统的机器也必须全绿。
+    多语言本身由文末的跨语言检查与 .\scripts\check-lang.ps1 负责。
 .EXAMPLE
     .\tests\cli.ps1
     .\tests\cli.ps1 -Exe build\Debug\ecapture.exe -ShowAll
+    .\tests\cli.ps1 -Lang en        # 整轮改用英文文案跑（只用于排查）
 #>
 param(
     [string]$Exe,
+    [string]$Lang = 'zh-CN',
     [switch]$ShowAll
 )
 
@@ -30,7 +34,13 @@ function Quote-NativeArg([string]$a) {
     return $a
 }
 
-function Invoke-Ecapture([string[]]$Arguments) {
+function Invoke-Ecapture([string[]]$Arguments, [switch]$NoLang) {
+    # 整轮固定语言：用例里自己写了 --lang / -l 的以用例为准
+    if ($Lang -and -not $NoLang -and
+        -not (@($Arguments | ForEach-Object { $_ -replace '^--', '' }) -contains 'lang') -and
+        -not (@($Arguments) -contains '-l')) {
+        $Arguments = @('--lang', $Lang) + @($Arguments)
+    }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.UseShellExecute = $false
@@ -185,6 +195,27 @@ $cases = @(
     @{ Name = '--quiet 也要保留 errors'; A = @('-q','--hwnd','zzz','out.png'); Exit = 1
        Errors = @('cli.invalid_number')
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('notes') } }
+
+    # ---------- 语言选项 ----------
+    @{ Name = '--lang 的规范取值全部可用'; A = (@('--pid','1','--lang','zh-TW') + @('out.png')); Exit = 4
+       Errors = @('match.no_window') }
+    @{ Name = '未知语言在解析期就被拒绝'; A = @('--lang','klingon','--pid','1','out.png'); Exit = 1
+       Errors = @('cli.unknown_language')
+       Check = { param($o) $o.errors[0].value -eq 'klingon' -and $o.errors[0].hint -like '*zh-CN*' -and
+                            $o.errors[0].hint -notmatch 'klingon' } }
+    @{ Name = 'zh-TW 是繁体表格'; A = @('--lang','zh-TW','--help'); Exit = 3; Text = $true
+       Has = @('視窗匹配條件', '用法:') }
+    @{ Name = 'en 是英文表格'; A = @('--lang','en','--help'); Exit = 3; Text = $true
+       Has = @('Usage:', 'Window match conditions', '--title-contains') }
+    @{ Name = 'ja 是日文表格'; A = @('--lang','ja','--help'); Exit = 3; Text = $true
+       Has = @('使い方:', 'ウィンドウ検索条件') }
+    @{ Name = '-l 短形式同样生效'; A = @('-l','ja','--help'); Exit = 3; Text = $true; Has = @('例:') }
+    @{ Name = '宽容写法 zh_TW 归到繁体'; A = @('--lang=zh_TW','--help'); Exit = 3; Text = $true
+       Has = @('視窗') }
+    @{ Name = '宽容写法 en-GB 归到英文'; A = @('--lang','en-GB','--help'); Exit = 3; Text = $true
+       Has = @('Usage:') }
+    @{ Name = '-v 的 input 回显所选语言'; A = (@('--lang','en','-v') + $ANCHOR + @('out.png')); Exit = 0
+       Check = { param($o) $o.input.lang -eq 'en' } }
 )
 
 $results = @()
@@ -273,3 +304,131 @@ if ($r.Stdout.Trim() -eq '' -and $o -and $o.captured -eq 0 -and $r.Exit -eq 0) {
     Write-Host ("  FAIL  通道分离：stdout={0} 字节，stderr 可解析={1}" -f $r.Stdout.Length, ($null -ne $o)) -ForegroundColor Red
     exit 1
 }
+
+# ---------------------------------------------------------------------------
+# 多语言：换语言只能换文字，不能换契约
+#   1. 四种语言的 --help 各不相同（证明读的是四份资源，不是同一份兜底）
+#   2. 同一命令在各语言下退出码与 errors 的 code 集合必须完全一致
+#   3. 每条 message / hint 非空，且不留未替换的占位符（%1）或取不到的 key（"?xxx.yyy"）
+#   4. 不给 --lang 的结果必须与 --lang auto 逐字节相同（默认跟随系统显示语言）
+# ---------------------------------------------------------------------------
+$LANGS = @('zh-CN', 'zh-TW', 'en', 'ja')
+$LEFTOVER = '%[1-9]|\?[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]'
+$PROBE = @(
+    @{ Name = 'hwnd 非法'; A = @('--hwnd', 'zzz', 'out.png'); Exit = 1 },
+    @{ Name = '偷懒路径失败'; A = @('--pid', '1'); Exit = 1 },
+    @{ Name = '无匹配窗口'; A = @('--class', 'NoSuchWindowXyz', 'out.png'); Exit = 4 },
+    @{ Name = '未知取图方式'; A = @('--capture', 'waiwang', '--pid', '1', 'out.png'); Exit = 1 },
+    @{ Name = 'index 越界'; A = @('--class', 'Shell_TrayWnd', '--index', '99', 'out.png'); Exit = 1 },
+    @{ Name = '开关不接受取值'; A = @('--json=maybe', '--pid', '1', 'out.png'); Exit = 1 }
+)
+$bad = 0
+
+# 1) 四份帮助互不相同，且没有空说明 / 未替换痕迹
+$seenHeaders = @{}
+foreach ($tag in $LANGS) {
+    $help = (Invoke-Ecapture @('--lang', $tag, '--help')).Stdout
+    $lines = @($help -split "`r?`n")
+    $header = $lines[0]
+    if (-not $header.Trim()) { $bad++; Write-Host "  FAIL  $tag 帮助首行为空" -ForegroundColor Red }
+    if ($seenHeaders.ContainsKey($header)) {
+        $bad++
+        Write-Host ("  FAIL  {0} 与 {1} 的帮助首行相同，四份资源没分开" -f $tag, $seenHeaders[$header]) -ForegroundColor Red
+    }
+    $seenHeaders[$header] = $tag
+    if ($help -match $LEFTOVER) {
+        $bad++
+        Write-Host ("  FAIL  {0} 帮助里有未替换痕迹：{1}" -f $tag, $Matches[0]) -ForegroundColor Red
+    }
+    $blank = @($lines | Where-Object { $_ -match '^\s+--' -and $_ -notmatch '\S$' })
+    if ($blank.Count) {
+        $bad++
+        Write-Host ("  FAIL  {0} 有选项说明为空：{1}" -f $tag, ($blank[0].Trim())) -ForegroundColor Red
+    }
+    if ($help.Length -gt 6000) {
+        $bad++
+        Write-Host ("  FAIL  {0} 帮助文本 {1} 字符，超过 6000" -f $tag, $help.Length) -ForegroundColor Red
+    }
+}
+if (-not $bad) { Write-Host ("  PASS  四种语言的帮助各不相同，无未替换占位符") -ForegroundColor DarkGreen }
+
+# 2) + 3) 同一条命令在四种语言下的机器可读部分必须一致
+foreach ($probe in $PROBE) {
+    $problems = @()
+    $shapes = @()
+    foreach ($tag in $LANGS) {
+        $r = Invoke-Ecapture (@('--lang', $tag) + $probe.A)
+        $body = if ($r.Stdout.Trim()) { $r.Stdout } else { $r.Stderr }
+        $o = $null
+        try { $o = $body | ConvertFrom-Json } catch { }
+        if (-not $o) { $problems += "$tag 输出不是 JSON"; continue }
+        if ($r.Exit -ne $probe.Exit) { $problems += "$tag 退出码 $($r.Exit) 期望 $($probe.Exit)" }
+        $fields = @()
+        foreach ($item in (@($o.errors) + @($o.notes))) {
+            if ($null -eq $item) { continue }
+            $fields += [string]$item.message
+            if ($item.PSObject.Properties.Name -contains 'hint') { $fields += [string]$item.hint }
+        }
+        foreach ($f in $fields) {
+            if (-not $f.Trim()) { $problems += "$tag 有 message/hint 为空" }
+            elseif ($f -match $LEFTOVER) { $problems += "$tag 残留 $($Matches[0])" }
+        }
+        $shapes += , ("{0}|{1}" -f $r.Exit, ((Codes $o.errors) -join ','))
+    }
+    if (($shapes | Sort-Object -Unique).Count -gt 1) {
+        $problems += ("各语言的 code/退出码不一致：{0}" -f ($shapes -join '  '))
+    }
+    if ($problems.Count) {
+        $bad++
+        Write-Host ("  FAIL  多语言 · {0}" -f $probe.Name) -ForegroundColor Red
+        foreach ($p in $problems) { Write-Host ("        · {0}" -f $p) -ForegroundColor Red }
+    } else {
+        Write-Host ("  PASS  多语言 · {0}（四语言同 code）" -f $probe.Name) -ForegroundColor DarkGreen
+    }
+}
+
+# 4) 不给 --lang == --lang auto
+$auto = Invoke-Ecapture @('--lang', 'auto', '--hwnd', 'zzz', 'out.png')
+$detect = Invoke-Ecapture -NoLang @('--hwnd', 'zzz', 'out.png')
+if ($auto.Stdout -eq $detect.Stdout -and $auto.Exit -eq $detect.Exit) {
+    Write-Host '  PASS  不给语言与 --lang auto 结果相同（默认跟随系统显示语言）' -ForegroundColor DarkGreen
+} else {
+    $bad++
+    Write-Host '  FAIL  不给语言与 --lang auto 结果不同' -ForegroundColor Red
+}
+
+# 5) 默认语言真的来自系统显示语言。判据独立取：直接问 kernel32 的 GetUserDefaultUILanguage，
+#    按 MAKELANGID 的位算出期望标签。不要用 Get-UICulture / .NET CurrentUICulture 当判据——
+#    实测一台显示语言为 zh-CN 的机器上它们是 en-US。
+if (-not ('EcaptureUi' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class EcaptureUi {
+    [DllImport("kernel32")] public static extern ushort GetUserDefaultUILanguage();
+}
+'@
+}
+$langid = [int][EcaptureUi]::GetUserDefaultUILanguage()
+$primary = $langid -band 0x3FF
+$sub = ($langid -shr 10) -band 0x3F
+$expected = switch ($primary) {
+    4 { if ($sub -in 1, 3, 5) { 'zh-TW' } else { 'zh-CN' } }   # 1 繁体 / 3 港 / 5 澳
+    17 { 'ja' }
+    9 { 'en' }
+    default { 'en' }
+}
+$detected = (Invoke-Ecapture -NoLang @('--help')).Stdout
+$expectedText = (Invoke-Ecapture @('--lang', $expected, '--help')).Stdout
+if ($detected -eq $expectedText) {
+    Write-Host ("  PASS  默认文案语言 = {0}（系统显示语言 LANGID 0x{1:X4}）" -f $expected, $langid) -ForegroundColor DarkGreen
+} else {
+    $bad++
+    Write-Host ("  FAIL  显示语言 LANGID 0x{1:X4} 应映射到 {0}，但默认帮助与 --lang {0} 不同" -f $expected, $langid) -ForegroundColor Red
+}
+
+if ($bad) {
+    Write-Host ("多语言检查失败：{0} 项" -f $bad) -ForegroundColor Red
+    exit 1
+}
+Write-Host '多语言检查通过' -ForegroundColor Green

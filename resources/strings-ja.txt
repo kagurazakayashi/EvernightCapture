@@ -1,0 +1,216 @@
+# EvernightCapture 日本語メッセージ（key <TAB> テキスト、1 行 1 件、# 始まりはコメント）
+# プレースホルダ %1 .. %9 は位置で置換（言語ごとに並べ替え可）。字面通り % を出すには %%。
+# ファイル名テンプレートの %i / %h はプレースホルダではなくそのまま残ります。
+# 4 つの言語ファイルの key は完全に一致している必要があります（.\scripts\check-lang.ps1 で検証）。
+
+# ---------------------------------------------------------------------------
+# ヘルプ本文（src/Report.cpp の HelpText が描画、レイアウトはコード側）
+# ---------------------------------------------------------------------------
+help.header	EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows.Graphics.Capture で画面を取得
+help.usage1	使い方: ECAPTURE.EXE [条件...] <出力パス>          条件を一切与えない => このヘルプ
+help.usage2	          ECAPTURE.EXE [条件...] --out <パス>      パスに - は画像バイトを標準出力へ
+help.usage3	          ECAPTURE.EXE [条件...]                      出力パスなし => png を標準出力へ
+help.syntax	表記: --opt=value / -opt / /opt すべて可。値自体が - 始まりなら --title=-x のように書き、-- でオプション解釈を打ち切り
+help.output1	出力: 成功もエラーも JSON で、captured / images のみ（ほかに errors / notes、input は --verbose のときだけ）
+help.output2	          --help / --version、および条件なしのときはテキスト
+help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
+help.exit2	        6 対象が保護されている / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
+help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック）；出力ディレクトリは既存であること
+help.examples	例:
+help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
+help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
+help.example3	ECAPTURE.EXE --pid 12345 --title-contains 報告 --all D:\shots\rpt_%i.png
+help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
+help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
+help.no_condition	一致条件が指定されていないため、ヘルプを表示しています。
+grp.match	ウィンドウ検索条件（同一オプションの繰り返しは OR、異なるオプションは同時成立）
+grp.pick	複数のウィンドウに一致したとき（排他）
+grp.capture	画面取得方式（既定 wgc；OS のバージョンやウィンドウの性質で失敗することがある）
+grp.output	出力
+grp.behavior	その他
+
+# ---------------------------------------------------------------------------
+# オプション説明（kOptions、オプション名で key を引く）
+# ---------------------------------------------------------------------------
+opt.hwnd	ウィンドウハンドル。数字のみは 10 進、0x 接頭辞または a-f を含む場合は 16 進。0x 推奨
+opt.pid	プロセス ID。10 進かつ 0 より大きい値
+opt.process	イメージファイル名（パスなし）、大文字小文字を区別しない。拡張子がない場合は .exe として扱う
+opt.exe	イメージの完全パス、大文字小文字を区別しない
+opt.title	ウィンドウタイトル完全一致
+opt.title-contains	ウィンドウタイトルに部分文字列を含む
+opt.title-regex	ウィンドウタイトルを正規表現で一致（ECMAScript 構文、解析時に検証）
+opt.class	ウィンドウクラス名、大文字小文字を区別しない。例 Notepad / CabinetWClass
+opt.index	n 番目のウィンドウを選ぶ。1 始まり、表示可否と Z 順で並ぶ
+opt.newest	最後に作成されたウィンドウを選ぶ
+opt.oldest	最初に作成されたウィンドウを選ぶ
+opt.all	一致した各ウィンドウから 1 枚ずつ保存
+opt.capture	wgc（既定、隠れていても取得可）/ dwm（DWM サムネイル、隠れていても取得可）/ printwindow（ウィンドウ自身の描画）/ bitblt（画面の表示ピクセルをコピー）/ duplication（デスクトップ複製を矩形で crop）/ auto（wgc-dwm-printwindow-bitblt の順にフォールバック）
+opt.out	出力パス。特殊値 - は画像バイトを標準出力へ。位置引数でも与えられ、全く指定しないのは --out - と同じ
+opt.format	エンコード形式を指定。未指定なら出力ファイルの拡張子から判定し、それも判別不能なら png
+opt.quality	JPEG の品質、既定 100
+opt.no-overwrite	既存のターゲットを上書きせずエラーで終了
+opt.dry-run	解析と候補ウィンドウの列挙だけ行い、画面取得もファイル書き出しもしない
+opt.json	廃止済みの互換スイッチで副作用なし：成功もエラーも元から JSON
+opt.verbose	JSON に input 節（正規化された全入力）を追加し、notes も残す
+opt.quiet	notes を省略。errors は常に返る
+opt.lang	メッセージの言語。auto（既定、システム表示言語に従う）/ zh-CN / zh-TW / en / ja。未対応のシステム言語は en
+opt.help	テキストのヘルプ（この部分）を出力
+opt.version	バージョンと段階を出力
+
+# ---------------------------------------------------------------------------
+# 解析時の診断（src/CliOptions.cpp）
+# ---------------------------------------------------------------------------
+cli.hwnd_value	--hwnd には有効なハンドル値が必要です（10 進、または 0x 付きの 16 進）
+cli.hwnd_hint	数字のみは 10 進として解釈。16 進は 0x… の形で書くか、a-f を含めば 16 進として扱います
+cli.pid_value	--pid には有効なプロセス ID を指定してください（10 進、0 より大きい値）
+cli.process_empty	--process は空にできません
+cli.process_path	--process はイメージファイル名のみ受け取ります（例 notepad.exe）。完全パスは --exe を使用してください
+cli.process_path_hint	--exe "D:\App\notepad.exe"
+cli.exe_empty	--exe は空にできません
+cli.exe_no_path	--exe の値にパス区切り文字がなく、ファイル名のように見えます。ファイル名だけなら --process を使ってください
+cli.class_empty	--class は空にできません
+cli.regex_invalid	--title-regex の正規表現が不正です (regex_error code=%1): %2
+cli.regex_hint	ECMAScript 構文。量子の前には繰り返し対象が必要で、文字クラス内の [ は対応する ] が必要です
+cli.regex_late	正規表現はこの段階で再コンパイルに失敗しました
+cli.index_value	--index は 1 始まりの番号です
+cli.unknown_capture_method	--capture の値は許可された一覧にありません
+cli.unknown_language	--lang の値はサポートされていない言語です
+cli.duplicate_output	--out が重複しています。出力パスは 1 つだけ指定できます
+cli.output_duplicate_positional	出力パスが重複しています。--out と位置引数のどちらか一方だけ指定してください
+cli.format_value	--format の値は許可された一覧にありません
+cli.quality_value	--quality は 1..100 の範囲で指定してください
+cli.switch_no_value	このスイッチは値を受け取りません。オプション名だけをを書いてください
+cli.switch_no_value_hint	%1（On）または %1=false（Off）
+cli.unknown_option	不明なオプション
+cli.missing_value	このオプションには値が必要です
+cli.unexpected_positional	位置引数が多すぎます。先頭のみ出力パスとして扱い、他の条件はすべてオプションで指定してください
+cli.conflicting_options	これらの選択方針は互斥です。1 つだけ選んでください
+cli.conflicting_hint	例：--index 2 だけを残す
+cli.unhandled_option	内部エラー：一覧にあるオプションをパーサが処理していません
+cli.missing_output	出力パスが指定されず、既定で標準出力へ書く手順でも画像を出力できませんでした
+cli.missing_output_hint	--out <パス> を明示するか、まず --dry-run でウィンドウが一致するか確認してください
+cli.internal_error	予期しない内部エラー
+
+# ---------------------------------------------------------------------------
+# 通知（note.*、終了コードを変えません）
+# ---------------------------------------------------------------------------
+note.duplicate_value	同一オプション内の重複した値は無視しました %1
+note.extension_appended	--process の値に拡張子がないため、.exe として照合します
+note.output_defaulted_stdout	出力パスなし：--out - として扱い、画像バイトを標準出力、JSON を stderr へ書き込みます
+note.output_defaulted_stdout_hint	ファイルが必要なら shot.png のようにパスを明示してください
+note.pipe_default_format	標準出力へ書き --format も未指定のため、png でエンコードします
+note.format_extension_mismatch	--format がファイル拡張子と一致しません。--format に従ってエンコードします（ファイル名は変更なし）
+note.format_defaulted_png	出力ファイルの拡張子から形式を判定できないため、png でエンコードします（ファイル名は変更なし）
+note.format_defaulted_png_hint	既知の拡張子：png / jpg / jpeg / bmp / tif / tiff / gif
+note.quality_ignored	--quality は jpeg のみ有効で、現在の形式では無視されます
+note.all_without_placeholder	--all で出力名にプレースホルダがない場合、ファイル名に連番が自動追加され、期待と異なることがあります
+note.all_without_placeholder_hint	例：shot_%i_%h.png
+note.json_flag_deprecated	出力は常時 JSON のため、--json は副作用のない互換スイッチになりました
+note.flag_overrides_quiet	--verbose と --quiet を同時に指定した場合は --verbose に従います
+note.dry_run	--dry-run：%1 個のウィンドウを選びました。画面取得もファイル書き出しもしていません
+note.output_extension_appended	出力名に拡張子がなかったため、選択した形式の拡張子を補いました
+note.output_extension_hint	実際に書き出した名前は %1
+note.capture_channel	auto：%1 が使用できないため %2 を使いました
+
+# ---------------------------------------------------------------------------
+# ウィンドウ照合（src/WindowMatch.cpp）
+# ---------------------------------------------------------------------------
+match.no_window	すべての条件を満たすウィンドウがありません
+match.no_window_hint	ウィンドウが表示されていること、他のプロセスに占有されていないことを確認してください。最小化中のウィンドウは取得できません
+match.iconic_hint	%1 個のウィンドウが条件に一致していますが最小化中のため取得できません：%2
+match.index_out_of_range	--index が一致ウィンドウ数を超えています
+match.index_hint	候補は計 %1 件：%2
+match.ambiguous	複数のウィンドウに一致しました。区別が必要です
+match.ambiguous_hint	--index/--newest/--oldest/--all を使うか条件を追加してください。候補（Z 順）：%1
+match.untitled	(タイトルなし)
+
+# ---------------------------------------------------------------------------
+# パイプラインとファイル書き出し（src/Capture.cpp）
+# ---------------------------------------------------------------------------
+io.file_exists	ターゲットファイルは既に存在します（--no-overwrite）
+io.file_exists_hint	このオプションを外して上書きするか、別の出力名にしてください
+io.open_failed	出力ファイルを開けません
+io.open_failed_hint	親ディレクトリは存在しますか？パスは妥当ですか（%1）
+io.dir_missing	出力ディレクトリが存在しません。先に作成してください
+io.write_interrupted	ファイル書き出しが中断されました
+io.stdout_failed	標準出力への書き出しに失敗しました
+
+# ---------------------------------------------------------------------------
+# 画面取得チャネル（src/CaptureCommon.cpp と各 CaptureXxx.cpp）
+# ---------------------------------------------------------------------------
+err.win32_code	エラーコード %1
+cap.rect_empty	ウィンドウ矩形が空です
+cap.rect_empty_draw	ウィンドウ矩形が空のため描画できません
+cap.rect_empty_screen	画面上のウィンドウ矩形が空です
+cap.window_gone	ウィンドウが最小化中または閉じられた可能性があります
+cap.dib_size	ウィンドウサイズ分のビットマップを確保できません
+cap.dib_size_hint	サイズ %1、ウィンドウが最小化中または終了しかけている可能性があります
+cap.create_compat_dc	CreateCompatibleDC に失敗しました
+cap.create_dib_section	CreateDIBSection に失敗しました
+cap.offscreen	ウィンドウが画面の完全に外にあるためピクセルを取得できません
+cap.visible_only	このチャネルは画面上に見える部分だけをコピーできます
+cap.bitblt_failed	画面 DC からの BitBlt に失敗しました
+cap.unsupported	この画面取得方式は未実装です
+cap.auto_failed	auto のフォールバック先がすべて失敗しました（%1）
+cap.hresult	HRESULT %1
+
+cap.wgc.failed	%1 に失敗しました (HRESULT %2)
+cap.wgc.hint	ウィンドウが保護されているか閉じられたか、システムが Windows.Graphics.Capture に対応していません
+cap.wgc.step.device	D3D11 デバイスの作成
+cap.wgc.step.wrap	Direct3D デバイスのラップ
+cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
+cap.wgc.step.staging	staging テクスチャの作成
+cap.wgc.step.map	staging テクスチャのロック
+cap.wgc.step.session	キャプチャセッションの作成
+cap.wgc.step.access	フレームサーフェスのアクセッサ取得
+cap.wgc.step.surface	フレームサーフェスの取得
+cap.wgc.step.texture	フレームサーフェスのテクスチャ変換
+cap.wgc.frame_zero	取得したフレームのサイズが 0 です
+cap.wgc.frame_zero_hint	ウィンドウが最小化中または直前に閉じられた可能性があります
+cap.wgc.size_zero	ウィンドウの現在のサイズが 0 のため取得できません
+cap.wgc.timeout	%1 ms 以内にフレームが届きませんでした
+cap.wgc.timeout_hint	ウィンドウに内容の更新がないか、DRM／セキュリティポリシーにより取得が拒まれています
+
+cap.dwm.register_class	サムネイル対象ウィンドウクラスの登録に失敗しました
+cap.dwm.create_host	サムネイル対象ウィンドウの作成に失敗しました
+cap.dwm.register_thumb	DwmRegisterThumbnail に失敗しました
+cap.dwm.register_thumb_hint	%1；ウィンドウが閉じられたか、デスクトップ合成が無効の可能性があります
+cap.dwm.update_props	DwmUpdateThumbnailProperties に失敗しました
+cap.dwm.host_zero	サムネイルホストウィンドウのサイズが空です
+cap.dwm.pw_failed	サムネイルホストウィンドウへの PrintWindow に失敗しました
+cap.dwm.not_composed	サムネイルが合成されず、ホストウィンドウを最前面にも出せませんでした
+cap.dwm.not_composed_hint	画面により上位の最前面ウィンドウがあります。wgc または printwindow チャネルにしてください
+
+cap.pw.failed	PrintWindow に失敗しました
+cap.pw.failed_hint	このウィンドウは WM_PRINT を受け付けないか（DirectComposition／ゲームウィンドウ）、既に閉じられています。%1
+
+cap.dup.adapter	ディスプレイアダプタの取得に失敗しました
+cap.dup.no_output	ウィンドウがどのモニタの範囲にもありません
+cap.dup.no_output_hint	このチャネルはモニタの合成出力を取得するため、ウィンドウの一部が画面にある必要があります
+cap.dup.hint_unsupported	DXGI_ERROR_UNSUPPORTED：リモートデスクトップ／一部の仮想マシンと基本ディスプレイドライバはデスクトップ複製に対応していません
+cap.dup.hint_denied	E_ACCESSDENIED：コンテンツが保護されているか、セキュリティデスクトップ（UAC）に切り替わっています
+cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：デバイスと出力の組み合わせが不正か、この出力は他のプロセスが複製済みです
+cap.dup.hint_timeout	タイムアウトまで新しいフレームがありません：デスクトップが完全に静止しているとフレームが送信されないため、対象ウィンドウを動かして再試行してください
+cap.dup.to_texture	デスクトップフレームをテクスチャへ変換できませんでした
+cap.dup.format	デスクトップフレームが BGRA8 形式ではありません
+cap.dup.format_hint	HDR／10 ビット表示では通常の BGRA フレームが得られません。システム設定で HDR を無効にしてください
+cap.dup.staging	staging テクスチャの作成に失敗しました
+cap.dup.map	デスクトップフレームのロックに失敗しました
+cap.dup.device	D3D11 デバイスの作成に失敗しました
+cap.dup.dxgi	デバイスが DXGI に対応していません
+cap.dup.duplicate	DuplicateOutput に失敗しました (HRESULT %1)
+cap.dup.acquire	AcquireNextFrame に失敗しました (HRESULT %1)
+cap.dup.timeout	%1 ms 以内にデスクトップフレームを取得できませんでした
+cap.dup.flat	デスクトップ複製で取得した画面全体が一色です：LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat_hint	このセッションのディスプレイドライバはデスクトップ複製へ内容を出力しないことがあります（リモートデスクトップ／基本ディスプレイドライバ／保護コンテンツがマスク）。wgc または bitblt にしてください
+cap.dup.not_in_frame	ウィンドウがこのモニタのデスクトップフレーム内にありません
+cap.dup.not_in_frame_hint	ウィンドウが他のモニタへ移動したか閉じられた可能性があります
+
+# ---------------------------------------------------------------------------
+# エンコード（src/Encoder.cpp）
+# ---------------------------------------------------------------------------
+enc.available	現在利用可能：%1
+enc.detail	%1（%2）
+enc.size_zero	フレームサイズが 0 のためエンコードできません
+enc.failed	エンコードに失敗しました
+enc.exception	エンコード中に予期しない例外が発生しました
