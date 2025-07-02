@@ -11,19 +11,22 @@ help.header	EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基�
 help.usage1	用法: ECAPTURE.EXE [條件...] <輸出路徑>        不給任何條件 => 顯示本說明
 help.usage2	      ECAPTURE.EXE [條件...] --out <路徑>      路徑寫 - 表示把圖片位元組輸出到標準輸出
 help.usage3	      ECAPTURE.EXE [條件...]                   不給輸出路徑 => 圖片按 png 寫標準輸出
+help.usage4	      ECAPTURE.EXE --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
 help.syntax	寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析
 help.output1	輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
 help.output2	      --help / --version 以及不給條件時是文字
 help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
 help.exit2	        6 目標受保護 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
-help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回）；輸出目錄必須已存在
+help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在
 help.examples	示例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
 help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
 help.example3	ECAPTURE.EXE --pid 12345 --title-contains 報告 --all D:\shots\rpt_%i.png
 help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
+help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.no_condition	未指定任何匹配條件，因此顯示說明。
+grp.target	截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
 grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
 grp.pick	匹配到多個視窗時（互斥）
 grp.capture	取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
@@ -45,7 +48,8 @@ opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
 opt.newest	取最後建立的視窗
 opt.oldest	取最早建立的視窗
 opt.all	每個匹配視窗各存一張
-opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回)
+opt.monitor	截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用
+opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
 opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
 opt.quality	JPEG 品質，預設 100
@@ -156,7 +160,7 @@ cap.auto_failed	auto 的退回通道全部失敗（%1）
 cap.hresult	HRESULT %1
 
 cap.wgc.failed	%1 失敗 (HRESULT %2)
-cap.wgc.hint	該視窗可能受保護、已關閉，或系統不支援 Windows.Graphics.Capture
+cap.wgc.hint	擷取目標可能受保護、已關閉，或系統不支援 Windows.Graphics.Capture
 cap.wgc.step.device	建立 D3D11 裝置
 cap.wgc.step.wrap	包裝 Direct3D 裝置
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
@@ -168,7 +172,7 @@ cap.wgc.step.surface	取影格表面
 cap.wgc.step.texture	影格表面轉紋理
 cap.wgc.frame_zero	取到的影格尺寸為 0
 cap.wgc.frame_zero_hint	視窗可能已最小化或剛被關閉
-cap.wgc.size_zero	視窗目前尺寸為 0，無法擷取
+cap.wgc.size_zero	擷取目標目前尺寸為 0，無法擷取
 cap.wgc.timeout	逾時未收到影格（%1 ms）
 cap.wgc.timeout_hint	視窗可能沒有內容更新，或受 DRM/安全策略保護而拒絕被擷取
 
@@ -215,3 +219,21 @@ enc.detail	%1（%2）
 enc.size_zero	影格尺寸為 0，無法編碼
 enc.failed	編碼失敗
 enc.exception	編碼時發生未預期的異常
+
+# ---------------------------------------------------------------------------
+# 螢幕目標（--monitor，src/ScreenMatch.cpp 與各通道的 CaptureScreenXxx）
+# ---------------------------------------------------------------------------
+cli.monitor_value	--monitor 需要 1 以上的螢幕編號，或 primary / all
+cli.monitor_value_hint	例如 --monitor 1（第一張螢幕）/ --monitor primary（主螢幕）/ --monitor all（每張螢幕各一張）
+cli.monitor_conflict	--monitor all 是「每張螢幕各截一張」，只能用在沒有視窗條件的整張螢幕截圖上
+cli.monitor_conflict_hint	按螢幕過濾視窗時請給單一編號，例如 --monitor 2
+match.monitor_out_of_range	--monitor 的螢幕編號不存在
+match.monitor_out_of_range_hint	本機共 %1 張螢幕：%2
+match.no_window_monitor_hint	已按 --monitor %1 限縮範圍；確認視窗確實與那張螢幕有重疊
+cap.unsupported_for_screen	%1 通道擷取的是視窗自己的畫面，整張螢幕用不了
+cap.unsupported_for_screen_hint	整張螢幕請用 wgc / duplication / bitblt，或 auto
+cap.screen_rect_broken	這張螢幕的矩形為空，取不到像素
+cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
+cap.dup.no_adapter_outputs	顯示卡上沒有可列舉的顯示輸出
+cap.dup.no_output_for_screen_hint	這張螢幕找不到對應的 DXGI 輸出（遠端工作階段與虛擬顯示卡上常見），改用 wgc 或 bitblt
+note.dry_run_monitor	--dry-run：已選出 %1 張螢幕，未截圖也未寫檔案

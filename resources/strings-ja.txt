@@ -10,19 +10,22 @@ help.header	EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを�
 help.usage1	使い方: ECAPTURE.EXE [条件...] <出力パス>          条件を一切与えない => このヘルプ
 help.usage2	          ECAPTURE.EXE [条件...] --out <パス>      パスに - は画像バイトを標準出力へ
 help.usage3	          ECAPTURE.EXE [条件...]                      出力パスなし => png を標準出力へ
+help.usage4	          ECAPTURE.EXE --monitor [n] <パス>         --monitor かつウィンドウ条件なし => そのモニタ全体
 help.syntax	表記: --opt=value / -opt / /opt すべて可。値自体が - 始まりなら --title=-x のように書き、-- でオプション解釈を打ち切り
 help.output1	出力: 成功もエラーも JSON で、captured / images のみ（ほかに errors / notes、input は --verbose のときだけ）
 help.output2	          --help / --version、および条件なしのときはテキスト
 help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
 help.exit2	        6 対象が保護されている / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
-help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック）；出力ディレクトリは既存であること
+help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること
 help.examples	例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
 help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
 help.example3	ECAPTURE.EXE --pid 12345 --title-contains 報告 --all D:\shots\rpt_%i.png
 help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
+help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.no_condition	一致条件が指定されていないため、ヘルプを表示しています。
+grp.target	取得対象（--monitor を付けない場合は下のウィンドウ条件だけで探します）
 grp.match	ウィンドウ検索条件（同一オプションの繰り返しは OR、異なるオプションは同時成立）
 grp.pick	複数のウィンドウに一致したとき（排他）
 grp.capture	画面取得方式（既定 wgc；OS のバージョンやウィンドウの性質で失敗することがある）
@@ -44,7 +47,8 @@ opt.index	n 番目のウィンドウを選ぶ。1 始まり、表示可否と Z 
 opt.newest	最後に作成されたウィンドウを選ぶ
 opt.oldest	最初に作成されたウィンドウを選ぶ
 opt.all	一致した各ウィンドウから 1 枚ずつ保存
-opt.capture	wgc（既定、隠れていても取得可）/ dwm（DWM サムネイル、隠れていても取得可）/ printwindow（ウィンドウ自身の描画）/ bitblt（画面の表示ピクセルをコピー）/ duplication（デスクトップ複製を矩形で crop）/ auto（wgc-dwm-printwindow-bitblt の順にフォールバック）
+opt.monitor	取得するモニタ番号、1 始まり（ディスプレイ設定の順序）；primary = 主モニタ、all = 全モニタを 1 枚ずつ。ウィンドウ条件なしではそのモニタ全体を、ウィンドウ条件ありではそのモニタに重なるウィンドウだけを対象にします。値は省略可（= 主モニタ）、省略時は後続の引数を消費しないので --monitor out.png も使えます
+opt.capture	wgc（既定、隠れていても取得可）/ dwm（DWM サムネイル、隠れていても取得可）/ printwindow（ウィンドウ自身の描画）/ bitblt（画面の表示ピクセルをコピー）/ duplication（デスクトップ複製を矩形で crop）/ auto（wgc-dwm-printwindow-bitblt の順にフォールバック、モニタ全体は wgc-duplication-bitblt）
 opt.out	出力パス。特殊値 - は画像バイトを標準出力へ。位置引数でも与えられ、全く指定しないのは --out - と同じ
 opt.format	エンコード形式を指定。未指定なら出力ファイルの拡張子から判定し、それも判別不能なら png
 opt.quality	JPEG の品質、既定 100
@@ -155,7 +159,7 @@ cap.auto_failed	auto のフォールバック先がすべて失敗しました�
 cap.hresult	HRESULT %1
 
 cap.wgc.failed	%1 に失敗しました (HRESULT %2)
-cap.wgc.hint	ウィンドウが保護されているか閉じられたか、システムが Windows.Graphics.Capture に対応していません
+cap.wgc.hint	取得対象が保護されているか閉じられたか、システムが Windows.Graphics.Capture に対応していません
 cap.wgc.step.device	D3D11 デバイスの作成
 cap.wgc.step.wrap	Direct3D デバイスのラップ
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
@@ -167,7 +171,7 @@ cap.wgc.step.surface	フレームサーフェスの取得
 cap.wgc.step.texture	フレームサーフェスのテクスチャ変換
 cap.wgc.frame_zero	取得したフレームのサイズが 0 です
 cap.wgc.frame_zero_hint	ウィンドウが最小化中または直前に閉じられた可能性があります
-cap.wgc.size_zero	ウィンドウの現在のサイズが 0 のため取得できません
+cap.wgc.size_zero	取得対象の現在のサイズが 0 のため取得できません
 cap.wgc.timeout	%1 ms 以内にフレームが届きませんでした
 cap.wgc.timeout_hint	ウィンドウに内容の更新がないか、DRM／セキュリティポリシーにより取得が拒まれています
 
@@ -214,3 +218,21 @@ enc.detail	%1（%2）
 enc.size_zero	フレームサイズが 0 のためエンコードできません
 enc.failed	エンコードに失敗しました
 enc.exception	エンコード中に予期しない例外が発生しました
+
+# ---------------------------------------------------------------------------
+# モニタ対象（--monitor、src/ScreenMatch.cpp と各チャネルの CaptureScreenXxx）
+# ---------------------------------------------------------------------------
+cli.monitor_value	--monitor には 1 以上のモニタ番号、または primary / all を指定してください
+cli.monitor_value_hint	例: --monitor 1（1 台目のモニタ）/ --monitor primary（メイン）/ --monitor all（全モニタを 1 枚ずつ）
+cli.monitor_conflict	--monitor all は「全モニタを 1 枚ずつ」という意味で、ウィンドウ条件なしのモニタ全体取得にしか使えません
+cli.monitor_conflict_hint	モニタでウィンドウを絞り込む場合は単一の番号を指定してください。例: --monitor 2
+match.monitor_out_of_range	--monitor のモニタ番号が存在しません
+match.monitor_out_of_range_hint	この PC のモニタは %1 台です: %2
+match.no_window_monitor_hint	--monitor %1 に絞り込みました。そのモニタにウィンドウが重なっているか確認してください
+cap.unsupported_for_screen	%1 チャネルはウィンドウ自身の面を取得するため、モニタ全体には使えません
+cap.unsupported_for_screen_hint	モニタ全体は wgc / duplication / bitblt、または auto を使ってください
+cap.screen_rect_broken	このモニタの矩形が空のためピクセルを取得できません
+cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
+cap.dup.no_adapter_outputs	GPU に列挙できるディスプレイ出力がありません
+cap.dup.no_output_for_screen_hint	このモニタに対応する DXGI 出力が見つかりません（リモートセッションや仮想 GPU でよくある現象です）。wgc か bitblt を使ってください
+note.dry_run_monitor	--dry-run：%1 台のモニタを選びました。画面取得もファイル書き出しもしていません

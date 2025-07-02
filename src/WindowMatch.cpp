@@ -13,6 +13,8 @@
 
 #include <psapi.h>
 
+#include "ScreenMatch.h"
+
 namespace ecapture {
 namespace {
 
@@ -50,7 +52,19 @@ struct Compiled {
     std::vector<std::wstring> titleContains;
     std::vector<std::wstring> classes;       // 已小写
     std::vector<std::wregex> titleRegexes;
+    std::vector<RECT> onScreens;             // --monitor 的屏幕限制；空 = 不限
 };
+
+// 窗口矩形与所选屏有重叠即算命中，所以跨屏窗口在两块屏上都找得到。
+// 用完整窗口矩形（含 DWM 那圈透明边）而不是扩展边框：这里要的是"人把窗口放在哪"。
+bool OnAnyScreen(const Compiled& c, const WindowInfo& w) {
+    if (c.onScreens.empty()) return true;
+    const RECT r{w.x, w.y, w.x + w.width, w.y + w.height};
+    for (const RECT& m : c.onScreens) {
+        if (r.left < m.right && r.right > m.left && r.top < m.bottom && r.bottom > m.top) return true;
+    }
+    return false;
+}
 
 bool Matches(const Compiled& c, const WindowInfo& w) {
     const std::wstring imageLower = ToLowerPlain(w.imageName);
@@ -141,6 +155,8 @@ BOOL CALLBACK CollectCallback(HWND hwnd, LPARAM lParam) {
     if (w.width <= 0 || w.height <= 0) return TRUE;
 
     if (!Matches(*state->compiled, w)) return TRUE;
+    // 最小化的窗口只为 hint 收集，屏幕限制只管真正的目标
+    if (!w.iconic && !OnAnyScreen(*state->compiled, w)) return TRUE;
     if (w.iconic) state->iconic->push_back(w);
     else state->all->push_back(w);
     return TRUE;
@@ -198,6 +214,16 @@ std::vector<WindowInfo> SelectWindows(const Options& opt, std::vector<Diagnostic
         }
     }
 
+    // --monitor 与窗口条件同时给出：条件照旧，只是只在所选那块屏上找
+    std::wstring monitorLabel;
+    if (opt.monitor.given) {
+        if (opt.monitor.all) monitorLabel = L"all";
+        else if (opt.monitor.ordinal == 0) monitorLabel = L"primary";
+        else monitorLabel = std::to_wstring(opt.monitor.ordinal);
+        c.onScreens = SelectedScreenRects(opt, errors);
+        if (!errors->empty()) return {};
+    }
+
     std::vector<WindowInfo> hits;
     std::vector<WindowInfo> iconic;
     CollectState state{&c, &hits, &iconic, 0};
@@ -212,7 +238,9 @@ std::vector<WindowInfo> SelectWindows(const Options& opt, std::vector<Diagnostic
     };
 
     if (hits.empty()) {
-        std::wstring hint = Msg(L"match.no_window_hint");
+        std::wstring hint =
+            monitorLabel.empty() ? Msg(L"match.no_window_hint")
+                                 : Msgf(L"match.no_window_monitor_hint", monitorLabel);
         if (!iconic.empty()) hint = Msgf(L"match.iconic_hint", iconic.size(), BriefList(iconic, 3));
         return fail(Diagnostic{codes::kNoWindow, Msg(L"match.no_window"), L"", L"", std::move(hint)});
     }

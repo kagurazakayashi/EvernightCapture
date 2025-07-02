@@ -97,6 +97,19 @@ bool ParseBool(const std::wstring& raw, bool* out) {
     return false;
 }
 
+// 取值可省略的选项要靠这个判断"下一个参数是不是我的取值"，否则会把输出路径吃掉。
+bool LooksLikeMonitorValue(const std::wstring& raw) {
+    const std::wstring v = ToLower(Trim(raw));
+    if (v.empty()) return false;
+    if (v == L"primary" || v == L"all") return true;
+    return std::all_of(v.begin(), v.end(), [](wchar_t c) { return std::iswdigit(c) != 0; });
+}
+
+bool LooksLikeOptionalValue(const std::wstring& name, const std::wstring& raw) {
+    if (name == L"monitor") return LooksLikeMonitorValue(raw);
+    return false;
+}
+
 // --lang 必须早于其余选项定下来：解析期的错误文案本身就要用调用方指定的语言。
 // 这里只找 --lang / -l / /lang 三种写法，取值非法不在这里报错——正式解析会按
 // 当前已生效的语言报 cli.unknown_language。
@@ -148,13 +161,18 @@ struct OptionSpec {
     const wchar_t* name;        // 规范名（不含前导 -）
     const wchar_t* shortName;   // 单字母别名，可为空
     bool takesValue;            // false = 开关
-    const wchar_t* group;       // match / pick / output / behavior
+    const wchar_t* group;       // target / match / pick / output / behavior
     const wchar_t* valueHint;   // 人读的取值占位符，开关为空（ASCII，各语言共用）
     const wchar_t* const* allowed;    // 枚举取值，nullptr 结尾；没有则 nullptr
     const wchar_t* messageKey;  // 说明文案的资源 key，见 resources/strings-*.txt
+    bool optionalValue = false; // 取值可省略（--monitor 不给编号 = 主屏）；仅 takesValue 时有意义
 };
 
 constexpr OptionSpec kOptions[] = {
+    // ---- 截图目标 ----
+    // valueHint 用方括号表示"取值可省略"：省略时下一个参数不会被吞掉，
+    // 所以 `ECAPTURE --monitor out.png` 里的 out.png 仍是输出路径。
+    {L"monitor", L"m", true, L"target", L"[<n|primary|all>]", nullptr, L"opt.monitor", true},
     // ---- 窗口匹配条件（同类 OR，跨类 AND）----
     {L"hwnd", L"", true, L"match", L"<handle>", nullptr, L"opt.hwnd"},
     {L"pid", L"", true, L"match", L"<pid>", nullptr, L"opt.pid"},
@@ -377,6 +395,26 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // 单个选项 -> 数据结构
     auto Apply = [&](const OptionSpec& spec, const std::wstring& value) {
         const std::wstring name = spec.name;
+
+        // ---- 截图目标 ----
+        if (name == L"monitor") {
+            const std::wstring v = ToLower(Trim(value));
+            opt.monitor.given = true;
+            opt.monitor.all = false;
+            opt.monitor.ordinal = 0;
+            if (v.empty()) return;                                    // 省略取值 = 主屏
+            if (v == L"all") { opt.monitor.all = true; return; }
+            if (v == L"primary") return;
+            uint64_t n = 0;
+            if (!ParseNumber(v, &n) || n == 0 || n > 0xFFFF) {
+                Err(codes::kInvalidNumber, Msg(L"cli.monitor_value"), L"--monitor", value,
+                    Msg(L"cli.monitor_value_hint"));
+                opt.monitor.given = false;
+                return;
+            }
+            opt.monitor.ordinal = static_cast<int>(n);
+            return;
+        }
 
         // ---- 匹配条件 ----
         if (name == L"hwnd") {
@@ -620,7 +658,19 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
 
         if (spec->takesValue) {
-            if (auto value = RequireValue(*spec, i, inlineValue, argc, argv); value) Apply(*spec, *value);
+            if (spec->optionalValue && !inlineValue) {
+                // 取值可省略：只在下一个参数明显就是本选项的取值时才吃掉它，
+                // 否则当开关用（--monitor = 主屏），剩下的照常按位置参数处理。
+                std::wstring next;
+                if (i + 1 < argc) next = Trim(argv[i + 1]);
+                if (LooksLikeOptionalValue(std::wstring(spec->name), next)) {
+                    Apply(*spec, argv[++i]);
+                } else {
+                    Apply(*spec, L"");
+                }
+            } else if (auto value = RequireValue(*spec, i, inlineValue, argc, argv); value) {
+                Apply(*spec, *value);
+            }
         } else {
             if (inlineValue) {
                 bool b = false;
@@ -668,14 +718,32 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
 
     opt.showVersion = versionFlag;
     if (helpFlag) opt.showHelp = true;
-    // 只有在没有参数错误、且没显式 --help/--version 时，才因为"零条件"返回帮助
-    if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.HasAnyCondition()) {
+    // 只有在没有参数错误、且没显式 --help/--version 时，才因为"零条件"返回帮助。
+    // 给了 --monitor 就不算零条件：那是明确的屏幕目标。
+    if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.HasAnyCondition() &&
+        !opt.monitor.given) {
         opt.showHelp = true;
         opt.helpReason = codes::kNoCondition;
     }
 
     // ---- 输出与格式 ----
     if (!opt.showHelp && !versionFlag) {
+        // 屏幕目标的两条硬规矩，都在解析期定下来，不留到运行期退化：
+        // --monitor all 是"每块屏各一张"，与"按屏过滤窗口"没法同时成立；
+        // dwm / printwindow 取的是窗口自己的画面，屏幕上没有这样一个窗口可取。
+        if (opt.monitor.given) {
+            if (opt.monitor.all && opt.HasAnyCondition()) {
+                Err(codes::kMonitorConflict, Msg(L"cli.monitor_conflict"), L"--monitor", L"all",
+                    Msg(L"cli.monitor_conflict_hint"));
+            }
+            if (opt.ScreenMode() && (opt.capture == CaptureMethod::kDwmThumbnail ||
+                                     opt.capture == CaptureMethod::kPrintWindow)) {
+                Err(codes::kUnsupported, Msgf(L"cap.unsupported_for_screen", CaptureMethodName(opt.capture)),
+                    L"--capture", CaptureMethodName(opt.capture),
+                    Msg(L"cap.unsupported_for_screen_hint"));
+            }
+        }
+
         // 没给输出路径不再算错：按 "--out -" 处理，图片走 stdout，JSON 走 stderr
         if (opt.output.empty()) {
             opt.output = L"-";

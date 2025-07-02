@@ -18,6 +18,7 @@
 #include "CapturePrintWindow.h"
 #include "Encoder.h"
 #include "Report.h"
+#include "ScreenMatch.h"
 #include "WindowMatch.h"
 
 namespace ecapture {
@@ -85,10 +86,13 @@ bool HasExtension(const std::wstring& path) {
     return dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash);
 }
 
-std::wstring Expand(const std::wstring& pattern, const WindowInfo& w, size_t ordinal) {
+// 占位符展开。窗口目标给句柄 / 进程 / 标题；屏幕目标没有前两者（取到 0），
+// %n 用去掉 "\\.\\" 前缀的设备名，这样 shot_%n.png 每块屏一个文件。
+std::wstring Expand(const std::wstring& pattern, uint64_t hwnd, uint32_t pid,
+                    const std::wstring& name, size_t ordinal) {
     std::wstring out;
     wchar_t hwndBuf[24];
-    swprintf(hwndBuf, 24, L"0x%08X", static_cast<unsigned>(w.hwnd));
+    swprintf(hwndBuf, 24, L"0x%08X", static_cast<unsigned>(hwnd));
     for (size_t i = 0; i < pattern.size(); ++i) {
         if (pattern[i] != L'%' || i + 1 >= pattern.size()) {
             out.push_back(pattern[i]);
@@ -99,9 +103,9 @@ std::wstring Expand(const std::wstring& pattern, const WindowInfo& w, size_t ord
             case L'd': out += DateToken(); break;
             case L't': out += TimeToken(); break;
             case L'h': out += hwndBuf; break;
-            case L'p': out += std::to_wstring(w.pid); break;
+            case L'p': out += std::to_wstring(pid); break;
             case L'i': out += std::to_wstring(ordinal); break;
-            case L'n': out += SanitizeForFileName(w.title); break;
+            case L'n': out += SanitizeForFileName(name); break;
             case L'%': out.push_back(L'%'); break;
             default:
                 out.push_back(L'%');
@@ -191,26 +195,47 @@ bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
     return false;
 }
 
-// --capture 分派。auto 按 wgc -> dwm -> printwindow -> bitblt 依次试，取第一个成功的；
-// 实际用的通道不是 wgc 时留一条 note，让调用方知道画面来路不同。
-// 显式指定的通道绝不回退：用户要哪个就要哪个。
-bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
-                       Diagnostic* err, std::vector<Diagnostic>* notes) {
-    if (method != CaptureMethod::kAuto) return CaptureOneChannel(hwnd, method, timeoutMs, out, err);
+// 屏幕目标的单通道取帧。dwm / printwindow 取的是"某个窗口的画面"，屏幕上并没有
+// 这么一个窗口可让它们画，所以这两种通道在解析期就已经被挡在屏幕目标之外。
+bool CaptureScreenOneChannel(const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
+                             CapturedFrame* out, Diagnostic* err) {
+    switch (method) {
+        case CaptureMethod::kWgc:
+            return CaptureScreenWgc(screen, timeoutMs, out, err);
+        case CaptureMethod::kBitBlt:
+            return CaptureScreenBitBlt(screen, timeoutMs, out, err);
+        case CaptureMethod::kDuplication:
+            return CaptureScreenDuplication(screen, timeoutMs, out, err);
+        case CaptureMethod::kAuto:
+            break;  // auto 由 CaptureScreenWithMethod 展开成回退链
+        default:
+            break;
+    }
+    if (err) {
+        *err = Diagnostic{codes::kUnsupported, Msgf(L"cap.unsupported_for_screen", CaptureMethodName(method)),
+                          L"--capture", CaptureMethodName(method),
+                          Msg(L"cap.unsupported_for_screen_hint")};
+    }
+    return false;
+}
 
-    static const CaptureMethod kChain[] = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
-                                           CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
+// auto 的回退链：按顺序试到第一个成功的通道。实际用的不是链首时留一条 note，
+// 让调用方知道画面来路不同。
+template <typename Try>
+bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, Diagnostic* err,
+                   std::vector<Diagnostic>* notes, Try tryOne) {
     std::wstring tried;
     Diagnostic last{};
-    for (const CaptureMethod m : kChain) {
+    for (const CaptureMethod m : chain) {
         CapturedFrame attempt;
         Diagnostic attemptErr{};
-        if (CaptureOneChannel(hwnd, m, timeoutMs, &attempt, &attemptErr)) {
+        if (tryOne(m, &attempt, &attemptErr)) {
             *out = std::move(attempt);
-            if (m != CaptureMethod::kWgc && notes) {
-                notes->push_back(Diagnostic{codes::kCaptureChannel,
-                                            Msgf(L"note.capture_channel", L"wgc", CaptureMethodName(m)),
-                                            L"--capture", L"auto", std::wstring()});
+            if (m != chain.front() && notes) {
+                notes->push_back(Diagnostic{
+                    codes::kCaptureChannel,
+                    Msgf(L"note.capture_channel", CaptureMethodName(chain.front()), CaptureMethodName(m)),
+                    L"--capture", L"auto", std::wstring()});
             }
             return true;
         }
@@ -225,6 +250,40 @@ bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
     return false;
 }
 
+// --capture 分派。auto 对窗口按 wgc -> dwm -> printwindow -> bitblt，对屏幕按
+// wgc -> duplication -> bitblt。显式指定的通道绝不回退：用户要哪个就要哪个。
+bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
+                       Diagnostic* err, std::vector<Diagnostic>* notes) {
+    if (method != CaptureMethod::kAuto) return CaptureOneChannel(hwnd, method, timeoutMs, out, err);
+    const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
+                                              CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
+    return FallbackChain(chain, out, err, notes, [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
+        return CaptureOneChannel(hwnd, m, timeoutMs, frame, e);
+    });
+}
+
+bool CaptureScreenWithMethod(const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
+                             CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes) {
+    if (method != CaptureMethod::kAuto)
+        return CaptureScreenOneChannel(screen, method, timeoutMs, out, err);
+    const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDuplication,
+                                             CaptureMethod::kBitBlt};
+    return FallbackChain(chain, out, err, notes, [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
+        return CaptureScreenOneChannel(screen, m, timeoutMs, frame, e);
+    });
+}
+
+// 一次截图的目标：一个窗口，或一整块屏幕。
+struct Target {
+    bool isScreen = false;
+    WindowInfo window;
+    ScreenInfo screen;
+};
+
+std::wstring TargetName(const Target& t) {
+    return t.isScreen ? ScreenDisplayName(t.screen) : t.window.title;
+}
+
 }  // namespace
 
 CaptureOutcome RunCapture(const Options& opt) {
@@ -233,44 +292,72 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 屏幕矩形必须与物理像素一致，否则 GDI 通道会截偏
     EnsureDpiAware();
 
-    std::vector<WindowInfo> targets = SelectWindows(opt, &outcome.errors, &outcome.notes);
+    std::vector<Target> targets;
+    if (opt.ScreenMode()) {
+        for (const auto& s : SelectScreens(opt, &outcome.errors)) {
+            Target t;
+            t.isScreen = true;
+            t.screen = s;
+            targets.push_back(std::move(t));
+        }
+    } else {
+        for (const auto& w : SelectWindows(opt, &outcome.errors, &outcome.notes)) {
+            Target t;
+            t.window = w;
+            targets.push_back(std::move(t));
+        }
+    }
     if (!outcome.errors.empty()) {
         const std::wstring& code = outcome.errors.front().code;
         outcome.exitCode = code == codes::kAmbiguousWindow ? EX_AMBIGUOUS
-                         : code == codes::kIndexOutOfRange ? EX_USAGE
-                                                           : EX_NO_MATCH;
+                         : code == codes::kIndexOutOfRange || code == codes::kMonitorOutOfRange
+                             ? EX_USAGE
+                             : EX_NO_MATCH;
         return outcome;
     }
 
     if (opt.dryRun) {
         std::wstring list;
-        for (const auto& w : targets) {
+        for (const Target& t : targets) {
             if (!list.empty()) list += L" | ";
-            list += DescribeWindow(w);
+            list += t.isScreen ? DescribeScreen(t.screen) : DescribeWindow(t.window);
         }
-        outcome.notes.push_back(Diagnostic{codes::kDryRun, Msgf(L"note.dry_run", targets.size()),
-                                           L"--dry-run", list, std::wstring()});
+        const wchar_t* key = targets.front().isScreen ? L"note.dry_run_monitor" : L"note.dry_run";
+        outcome.notes.push_back(Diagnostic{codes::kDryRun, Msgf(key, targets.size()), L"--dry-run",
+                                           list, std::wstring()});
         return outcome;
     }
 
     for (size_t i = 0; i < targets.size(); ++i) {
-        const WindowInfo& w = targets[i];
+        const Target& t = targets[i];
         const ULONGLONG started = GetTickCount64();
 
         CapturedImage img;
-        img.hwndHex = HwndHexOf(w.hwnd);
-        img.pid = w.pid;
-        img.title = w.title;
-        img.windowClass = w.className;
-        img.imageName = w.imageName;
         img.format = FormatName(opt.format);
+        if (t.isScreen) {
+            img.screen = true;
+            img.monitorOrdinal = t.screen.ordinal;
+            img.deviceName = t.screen.deviceName;
+            img.primary = t.screen.primary;
+        } else {
+            img.hwndHex = HwndHexOf(t.window.hwnd);
+            img.pid = t.window.pid;
+            img.title = t.window.title;
+            img.windowClass = t.window.className;
+            img.imageName = t.window.imageName;
+        }
+
+        // %h / %p 只对窗口有意义，屏幕目标给 0；%n 是窗口标题或设备名
+        const uint64_t hwnd = t.isScreen ? 0 : t.window.hwnd;
+        const uint32_t pid = t.isScreen ? 0 : t.window.pid;
+        const std::wstring name = TargetName(t);
 
         if (targets.size() > 1) {
             img.file = opt.output.find(L'%') != std::wstring::npos
-                           ? Expand(opt.output, w, i + 1)
+                           ? Expand(opt.output, hwnd, pid, name, i + 1)
                            : AppendOrdinal(opt.output, i + 1);
         } else {
-            img.file = Expand(opt.output, w, 1);
+            img.file = Expand(opt.output, hwnd, pid, name, 1);
         }
         if (img.file != L"-" && !HasExtension(img.file)) {
             img.file += ExtensionFor(opt.format);
@@ -284,8 +371,12 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         CapturedFrame frame;
         Diagnostic capErr;
-        if (!CaptureWithMethod(w.hwnd, opt.capture, kFrameTimeoutMs, &frame, &capErr,
-                               &outcome.notes)) {
+        const bool got = t.isScreen
+                             ? CaptureScreenWithMethod(t.screen, opt.capture, kFrameTimeoutMs, &frame,
+                                                       &capErr, &outcome.notes)
+                             : CaptureWithMethod(t.window.hwnd, opt.capture, kFrameTimeoutMs, &frame,
+                                                 &capErr, &outcome.notes);
+        if (!got) {
             outcome.errors.push_back(std::move(capErr));
             continue;
         }
@@ -326,7 +417,7 @@ CaptureOutcome RunCapture(const Options& opt) {
                                ? EX_IO_FAILED
                                : EX_CAPTURE_FAILED;
     } else {
-        // 部分成功：图片已写出，但有的窗口失败 -> 用截图失败码提示调用方看 errors
+        // 部分成功：图片已写出，但有目标失败 -> 用截图失败码提示调用方看 errors
         outcome.exitCode = outcome.errors.empty() ? EX_OK : EX_CAPTURE_FAILED;
     }
     return outcome;

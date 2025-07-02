@@ -21,6 +21,11 @@ struct CapturedImage {
     std::wstring windowClass;
     std::wstring imageName;
     uint32_t elapsedMs = 0;
+    // 屏幕目标（--monitor 且无窗口条件）：没有窗口可归属，改带屏幕信息
+    bool screen = false;
+    uint32_t monitorOrdinal = 0;
+    std::wstring deviceName;
+    bool primary = false;
 };
 
 struct CaptureOutcome {

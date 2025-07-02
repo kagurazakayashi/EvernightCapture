@@ -125,6 +125,48 @@ $cases = @(
     @{ Name = '-vq 时 notes 保留'; A = @('-vq','--exe','a.exe','--dry-run','out.png'); Exit = 4
        Notes = @('note.exe_path_looks_like_name') }
 
+    # ---------- 屏幕目标（--monitor；一律 dry-run，不抓屏）----------
+    @{ Name = '--monitor + dry-run 只列屏幕不抓屏'
+       A = @('--monitor','1','--dry-run','out.png'); Exit = 0; Json = $true; Notes = @('note.dry_run')
+       Check = { param($o) $o.captured -eq 0 -and -not $o.PSObject.Properties.Name.Contains('errors') } }
+    @{ Name = '--monitor 省略取值 = 主屏，且 target=screen'
+       A = @('--monitor','--dry-run','out.png','-v'); Exit = 0
+       Check = { param($o) $o.input.monitor -eq 'primary' -and $o.input.target -eq 'screen' } }
+    @{ Name = '--monitor 不吃位置参数'; A = @('--monitor','out.png','--dry-run','-v'); Exit = 0
+       Check = { param($o) $o.input.output -like '*out.png' -and $o.input.monitor -eq 'primary' } }
+    @{ Name = '短选项 -m 与 --monitor 等价'; A = @('-m','1','--dry-run','out.png','-v'); Exit = 0
+       Check = { param($o) $o.input.monitor -eq 1 -and $o.input.target -eq 'screen' } }
+    @{ Name = '--monitor all 回显 all'; A = @('--monitor','all','--dry-run','out.png','-v'); Exit = 0
+       Check = { param($o) $o.input.monitor -eq 'all' -and $o.input.target -eq 'screen' } }
+    @{ Name = '--monitor 与窗口条件同时给出 = 按屏过滤窗口'
+       A = @('--monitor','1','--class','Shell_TrayWnd','--dry-run','out.png','-v'); Exit = 0
+       Check = { param($o) $o.input.target -eq 'window' -and $o.input.monitor -eq 1 } }
+    @{ Name = 'help 里有 --monitor 一节'; A = @('--help'); Exit = 3; Text = $true
+       Has = @('截图目标', '--monitor') }
+    @{ Name = '--monitor all 与窗口条件冲突'; A = @('--monitor','all','--class','Shell_TrayWnd','out.png')
+       Exit = 1; Errors = @('cli.monitor_conflict') }
+    @{ Name = '屏幕编号越界'; A = @('--monitor','99','--dry-run','out.png'); Exit = 1
+       Errors = @('match.monitor_out_of_range')
+       Check = { param($o) $o.errors[0].option -eq '--monitor' -and $o.errors[0].hint } }
+    @{ Name = '屏幕编号越界且未给输出路径 -> 只报 cli.missing_output'
+       A = @('--monitor','99'); Exit = 1; ToStderr = $true; Errors = @('cli.missing_output') }
+    @{ Name = '--monitor 取值非数字非关键字 -> 位置参数，不当取值'
+       A = @('--monitor=abc','out.png'); Exit = 1; Errors = @('cli.invalid_number') }
+    @{ Name = '--monitor 0 被拒绝'; A = @('--monitor','0','out.png'); Exit = 1
+       Errors = @('cli.invalid_number') }
+    @{ Name = '整屏截图拒绝 dwm'
+       A = @('--monitor','primary','--capture','dwm','out.png'); Exit = 1
+       Errors = @('capture.unsupported')
+       Check = { param($o) $o.errors[0].hint -match 'wgc' -and $o.errors[0].value -eq 'dwm' } }
+    @{ Name = '整屏截图拒绝 printwindow'
+       A = @('--monitor','primary','--capture','printwindow','out.png'); Exit = 1
+       Errors = @('capture.unsupported') }
+    @{ Name = '整屏截图接受 duplication / bitblt / auto'
+       A = @('--monitor','1','--capture','duplication','--dry-run','out.png'); Exit = 0 }
+    @{ Name = '未给输出路径的整屏 dry-run 走 stderr'
+       A = @('--monitor','1','--dry-run'); Exit = 0; ToStderr = $true
+       Notes = @('note.output_defaulted_stdout', 'note.dry_run') }
+
     # ---------- 匹配条件被正确解析（必然无窗口命中 -> exit 4）----------
     @{ Name = '8 个条件同时给出被接受'; A = @('--hwnd','0x10','--pid','1','--process','p.exe','--exe','D:\e.exe',
                                               '--title','t','--title-contains','c','--title-regex','r','--class','k','out.png')
@@ -320,7 +362,10 @@ $PROBE = @(
     @{ Name = '无匹配窗口'; A = @('--class', 'NoSuchWindowXyz', 'out.png'); Exit = 4 },
     @{ Name = '未知取图方式'; A = @('--capture', 'waiwang', '--pid', '1', 'out.png'); Exit = 1 },
     @{ Name = 'index 越界'; A = @('--class', 'Shell_TrayWnd', '--index', '99', 'out.png'); Exit = 1 },
-    @{ Name = '开关不接受取值'; A = @('--json=maybe', '--pid', '1', 'out.png'); Exit = 1 }
+    @{ Name = '开关不接受取值'; A = @('--json=maybe', '--pid', '1', 'out.png'); Exit = 1 },
+    @{ Name = '屏幕编号越界'; A = @('--monitor', '99', '--dry-run', 'out.png'); Exit = 1 },
+    @{ Name = '整屏不支持的通道'; A = @('--monitor', 'primary', '--capture', 'dwm', 'out.png'); Exit = 1 },
+    @{ Name = 'all 与窗口条件冲突'; A = @('--monitor', 'all', '--class', 'Shell_TrayWnd', 'out.png'); Exit = 1 }
 )
 $bad = 0
 

@@ -73,11 +73,18 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         j.Key(L"width").Value(static_cast<long long>(img.width));
         j.Key(L"height").Value(static_cast<long long>(img.height));
         OptString(j, L"format", img.format);
-        OptString(j, L"hwnd", img.hwndHex);
-        j.Key(L"pid").Value(static_cast<long long>(img.pid));
-        OptString(j, L"title", img.title);
-        OptString(j, L"class", img.windowClass);
-        OptString(j, L"image", img.imageName);
+        if (img.screen) {
+            // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
+            j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
+            OptString(j, L"device", img.deviceName);
+            j.Key(L"primary").Value(img.primary);
+        } else {
+            OptString(j, L"hwnd", img.hwndHex);
+            j.Key(L"pid").Value(static_cast<long long>(img.pid));
+            OptString(j, L"title", img.title);
+            OptString(j, L"class", img.windowClass);
+            OptString(j, L"image", img.imageName);
+        }
         j.Key(L"elapsedMs").Value(static_cast<long long>(img.elapsedMs));
         j.End();
     }
@@ -107,6 +114,12 @@ void WriteInputEcho(Json& j, const Options& opt) {
 
     OptString(j, L"output", AbsoluteOf(opt.output));
     j.Key(L"toStdout").Value(opt.output == L"-");
+    if (opt.monitor.given) {
+        if (opt.monitor.all) j.Key(L"monitor").Value(L"all");
+        else if (opt.monitor.ordinal == 0) j.Key(L"monitor").Value(L"primary");
+        else j.Key(L"monitor").Value(opt.monitor.ordinal);
+        j.Key(L"target").Value(opt.ScreenMode() ? L"screen" : L"window");
+    }
     j.Key(L"format").Value(FormatName(opt.format));
     j.Key(L"formatGiven").Value(opt.formatExplicit);
     j.Key(L"capture").Value(CaptureMethodName(opt.capture));
@@ -118,6 +131,7 @@ void WriteInputEcho(Json& j, const Options& opt) {
 }
 
 const wchar_t* GroupTitle(const std::wstring& group) {
+    if (group == L"target") return L"grp.target";
     if (group == L"match") return L"grp.match";
     if (group == L"pick") return L"grp.pick";
     if (group == L"capture") return L"grp.capture";
@@ -144,10 +158,11 @@ std::wstring HelpText() {
     t += Msg(L"help.usage1") + L"\r\n";
     t += Msg(L"help.usage2") + L"\r\n";
     t += Msg(L"help.usage3") + L"\r\n";
+    t += Msg(L"help.usage4") + L"\r\n";
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
-    const wchar_t* groups[] = {L"match", L"pick", L"capture", L"output", L"behavior"};
+    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"output", L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);
@@ -177,7 +192,7 @@ std::wstring HelpText() {
     t += L"\r\n";
     t += Msg(L"help.examples") + L"\r\n";
     for (const wchar_t* key : {L"help.example1", L"help.example2", L"help.example3", L"help.example4",
-                               L"help.example5"}) {
+                               L"help.example5", L"help.example6"}) {
         t += L"  " + Msg(key) + L"\r\n";
     }
     return t;

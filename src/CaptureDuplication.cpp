@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "CaptureCommon.h"
@@ -64,25 +65,40 @@ struct PickedOutput {
     DXGI_OUTPUT_DESC desc{};
 };
 
-bool PickOutput(IDXGIDevice* device, const RECT& window, PickedOutput* out, Diagnostic* err) {
+bool EnumerateOutputs(IDXGIDevice* device, std::vector<std::pair<ComPtr<IDXGIOutput1>, DXGI_OUTPUT_DESC>>* out,
+                      Diagnostic* err, const wchar_t* failKey) {
     ComPtr<IDXGIAdapter> adapter;
     HRESULT hr = device->GetAdapter(&adapter);
     if (FAILED(hr)) {
         CaptureError(err, kChannel, Msg(L"cap.dup.adapter"), Msgf(L"cap.hresult", HResultText(hr)));
         return false;
     }
-    long long best = 0;
     for (UINT i = 0;; ++i) {
         ComPtr<IDXGIOutput> output;
         if (FAILED(adapter->EnumOutputs(i, &output))) break;
         DXGI_OUTPUT_DESC desc{};
         if (FAILED(output->GetDesc(&desc))) continue;
-        const long long overlap = AreaOf(IntersectRect2(window, desc.DesktopCoordinates));
-        if (overlap <= best) continue;
         ComPtr<IDXGIOutput1> as1;
         if (FAILED(output.As(&as1))) continue;
+        out->emplace_back(std::move(as1), desc);
+    }
+    if (out->empty()) {
+        CaptureError(err, kChannel, Msg(failKey), std::wstring());
+        return false;
+    }
+    return true;
+}
+
+bool PickOutputOverlapping(IDXGIDevice* device, const RECT& window, PickedOutput* out,
+                           Diagnostic* err) {
+    std::vector<std::pair<ComPtr<IDXGIOutput1>, DXGI_OUTPUT_DESC>> outputs;
+    if (!EnumerateOutputs(device, &outputs, err, L"cap.dup.no_adapter_outputs")) return false;
+    long long best = 0;
+    for (const auto& [output1, desc] : outputs) {
+        const long long overlap = AreaOf(IntersectRect2(window, desc.DesktopCoordinates));
+        if (overlap <= best) continue;
         best = overlap;
-        out->output1 = as1;
+        out->output1 = output1;
         out->desc = desc;
     }
     if (!out->output1 || best <= 0) {
@@ -90,6 +106,34 @@ bool PickOutput(IDXGIDevice* device, const RECT& window, PickedOutput* out, Diag
         return false;
     }
     return true;
+}
+
+// 屏幕目标：EnumDisplayMonitors 与 DXGI 是两套枚举，能把它们对上的只有设备名
+// （两边都是 "\\.\DISPLAY1" 这个形状）。名字对不上时退回比矩形——
+// 虚拟显卡偶有设备名不一致的情况。
+bool PickOutputForScreen(IDXGIDevice* device, const ScreenInfo& screen, PickedOutput* out,
+                         Diagnostic* err) {
+    std::vector<std::pair<ComPtr<IDXGIOutput1>, DXGI_OUTPUT_DESC>> outputs;
+    if (!EnumerateOutputs(device, &outputs, err, L"cap.dup.no_adapter_outputs")) return false;
+    for (const auto& [output1, desc] : outputs) {
+        if (screen.deviceName == desc.DeviceName) {
+            out->output1 = output1;
+            out->desc = desc;
+            return true;
+        }
+    }
+    for (const auto& [output1, desc] : outputs) {
+        if (desc.DesktopCoordinates.left == screen.bounds.left &&
+            desc.DesktopCoordinates.top == screen.bounds.top &&
+            desc.DesktopCoordinates.right == screen.bounds.right &&
+            desc.DesktopCoordinates.bottom == screen.bounds.bottom) {
+            out->output1 = output1;
+            out->desc = desc;
+            return true;
+        }
+    }
+    CaptureError(err, kChannel, Msg(L"cap.dup.no_output"), Msg(L"cap.dup.no_output_for_screen_hint"));
+    return false;
 }
 
 std::wstring DuplicationHint(HRESULT hr) {
@@ -160,36 +204,11 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     return true;
 }
 
-}  // namespace
-
-bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFrame* out,
-                              Diagnostic* err) {
-    const HWND hwnd = reinterpret_cast<HWND>(hwndValue);
-    out->pixels.clear();
-    out->width = out->height = out->stride = 0;
-
-    const RECT ext = WindowScreenRect(hwnd);
-    if (ext.right <= ext.left || ext.bottom <= ext.top) {
-        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
-        return false;
-    }
-
-    ComPtr<ID3D11Device> device = CreateCaptureDevice();
-    if (!device) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.device"), std::wstring());
-        return false;
-    }
-    ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(device.As(&dxgiDevice))) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.dxgi"), std::wstring());
-        return false;
-    }
-
-    PickedOutput picked;
-    if (!PickOutput(dxgiDevice.Get(), ext, &picked, err)) return false;
-
+// 取该输出的整幅桌面帧：等一次真实 present、拷进 CPU、把单色帧判掉。
+bool GrabOutputFrame(ID3D11Device* device, const PickedOutput& picked, uint32_t timeoutMs,
+                     CapturedFrame* desktop, Diagnostic* err) {
     ComPtr<IDXGIOutputDuplication> dup;
-    HRESULT hr = picked.output1->DuplicateOutput(device.Get(), &dup);
+    const HRESULT hr = picked.output1->DuplicateOutput(device, &dup);
     if (FAILED(hr)) {
         CaptureError(err, kChannel, Msgf(L"cap.dup.duplicate", HResultText(hr)),
                      DuplicationHint(hr));
@@ -211,12 +230,12 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
                          DuplicationHint(DXGI_ERROR_WAIT_TIMEOUT));
             return false;
         }
-        hr = dup->AcquireNextFrame(std::min(kAcquireSliceMs, static_cast<UINT>(remaining)), &info,
-                                   &resource);
-        if (hr == DXGI_ERROR_WAIT_TIMEOUT || hr == S_FALSE) continue;
-        if (FAILED(hr)) {
-            CaptureError(err, kChannel, Msgf(L"cap.dup.acquire", HResultText(hr)),
-                         DuplicationHint(hr));
+        const HRESULT acquire = dup->AcquireNextFrame(
+            std::min(kAcquireSliceMs, static_cast<UINT>(remaining)), &info, &resource);
+        if (acquire == DXGI_ERROR_WAIT_TIMEOUT || acquire == S_FALSE) continue;
+        if (FAILED(acquire)) {
+            CaptureError(err, kChannel, Msgf(L"cap.dup.acquire", HResultText(acquire)),
+                         DuplicationHint(acquire));
             return false;
         }
         const bool presented = info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0;
@@ -228,42 +247,100 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
         }
     }
 
-    CapturedFrame desktop;
     bool copied = false;
     {
         AcquiredFrame guard(dup.Get(), info, resource.Get());
-        copied = CopyDesktopToCpu(device.Get(), guard.resource(), &desktop, err);
+        copied = CopyDesktopToCpu(device, guard.resource(), desktop, err);
     }  // 这里 ReleaseFrame，之后才能安全地只用 CPU 副本
     if (!copied) return false;
 
     // 整幅桌面帧单色 = 根本没拿到内容（虚拟显卡 / 远程桌面 / 内容被驱动屏蔽的典型表现）。
-    // 判整幅而不是判裁剪后的窗口区域：窗口本身可能就是一块纯黑内容。
-    if (FrameIsFlat(desktop)) {
+    // 判整幅而不是判裁剪后的目标区域：目标本身可能就是一块纯黑内容。
+    if (FrameIsFlat(*desktop)) {
         CaptureError(err, kChannel,
                      Msgf(L"cap.dup.flat", info.LastPresentTime.QuadPart, info.AccumulatedFrames,
                           info.ProtectedContentMaskedOut ? 1 : 0),
                      Msg(L"cap.dup.flat_hint"));
         return false;
     }
+    desktop->source = kChannel;
+    return true;
+}
 
-    // 桌面帧覆盖整个输出，窗口矩形要换算到该输出的坐标系再裁
-    const int x = ext.left - picked.desc.DesktopCoordinates.left;
-    const int y = ext.top - picked.desc.DesktopCoordinates.top;
+// 桌面帧覆盖整个输出，目标矩形要换算到该输出的坐标系再裁。
+// 屏幕目标传的就是这块输出本身，裁下来等价于整幅帧。
+bool CropDesktopToRect(CapturedFrame* desktop, const RECT& desktopCoordinates, const RECT& rect,
+                       Diagnostic* err) {
+    const int x = rect.left - desktopCoordinates.left;
+    const int y = rect.top - desktopCoordinates.top;
     const int cropX = std::max(0, x);
     const int cropY = std::max(0, y);
-    const int visibleW = std::min(static_cast<int>(desktop.width), x + static_cast<int>(ext.right - ext.left));
-    const int visibleH = std::min(static_cast<int>(desktop.height),
-                                 y + static_cast<int>(ext.bottom - ext.top));
+    const int visibleW = std::min(static_cast<int>(desktop->width), x + static_cast<int>(rect.right - rect.left));
+    const int visibleH = std::min(static_cast<int>(desktop->height), y + static_cast<int>(rect.bottom - rect.top));
     if (visibleW <= cropX || visibleH <= cropY) {
         CaptureError(err, kChannel, Msg(L"cap.dup.not_in_frame"),
                      Msg(L"cap.dup.not_in_frame_hint"));
         return false;
     }
-    desktop.source = kChannel;
-    CropFrame(&desktop, static_cast<uint32_t>(cropX), static_cast<uint32_t>(cropY),
+    CropFrame(desktop, static_cast<uint32_t>(cropX), static_cast<uint32_t>(cropY),
               static_cast<uint32_t>(visibleW - cropX), static_cast<uint32_t>(visibleH - cropY));
+    return true;
+}
+
+// 公共路线：建设备 -> 挑输出 -> 取整幅桌面帧 -> 按目标矩形裁
+bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, uint32_t timeoutMs,
+                            CapturedFrame* out, Diagnostic* err) {
+    ComPtr<ID3D11Device> device = CreateCaptureDevice();
+    if (!device) {
+        CaptureError(err, kChannel, Msg(L"cap.dup.device"), std::wstring());
+        return false;
+    }
+    ComPtr<IDXGIDevice> dxgiDevice;
+    if (FAILED(device.As(&dxgiDevice))) {
+        CaptureError(err, kChannel, Msg(L"cap.dup.dxgi"), std::wstring());
+        return false;
+    }
+
+    PickedOutput picked;
+    if (screen) {
+        if (!PickOutputForScreen(dxgiDevice.Get(), *screen, &picked, err)) return false;
+    } else {
+        if (!PickOutputOverlapping(dxgiDevice.Get(), rect, &picked, err)) return false;
+    }
+
+    CapturedFrame desktop;
+    if (!GrabOutputFrame(device.Get(), picked, timeoutMs, &desktop, err)) return false;
+    if (!CropDesktopToRect(&desktop, picked.desc.DesktopCoordinates, rect, err)) return false;
     *out = std::move(desktop);
     return true;
+}
+
+}  // namespace
+
+bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFrame* out,
+                              Diagnostic* err) {
+    const HWND hwnd = reinterpret_cast<HWND>(hwndValue);
+    out->pixels.clear();
+    out->width = out->height = out->stride = 0;
+
+    const RECT ext = WindowScreenRect(hwnd);
+    if (ext.right <= ext.left || ext.bottom <= ext.top) {
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
+        return false;
+    }
+    return CaptureRectDuplication(ext, nullptr, timeoutMs, out, err);
+}
+
+bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFrame* out,
+                              Diagnostic* err) {
+    out->pixels.clear();
+    out->width = out->height = out->stride = 0;
+
+    if (screen.bounds.right <= screen.bounds.left || screen.bounds.bottom <= screen.bounds.top) {
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.screen_rect_broken"));
+        return false;
+    }
+    return CaptureRectDuplication(screen.bounds, &screen, timeoutMs, out, err);
 }
 
 }  // namespace ecapture

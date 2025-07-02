@@ -11,19 +11,22 @@ help.header	EvernightCapture (ECAPTURE.EXE) - capture a window selected by condi
 help.usage1	Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all => this help
 help.usage2	       ECAPTURE.EXE [conditions...] --out <path>      "-" means image bytes go to stdout
 help.usage3	       ECAPTURE.EXE [conditions...]                    No output path => png bytes to stdout
+help.usage4	       ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
 help.syntax	Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --
 help.output1	Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
 help.output2	       --help / --version and the no-conditions case are plain text
 help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
 help.exit2	        6 target protected / 7 capture failed / 8 write failed / 9 internal error
-help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt); the output directory must already exist
+help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
 help.examples	Examples:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
 help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
 help.example3	ECAPTURE.EXE --pid 12345 --title-contains Report --all D:\shots\rpt_%i.png
 help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
+help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.no_condition	No match condition was given, so this help is shown.
+grp.target	Capture target (without --monitor only the window conditions below are used)
 grp.match	Window match conditions (repeat one option for OR, combine different options with AND)
 grp.pick	When several windows match (mutually exclusive)
 grp.capture	Capture channel (default wgc; may fail because of the OS version or the window itself)
@@ -45,7 +48,8 @@ opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
 opt.newest	Take the most recently created window
 opt.oldest	Take the oldest created window
 opt.all	Save one image per matched window
-opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt)
+opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works
+opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 opt.out	Output path; the special value - writes image bytes to stdout. A positional argument works too; giving none is the same as --out -
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
 opt.quality	JPEG quality, default 100
@@ -156,7 +160,7 @@ cap.auto_failed	Every auto fallback channel failed (%1)
 cap.hresult	HRESULT %1
 
 cap.wgc.failed	%1 failed (HRESULT %2)
-cap.wgc.hint	The window may be protected or closed, or the system does not support Windows.Graphics.Capture
+cap.wgc.hint	The capture target may be protected or closed, or the system does not support Windows.Graphics.Capture
 cap.wgc.step.device	create the D3D11 device
 cap.wgc.step.wrap	wrap the Direct3D device
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
@@ -168,7 +172,7 @@ cap.wgc.step.surface	get the frame surface
 cap.wgc.step.texture	convert the frame surface to a texture
 cap.wgc.frame_zero	The captured frame has size 0
 cap.wgc.frame_zero_hint	The window may be minimized or just closed
-cap.wgc.size_zero	The window currently has size 0 and cannot be captured
+cap.wgc.size_zero	The capture target currently has size 0 and cannot be captured
 cap.wgc.timeout	No frame received within %1 ms
 cap.wgc.timeout_hint	The window may have no content updates, or DRM/security policy refuses to let it be captured
 
@@ -215,3 +219,21 @@ enc.detail	%1 (%2)
 enc.size_zero	Frame has size 0, cannot encode
 enc.failed	Encoding failed
 enc.exception	Unexpected exception while encoding
+
+# ---------------------------------------------------------------------------
+# Screen target (--monitor, src/ScreenMatch.cpp and the CaptureScreenXxx channels)
+# ---------------------------------------------------------------------------
+cli.monitor_value	--monitor needs a monitor number starting at 1, or primary / all
+cli.monitor_value_hint	e.g. --monitor 1 (first monitor) / --monitor primary (main one) / --monitor all (one image per monitor)
+cli.monitor_conflict	--monitor all means "one image per monitor" and only works for a whole-screen capture with no window conditions
+cli.monitor_conflict_hint	To filter windows by monitor give a single number, e.g. --monitor 2
+match.monitor_out_of_range	No monitor has that --monitor number
+match.monitor_out_of_range_hint	This machine has %1 monitor(s): %2
+match.no_window_monitor_hint	The search was limited to --monitor %1; check that the window really overlaps that monitor
+cap.unsupported_for_screen	The %1 channel captures a window's own surface, which a whole screen does not have
+cap.unsupported_for_screen_hint	For a whole screen use wgc / duplication / bitblt, or auto
+cap.screen_rect_broken	This monitor's rectangle is empty, so there are no pixels to take
+cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
+cap.dup.no_adapter_outputs	The graphics adapter exposes no display output
+cap.dup.no_output_for_screen_hint	This monitor has no matching DXGI output (common in remote sessions and virtual GPUs); use wgc or bitblt
+note.dry_run_monitor	--dry-run: %1 monitor(s) selected, nothing captured and no file written

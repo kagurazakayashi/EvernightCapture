@@ -70,19 +70,28 @@ wdx11::IDirect3DDevice WrapDevice(ID3D11Device* device) {
     return inspectable.as<wdx11::IDirect3DDevice>();
 }
 
-wgc::GraphicsCaptureItem CreateItem(uint64_t hwnd) {
+wgc::GraphicsCaptureItem CreateItem(uint64_t hwnd, HMONITOR monitor) {
     try {
         auto factory = winrt::get_activation_factory<wgc::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
         wgc::GraphicsCaptureItem item{nullptr};
-        const HRESULT hr = factory->CreateForWindow(
-            reinterpret_cast<HWND>(hwnd),
-            winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
-            winrt::put_abi(item));
+        const HRESULT hr = monitor ? factory->CreateForMonitor(
+                                         monitor,
+                                         winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
+                                         winrt::put_abi(item))
+                                   : factory->CreateForWindow(
+                                         reinterpret_cast<HWND>(hwnd),
+                                         winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
+                                         winrt::put_abi(item));
         if (FAILED(hr) || !item) return nullptr;
         return item;
     } catch (const winrt::hresult_error&) {
         return nullptr;
     }
+}
+
+void ResetFrame(CapturedFrame* out) {
+    out->pixels.clear();
+    out->width = out->height = out->stride = 0;
 }
 
 // 把帧的 GPU 纹理复制到 CPU 可读的 staging 纹理
@@ -128,21 +137,14 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
     return true;
 }
 
-}  // namespace
-
-bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err) {
-    EnsureWinrtInitialized();
-    out->pixels.clear();
-    out->width = out->height = out->stride = 0;
-
+// 建帧池 -> 开会话 -> 取一帧 -> 拷进 CPU。窗口与屏幕只有"采集项从哪来"这一步不同。
+bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, CapturedFrame* out,
+               Diagnostic* err) {
     ComPtr<ID3D11Device> device = CreateDevice();
     if (!device) return Fail(err, L"cap.wgc.step.device", E_FAIL);
 
     const auto winrtDevice = WrapDevice(device.Get());
     if (!winrtDevice) return Fail(err, L"cap.wgc.step.wrap", E_FAIL);
-
-    auto item = CreateItem(hwnd);
-    if (!item) return Fail(err, L"cap.wgc.step.item", E_NOINTERFACE);
 
     const auto size = item.Size();
     if (size.Width <= 0 || size.Height <= 0) {
@@ -214,6 +216,27 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
     if (FAILED(qhr)) return Fail(err, L"cap.wgc.step.texture", qhr);
 
     return CopyToCpu(device.Get(), texture.Get(), out, err);
+}
+
+}  // namespace
+
+bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err) {
+    EnsureWinrtInitialized();
+    ResetFrame(out);
+
+    const auto item = CreateItem(hwnd, nullptr);
+    if (!item) return Fail(err, L"cap.wgc.step.item", E_NOINTERFACE);
+    return GrabFrame(item, timeoutMs, out, err);
+}
+
+bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFrame* out,
+                      Diagnostic* err) {
+    EnsureWinrtInitialized();
+    ResetFrame(out);
+
+    const auto item = CreateItem(0, reinterpret_cast<HMONITOR>(screen.monitor));
+    if (!item) return Fail(err, L"cap.wgc.step.item_monitor", E_NOINTERFACE);
+    return GrabFrame(item, timeoutMs, out, err);
 }
 
 }  // namespace ecapture

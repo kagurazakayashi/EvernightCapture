@@ -16,6 +16,7 @@ add_executable(ecapture
   src/Json.cpp
   src/Report.cpp
   src/WindowMatch.cpp
+  src/ScreenMatch.cpp
   src/Capture.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp

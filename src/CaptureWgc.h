@@ -4,11 +4,16 @@
 #include <cstdint>
 
 #include "CaptureCommon.h"
+#include "ScreenMatch.h"
 
 namespace ecapture {
 
 // 抓取指定窗口。失败时填 *err（code 以 capture. 开头）并返回 false。
 bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err);
+
+// 抓取整块屏幕（--monitor 的屏幕目标）：同一个会话机制，只是采集项由 HMONITOR 建出来。
+bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFrame* out,
+                      Diagnostic* err);
 
 // WinRT 套间只需初始化一次；内部自带幂等保护。
 void EnsureWinrtInitialized();

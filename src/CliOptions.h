@@ -61,8 +61,20 @@ enum class CaptureMethod {
     kAuto,          // 按 wgc -> dwm -> printwindow -> bitblt 依次回退
 };
 
+// --monitor 的取值域：给了这个选项就有屏幕目标。
+//   无窗口条件  -> 整块屏幕截图（ordinal=0 用主屏，all 则每块屏各一张）
+//   有窗口条件  -> 只算落在那块屏上的窗口
+// 之所以要显式给 --monitor 才截屏，而不是"没条件就当全屏"：漏写条件的调用方
+// 不该在无意间拍到整个桌面。
+struct MonitorSelector {
+    bool given = false;
+    bool all = false;   // --monitor all
+    int ordinal = 0;    // 1 起；0 = 未指定，用主屏
+};
+
 struct Options {
     MatchOptions match;
+    MonitorSelector monitor;    // --monitor / -m
 
     std::wstring output;              // 位置参数或 --out；"-" 表示写标准输出
     bool outputImplicitStdout = false;  // 未给输出路径 => 按 "--out -" 处理，PNG 写标准输出
@@ -87,6 +99,8 @@ struct Options {
     bool showVersion = false;
 
     bool HasAnyCondition() const { return !match.IsEmpty(); }
+    // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面
+    bool ScreenMode() const { return monitor.given && match.IsEmpty(); }
 };
 
 // ---------------------------------------------------------------------------
@@ -109,6 +123,7 @@ inline constexpr const wchar_t* kDuplicateOutput = L"cli.duplicate_output";
 inline constexpr const wchar_t* kConflictingOptions = L"cli.conflicting_options";
 inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_method";
 inline constexpr const wchar_t* kUnknownLanguage = L"cli.unknown_language";
+inline constexpr const wchar_t* kMonitorConflict = L"cli.monitor_conflict";
 inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
 // 参数层（退出码 2 / 3）
 inline constexpr const wchar_t* kNoCondition = L"cli.no_condition";
@@ -132,6 +147,7 @@ inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
 inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
 inline constexpr const wchar_t* kIndexOutOfRange = L"match.index_out_of_range";
+inline constexpr const wchar_t* kMonitorOutOfRange = L"match.monitor_out_of_range";
 inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
 inline constexpr const wchar_t* kUnsupported = L"capture.unsupported";
 inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavailable";

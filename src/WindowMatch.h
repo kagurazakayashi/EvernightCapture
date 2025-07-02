@@ -1,6 +1,7 @@
 #pragma once
 // 窗口枚举与条件求值：把 --hwnd/--pid/--process/--exe/--title/--title-contains/--title-regex/--class
 // 编译成对每个顶层候选窗口的 AND/OR 判定，再按选择策略消歧。
+// 同时给了 --monitor 时，只在所选那块屏的矩形范围内找窗口。
 
 #include <cstdint>
 #include <string>
