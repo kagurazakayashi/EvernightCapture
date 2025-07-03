@@ -16,7 +16,7 @@ help.syntax	寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開�
 help.output1	輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
 help.output2	      --help / --version 以及不給條件時是文字
 help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
-help.exit2	        6 目標受保護 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
+help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
 help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在
 help.examples	示例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -48,7 +48,7 @@ opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
 opt.newest	取最後建立的視窗
 opt.oldest	取最早建立的視窗
 opt.all	每個匹配視窗各存一張
-opt.monitor	截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用
+opt.monitor	截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕截圖會先彈框徵求同意，且沒有跳過確認的開關
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
 opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
@@ -237,3 +237,20 @@ cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
 cap.dup.no_adapter_outputs	顯示卡上沒有可列舉的顯示輸出
 cap.dup.no_output_for_screen_hint	這張螢幕找不到對應的 DXGI 輸出（遠端工作階段與虛擬顯示卡上常見），改用 wgc 或 bitblt
 note.dry_run_monitor	--dry-run：已選出 %1 張螢幕，未截圖也未寫檔案
+
+# ---------------------------------------------------------------------------
+# 整張螢幕截圖的人工確認（src/Consent.cpp）
+# ---------------------------------------------------------------------------
+consent.title	EvernightCapture 要截取整張螢幕
+consent.head	本工具準備截取螢幕畫面，需要你同意。
+consent.targets	目標螢幕（共 %1 張）：%2
+consent.plan	擷取通道 %1，圖片寫往 %2
+consent.warning	截到的是螢幕上此刻的全部可見內容：其他視窗、開啟的檔案、通知、桌面上的文字都可能進圖。
+consent.dialog_closes	本對話框會在截圖開始前關閉，不會出現在圖裡。
+consent.ask	允許現在截圖嗎？
+consent.denied	使用者拒絕了整張螢幕截圖
+consent.denied_hint	未擷取任何畫面，也沒有寫檔案。只要某個視窗的話，去掉 --monitor 改用視窗條件
+consent.unavailable	無法顯示確認對話框，已按拒絕處理
+consent.unavailable_hint	這個工作階段沒有可互動的桌面（服務、排程工作或鎖屏狀態），沒有人能同意截圖。%1
+consent.output_stdout	標準輸出
+consent.more_screens	另有 %1 張螢幕未列出

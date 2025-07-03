@@ -1,18 +1,19 @@
 <#
 .SYNOPSIS
-    真机整屏截图测试（--monitor）：验证屏幕通道的尺寸、坐标映射与"真的抓到了屏幕内容"。
+    真机整屏截图测试（--monitor）：验证确认框行为、屏幕通道的尺寸、坐标映射与"真的抓到了屏幕内容"。
 .DESCRIPTION
-    判据不是"有没有报错 / 文件多大"，而是三件事同时成立：
-      1. 图片宽高 == 该屏在系统里的物理像素矩形（抓错屏、偏移、DPI 缩放都会在这里露出来）
-      2. 目标屏左上角摆一个置顶纯红小方块之后，图片对应位置必须是红
+    判据不是"有没有报错 / 文件多大"，而是：
+      1. 全屏截图一定会弹确认框；答"否"必须 capture.access_denied + 退出码 6 且不写出文件
+      2. --dry-run 不许弹框（弹了就说明它偷偷取了帧）
+      3. 图片宽高 == 该屏在系统里的物理像素矩形（抓错屏、偏移、DPI 缩放都会在这里露出来）
+      4. 目标屏左上角摆一个置顶纯红小方块之后，图片对应位置必须是红
          —— 这条能区分"画面整体平移了"和"画面确实是这块屏"
-      3. 撤掉红块后同一位置必须不再红 —— 上面那条的阴性对照，
-         否则"该位置是红"可能只是恰好成立
-    还检查 --monitor all 的出图数量与每块屏各自的尺寸、--monitor 1 --out - 的通道分离
-    （PNG 占 stdout，JSON 走 stderr）。
-    会在屏幕左上角短暂弹出一个置顶纯红小方块（约 3 秒），结束或失败时自动关闭。
-    屏幕编号取的是 EnumDisplayMonitors 的顺序，所以测试里的"1 号屏"就是 $screens[0]，
-    主屏只用来做 SM_CXSCREEN 的自洽校验。
+      5. 撤掉红块后同一位置必须不再红 —— 上面那条的阴性对照
+    还检查 --monitor all 的出图数量与每块屏各自的尺寸、--monitor 1 --out - 的通道分离。
+
+    工具本身没有跳过确认的开关，所以这里由测试驱动对话框：找到 #32770 窗口后按控件 ID
+    （IDYES=6 / IDNO=7）点掉，与文案语言无关。也就是说屏幕上会真的闪出确认框，
+    跑这个测试前请让出屏幕。
 .EXAMPLE
     .\tests\screen.ps1
     .\tests\screen.ps1 -Keep        # 保留截图以便人眼看
@@ -37,8 +38,9 @@ $outDir = Join-Path ([IO.Path]::GetTempPath()) 'ecapture-screen'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 # ---------------------------------------------------------------------------
-# 独立判据：自己枚举显示器矩形。必须先让本进程 DPI aware，否则拿到的是缩放后的
-# 虚拟坐标，与工具（per-monitor v2）看到的物理像素对不上。
+# 独立判据：自己枚举显示器矩形，外加驱动确认框要的几个 user32 调用。
+# 必须先让本进程 DPI aware，否则拿到的是缩放后的虚拟坐标，与工具（per-monitor v2）
+# 看到的物理像素对不上。
 # ---------------------------------------------------------------------------
 Add-Type -TypeDefinition @'
 using System;
@@ -53,6 +55,7 @@ namespace EcScreen {
       [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string szDevice;
     }
     public delegate bool EnumProc(IntPtr hMon, IntPtr hdc, ref RECT r, IntPtr data);
+    public delegate bool EnumWinProc(IntPtr hwnd, IntPtr data);
     [DllImport("user32")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
     [DllImport("user32")] public static extern bool SetProcessDPIAware();
     [DllImport("user32")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, EnumProc proc, IntPtr data);
@@ -61,6 +64,12 @@ namespace EcScreen {
     [DllImport("user32")] public static extern IntPtr GetDC(IntPtr hwnd);
     [DllImport("gdi32")] public static extern int GetDeviceCaps(IntPtr dc, int idx);
     [DllImport("user32")] public static extern int ReleaseDC(IntPtr hwnd, IntPtr dc);
+    [DllImport("user32")] public static extern bool EnumWindows(EnumWinProc proc, IntPtr data);
+    [DllImport("user32")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, char[] cls, int max);
+    [DllImport("user32")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
+    [DllImport("user32")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
+    [DllImport("user32")] public static extern bool IsWindow(IntPtr h);
   }
 }
 '@
@@ -103,6 +112,43 @@ Write-Host ("显示器 {0} 块；1 号屏 {1} {2}x{3}+{4}+{5}；主屏 {6} {7}x{
 if ($smCx -ne $primary[0].Width -or $smCy -ne $primary[0].Height) {
     throw ("判据自身不可信：SM_CXSCREEN 与 EnumDisplayMonitors 不一致（DPI 虚拟化？Scale={0}%）" -f `
            [math]::Round($dpi * 100 / 96))
+}
+
+# ---------------------------------------------------------------------------
+# 确认框：按控件 ID 点，不靠文案。0 = 不点（留给人回答）
+# ---------------------------------------------------------------------------
+$IDYES = 6
+$IDNO = 7
+$WM_BM_CLICK = 0xF5
+
+function Find-Dialog([uint32]$procId) {
+    $script:found = [IntPtr]::Zero
+    $want = [long]$procId
+    $proc = [EcScreen.Win+EnumWinProc] {
+        param($h, $data)
+        $cls = New-Object char[] 64
+        [void][EcScreen.Win]::GetClassName($h, $cls, 64)
+        $name = (-join ($cls | Where-Object { $_ -ne [char]0 })).Trim()
+        if ($name -eq '#32770') {
+            $p = [uint32]0
+            [void][EcScreen.Win]::GetWindowThreadProcessId($h, [ref]$p)
+            if ([long]$p -eq $script:want) { $script:found = $h; return $false }
+        }
+        return $true
+    }
+    $script:want = $want
+    [void][EcScreen.Win]::EnumWindows($proc, [IntPtr]::Zero)
+    return $script:found
+}
+
+function Wait-Dialog([uint32]$pid_, [int]$timeoutMs) {
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        $h = Find-Dialog $pid_
+        if ($h -ne [IntPtr]::Zero) { return $h }
+        Start-Sleep -Milliseconds 60
+    }
+    return [IntPtr]::Zero
 }
 
 # ---------------------------------------------------------------------------
@@ -160,9 +206,9 @@ function Measure-Shot([string]$path, [int]$px, [int]$py) {
     } finally { $bmp.Dispose() }
 }
 
-# 分别读两个流：PS 5.1 的 2>&1 会把原生 stderr 包成错误记录文字，那样没法校验 JSON。
-# stdout 按字节读，--out - 时它就是 PNG。
-function Invoke-EcapProcess([string[]]$Arguments) {
+# 起进程 -> （需要的话）点掉确认框 -> 分别收两个流。
+# 必须先点框再读流：工具在确认前不会往 stdout 写任何东西，反过来读会互相等死。
+function Invoke-EcapProcess2([string[]]$Arguments, [int]$Answer, [switch]$ExpectNoDialog) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.UseShellExecute = $false
@@ -175,6 +221,28 @@ function Invoke-EcapProcess([string[]]$Arguments) {
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
     [void]$p.Start()
+
+    $dialog = [IntPtr]::Zero
+    $script:dialogSeen = $false
+    if (-not $ExpectNoDialog) {
+        $dialog = Wait-Dialog ([uint32]$p.Id) 8000
+        if ($dialog -eq [IntPtr]::Zero) {
+            Write-Host '  !! 没等到确认框（工具可能压根没弹，或弹得太慢）' -ForegroundColor DarkYellow
+        }
+    } else {
+        # dry-run 之类的路径不该弹框；给它 800 ms 再判，早到就能立刻报错
+        $dialog = Wait-Dialog ([uint32]$p.Id) 800
+    }
+    $script:dialogSeen = ($dialog -ne [IntPtr]::Zero)
+    if ($dialog -ne [IntPtr]::Zero -and $Answer -gt 0) {
+        $btn = [EcScreen.Win]::GetDlgItem($dialog, $Answer)
+        if ($btn -ne [IntPtr]::Zero) {
+            [void][EcScreen.Win]::SendMessage($btn, $WM_BM_CLICK, [IntPtr]::Zero, [IntPtr]::Zero)
+        } else {
+            Write-Host "  !! 确认框里找不到按钮 ID=$Answer" -ForegroundColor DarkYellow
+        }
+    }
+
     $ms = New-Object System.IO.MemoryStream
     $buf = New-Object byte[] 65536
     while ($true) {
@@ -185,7 +253,8 @@ function Invoke-EcapProcess([string[]]$Arguments) {
     $se = $p.StandardError.ReadToEnd()
     $p.WaitForExit()
     [pscustomobject]@{ Exit = $p.ExitCode; Bytes = $ms.ToArray(); Err = $se
-                       Text = [Text.Encoding]::UTF8.GetString($ms.ToArray()) }
+                       Text = [Text.Encoding]::UTF8.GetString($ms.ToArray())
+                       Dialog = $script:dialogSeen }
 }
 
 $target = $screens[0]      # 工具编号 1 = EnumDisplayMonitors 的第一个
@@ -193,6 +262,25 @@ $probeX = 40
 $probeY = 40
 $mark = $null
 try {
+    # ---------- 0) 确认框本身：一定弹；答否就不截图也不写文件 ----------
+    Write-Host "`n=== 确认框：弹得出、答否必须不落地 ==="
+    $path = Join-Path $outDir 'refused.png'
+    Remove-Item $path -ErrorAction SilentlyContinue
+    $r = Invoke-EcapProcess2 @('--monitor', '1', '--capture', 'bitblt', '--out', $path) $IDNO
+    Assert ($r.Dialog) '全屏截图没有弹确认框'
+    Assert ($r.Exit -eq 6) "答\"否\"的退出码 $($r.Exit)，应为 6"
+    $o = $null
+    try { $o = $r.Text | ConvertFrom-Json } catch { }
+    Assert ($o -and (@($o.errors | ForEach-Object code) -contains 'capture.access_denied')) `
+        '答"否"没报 capture.access_denied'
+    Assert ($o.captured -eq 0 -and @($o.images).Count -eq 0) '答"否"不该有图'
+    Assert (-not (Test-Path $path)) '答"否"却写出了文件'
+
+    Write-Host "`n=== --dry-run 不许弹确认框（它不该取帧）==="
+    $r = Invoke-EcapProcess2 @('--monitor', '1', '--dry-run', '--out', $path) 0 -ExpectNoDialog
+    Assert (-not $r.Dialog) '--dry-run 弹了确认框'
+    Assert ($r.Exit -eq 0) "--dry-run 退出码 $($r.Exit)，应为 0"
+
     # ---------- 1) 每条屏幕通道：尺寸 + 红块位置 + 颜色数 + JSON 形状 ----------
     Write-Host "`n=== 1 号屏左上角已放红色小方块：每条通道都要抓到它 ==="
     $mark = Start-Mark $target
@@ -200,12 +288,13 @@ try {
     foreach ($ch in $Channels) {
         $path = Join-Path $outDir ("m1_{0}.png" -f $ch)
         Remove-Item $path -ErrorAction SilentlyContinue
-        $r = Invoke-EcapProcess @('--monitor', '1', '--capture', $ch, '--out', $path, '-v')
+        $r = Invoke-EcapProcess2 @('--monitor', '1', '--capture', $ch, '--out', $path, '-v') $IDYES
         $o = $null
         try { $o = $r.Text | ConvertFrom-Json } catch { }
         $m = Measure-Shot $path $probeX $probeY
         Write-Host ("  {0,-12} exit={1} {2}x{3} colors={4} probe=({5},{6},{7})" -f `
                    $ch, $r.Exit, $m.Width, $m.Height, $m.Colors, $m.R, $m.G, $m.B)
+        Assert ($r.Dialog) "$ch 那一次没弹确认框"
         Assert ($r.Exit -eq 0 -and $o -and $o.captured -eq 1) `
             "$ch 通道应成功出 1 张图（exit=$($r.Exit)）"
         Assert ($m) "$ch 通道没写出 PNG 文件"
@@ -236,19 +325,19 @@ try {
     Start-Sleep -Milliseconds 1500
     $path = Join-Path $outDir 'negative.png'
     Remove-Item $path -ErrorAction SilentlyContinue
-    [void](Invoke-EcapProcess @('--monitor', '1', '--capture', 'bitblt', '--out', $path))
+    [void](Invoke-EcapProcess2 @('--monitor', '1', '--capture', 'bitblt', '--out', $path) $IDYES)
     $neg = Measure-Shot $path $probeX $probeY
     Write-Host ("  {0,-12} probe=({1},{2},{3})" -f 'bitblt', $neg.R, $neg.G, $neg.B)
-    Assert ($neg -and -not (Is-Red $neg)) `
-        '阴性对照不成立：没有红块时该位置也是红的'
+    Assert ($neg -and -not (Is-Red $neg)) '阴性对照不成立：没有红块时该位置也是红的'
 
-    # ---------- 3) --monitor all：出图数量与每块屏各自的尺寸 ----------
-    Write-Host "`n=== --monitor all：每块屏一张，尺寸各自对上 ==="
+    # ---------- 3) --monitor all：只弹一次框，每块屏一张 ----------
+    Write-Host "`n=== --monitor all：一次确认，每块屏一张，尺寸各自对上 ==="
     $allPattern = Join-Path $outDir 'all_%i.png'
     Remove-Item (Join-Path $outDir 'all_*.png') -ErrorAction SilentlyContinue
-    $r = Invoke-EcapProcess @('--monitor', 'all', '--out', $allPattern, '-v')
+    $r = Invoke-EcapProcess2 @('--monitor', 'all', '--out', $allPattern, '-v') $IDYES
     $o = $null
     try { $o = $r.Text | ConvertFrom-Json } catch { }
+    Assert ($r.Dialog) '--monitor all 没弹确认框'
     Assert ($r.Exit -eq 0 -and $o -and $o.captured -eq $screens.Count) `
         "--monitor all 应出 $($screens.Count) 张：exit=$($r.Exit) captured=$($o.captured)"
     foreach ($sc in $screens) {
@@ -260,15 +349,17 @@ try {
         Assert ($img -and $img.device -eq $sc.Device) "$($sc.Device) 没出现在 images 里或设备名不对"
     }
 
-    # ---------- 4) --monitor + 窗口条件：按屏过滤，出的仍是窗口图 ----------
-    Write-Host "`n=== --monitor 1 + 窗口条件：按屏过滤，JSON 仍是窗口形状 ==="
-    $r = Invoke-EcapProcess @('--monitor', '1', '--class', 'Shell_TrayWnd', '--dry-run', '--out', '-', '-v')
+    # ---------- 4) --monitor + 窗口条件：按屏过滤，不该弹框 ----------
+    Write-Host "`n=== --monitor 1 + 窗口条件：按屏过滤，不弹框，JSON 仍是窗口形状 ==="
+    $r = Invoke-EcapProcess2 @('--monitor', '1', '--class', 'Shell_TrayWnd', '--dry-run', '--out',
+                               '-', '-v') 0 -ExpectNoDialog
+    Assert (-not $r.Dialog) '按屏过滤（不截整屏）弹了确认框'
     $o = $null
     try { $o = $r.Err | ConvertFrom-Json } catch { }
-    Assert ($r.Exit -eq 0 -and $o -and $o.input.target -eq 'window') `
-        "按屏过滤模式没跑起来：exit=$($r.Exit)"
+    Assert ($r.Exit -eq 0 -and $o -and $o.input.target -eq 'window') "按屏过滤模式没跑起来：exit=$($r.Exit)"
     Assert (@($o.notes | ForEach-Object code) -contains 'note.dry_run') '按屏过滤时 dry-run 仍应报 note.dry_run'
-    $r = Invoke-EcapProcess @('--monitor', '99', '--class', 'Shell_TrayWnd', '--dry-run', '--out', '-', '-v')
+    $r = Invoke-EcapProcess2 @('--monitor', '99', '--class', 'Shell_TrayWnd', '--out', '-', '-v') 0 -ExpectNoDialog
+    Assert (-not $r.Dialog) '屏幕编号越界时不该先弹框（越界是参数错）'
     $o = $null
     try { $o = $r.Err | ConvertFrom-Json } catch { }
     Assert ($r.Exit -eq 1 -and (@($o.errors | ForEach-Object code) -contains 'match.monitor_out_of_range')) `
@@ -276,7 +367,7 @@ try {
 
     # ---------- 5) 屏幕目标走 stdout：PNG 在 stdout，JSON 在 stderr ----------
     Write-Host "`n=== --monitor 1 --out - ：图片字节占 stdout，JSON 走 stderr ==="
-    $r = Invoke-EcapProcess @('--monitor', '1', '--capture', 'bitblt', '--out', '-')
+    $r = Invoke-EcapProcess2 @('--monitor', '1', '--capture', 'bitblt', '--out', '-') $IDYES
     $o = $null
     try { $o = $r.Err | ConvertFrom-Json } catch { }
     $b = $r.Bytes

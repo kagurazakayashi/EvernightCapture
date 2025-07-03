@@ -10,6 +10,7 @@ rem
 rem  Flow: start fontview.exe on a font file
 rem        -> capture that window with EVERY --capture channel
 rem        -> verify each PNG really has content (size + distinct colors)
+rem        -> optional: capture the whole screen with --monitor (see below)
 rem        -> open the screenshot folder in Explorer
 rem        -> end fontview.exe
 rem
@@ -19,6 +20,13 @@ rem  Example: tests\fontview_shot.bat "" "wgc bitblt"    (only these channels)
 rem
 rem  Channels below must stay in sync with kCaptureValues in src/CliOptions.cpp
 rem  (tests\channels.ps1 does the same sweep with stricter occlusion checks).
+rem
+rem  The whole-screen step is gated by a plain PAUSE, because ECAPTURE has no switch
+rem  that skips its consent dialog: past the pause it blocks until you click "yes" (or
+rem  "no", which is reported as REFUSED and is not a channel failure). So a run with no
+rem  one at the keyboard stops there - pause itself returns immediately when stdin is
+rem  redirected, it is the dialog that waits. tests\screen.ps1 is the unattended version:
+rem  it finds the dialog and clicks it by control ID, so it needs nobody at all.
 rem
 rem  Two things this target teaches about ECAPTURE:
 rem   1. fontview.exe does NOT strip quotes around its argument, so the font
@@ -55,14 +63,19 @@ if not exist "%ECAPTURE%" (echo [FAIL] no build\ecapture.exe, run .\build.ps1 & 
 if not exist "%FONTARG%"  (echo [FAIL] font file not found: "%FONTARG%" & set "RC=1" & goto :report)
 if not exist "%SHOTDIR%"   mkdir "%SHOTDIR%"
 if not exist "%SHOTDIR%"  (echo [FAIL] cannot create "%SHOTDIR%" & set "RC=1" & goto :report)
-del "%SHOTDIR%\fontview_*.png" >nul 2>&1
+
+rem Start from an empty scratch folder: a leftover image from an earlier run looks
+rem exactly like a fresh success (this folder is only ever test output).
+set "CLEARED=0"
+for %%F in ("%SHOTDIR%\*.*") do set /a CLEARED+=1 & del /q "%%~fF" >nul 2>&1
+echo       cleared %CLEARED% leftover file(s) from "%SHOTDIR%"
 
 rem fontview reads the raw tail of its command line, so hand it a path with
 rem neither quotes nor spaces.
 for %%F in ("%FONTARG%") do set "FSHORT=%%~sF"
 if not defined FSHORT (echo [FAIL] cannot resolve the short path of "%FONTARG%" & set "RC=1" & goto :report)
 
-echo [1/4] start %TNAME%  %FSHORT%
+echo [1/5] start %TNAME%  %FSHORT%
 start "" "%TARGET%" %FSHORT%
 
 :wait_win
@@ -76,16 +89,19 @@ goto :wait_win
 :win_up
 echo       preview window up, waited %WTRY%s
 
-echo [2/4] capture with every channel
+echo [2/5] capture with every channel
 for %%c in (%CHANNELS%) do call :shoot %%c
 
 if "%BAD%"=="0" (echo       all %DONE% channels ok) else (echo       %BAD% of %DONE% channels failed)
 
-echo [3/4] open the screenshot folder
+echo [3/5] whole screen (--monitor)
+call :shoot_screen
+
+echo [4/5] open the screenshot folder
 start "" explorer "%SHOTDIR%"
 
 :kill
-echo [4/4] end %TNAME%
+echo [5/5] end %TNAME%
 taskkill /IM %TNAME% /F
 call :is_running
 if "%RUNNING%"=="1" (echo [FAIL] %TNAME% is still running & if "%RC%"=="0" set "RC=1") else echo       stopped
@@ -135,6 +151,31 @@ if not "%ERRORLEVEL%"=="0" (echo %PCH%  FAIL  flat or empty frame & set /a BAD+=
 
 :s_done
 set /a DONE+=1
+goto :eof
+
+rem ---------------------------------------------------------------------
+rem  :shoot_screen - one whole-screen shot through --monitor, only after a
+rem  human yes here. ECAPTURE has no option to skip its own consent dialog,
+rem  so this call blocks until that dialog is answered on screen. The default
+rem  channel (wgc) is used; tests\screen.ps1 sweeps every screen-capable
+rem  channel and clicks the dialog itself.
+rem ---------------------------------------------------------------------
+:shoot_screen
+set "SSHOT=%SHOTDIR%\fontview_screen.png"
+if exist "%SSHOT%" del "%SSHOT%"
+echo       whole-screen shot next: ECAPTURE opens a consent dialog - click yes to capture,
+echo       no to skip it (answering no is NOT counted as a failure).
+pause
+"%ECAPTURE%" --monitor 1 --out "%SSHOT%" >nul 2>&1
+set "ERC=%ERRORLEVEL%"
+if "%ERC%"=="6" (echo screen        REFUSED  consent dialog answered no - not a channel failure & goto :eof)
+if not "%ERC%"=="0" (echo screen        FAIL  rc=%ERC% & set /a BAD+=1 & goto :eof)
+if not exist "%SSHOT%" (echo screen        FAIL  no image written & set /a BAD+=1 & goto :eof)
+for %%F in ("%SSHOT%") do set "SIZE=%%~zF"
+if %SIZE% lss 1024 (echo screen        FAIL  only %SIZE% bytes & set /a BAD+=1 & goto :eof)
+
+powershell -NoProfile -Command "Add-Type -AssemblyName System.Drawing; $i=[Drawing.Bitmap]::new('%SSHOT%'); try { $s=@{}; for($y=0; $y -lt $i.Height; $y+=11){ for($x=0; $x -lt $i.Width; $x+=11){ $p=$i.GetPixel($x,$y); $s[(($p.R -shl 16) -bor ($p.G -shl 8) -bor $p.B)]=1 } }; $w=$i.Width; $h=$i.Height } finally { $i.Dispose() }; Write-Host ('screen          ' + $w + 'x' + $h + ', ' + $s.Count + ' colors, %SIZE% bytes'); if ($s.Count -lt 12) { exit 1 }"
+if not "%ERRORLEVEL%"=="0" (echo screen        FAIL  flat or empty frame & set /a BAD+=1)
 goto :eof
 
 rem ---- pad the channel name to a fixed column so the table lines up ----

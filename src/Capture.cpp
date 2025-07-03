@@ -16,6 +16,7 @@
 #include "CaptureDwm.h"
 #include "CaptureDuplication.h"
 #include "CapturePrintWindow.h"
+#include "Consent.h"
 #include "Encoder.h"
 #include "Report.h"
 #include "ScreenMatch.h"
@@ -326,6 +327,19 @@ CaptureOutcome RunCapture(const Options& opt) {
         outcome.notes.push_back(Diagnostic{codes::kDryRun, Msgf(key, targets.size()), L"--dry-run",
                                            list, std::wstring()});
         return outcome;
+    }
+
+    // 整屏截图先问人：没有命令行旁路，答"否"或弹不出框都不取帧。
+    // --dry-run 在上面就已经返回，所以"只看会截到什么"不会被打扰。
+    if (opt.ScreenMode()) {
+        std::vector<ScreenInfo> screens;
+        for (const auto& t : targets) screens.push_back(t.screen);
+        Diagnostic consent;
+        if (!AskScreenCaptureConsent(opt, screens, &consent)) {
+            outcome.errors.push_back(std::move(consent));
+            outcome.exitCode = EX_DENIED;
+            return outcome;
+        }
     }
 
     for (size_t i = 0; i < targets.size(); ++i) {

@@ -18,6 +18,7 @@ add_executable(ecapture
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/Capture.cpp
+  src/Consent.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/D3dDevice.cpp

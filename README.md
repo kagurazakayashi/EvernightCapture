@@ -43,7 +43,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
       ECAPTURE.EXE --monitor [n] <路径>       给了 --monitor 且没有窗口条件 => 那块屏幕整幅截图
 
 截图目标（不给 --monitor 就只按下面的窗口条件找）
-  --monitor, -m [<n|primary|all>] 截图目标屏的编号，从 1 开始（按显示设置里的顺序）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用
+  --monitor, -m [<n|primary|all>] 截图目标屏的编号，从 1 开始（按显示设置里的顺序）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整屏截图会先弹框征求同意，且没有跳过确认的开关
 
 窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）
   --hwnd <handle>                 窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x
@@ -83,7 +83,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
 输出: 成功与错误都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
       --help / --version 以及不给条件时是文本
 退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
-        6 目标受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常
+        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
 当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在
 
 示例:

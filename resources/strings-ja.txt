@@ -15,7 +15,7 @@ help.syntax	表記: --opt=value / -opt / /opt すべて可。値自体が - 始�
 help.output1	出力: 成功もエラーも JSON で、captured / images のみ（ほかに errors / notes、input は --verbose のときだけ）
 help.output2	          --help / --version、および条件なしのときはテキスト
 help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
-help.exit2	        6 対象が保護されている / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
+help.exit2	        6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
 help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること
 help.examples	例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -47,7 +47,7 @@ opt.index	n 番目のウィンドウを選ぶ。1 始まり、表示可否と Z 
 opt.newest	最後に作成されたウィンドウを選ぶ
 opt.oldest	最初に作成されたウィンドウを選ぶ
 opt.all	一致した各ウィンドウから 1 枚ずつ保存
-opt.monitor	取得するモニタ番号、1 始まり（ディスプレイ設定の順序）；primary = 主モニタ、all = 全モニタを 1 枚ずつ。ウィンドウ条件なしではそのモニタ全体を、ウィンドウ条件ありではそのモニタに重なるウィンドウだけを対象にします。値は省略可（= 主モニタ）、省略時は後続の引数を消費しないので --monitor out.png も使えます
+opt.monitor	取得するモニタ番号、1 始まり（ディスプレイ設定の順序）；primary = 主モニタ、all = 全モニタを 1 枚ずつ。ウィンドウ条件なしではそのモニタ全体を、ウィンドウ条件ありではそのモニタに重なるウィンドウだけを対象にします。値は省略可（= 主モニタ）、省略時は後続の引数を消費しないので --monitor out.png も使えます。モニタ全体取得は最初に確認ダイアログで同意を求め、これを飛ばすオプションはありません
 opt.capture	wgc（既定、隠れていても取得可）/ dwm（DWM サムネイル、隠れていても取得可）/ printwindow（ウィンドウ自身の描画）/ bitblt（画面の表示ピクセルをコピー）/ duplication（デスクトップ複製を矩形で crop）/ auto（wgc-dwm-printwindow-bitblt の順にフォールバック、モニタ全体は wgc-duplication-bitblt）
 opt.out	出力パス。特殊値 - は画像バイトを標準出力へ。位置引数でも与えられ、全く指定しないのは --out - と同じ
 opt.format	エンコード形式を指定。未指定なら出力ファイルの拡張子から判定し、それも判別不能なら png
@@ -236,3 +236,20 @@ cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
 cap.dup.no_adapter_outputs	GPU に列挙できるディスプレイ出力がありません
 cap.dup.no_output_for_screen_hint	このモニタに対応する DXGI 出力が見つかりません（リモートセッションや仮想 GPU でよくある現象です）。wgc か bitblt を使ってください
 note.dry_run_monitor	--dry-run：%1 台のモニタを選びました。画面取得もファイル書き出しもしていません
+
+# ---------------------------------------------------------------------------
+# 画面全体取得の人工確認（src/Consent.cpp）
+# ---------------------------------------------------------------------------
+consent.title	EvernightCapture が画面全体を取得しようとしています
+consent.head	画面のピクセルを取得します。同意が必要です。
+consent.targets	対象モニタ（%1 台）：%2
+consent.plan	チャネル %1、出力先 %2
+consent.warning	取得画像にはその瞬間の画面全体が含まれます。他のウィンドウ、開いている文書、通知、デスクトップ上の文字も写ります。
+consent.dialog_closes	このダイアログは取得開始前に閉じるので、画像には写りません。
+consent.ask	今取得することを許可しますか？
+consent.denied	ユーザーが画面全体の取得を拒否しました
+consent.denied_hint	取得もファイル書き出しもしていません。特定のウィンドウだけなら --monitor を外してウィンドウ条件を使ってください
+consent.unavailable	確認ダイアログを表示できないため、拒否として扱いました
+consent.unavailable_hint	このセッションには対話できるデスクトップがありません（サービス、タスクスケジューラ、ロック状態など）。同意できる人がいません。%1
+consent.output_stdout	標準出力
+consent.more_screens	ほか %1 台は列挙していません

@@ -16,7 +16,7 @@ help.syntax	Syntax: --opt=value / -opt / /opt all work; when a value itself star
 help.output1	Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
 help.output2	       --help / --version and the no-conditions case are plain text
 help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
-help.exit2	        6 target protected / 7 capture failed / 8 write failed / 9 internal error
+help.exit2	        6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
 help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
 help.examples	Examples:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -48,7 +48,7 @@ opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
 opt.newest	Take the most recently created window
 opt.oldest	Take the oldest created window
 opt.all	Save one image per matched window
-opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works
+opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole-screen capture asks for consent in a dialog first, and there is no switch that skips it
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 opt.out	Output path; the special value - writes image bytes to stdout. A positional argument works too; giving none is the same as --out -
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
@@ -237,3 +237,20 @@ cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
 cap.dup.no_adapter_outputs	The graphics adapter exposes no display output
 cap.dup.no_output_for_screen_hint	This monitor has no matching DXGI output (common in remote sessions and virtual GPUs); use wgc or bitblt
 note.dry_run_monitor	--dry-run: %1 monitor(s) selected, nothing captured and no file written
+
+# ---------------------------------------------------------------------------
+# Human consent for whole-screen captures (src/Consent.cpp)
+# ---------------------------------------------------------------------------
+consent.title	EvernightCapture wants to capture the whole screen
+consent.head	This tool is about to capture screen pixels and needs your consent.
+consent.targets	Target monitor(s), %1 in total: %2
+consent.plan	Channel %1, image goes to %2
+consent.warning	The image holds everything currently visible on screen: other windows, open documents, notifications, text on the desktop.
+consent.dialog_closes	This dialog closes before the capture starts, so it will not appear in the image.
+consent.ask	Allow the capture now?
+consent.denied	The user refused the whole-screen capture
+consent.denied_hint	Nothing was captured and no file was written. To grab a single window, drop --monitor and use the window conditions
+consent.unavailable	The consent dialog could not be shown, treated as a refusal
+consent.unavailable_hint	This session has no interactive desktop (service, scheduled task or lock screen), so nobody could consent. %1
+consent.output_stdout	standard output
+consent.more_screens	%1 more monitor(s) not listed
