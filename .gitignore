@@ -3,6 +3,7 @@ out/
 *.obj
 *.pdb
 *.ilk
+*.exe
 .vs/
 CMakeUserPresets.json
 A*.md
