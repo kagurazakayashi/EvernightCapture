@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "Lang.h"
+#include "Version.h"
 
 namespace ecapture {
 
@@ -203,8 +204,9 @@ enum ExitCode : int {
     EX_INTERNAL = 9,       // 未预期的内部异常
 };
 
-// 版本与阶段：只在 --version 文本里出现；JSON 不携带任何程序元信息
-inline constexpr const wchar_t* kVersion = L"0.4.0";
+// 版本与阶段：只在 --version 文本里出现；JSON 不携带任何程序元信息。
+// 版本数字本体在 src/Version.h（文件属性里的 VERSIONINFO 与 CMake 都从那里取）
+inline constexpr const wchar_t* kVersion = ECAPTURE_TEXT(ECAPTURE_VERSION_STRING);
 // 已实现的取图通道
 inline constexpr const wchar_t* kStage = L"capture-channels";
 

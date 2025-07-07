@@ -1,127 +1,194 @@
+<div align="center">
+
+<img src="assets/logo.png" width="128" height="128" alt="EvernightCapture logo">
+
 # EvernightCapture
 
-命令行窗口截图工具（`ECAPTURE.EXE`）：按条件筛出窗口，用 Windows.Graphics.Capture 把那个窗口画面存成图片文件。
+A command-line window screenshot tool: select windows by conditions, then save that window's pixels to an image file.
 
-当前版本 0.4.0：`--capture` 的取值全部可用——`wgc`（Windows.Graphics.Capture，默认，也是 `auto` 的首选）、
-`dwm`（DWM 缩略图）、`printwindow`（窗口自绘）、`bitblt`（拷屏幕可见像素）、
-`duplication`（DXGI 桌面复制整屏帧后按窗口矩形裁剪）、`auto`（按 wgc→dwm→printwindow→bitblt 回退）。
-曾实现过的 `magnification` 已删除，理由见 AGENTS.md。
+[English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja-JP.md)
 
-## 构建与测试
+</div>
 
-需要 Visual Studio（"使用 C++ 的桌面开发"工作负载）+ Windows SDK，脚本会自动定位。
+Built on a full set of Windows.Graphics.Capture channels. The entry point is `ECAPTURE.EXE` — one executable,
+statically linked CRT, no VC++ runtime on the target machine. The output is program-friendly: everything except
+`--help` and `--version` is JSON, exit codes are stable, and every diagnostic carries a stable `code`, so the tool
+works just as well typed by hand as called from a script or an AI agent.
+
+Current version **0.4.0**: every `--capture` value is implemented (`wgc` / `dwm` / `printwindow` / `bitblt` /
+`duplication` / `auto`), and `--monitor` gives whole-screen capture plus "filter windows by monitor". The
+previously implemented `magnification` channel was removed (reasons in AGENTS.md).
+
+## Features
+
+- **Select windows by condition**: handle / process id / image name / full path / title (exact, contains, regex) /
+  window class — different options AND together, repeating one option ORs it
+- **Six capture channels**: capture a window that is covered by something else (`wgc` / `dwm` / `printwindow`), or
+  deliberately copy only the pixels visible on screen (`bitblt` / `duplication`)
+- **Many windows at once**: `--all` saves one image per matched window, named with placeholders like `%i`
+- **Human consent for whole-screen capture**: `--monitor` on a whole screen always shows a modal confirmation
+  dialog first — **there is no command-line or environment-variable bypass**
+- **Four message languages**: `zh-CN` / `zh-TW` / `en` / `ja`, defaulting to the system display language, all
+  embedded as resources inside the exe
+- **Machine-readable JSON**: capture results and errors only — no tool name, version, schema or argument echo
+
+## Quick start
+
+You need Visual Studio ("Desktop development with C++" workload) plus the Windows SDK; the build script locates
+both automatically.
 
 ```powershell
-.\build.ps1                # Release，产物 build\ecapture.exe
-.\build.ps1 -Config Debug
-.\build.ps1 -Clean
-.\tests\cli.ps1            # 输出契约回归测试（61 例 + 多语言检查，一律 --dry-run，不截图）
-.\scripts\check-lang.ps1   # 四种语言文案的 key / 占位符对齐检查，并确认 exe 里真有四份资源
-.\tests\smoke.ps1          # 真机冒烟：起记事本窗口截图，校验 PNG 尺寸与像素内容
-.\tests\channels.ps1       # 真机通道对比：每条通道逐个截图 + 遮挡对照
-.\tests\fontview_shot.bat  # 真机批处理冒烟：起字体查看器 -> 逐通道截图并校验画面 -> 打开截图目录 -> 结束进程
+.\build.ps1                                  # Release, output: build\ecapture.exe
+ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
 ```
 
-产物是单文件：静态链接 CRT，目标机器不需要装 VC++ 运行时。
+The output directory must **already exist** — the tool never creates one. To see what would be matched first
+(no capture, no file written):
 
-## 文案语言
+```powershell
+ECAPTURE.EXE --process notepad.exe --dry-run --out D:\shots\_probe.png
+```
 
-`--lang`（短形式 `-l`）选文案语言：`zh-CN` / `zh-TW` / `en` / `ja`，不给或给 `auto` 时跟随系统显示语言，
-系统语言不支持时用 `en`。文案是 exe 自带的嵌入资源（`resources/strings-<语言>.txt` 按语言编成四份
-`RCDATA`），包括 `--help` 全文与每条诊断的 message/hint；`code`、JSON 键名、取值枚举不随语言变化。
+Recipes people actually use:
 
-## 帮助
+```powershell
+# Pin one window by title plus window class
+ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
 
-下面这段是 `ECAPTURE.EXE --help` 的原样输出，改动选项后运行 `.\scripts\mkreadme.ps1` 重新生成，不要手工编辑。
+# Name a window explicitly, using a handle taken from the dry-run candidate list
+ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite D:\shots\one.png
 
+# One image per matched window, numbered file names
+ECAPTURE.EXE --pid 12345 --title-contains Report --all "D:\shots\rpt_%i.png"
+
+# Image bytes on stdout (JSON then moves to stderr)
+ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
+
+# Whole screen: always asks for consent, no skip switch exists
+ECAPTURE.EXE --monitor primary --out D:\shots\screen.png
+ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
+```
+
+## Options
+
+`--opt=value`, `-opt` and `/opt` are all accepted; when a value itself starts with `-` write `--title=-x` or end
+option parsing with `--`. Short options **cannot** be combined (`-qi` fails with `cli.unknown_option`). The block
+below is the verbatim output of `ECAPTURE.EXE --help`; run `.\scripts\mkreadme.ps1` after changing options —
+**do not hand-edit that block**.
+
+<!-- BEGIN ECAPTURE-HELP -->
 ```text
-EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Graphics.Capture
+EvernightCapture (ECAPTURE.EXE) - capture a window selected by conditions, built on Windows.Graphics.Capture
 
-用法: ECAPTURE.EXE [条件...] <输出路径>        不给任何条件 => 显示本帮助
-      ECAPTURE.EXE [条件...] --out <路径>      路径写 - 表示把图片字节输出到标准输出
-      ECAPTURE.EXE [条件...]                   不给输出路径 => 图片按 png 写标准输出
-      ECAPTURE.EXE --monitor [n] <路径>       给了 --monitor 且没有窗口条件 => 那块屏幕整幅截图
+Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all => this help
+       ECAPTURE.EXE [conditions...] --out <path>      "-" means image bytes go to stdout
+       ECAPTURE.EXE [conditions...]                    No output path => png bytes to stdout
+       ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
 
-截图目标（不给 --monitor 就只按下面的窗口条件找）
-  --monitor, -m [<n|primary|all>] 截图目标屏的编号，从 1 开始（按显示设置里的顺序）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整屏截图会先弹框征求同意，且没有跳过确认的开关
+Capture target (without --monitor only the window conditions below are used)
+  --monitor, -m [<n|primary|all>] Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole-screen capture asks for consent in a dialog first, and there is no switch that skips it
 
-窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）
-  --hwnd <handle>                 窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x
-  --pid <pid>                     进程 ID，十进制且大于 0
-  --process, -p <image-name>      映像文件名（不含路径），忽略大小写；无扩展名时按 .exe 处理
-  --exe <full-path>               映像完整路径，忽略大小写
-  --title, -t <exact-title>       窗口标题精确匹配
-  --title-contains, -T <text>     窗口标题包含子串
-  --title-regex, -R <regex>       窗口标题正则匹配，ECMAScript 语法，解析期即校验
-  --class, -c <class-name>        窗口类名，忽略大小写，如 Notepad / CabinetWClass
+Window match conditions (repeat one option for OR, combine different options with AND)
+  --hwnd <handle>                 Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x
+  --pid <pid>                     Process id, decimal and greater than 0
+  --process, -p <image-name>      Image file name (no path), case-insensitive; without an extension .exe is assumed
+  --exe <full-path>               Full image path, case-insensitive
+  --title, -t <exact-title>       Window title, exact match
+  --title-contains, -T <text>     Window title contains this substring
+  --title-regex, -R <regex>       Window title regular-expression match (ECMAScript), validated while parsing
+  --class, -c <class-name>        Window class name, case-insensitive, e.g. Notepad / CabinetWClass
 
-匹配到多个窗口时（互斥）
-  --index, -i <n>                 取第 n 个窗口，从 1 开始，按可见性/叠放次序排序
-  --newest                        取最后创建的窗口
-  --oldest                        取最早创建的窗口
-  --all, -a                       每个匹配窗口各存一张
+When several windows match (mutually exclusive)
+  --index, -i <n>                 Take the n-th window, 1-based, ordered by visibility and z-order
+  --newest                        Take the most recently created window
+  --oldest                        Take the oldest created window
+  --all, -a                       Save one image per matched window
 
-取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）
-  --capture, -C <method>          wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)
+Capture channel (default wgc; may fail because of the OS version or the window itself)
+  --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 
-输出
-  --out, -o <path|->              输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -
-  --format, -f <name>             强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png
-  --quality <1-100>               JPEG 质量，默认 100
-  --no-overwrite                  目标已存在时不覆盖，报错退出
+Output
+  --out, -o <path|->              Output path; the special value - writes image bytes to stdout. A positional argument works too; giving none is the same as --out -
+  --format, -f <name>             Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
+  --quality <1-100>               JPEG quality, default 100
+  --no-overwrite                  Fail instead of overwriting an existing target
 
-其它
-  --dry-run, -d                   只解析并列出候选窗口，不截图不写文件
-  --json, -j                      已废弃的兼容开关，无副作用：成功与错误本来就输出 JSON
-  --verbose, -v                   JSON 中追加 input 段（规范化后的全部输入），并保留 notes
-  --quiet, -q                     省略 notes；errors 无论如何都会返回
-  --lang, -l <language>           文案语言。auto(默认，跟随系统显示语言) / zh-CN / zh-TW / en / ja；系统语言不受支持时用 en
-  --help, -h                      输出文本帮助（本段）
-  --version                       输出版本与阶段
+Miscellaneous
+  --dry-run, -d                   Parse and list candidate windows only - no capture, no file written
+  --json, -j                      Deprecated compatibility switch, no effect: success and errors are already JSON
+  --verbose, -v                   Add the input section to the JSON (all input, normalized) and keep notes
+  --quiet, -q                     Drop notes; errors are always returned whatever this says
+  --lang, -l <language>           Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
+  --help, -h                      Print this text help
+  --version                       Print version and stage
 
-写法: --opt=value / -opt / /opt 都接受；取值本身以 - 开头时写成 --title=-x，或用 -- 结束选项解析
-输出: 成功与错误都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
-      --help / --version 以及不给条件时是文本
-退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
-        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
-当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在
+Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --
+Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
+       --help / --version and the no-conditions case are plain text
+Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
+        6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
+Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
 
-示例:
+Examples:
   ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
   ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
-  ECAPTURE.EXE --pid 12345 --title-contains 报告 --all D:\shots\rpt_%i.png
+  ECAPTURE.EXE --pid 12345 --title-contains Report --all D:\shots\rpt_%i.png
   ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
   ECAPTURE.EXE --process notepad.exe --out - > snap.png
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 ```
+<!-- END ECAPTURE-HELP -->
 
-## 输出形式
+## Matching semantics
 
-`--help`、`--version`、以及不给任何条件时是纯文本。其余一律 JSON，只装捕获到的窗口信息与保存的文件信息，不带工具名/版本/输入回显等元信息。
+Different options are ANDed together (all of them must hit the same window); repeating one option ORs it.
+Conditions are never combined across two different windows.
 
-成功（真实输出的形状，数值为一次实际截取的例子）：
+```powershell
+ECAPTURE.EXE --process notepad.exe --title-contains Report D:\shots\r.png
+# windows whose process is notepad.exe AND whose title contains "Report"
+```
+
+- `--title` compares the whole string and `--title-contains` matches a substring; both are **case-sensitive**.
+  `--class`, `--process` and `--exe` are case-insensitive.
+- Enumeration skips invisible and zero-size windows by default; **minimized windows cannot be captured** and are
+  only mentioned separately in the `hint`.
+- When several windows match and no disambiguation option was given, the tool refuses to pick one: it reports
+  `match.ambiguous_window` (exit code 5) and lists every candidate in `hint`, ordered by z-order.
+
+## Output format
+
+`--help`, `--version` and the "no conditions given" case are plain text. Everything else is JSON carrying only the
+capture result and the errors.
+
+A window image (real shape of the output; the numbers come from one actual capture):
 
 ```json
 {
   "captured": 1,
   "images": [
     {
-      "file": "D:\\shots\\game.png",
-      "bytes": 248193,
-      "width": 2560,
-      "height": 1440,
+      "file": "D:\\shots\\EvernightCapture - File Explorer.png",
+      "bytes": 60198,
+      "width": 1247,
+      "height": 607,
       "format": "png",
-      "hwnd": "0x001A0B4C",
-      "pid": 12345,
-      "title": "LocalSend",
-      "class": "UnrealWindow",
-      "elapsedMs": 41
+      "hwnd": "0x001B0C48",
+      "pid": 31468,
+      "title": "D:\\share\\EvernightCapture - File Explorer",
+      "class": "CabinetWClass",
+      "image": "explorer.exe",
+      "elapsedMs": 156
     }
   ]
 }
 ```
 
-出错：
+A screen image (`--monitor` with no window conditions) has no window to attribute, so it swaps those fields for
+`monitor` / `device` / `primary`, and `hwnd` / `pid` / `title` / `class` / `image` do not appear at all — callers
+tell the two kinds apart by checking whether `monitor` exists.
+
+An error (`--hwnd` given a garbage value):
 
 ```json
 {
@@ -130,26 +197,165 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   "errors": [
     {
       "code": "cli.invalid_number",
-      "message": "--hwnd 需要有效的句柄值（十进制，或带 0x 前缀的十六进制）",
+      "message": "--hwnd needs a valid handle (decimal, or hexadecimal with a 0x prefix)",
       "option": "--hwnd",
       "value": "zzz",
-      "hint": "纯数字按十进制解析；十六进制请写成 0x……，或含 a-f 时自动按十六进制"
+      "hint": "plain digits parse as decimal; write hexadecimal as 0x..., or it is taken as hexadecimal when it contains a-f"
     }
   ]
 }
 ```
 
-规则：`captured` 与 `images` 恒在，空时是 `[]`；`errors` 只要非空就一定出现（`--quiet` 也只抑制 `notes`，不会吞掉错误）；`notes` 是提示，仅非空且未 `--quiet` 时出现；`input` 段仅 `--verbose` 时出现，内容是规范化后的输入。诊断项里为空的字段整个键省略。
+Rules:
 
-退出码与输出内容相互独立：`0` 成功 / `1` 参数错 / `2` 未给条件 / `3` `--help` / `4` 无匹配窗口 / `5` 匹配多个窗口 / `6` 目标受保护 / `7` 截图失败 / `8` 写文件失败 / `9` 内部异常。
+1. `captured` and `images` are always present (`[]` when empty); `errors` appears whenever it is non-empty
+   (`--quiet` cannot suppress it); `notes` appears only when non-empty and not `--quiet`; `input` appears only with
+   `--verbose`. Look at `errors` before reading `images`.
+2. Empty fields of a diagnostic drop the whole key — there is no `null` placeholder.
+3. `code` values are stable: `cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
+4. Streams: by default everything goes to stdout and stderr stays empty; once the image occupies stdout (explicit
+   `--out -`, or no output path at all) the whole JSON moves to stderr. The two streams never mix.
+5. `captured` equals the number of `images`; one window per image, and with `--monitor all` one monitor per image.
 
-输出通道：默认全部写 stdout，stderr 保持为空；`--out -` 时 stdout 留给图片字节，JSON 整体改走 stderr。
+## Exit codes
 
-## 匹配语义
+`0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no matching window /
+`5` several matches / `6` target protected or refused / `7` capture failed / `8` write failed / `9` internal error.
+New meanings only ever append numbers.
 
-不同选项之间是 AND（"都满足才开始"），同一选项写多次是 OR。所有条件必须命中同一个窗口，不会跨窗口拼接。
+The exit code and the body are two independent signals; `2`/`3`/`4`/`5` are normal control flow, not crashes.
+**Partial success is allowed**: with `--all` or `--monitor all`, if some targets fail the images already written
+stay in `images` (`captured` can be greater than 0) while the exit code is `7`.
 
-```powershell
-ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
-# 进程是 notepad.exe 且 标题含"报告" 的那些窗口
+## Capture channels
+
+| Value | Channel | Covered window | Hardware-accelerated content | Minimum OS |
+| --- | --- | --- | --- | --- |
+| `wgc` | Windows.Graphics.Capture | yes (DWM cache) | normal | Win10 1803+ |
+| `dwm` | DwmRegisterThumbnail | yes | mostly normal, protected windows black | Win7+ |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | yes (window self-draw) | often fully black | Win8.1+ |
+| `bitblt` | BitBlt from a screen DC | no, visible pixels only | partly black | all versions |
+| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal | Win8+; RDP / virtual GPUs often yield nothing |
+| `auto` | falls back wgc → dwm → printwindow → bitblt | best effort | best effort | — |
+
+- Want "the window's own content", even if something is on top of it: keep the default `wgc`. Want "what the screen
+  looks like right now", occluder included: use `bitblt` or `duplication`.
+- A bad `--capture` value fails during parsing with `cli.unknown_capture_method` (exit code 1) and **never degrades
+  to the default channel**; only `auto` may fall back, and a successful fallback emits `note.capture_channel`.
+- DRM / protected content is always black. Driver-level black bars (some players) are defeated by some channels and
+  not by others — nothing is guaranteed.
+- Whole-screen capture only uses `wgc` / `duplication` / `bitblt`; `--monitor` with `dwm` or `printwindow` fails
+  during parsing with `capture.unsupported` (exit code 1). In screen mode `auto` falls back wgc → duplication →
+  bitblt.
+
+## Whole-screen capture and consent
+
+`--monitor` with no window conditions captures a whole screen, and that **always shows a modal confirmation dialog
+first** (it lists the target monitor, the channel, and where the image goes). Only "Yes" lets a frame be taken:
+
+- **No command-line bypass and no environment-variable bypass.** If no dialog can be shown (service session, no
+  interactive desktop) it is treated as a refusal.
+- Answering "No", or being unable to show the dialog, both give `capture.access_denied` + exit code `6`, no file.
+- After "Yes" the tool waits one second before grabbing a frame, so the dialog's close animation is not captured;
+  the dialog itself never appears in the image.
+- `--dry-run` and "filter windows by monitor" take no whole-screen frame, so no dialog appears.
+- To tell "a human refused" apart from "the path was wrong" you must pass `--out` explicitly: without an output
+  path every failure collapses into `cli.missing_output` + exit code 1, and the real reason is not leaked.
+
+`--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
+`--monitor all` one image per monitor. Numbers follow the `EnumDisplayMonitors` order and start at 1; out of range
+gives `match.monitor_out_of_range` (exit code 1) with every local monitor listed in `hint`. `--monitor <n>` together
+with window conditions means "filter windows by monitor" (a window overlapping that monitor matches, and a window
+spanning monitors matches on both), still producing window images and no dialog. `--monitor all` is mutually
+exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1), but disambiguation options
+such as `--all` and `--index` do not count as matching conditions and may accompany it.
+
+## File name placeholders
+
+Usable anywhere in the `--out` path; multiple images rely on them:
+
+| Placeholder | Meaning |
+| --- | --- |
+| `%i` | ordinal, starting at 1 (`--all` windows, `--monitor all` screens) |
+| `%h` | window handle, shaped like `0x001B0C48`; screen targets give 0 |
+| `%p` | process id; screen targets give 0 |
+| `%n` | screen targets give the device name without the `\\.\` prefix (e.g. `DISPLAY1`) |
+| `%d` | local date `YYYYMMDD` |
+| `%t` | local time `HHMMSS` |
+| `%%` | one literal `%`; any other `%x` is kept verbatim |
+
+When `--all` is used without a placeholder the tool appends `_1`, `_2`, … and emits
+`note.all_without_placeholder`.
+
+## Message language
+
+`--lang` (`-l`) takes `zh-CN` / `zh-TW` / `en` / `ja`; omitted or `auto` uses the Windows display language, falling
+back to `en` when that is not one of the four. Values are accepted generously: case-insensitive, `_` and `-` are
+equivalent, `zh_TW` / `zh-Hant` / `cht` / `tw` map to Traditional Chinese, `chs` / `cn` / `zh-Hans` to Simplified,
+`jp` to Japanese. An unknown value fails during parsing with `cli.unknown_language` (exit code 1) instead of
+silently defaulting.
+
+**Only human-readable text changes with the language**: `message` / `hint` of diagnostics and the whole `--help`.
+`code`, JSON keys, value enums, `0x…` handles and `HRESULT` numbers never change, so callers can branch on `code`
+alone. The strings are embedded resources (`resources/strings-<language>.txt` compiled as four `RCDATA` blocks), so
+switching language works offline.
+
+## Guide for AI and scripts
+
+The tool is designed for programmatic calls; following these conventions is the cheapest way to use it. The
+repository also ships a skill that teaches an agent to drive it: `.agents/skills/ecapture-screenshot/` (contains
+`SKILL.md`, `references/cli-contract.md`, and a copy of the exe).
+
+1. **Probe with `--dry-run` first**, then disambiguate, then capture for real. `--dry-run` takes no frame and writes
+   no file; candidates are in `notes[0].value`, shaped like
+   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`. Note that `--dry-run` still requires
+   `--out`, otherwise `cli.missing_output` + 1; and **`--dry-run` alone with no window condition = text help + exit
+   code 2**.
+2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`). The codes you actually hit:
+   `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose
+   from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
+   candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `capture.failed` (7),
+   `capture.access_denied` (6), `io.write_failed` (8, directory missing), `io.file_exists` (8, with
+   `--no-overwrite`).
+3. **Read the right stream**: with `--out <file>` the JSON is on stdout and stderr is empty, so parse stdout
+   directly. With `--out -` (or no output path) the image bytes occupy stdout and the whole JSON moves to stderr.
+   In PowerShell 5.1 `2>&1` wraps native stderr into error records, so redirect `1>` and `2>` separately if you want
+   both the image and the JSON.
+4. **Do not treat a non-zero exit code as total failure**: on partial success `captured` is greater than 0 while the
+   exit code is 7, and the images already on disk are perfectly usable.
+5. **Exit code 0 does not mean the picture is correct**: protected content and some player drivers hand you black
+   frames while reporting success. Verify pixels to be sure — for instance put a solid-colour window on top of the
+   target and capture again, then check whether you got the target's content or the cover; at minimum compare
+   `width`/`height` against the target window rectangle.
+6. **Ask a human before capturing a whole screen**: `--monitor` on a full screen pops a modal dialog and blocks the
+   process until somebody answers, with no bypass. Don't treat it as a freely available screenshot in automation;
+   tell the user first, and pass `--out` explicitly. If you only need one window, don't escalate to the whole
+   screen.
+7. To reliably target "some application", prefer `--process`/`--exe` plus `--class`; title matching is
+   case-sensitive and unreliable across locales.
+
+## Build and test
+
+| Command | Purpose |
+| --- | --- |
+| `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
+| `.\tests\cli.ps1` | 77 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
+| `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
+| `.\tests\smoke.ps1` | On-device smoke: open Notepad → capture → validate PNG size and pixel content |
+| `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control |
+| `.\tests\screen.ps1` | On-device whole-screen test: consent behaviour + three screen channels + red-block placement + negative control |
+| `.\scripts\mkreadme.ps1` | Regenerates the help block of all four READMEs from each language's `--help` output |
+
+`build.ps1` uses vswhere to find Visual Studio and prefers its bundled cmake/ninja. Builds must stay warning-free
+under `/W4`. When testing by hand in Git Bash, run `export MSYS2_ARG_CONV_EXCL='*'` first — otherwise `/help` gets
+rewritten as a path and `--out /tmp/x.png` turns into a mangled one.
+
+## License
+
+EvernightCapture is licensed under the [Mulan Permissive Software License v2 (Mulan PSL v2)](http://license.coscl.org.cn/MulanPSL2).
+The complete bilingual (Chinese and English) text is in [LICENSE](LICENSE).
+
+```
+Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi)
+EvernightCapture is licensed under Mulan PSL v2.
 ```

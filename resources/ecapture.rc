@@ -13,6 +13,58 @@
 // 文件路径相对本 .rc 解析（CMake 已把 resources 目录给 rc 的搜索路径）。
 #pragma code_page(65001)
 
+// 应用程序图标。序号必须是 1：资源管理器 / 任务栏 / 控制台标题取的是
+// 编号最小的那份 RT_GROUP_ICON，rc.exe 会把 .ico 里的各尺寸自动汇成组图标。
+1 ICON "icon.ico"
+
+// ---------------------------------------------------------------------------
+// 文件属性（VERSIONINFO）：资源管理器右键"属性"、"详细信息"面板、任务栏悬停提示，
+// 以及 Get-Item .VersionInfo / VerQueryValue 读到的就是这一段。
+//
+// * 全部写英文。这里的内容不参与 --lang 那套（四份 RCDATA 只管给人看的诊断文字与
+//   --help），属性面板由系统显示语言决定，工具给它中文也没有对应英文那份可退。
+// * 版本号只在 src/Version.h 里写一次，下面靠宏代入；FILEVERSION / PRODUCTVERSION 是
+//   数值比较用的，字符串版 FileVersion / ProductVersion 给人看，两处必须同步。
+// * 块名 "040904B0" = 语言 0x0409（英语-美国）+ 代码页 0x04B0（1200，UTF-16），必须和
+//   VarFileInfo 里那条 Translation 成对写；不成对时部分系统的属性面板会显示空白。
+//
+// winres.h 提供 VS_VERSION_INFO / VOS_NT_WINDOWS32 / VFT_APP 这些符号（只在 rc 下可用）。
+#include <winres.h>
+#include "Version.h"
+
+VS_VERSION_INFO VERSIONINFO
+    FILEVERSION    ECAPTURE_VERSION_MAJOR, ECAPTURE_VERSION_MINOR, ECAPTURE_VERSION_PATCH, 0
+    PRODUCTVERSION ECAPTURE_VERSION_MAJOR, ECAPTURE_VERSION_MINOR, ECAPTURE_VERSION_PATCH, 0
+    FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+    FILEFLAGS      VS_FF_DEBUG
+#else
+    FILEFLAGS      0x0L
+#endif
+    FILEOS         VOS_NT_WINDOWS32
+    FILETYPE       VFT_APP
+    FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "KagurazakaYashi"
+            VALUE "FileDescription", "EvernightCapture - command-line screenshot tool built on Windows.Graphics.Capture"
+            VALUE "FileVersion", ECAPTURE_VERSION_STRING
+            VALUE "InternalName", "ECAPTURE.EXE"
+            VALUE "LegalCopyright", "Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi). EvernightCapture is licensed under the Mulan Permissive Software License, Version 2 (MulanPSL-2.0): http://license.coscl.org.cn/MulanPSL2"
+            VALUE "OriginalFilename", "ECAPTURE.EXE"
+            VALUE "ProductName", "EvernightCapture"
+            VALUE "ProductVersion", ECAPTURE_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+
 ECP_TEXT_ZH_CN RCDATA "strings-zh-CN.txt"
 ECP_TEXT_ZH_TW RCDATA "strings-zh-TW.txt"
 ECP_TEXT_EN    RCDATA "strings-en.txt"

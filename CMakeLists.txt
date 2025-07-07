@@ -1,7 +1,21 @@
 cmake_minimum_required(VERSION 3.25)
 
+# 版本号只在 src/Version.h 写一次（C++ 的 --version 与 exe 文件属性都从它取），
+# 这里把它读出来喂给 project(VERSION ...)，别再手抄一份数字到本文件里。
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h" ECAPTURE_VERSION_HEADER)
+foreach(part IN ITEMS MAJOR MINOR PATCH)
+  string(REGEX MATCH "#define ECAPTURE_VERSION_${part} +([0-9]+)" _match
+         "${ECAPTURE_VERSION_HEADER}")
+  # 判"匹配到没有"要看整段匹配，别拿 CMAKE_MATCH_1 当真值：主版本号就是 0，
+  # 用 if(NOT CMAKE_MATCH_1) 会把 0 当成没匹配上。
+  if(_match STREQUAL "")
+    message(FATAL_ERROR "src/Version.h 里找不到 #define ECAPTURE_VERSION_${part}")
+  endif()
+  set(ECAPTURE_${part}_VERSION "${CMAKE_MATCH_1}")
+endforeach()
+
 project(EvernightCapture
-        VERSION 0.1.0
+        VERSION ${ECAPTURE_MAJOR_VERSION}.${ECAPTURE_MINOR_VERSION}.${ECAPTURE_PATCH_VERSION}
         DESCRIPTION "CLI screenshot tool built on Windows.Graphics.Capture"
         LANGUAGES CXX RC)
 
@@ -33,16 +47,20 @@ add_executable(ecapture
 
 # rc.exe 按当前目录解析 RCDATA 的文件名，而 Ninja 的工作目录是 build 目录：
 # 把 resources 目录加进包含路径，文案文件按裸文件名即可命中。
-target_include_directories(ecapture PRIVATE resources)
+# src 也在里面：ecapture.rc 用 #include "Version.h" 取版本号（那是个 C++ 头，不放 resources）。
+target_include_directories(ecapture PRIVATE resources src)
 
 # RC_DEPENDS 实测不会触发重编（改 .txt 后 ninja 说没活干），用 OBJECT_DEPENDS 才可靠：
-# 文案文件必须列成 .rc 的依赖，否则改完文案要 clean 重编才生效。
-set(ECAPTURE_STRINGS
+# .rc 嵌进去的数据文件（四份文案 + 图标）与 #include 的头都必须列成 .rc 的依赖，
+# 否则改完要 clean 重编才生效。
+set(ECAPTURE_RC_INPUTS
   "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-zh-CN.txt"
   "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-zh-TW.txt"
   "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-en.txt"
-  "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-ja.txt")
-set_source_files_properties(resources/ecapture.rc PROPERTIES OBJECT_DEPENDS "${ECAPTURE_STRINGS}")
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/strings-ja.txt"
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.ico"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h")
+set_source_files_properties(resources/ecapture.rc PROPERTIES OBJECT_DEPENDS "${ECAPTURE_RC_INPUTS}")
 
 target_compile_features(ecapture PRIVATE cxx_std_20)
 set_target_properties(ecapture PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
