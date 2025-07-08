@@ -303,10 +303,18 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
 | `.\tests\cli.ps1` | 77 例输出契约断言 + 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
-| `.\tests\smoke.ps1` | 真机冒烟：开记事本 → 截图 → 校验 PNG 尺寸与像素内容 |
-| `.\tests\channels.ps1` | 真机通道对比：六条通道 + 遮挡对照 |
-| `.\tests\screen.ps1` | 真机整屏测试：确认框行为 + 三条屏幕通道 + 红块定位 + 阴性对照 |
+| `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
+| `.\tests\smoke.ps1` | 真机冒烟：截自己建的测试窗口 → 校验 PNG 尺寸与像素内容 |
+| `.\tests\channels.ps1` | 真机通道对比：六条通道 + 遮挡对照，目标与遮挡物都是自建的窗口 |
+| `.\tests\isolation.ps1` | 真机资源隔离：同名的既有进程保持存活且不被当成目标、并发两轮互不串、异常退出只清理自身 |
+| `.\tests\screen.ps1` | 真机整屏测试：确认框行为 + 三条屏幕通道 + 红块定位 + 阴性对照。只有加了 `-SimulateConsent` 才会代答确认框，且只该在专门腾给测试的桌面上这么用 |
+| `.\tests\window_shot.bat` | 给人跑的批处理：编译测试窗口程序 → 逐通道截图 → 打开截图目录 → 只结束自己起的那个 PID |
 | `.\scripts\mkreadme.ps1` | 用各语言 `--help` 的原样输出重生成四份 README 的帮助段 |
+
+所有桌面测试的目标窗口一律是自家的：`tests\helper\ec_window.cs` 编到本次运行的临时目录里，测试握着它的
+PID 与 HWND，因此既不按进程名去找目标、也不按进程名批量收尾，删除的也只有自己建的那个目录。
+`tests\harness.psm1` 放着共享的进程调用器（argv 引号规则、两条流并发消费、有期限的等待、超时只结束自己
+那棵进程树），以及临时目录与测试窗口的建立和收尾；`tests\invoker.ps1` 就是拿来证明这个调用器本身的。
 
 `build.ps1` 用 vswhere 定位 VS，并优先使用 VS 自带的 cmake/ninja。构建要求 `/W4` 下零警告。
 在 Git Bash 里手工测试要先 `export MSYS2_ARG_CONV_EXCL='*'`，否则 `/help` 会被当成路径改写、`--out /tmp/x.png` 会被转成怪路径。

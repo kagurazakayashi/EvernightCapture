@@ -341,10 +341,19 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
 | `.\tests\cli.ps1` | 77 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
-| `.\tests\smoke.ps1` | On-device smoke: open Notepad → capture → validate PNG size and pixel content |
-| `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control |
-| `.\tests\screen.ps1` | On-device whole-screen test: consent behaviour + three screen channels + red-block placement + negative control |
+| `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
+| `.\tests\smoke.ps1` | On-device smoke: capture its own test window → validate PNG size and pixel content |
+| `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows |
+| `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
+| `.\tests\screen.ps1` | On-device whole-screen test: consent behaviour + three screen channels + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing |
+| `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel → open the screenshot folder → end just that PID |
 | `.\scripts\mkreadme.ps1` | Regenerates the help block of all four READMEs from each language's `--help` output |
+
+Every desktop test targets a window of its own: `tests\helper\ec_window.cs` compiles into the run's
+scratch folder and the test keeps that PID and HWND, so nothing is ever found or killed by image name and
+only the folder it created gets deleted. `tests\harness.psm1` holds the shared process invoker (argv
+quoting, both streams drained concurrently, bounded wait, kills only its own process tree) and the scratch
+directory / window helpers, and `tests\invoker.ps1` is what proves that invoker.
 
 `build.ps1` uses vswhere to find Visual Studio and prefers its bundled cmake/ninja. Builds must stay warning-free
 under `/W4`. When testing by hand in Git Bash, run `export MSYS2_ARG_CONV_EXCL='*'` first — otherwise `/help` gets

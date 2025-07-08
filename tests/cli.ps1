@@ -4,7 +4,8 @@
 .DESCRIPTION
     这些用例只验证参数解析与输出契约，一律带 --dry-run，不截图也不写文件。
     需要"必然存在"的窗口做锚点时统一用任务栏 --class Shell_TrayWnd。
-    真机截图（含像素内容校验）在 tests\smoke.ps1。
+    真机截图（含像素内容校验）在 tests\smoke.ps1，通道与遮挡对照在 tests\channels.ps1。
+    起进程的方式由 tests\harness.psm1 统一负责，调用器本身由 tests\invoker.ps1 离线验证。
     断言的文案是简体中文，所以整轮都强制 --lang zh-CN：换一台英文系统的机器也必须全绿。
     多语言本身由文末的跨语言检查与 .\scripts\check-lang.ps1 负责。
 .EXAMPLE
@@ -19,45 +20,20 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = (Get-Item -LiteralPath "$PSScriptRoot\..").FullName
-if (-not $Exe) { $Exe = Join-Path $root 'build\ecapture.exe' }
-if (-not (Test-Path $Exe)) { throw "找不到可执行文件：$Exe（先运行 .\build.ps1）" }
-$Exe = (Get-Item -LiteralPath $Exe).FullName
+Import-Module (Join-Path $PSScriptRoot 'harness.psm1') -Force -DisableNameChecking
+Initialize-EcHarness -Exe $Exe | Out-Null
 
-# 用 .NET Process 分别捕获 stdout / stderr：PS 5.1 的 2>&1 会把原生 stderr 包装成
-# 错误记录文字，那样就没法校验 body 是不是合法 JSON。
-function Quote-NativeArg([string]$a) {
-    if ($a -eq '' -or $a -match '[\s"]') {
-        $escaped = ($a -replace '(\\+)', '$1$1') -replace '"', '\"'
-        return '"' + $escaped + '"'
-    }
-    return $a
-}
+# 起进程一律走 tests\harness.psm1 的调用器：参数按 Windows argv 规则传，
+# 两条流并发读取，等待有期限。这里只补一层"整轮锁一种语言"的约定。
+function Invoke-Ec {
+    param([string[]]$Arguments, [switch]$NoLang)
 
-function Invoke-Ecapture([string[]]$Arguments, [switch]$NoLang) {
     # 整轮固定语言：用例里自己写了 --lang / -l 的以用例为准
-    if ($Lang -and -not $NoLang -and
-        -not (@($Arguments | ForEach-Object { $_ -replace '^--', '' }) -contains 'lang') -and
-        -not (@($Arguments) -contains '-l')) {
+    $names = @($Arguments | ForEach-Object { $_ -replace '^--', '' })
+    if ($Lang -and -not $NoLang -and ($names -notcontains 'lang') -and ($Arguments -notcontains '-l')) {
         $Arguments = @('--lang', $Lang) + @($Arguments)
     }
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $Exe
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
-    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-    $psi.Arguments = ($Arguments | ForEach-Object { Quote-NativeArg $_ }) -join ' '
-    $p = New-Object System.Diagnostics.Process
-    $p.StartInfo = $psi
-    [void]$p.Start()
-    # 先读完 stdout 再读 stderr：按契约两者不会同时携带大文档（-o - 时 JSON 才走 stderr）
-    $so = $p.StandardOutput.ReadToEnd()
-    $se = $p.StandardError.ReadToEnd()
-    $p.WaitForExit()
-    return [pscustomobject]@{ Exit = $p.ExitCode; Stdout = $so; Stderr = $se }
+    return (Invoke-Ecapture -Arguments $Arguments)
 }
 
 function Codes($list) { if ($null -eq $list) { @() } else { @($list | ForEach-Object { $_.code }) } }
@@ -262,7 +238,7 @@ $cases = @(
 
 $results = @()
 foreach ($c in $cases) {
-    $r = Invoke-Ecapture $c.A
+    $r = Invoke-Ec $c.A
     $body = if ($r.Stdout.Trim()) { $r.Stdout } else { $r.Stderr }   # JSON 所在通道
     $results += [pscustomobject]@{ Case = $c; Body = $body; Out = $r.Stdout; Err = $r.Stderr; Exit = $r.Exit }
 }
@@ -279,7 +255,7 @@ foreach ($r in $results) {
         if ($looksJson) { $problems += '期望文本输出，实际是 JSON' }
         foreach ($frag in @($c.Has)) { if (-not $body.Contains($frag)) { $problems += "缺少片段: $frag" } }
         if ($c.Name -like '*帮助体积*') {
-            $help = (Invoke-Ecapture @('--help')).Stdout
+            $help = (Invoke-Ec @('--help')).Stdout
             if ($help.Length -gt 6000) { $problems += "帮助文本 $($help.Length) 字符，超过 6000" }
         }
     } else {
@@ -337,7 +313,7 @@ if ($fail) { exit 1 }
 # 通道分离：-o - 时 stdout 必须只留给图片字节，JSON 整体走 stderr
 # （这里用 dry-run，所以 stdout 应该是空的，JSON 在 stderr）
 # ---------------------------------------------------------------------------
-$r = Invoke-Ecapture ($ANCHOR + @('--format', 'png', '-o', '-'))
+$r = Invoke-Ec ($ANCHOR + @('--format', 'png', '-o', '-'))
 $o = $null
 try { $o = $r.Stderr | ConvertFrom-Json } catch { }
 if ($r.Stdout.Trim() -eq '' -and $o -and $o.captured -eq 0 -and $r.Exit -eq 0) {
@@ -372,7 +348,7 @@ $bad = 0
 # 1) 四份帮助互不相同，且没有空说明 / 未替换痕迹
 $seenHeaders = @{}
 foreach ($tag in $LANGS) {
-    $help = (Invoke-Ecapture @('--lang', $tag, '--help')).Stdout
+    $help = (Invoke-Ec @('--lang', $tag, '--help')).Stdout
     $lines = @($help -split "`r?`n")
     $header = $lines[0]
     if (-not $header.Trim()) { $bad++; Write-Host "  FAIL  $tag 帮助首行为空" -ForegroundColor Red }
@@ -402,7 +378,7 @@ foreach ($probe in $PROBE) {
     $problems = @()
     $shapes = @()
     foreach ($tag in $LANGS) {
-        $r = Invoke-Ecapture (@('--lang', $tag) + $probe.A)
+        $r = Invoke-Ec (@('--lang', $tag) + $probe.A)
         $body = if ($r.Stdout.Trim()) { $r.Stdout } else { $r.Stderr }
         $o = $null
         try { $o = $body | ConvertFrom-Json } catch { }
@@ -433,8 +409,8 @@ foreach ($probe in $PROBE) {
 }
 
 # 4) 不给 --lang == --lang auto
-$auto = Invoke-Ecapture @('--lang', 'auto', '--hwnd', 'zzz', 'out.png')
-$detect = Invoke-Ecapture -NoLang @('--hwnd', 'zzz', 'out.png')
+$auto = Invoke-Ec @('--lang', 'auto', '--hwnd', 'zzz', 'out.png')
+$detect = Invoke-Ec -NoLang @('--hwnd', 'zzz', 'out.png')
 if ($auto.Stdout -eq $detect.Stdout -and $auto.Exit -eq $detect.Exit) {
     Write-Host '  PASS  不给语言与 --lang auto 结果相同（默认跟随系统显示语言）' -ForegroundColor DarkGreen
 } else {
@@ -463,8 +439,8 @@ $expected = switch ($primary) {
     9 { 'en' }
     default { 'en' }
 }
-$detected = (Invoke-Ecapture -NoLang @('--help')).Stdout
-$expectedText = (Invoke-Ecapture @('--lang', $expected, '--help')).Stdout
+$detected = (Invoke-Ec -NoLang @('--help')).Stdout
+$expectedText = (Invoke-Ec @('--lang', $expected, '--help')).Stdout
 if ($detected -eq $expectedText) {
     Write-Host ("  PASS  默认文案语言 = {0}（系统显示语言 LANGID 0x{1:X4}）" -f $expected, $langid) -ForegroundColor DarkGreen
 } else {

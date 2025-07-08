@@ -303,10 +303,18 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 | `.\build.ps1` | Release 建置，產物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可選 |
 | `.\tests\cli.ps1` | 77 例輸出契約斷言 + 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
 | `.\scripts\check-lang.ps1` | 四語文案的 key / 佔位符對齊檢查，並確認 exe 裡真的編進了四份資源 |
-| `.\tests\smoke.ps1` | 實機冒煙：開記事本 → 截圖 → 校驗 PNG 尺寸與像素內容 |
-| `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照 |
-| `.\tests\screen.ps1` | 實機整張螢幕測試：確認框行為 + 三條螢幕通道 + 紅塊定位 + 陰性對照 |
+| `.\tests\invoker.ps1` | 離線檢查共用的測試程序呼叫器：argv 引號、兩條流同時輸出、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄（不截圖） |
+| `.\tests\smoke.ps1` | 實機冒煙：截自己建立的測試視窗 → 校驗 PNG 尺寸與像素內容 |
+| `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗 |
+| `.\tests\isolation.ps1` | 實機資源隔離：同名的既有處理程序保持存活且不會被當成目標、並發兩輪互不串、異常退出只清理自身 |
+| `.\tests\screen.ps1` | 實機整張螢幕測試：確認框行為 + 三條螢幕通道 + 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用 |
+| `.\tests\window_shot.bat` | 給人跑的批次檔：編譯測試視窗程式 → 逐通道截圖 → 開啟截圖目錄 → 只結束自己起的那個 PID |
 | `.\scripts\mkreadme.ps1` | 用各語言 `--help` 的原樣輸出重新產生四份 README 的說明段 |
+
+所有實機測試的目標視窗一律是自家的：`tests\helper\ec_window.cs` 編到本次執行的暫存目錄裡，測試握著它的
+PID 與 HWND，因此既不按處理程序名去找目標、也不按處理程序名批次結束，刪除的也只有自己建立的那個目錄。
+`tests\harness.psm1` 放著共用的程序呼叫器（argv 引號規則、兩條流併發消費、有期限的等待、逾時只結束自己
+那棵程序樹），以及暫存目錄與測試視窗的建立與收尾；`tests\invoker.ps1` 就是用來證明這個呼叫器本身的。
 
 `build.ps1` 用 vswhere 定位 VS，並優先使用 VS 自帶的 cmake/ninja。建置要求在 `/W4` 下零警告。
 在 Git Bash 裡手動測試要先 `export MSYS2_ARG_CONV_EXCL='*'`，否則 `/help` 會被當成路徑改寫、`--out /tmp/x.png` 會被轉成怪異的路徑。
