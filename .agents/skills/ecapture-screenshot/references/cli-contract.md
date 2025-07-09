@@ -20,19 +20,20 @@
 | `--newest` / `--oldest` | | 开关 | 取最后/最早创建的窗口 |
 | `--all` | `-a` | 开关 | 每个命中窗口各存一张；与 `--monitor all` 互斥 |
 | `--capture` | `-C` | `wgc`（默认）/`dwm`/`printwindow`/`bitblt`/`duplication`/`auto` | 取图通道。取值写错解析期报 `cli.unknown_capture_method`，不会退化成默认值。屏幕模式只支持 `wgc`/`duplication`/`bitblt`/`auto`，`dwm`/`printwindow` 报 `capture.unsupported` |
-| `--out` | `-o` | 路径或 `-` | `-` = 图片字节写标准输出。也可用位置参数；完全不给时等同 `--out -` |
+| `--out` | `-o` | 路径或 `-` | `-` = 图片字节写标准输出。也可用位置参数；完全不给时等同 `--out -`。整批的最终绝对路径在取第一帧（以及整屏确认框）之前一次算好：扩展名缺了就补，两个目标算出同一个名字就报 `io.output_collision`+8 且整批不作，绝不静默改名。`-` 不是路径，不参与展开与碰撞检测 |
 | `--format` | `-f` | `png`/`jpg`/`jpeg`/`bmp`/`tiff`/`gif` | 不给则由扩展名判定；扩展名判不出时用 png 并发 `note.format_defaulted_png`（文件名不改）。**没有 `webp`、没有 `ico`、没有 `auto`** |
 | `--quality` | | 1–100，默认 100 | 只对 jpeg 生效，给别的格式发 `note.quality_ignored` |
-| `--no-overwrite` | | 开关 | 目标已存在时报 `io.file_exists` 且不覆盖 |
+| `--no-overwrite` | | 开关，可写 `=true/false` | 目标已存在时报 `io.file_exists` 且不覆盖。裸写与 `=true/1/yes/y/on` 同义（禁止覆盖），`=false/0/no/n/off` 取消禁令；重复给出时最后一个生效。**已存在与否由最后那次不许替换的改名原子判定**，没有「先查一下」那种竞态预检 |
 | `--dry-run` | `-d` | 开关 | 选完窗口就返回，只给 `note.dry_run`；不取帧、不写文件、不弹确认框。但仍要求给 `--out` |
 | `--json` | `-j` | 开关 | 已废弃、无副作用（成功与错误本来就是 JSON）；用它会收到 `note.json_flag_deprecated` |
-| `--verbose` | `-v` | 开关 | JSON 追加 `input` 段（规范化后的全部输入，含最终生效的 `lang`） |
+| `--verbose` | `-v` | 开关 | JSON 追加 `input` 段（规范化后的全部输入，含最终生效的 `lang` 与 `overwrite`） |
 | `--quiet` | `-q` | 开关 | 省略 `notes`；**`errors` 不受抑制** |
 | `--lang` | `-l` | `auto`（默认，跟随系统显示语言）/`zh-CN`/`zh-TW`/`en`/`ja` | 只影响给人看的 `message`/`hint`/`--help`；`code`、JSON 键名、取值枚举、`0x…` 句柄一律不变。取值宽容：忽略大小写、`_` 与 `-` 等价、`zh_TW`/`zh-Hant`/`cht`/`tw`/`chs`/`cn`/`jp` 都认。写错报 `cli.unknown_language` |
 | `--help` | `-h` | | 文本帮助，退出码 3 |
 | `--version` | | | 版本与阶段，纯文本 |
 
 写法：`--opt=value` / `-opt` / `/opt` 都接受；取值本身以 `-` 开头时写成 `--title=-x`，或用 `--` 结束选项解析。
+开关也可以写 `--opt=true/false`（`1/0`、`yes/no`、`y/n`、`on/off` 都认，大小写与前后空格无关）：普通开关写 `=false` 等于没写，`--no-overwrite` 这种负向开关写 `=false` 才是取消禁令。
 **短选项不能合并**（`-qi` 会报 `cli.unknown_option`）。同一选项多次出现取并集，不同选项必须同时命中（AND）。
 
 ## JSON 结构
@@ -92,7 +93,7 @@
 
 退出码与 body 是两套独立信号：先看 `errors`，再看 `captured`，最后才用退出码做粗分支。
 
-- 只有 `io.write_failed` 与 `io.file_exists` 会给出 8；截图/编码阶段的其它失败（含
+- 只有 `io.write_failed`、`io.file_exists` 与 `io.output_collision` 会给出 8；截图/编码阶段的其它失败（含
   `capture.failed`、`capture.encoder_unavailable`）都给 7；`capture.access_denied` 给 6。
 - **部分成功**：`--all` / `--monitor all` 里某些目标失败时，已写出的图照样在 `images` 里
   （`captured` 可以大于 0），但退出码仍是 7。所以"退出码非 0"不等于"什么都没拿到"。
@@ -116,7 +117,7 @@
 `capture.encoder_unavailable`（7）`capture.failed`（7）
 
 **`io.*`**
-`io.write_failed`（8）`io.file_exists`（8，配合 `--no-overwrite`）
+`io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）
 
 **`note.*`（不是错误，`--quiet` 会去掉）**
 `note.dry_run` `note.capture_channel`（`auto` 回退后实际用了哪条）`note.duplicate_value`
@@ -135,12 +136,14 @@
 | `%i` | 序号，从 1 起（`--all` 多窗口、`--monitor all` 多屏都用它） |
 | `%h` | 窗口句柄，形如 `0x001B0C48`（`0x%08X`）；屏幕目标给 0 |
 | `%p` | 进程 ID；屏幕目标给 0 |
-| `%n` | 屏幕目标给去掉 `\\.\` 前缀的设备名（如 `DISPLAY1`） |
+| `%n` | 窗口标题；屏幕目标给去掉 `\\.\` 前缀的设备名（如 `DISPLAY1`）。会被清洗成能用的文件名片段：非法字符换成 `_`、去掉尾部的点与空格、整段正好是保留设备名（`CON` / `NUL` / `COM1` / `LPT1` …）时加 `_` 前缀、按 80 个 UTF-16 码元截断且不劈开代理对 |
 | `%d` | 本地日期 `YYYYMMDD` |
 | `%t` | 本地时间 `HHMMSS` |
 | `%%` | 一个字面 `%`；其余 `%x` 原样保留两个字符 |
 
-`--all` 的输出名里没有占位符时会自动追加 `_序号` 并发 `note.all_without_placeholder`。
+`--all` 的输出名里没有占位符时会自动追加 `_序号` 并发 `note.all_without_placeholder`。**模板里已有 `%` 时不再追加**，所以占位符分不开目标就得由调用方负责：整批名字在取帧前一次算完，任意两个撞车（绝对路径、不区分大小写、逐码元比较）就报 `io.output_collision`+8，一张也不会落地。`%d` / `%t` 一批发一次时钟，跨午夜也不会劈成两天。8.3 短名、硬链接、junction / 符号链接、UNC 与盘符这类字符串比不出来的别名，预检认不到，只能由提交那一次原子操作当场判定。`--out -` 不展开也不查碰撞，整批按顺序进同一条流。
+
+写文件是原子的：先写目标目录下唯一的临时文件（`~<目标名>.ecapture-<pid>-…`），写完、刷新、关闭之后才改名成目标名。允许覆盖走可替换的改名，禁止覆盖走不可替换的改名（撞名即 `io.file_exists`）；任何一步失败都只清掉本次自己的临时文件，旧文件既不会被截断也不会被删。保证边界：本机文件系统上同卷改名是原子的，网络共享上只看服务端实现；只读或被人占用的目标照旧报错，不会被硬换掉。
 这些模板占位符**不是**文案里的 `%1..%9` 参数占位符，别混。
 
 ## 各 shell 的坑（实测）

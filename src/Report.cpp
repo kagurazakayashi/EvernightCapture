@@ -114,6 +114,9 @@ void WriteInputEcho(Json& j, const Options& opt) {
 
     OptString(j, L"output", AbsoluteOf(opt.output));
     j.Key(L"toStdout").Value(opt.output == L"-");
+    // 覆盖策略也回显出来：--no-overwrite 的布尔写法（裸写 / =true / =false）只有这样才能
+    // 在不截图的情况下被断言（布尔别名一共有十种写法）。
+    j.Key(L"overwrite").Value(opt.overwrite);
     if (opt.monitor.given) {
         if (opt.monitor.all) j.Key(L"monitor").Value(L"all");
         else if (opt.monitor.ordinal == 0) j.Key(L"monitor").Value(L"primary");

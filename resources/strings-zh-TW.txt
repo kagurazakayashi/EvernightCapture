@@ -50,10 +50,10 @@ opt.oldest	取最早建立的視窗
 opt.all	每個匹配視窗各存一張
 opt.monitor	截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕截圖會先彈框徵求同意，且沒有跳過確認的開關
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
-opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -
+opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
 opt.quality	JPEG 品質，預設 100
-opt.no-overwrite	目標已存在時不覆蓋，報錯退出
+opt.no-overwrite	目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 opt.dry-run	只解析並列出候選視窗，不截圖不寫檔案
 opt.json	已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
 opt.verbose	JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
@@ -130,7 +130,7 @@ match.ambiguous_hint	用 --index/--newest/--oldest/--all 或補充條件。候�
 match.untitled	(無標題)
 
 # ---------------------------------------------------------------------------
-# 流程與寫檔（src/Capture.cpp）
+# 流程與寫檔（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）
 # ---------------------------------------------------------------------------
 io.file_exists	目標檔案已存在（--no-overwrite）
 io.file_exists_hint	去掉該選項以覆蓋，或換輸出檔案名
@@ -139,6 +139,11 @@ io.open_failed_hint	上層目錄是否存在？路徑是否合法（錯誤碼 %1
 io.dir_missing	輸出目錄不存在，請先建立目錄
 io.write_interrupted	寫檔案中斷
 io.stdout_failed	寫標準輸出失敗
+io.output_collision	多個目標算出同一個輸出名，整批沒有截圖也沒有寫檔案
+io.output_collision_hint	第 %1 張與第 %2 張都要寫到 %3；請在 --out 裡加上能區分目標的佔位符（如 %i 或 %h）
+io.temp_failed	無法在輸出目錄下建立暫存檔案
+io.commit_failed	寫完的暫存檔案沒能改名為目標檔案
+io.not_absolute	輸出路徑沒能化成絕對路徑，同目錄改名無從保證
 
 # ---------------------------------------------------------------------------
 # 取圖通道（src/CaptureCommon.cpp 與各 CaptureXxx.cpp）

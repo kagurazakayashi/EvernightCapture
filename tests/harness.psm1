@@ -552,8 +552,12 @@ function Start-EcWindow {
         window = 多色内容（截图目标）；solid = 单色（遮挡物或屏幕标记）。
     .PARAMETER Rect
         物理像素的 'L,T,R,B'。窗口是 WS_POPUP，所以请求矩形就是它真正占的位置。
+    .PARAMETER Windows
+        同一个进程建几扇窗口（默认 1）。多扇时类名是 <class>、<class>-2 …，标题全都一样，
+        用来造「同一个 PID 的两个目标」—— %p / %n 的撞名检测只有这么造才验得到。
     .OUTPUTPROPERTY
         Proc Diagnostics.Process，Pid Int32，Hwnd IntPtr，Class String，Title String，Rect Int[]
+        Hwnds / Classes：本次建的全部窗口（多扇时按 -2、-3 的顺序），Hwnd / Class 就是它们的第一个
     #>
     param(
         [Parameter(Mandatory)]$RunDir,
@@ -566,6 +570,7 @@ function Start-EcWindow {
         [switch]$TopMost,
         [int]$MaxLifeSeconds = 300,
         [string]$PidFile = '',
+        [int]$Windows = 1,
         [int]$TimeoutMs = 15000
     )
 
@@ -577,6 +582,7 @@ function Start-EcWindow {
                   '--watch-pid', [string]$PID)
     if ($PidFile) { $arguments += @('--pid-file', $PidFile) }
     if ($TopMost) { $arguments += '--topmost' }
+    if ($Windows -gt 1) { $arguments += @('--windows', [string]$Windows) }
 
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $helper
@@ -594,10 +600,20 @@ function Start-EcWindow {
     $window = [pscustomobject]@{
         Proc = $proc; Pid = [int]$proc.Id; Hwnd = [IntPtr]::Zero; Class = $Class
         Title = $Title; Helper = $helper; Rect = ($Rect.Split(',') | ForEach-Object { [int]$_ })
+        Hwnds = @(); Classes = @($Class)
     }
     [void]$script:EcOwnedWindows.Add($window)
     try {
         $window.Hwnd = Wait-EcWindow -ProcessId $window.Pid -Class $Class -TimeoutMs $TimeoutMs
+        $window.Hwnds = @($window.Hwnd)
+        # --windows N 时其余几扇各自有类名 <class>-2、<class>-3 …：一扇一扇等到，
+        # 少一扇就是这次的目标不完整，宁可直接抛而不拿半套去截图。
+        for ($k = 2; $k -le $Windows; $k++) {
+            $extra = "$Class-$k"
+            $extraHwnd = Wait-EcWindow -ProcessId $window.Pid -Class $extra -TimeoutMs $TimeoutMs
+            $window.Hwnds += $extraHwnd
+            $window.Classes += $extra
+        }
     } catch {
         Stop-EcWindow -Window $window
         throw

@@ -42,6 +42,18 @@ programmatically.
    otherwise `note.all_without_placeholder` fires and `_N` is appended).
 3. Drop `--dry-run` and point the output at the real path. **The output directory must already exist**,
    otherwise `io.write_failed` + exit 8.
+4. **Every output name of the batch is planned before the first frame is taken.** Two targets that expand to
+   the same path give `io.output_collision` + exit 8 and nothing at all is captured - the tool never renames
+   your template behind your back. A placeholder must actually separate the targets: `%i` or `%h` do, while
+   `%d`, `%t`, `%%`, an unknown `%x`, `%p` for two windows of one process, and `%n` for equal (or
+   case-equivalent, or truncation-equivalent) titles do not. `%d` / `%t` come from one clock per batch.
+   `--out -` is not a path: no expansion and no collision check.
+5. **Writes are atomic and `--no-overwrite` is checked by the write itself.** Bytes land in a unique
+   temporary file in the target directory and are renamed onto the target only after everything is written
+   and flushed, so a failed write leaves the previous file exactly as it was, and only that run's own
+   temporary file is ever removed. `--no-overwrite` (bare, or `=true` / `1` / `yes` / `y` / `on`) makes the
+   final rename refuse an existing target (`io.file_exists` + exit 8); `--no-overwrite=false` / `0` / `no` /
+   `n` / `off` cancels the prohibition. Repeated occurrences: the last one wins.
 
 ## Reading the output
 
@@ -131,8 +143,9 @@ whether `monitor` is present):
 | `cli.monitor_conflict` | 1 | `--monitor all` plus window match conditions; use a single monitor number to filter instead |
 | `capture.failed` | 7 | Target protected, gone, or unsupported by the OS; retry once with `--capture auto`, and if it fails again nothing is reachable |
 | `capture.access_denied` | 6 | Whole-screen dialog answered "No" or not showable, or the target window is protected |
-| `io.write_failed` | 8 | Output directory does not exist or the file name is invalid |
-| `io.file_exists` | 8 | `--no-overwrite` was given and the target already exists |
+| `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
+| `io.file_exists` | 8 | `--no-overwrite` (or `=true`) was given and the target already exists; decided by the final rename, not by a pre-check |
+| `io.output_collision` | 8 | Two targets expand to the same output name; the whole batch is refused before any frame is taken, so nothing is written - put `%i` / `%h` into `--out` |
 
 ## Resources
 

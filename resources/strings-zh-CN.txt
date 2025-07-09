@@ -50,10 +50,10 @@ opt.newest	取最后创建的窗口
 opt.oldest	取最早创建的窗口
 opt.all	每个匹配窗口各存一张
 opt.capture	wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)
-opt.out	输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -
+opt.out	输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -。整批输出名在取帧之前一次算好，两个目标算出同一个名字时整批报错，不会静默覆盖
 opt.format	强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png
 opt.quality	JPEG 质量，默认 100
-opt.no-overwrite	目标已存在时不覆盖，报错退出
+opt.no-overwrite	目标已存在时不覆盖，报错退出（不给取值就是禁止覆盖）；写 --no-overwrite=false（0 / no / n / off）取消这条禁令，=true / 1 / yes / y / on 与不给取值同义。重复给出时最后一个生效
 opt.dry-run	只解析并列出候选窗口，不截图不写文件
 opt.json	已废弃的兼容开关，无副作用：成功与错误本来就输出 JSON
 opt.verbose	JSON 中追加 input 段（规范化后的全部输入），并保留 notes
@@ -130,7 +130,7 @@ match.ambiguous_hint	用 --index/--newest/--oldest/--all 或补充条件。候�
 match.untitled	(无标题)
 
 # ---------------------------------------------------------------------------
-# 流水线与写文件（src/Capture.cpp）
+# 流水线与写文件（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）
 # ---------------------------------------------------------------------------
 io.file_exists	目标文件已存在（--no-overwrite）
 io.file_exists_hint	去掉该选项以覆盖，或换输出文件名
@@ -139,6 +139,11 @@ io.open_failed_hint	父目录是否存在？路径是否合法（错误码 %1）
 io.dir_missing	输出目录不存在，请先建好目录
 io.write_interrupted	写文件中断
 io.stdout_failed	写标准输出失败
+io.output_collision	多个目标算出同一个输出名，整批没有截图也没有写文件
+io.output_collision_hint	第 %1 张与第 %2 张都要写到 %3；请在 --out 里加上能区分目标的占位符（如 %i 或 %h）
+io.temp_failed	无法在输出目录下创建临时文件
+io.commit_failed	写完的临时文件没能改名为目标文件
+io.not_absolute	输出路径没能化成绝对路径，同目录改名无从保证
 
 # ---------------------------------------------------------------------------
 # 取图通道（src/CaptureCommon.cpp 与各 CaptureXxx.cpp）

@@ -166,6 +166,9 @@ struct OptionSpec {
     const wchar_t* const* allowed;    // 枚举取值，nullptr 结尾；没有则 nullptr
     const wchar_t* messageKey;  // 说明文案的资源 key，见 resources/strings-*.txt
     bool optionalValue = false; // 取值可省略（--monitor 不给编号 = 主屏）；仅 takesValue 时有意义
+    // 名字带 no- 的开关：写出去的字段是"开关取反后的值"，所以 --no-overwrite=true 与裸开关同义，
+    // --no-overwrite=false 才是取消禁止覆盖。见解析循环里对 inlineValue 的处理。
+    bool inverted = false;
 };
 
 constexpr OptionSpec kOptions[] = {
@@ -193,7 +196,7 @@ constexpr OptionSpec kOptions[] = {
     {L"out", L"o", true, L"output", L"<path|->", nullptr, L"opt.out"},
     {L"format", L"f", true, L"output", L"<name>", kFormatValues, L"opt.format"},
     {L"quality", L"", true, L"output", L"<1-100>", nullptr, L"opt.quality"},
-    {L"no-overwrite", L"", false, L"output", L"", nullptr, L"opt.no-overwrite"},
+    {L"no-overwrite", L"", false, L"output", L"", nullptr, L"opt.no-overwrite", false, true},
     // ---- 行为 ----
     {L"dry-run", L"d", false, L"behavior", L"", nullptr, L"opt.dry-run"},
     {L"json", L"j", false, L"behavior", L"", nullptr, L"opt.json"},
@@ -392,7 +395,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     std::vector<std::wstring> pickFlags;   // --index/--newest/--oldest/--all，互斥
     MultiMatch multiFlag = MultiMatch::kAsk;
 
-    // 单个选项 -> 数据结构
+    // 单个选项 -> 数据结构。取值型选项的 value 是用户给的原文；开关的 value 是布尔写法的规范化结果：
+    // 裸开关 = 空串，--flag=true/1/yes/y/on = "1"，=false/0/no/n/off = "0"（普通开关写 =false 时压根不到这里）。
+    // 目前只有负向开关 --no-overwrite 会看这个值。
     auto Apply = [&](const OptionSpec& spec, const std::wstring& value) {
         const std::wstring name = spec.name;
 
@@ -563,7 +568,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             qualityExplicit = true;
             return;
         }
-        if (name == L"no-overwrite") { opt.overwrite = false; return; }
+        // 负向开关：裸写与 --no-overwrite=true/1/yes/on/y 都是禁止覆盖（value 为空或 "1"）；
+        // =false/0/no/off/n 才是取消禁令。每次都是整字段赋值，所以重复给出时最后一个生效。
+        if (name == L"no-overwrite") { opt.overwrite = (value == L"0"); return; }
 
         // ---- 行为 ----
         if (name == L"lang") {
@@ -672,6 +679,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 Apply(*spec, *value);
             }
         } else {
+            std::wstring boolArg;   // 开关一般不吃取值；只有 =true / =false 这种写法填 "1" / "0"
             if (inlineValue) {
                 bool b = false;
                 const std::wstring flag = L"--" + std::wstring(spec->name);
@@ -680,11 +688,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                         Msgf(L"cli.switch_no_value_hint", flag));
                     continue;
                 }
-                // 允许 --no-overwrite=false 这种反写
-                if (std::wstring(spec->name) == L"no-overwrite") { opt.overwrite = b; continue; }
-                if (!b) continue;
+                // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令
+                if (!b && !spec->inverted) continue;
+                boolArg = b ? L"1" : L"0";
             }
-            Apply(*spec, L"");
+            Apply(*spec, boolArg);
         }
     }
 

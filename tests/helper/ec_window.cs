@@ -17,6 +17,7 @@
 //
 // 只用 C# 5 语法：编译器是 .NET Framework 自带的 csc.exe。
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -180,6 +181,7 @@ namespace EcTestHelper
         public string StderrText;
         public int Spawn;
         public int Seconds = 3600;
+        public int Windows = 1;           // --windows N：同一进程建几扇自有窗口（%p 撞名要有这个才造得出来）
         public int PayloadStart = -1;     // "--" 之后的第一条：args 模式把它之后全当数据
         public string PidFile;            // 把自己的 PID 写进这个文件：给 cmd 脚本精确收尾用
     }
@@ -206,6 +208,9 @@ namespace EcTestHelper
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
         private static IntPtr g_hwnd = IntPtr.Zero;
+        private static readonly List<IntPtr> g_windows = new List<IntPtr>();   // --windows N 时不止一扇
+        private static int g_openWindows;                                       // 关到最后一扇才退出消息循环
+        private static readonly List<string> g_classes = new List<string>();    // 本次注册过的类名，收尾逐个注销
         private static Native.WndProcDelegate g_wndProc;      // 必须长期持有，否则委托被 GC 后回调会崩
         private static Options g_opt = new Options();
 
@@ -267,6 +272,10 @@ namespace EcTestHelper
                     case "--stderr-text": o.StderrText = Need(args, ref i, key); break;
                     case "--spawn": o.Spawn = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
                     case "--seconds": o.Seconds = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
+                    case "--windows":
+                        o.Windows = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture);
+                        if (o.Windows < 1 || o.Windows > 8) { throw new ArgumentException("--windows wants 1..8"); }
+                        break;
                     case "--pid-file": o.PidFile = Need(args, ref i, key); break;
                     case "--rect":
                         value = Need(args, ref i, key);
@@ -310,29 +319,44 @@ namespace EcTestHelper
             wc.lpfnWndProc = Marshal.GetFunctionPointerForDelegate(g_wndProc);
             wc.hInstance = Native.GetModuleHandle(null);
             wc.hbrBackground = Native.GetStockObject(WHITE_BRUSH);   // 类背景刷：擦背景时也有内容，不留黑底
-            wc.lpszClassName = opt.ClassName;
-
-            if (Native.RegisterClassExW(ref wc) == 0)
-            {
-                Console.Error.WriteLine("RegisterClassExW failed for " + opt.ClassName);
-                return 3;
-            }
 
             uint exStyle = opt.TopMost ? WS_EX_TOPMOST : 0u;
             uint style = WS_POPUP | WS_VISIBLE | WS_SYSMENU;
-            g_hwnd = Native.CreateWindowExW(exStyle, opt.ClassName, opt.Title, style,
-                opt.Left, opt.Top, opt.Width, opt.Height, IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
-            if (g_hwnd == IntPtr.Zero)
+
+            // --windows N：同一个进程建好几扇自有窗口（类名 <class>、<class>-2 …，标题全都一样）。
+            // 「同一个进程的两个目标」只能这么造，而 %p / %n 的撞名检测非要它不可。
+            // 每扇错开 48 像素：叠着也没关系，WGC 取的是各自的画面。
+            for (int k = 1; k <= opt.Windows; k++)
             {
-                Console.Error.WriteLine("CreateWindowExW failed for " + opt.ClassName);
-                Native.UnregisterClassW(opt.ClassName, wc.hInstance);
-                return 4;
+                string className = k == 1 ? opt.ClassName : opt.ClassName + "-" + k.ToString(CultureInfo.InvariantCulture);
+                wc.lpszClassName = className;
+                if (Native.RegisterClassExW(ref wc) == 0)
+                {
+                    Console.Error.WriteLine("RegisterClassExW failed for " + className);
+                    return 3;
+                }
+                g_classes.Add(className);
+
+                IntPtr hwnd = Native.CreateWindowExW(exStyle, className, opt.Title, style,
+                    opt.Left + (k - 1) * 48, opt.Top + (k - 1) * 48, opt.Width, opt.Height,
+                    IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
+                if (hwnd == IntPtr.Zero)
+                {
+                    Console.Error.WriteLine("CreateWindowExW failed for " + className);
+                    return 4;
+                }
+                if (k == 1) { g_hwnd = hwnd; }        // 第一扇仍是 g_hwnd：等窗与判据都按主类名认它
+                g_windows.Add(hwnd);
+                Native.ShowWindow(hwnd, SW_SHOW);
+                if (opt.TopMost)
+                {
+                    Native.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+                // 先进来一次同步绘制：截图可能紧接着开始，而「还没画过」与「画成全黑」
+                // 在 PrintWindow 拿到的自绘内容里长得一模一样。
+                Native.UpdateWindow(hwnd);
             }
-            Native.ShowWindow(g_hwnd, SW_SHOW);
-            if (opt.TopMost)
-            {
-                Native.SetWindowPos(g_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            g_openWindows = g_windows.Count;
 
             if (!string.IsNullOrEmpty(opt.PidFile))
             {
@@ -345,10 +369,7 @@ namespace EcTestHelper
             if (opt.WatchPid > 0) { StartWatchdog(opt.WatchPid); }
             if (opt.MaxLifeSeconds > 0) { StartLifeLimit(opt.MaxLifeSeconds); }
 
-            // 先进来一次同步绘制：截图可能紧接着开始，而「还没画过」与「画成全黑」
-            // 在 PrintWindow 拿到的自绘内容里长得一模一样。
-            Native.UpdateWindow(g_hwnd);
-
+            // 同步绘制已经在建窗口时就地做过，这里不再补一次：多扇窗口时那一句只画得到第一扇。
             Native.MSG msg;
             int got;
             while ((got = Native.GetMessageW(out msg, IntPtr.Zero, 0, 0)) != 0)
@@ -357,7 +378,10 @@ namespace EcTestHelper
                 Native.TranslateMessage(ref msg);
                 Native.DispatchMessageW(ref msg);
             }
-            Native.UnregisterClassW(opt.ClassName, wc.hInstance);
+            foreach (string className in g_classes)
+            {
+                Native.UnregisterClassW(className, wc.hInstance);
+            }
             return 0;
         }
 
@@ -372,7 +396,12 @@ namespace EcTestHelper
                 return IntPtr.Zero;
             }
             if (message == WM_CLOSE) { Native.DestroyWindow(hWnd); return IntPtr.Zero; }
-            if (message == WM_DESTROY) { Native.PostQuitMessage(0); return IntPtr.Zero; }
+            if (message == WM_DESTROY)
+            {
+                // 多扇窗口时要关到最后一扇才退消息循环，否则看门狗关第一扇就把剩下的留在原地
+                if (Interlocked.Decrement(ref g_openWindows) <= 0) { Native.PostQuitMessage(0); }
+                return IntPtr.Zero;
+            }
             return Native.DefWindowProcW(hWnd, message, wParam, lParam);
         }
 
@@ -477,13 +506,13 @@ namespace EcTestHelper
 
         private static void CloseSelf()
         {
-            IntPtr hwnd = g_hwnd;
-            if (hwnd != IntPtr.Zero)
+            // 本次建的窗口一起关：WM_DESTROY 那边走计数，最后一扇才 PostQuitMessage，
+            // 否则 --windows N 时只关得掉第一扇，剩下的会留在屏幕上等 max-life。
+            foreach (IntPtr hwnd in g_windows)
             {
                 Native.PostMessageW(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                return;
             }
-            Environment.Exit(0);
+            if (g_windows.Count == 0) { Environment.Exit(0); }
         }
 
         // ---------------------------------------------------------------- 假后端

@@ -99,10 +99,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
 
 輸出
-  --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -
+  --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋
   --format, -f <name>             強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
   --quality <1-100>               JPEG 品質，預設 100
-  --no-overwrite                  目標已存在時不覆蓋，報錯退出
+  --no-overwrite                  目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 
 其他
   --dry-run, -d                   只解析並列出候選視窗，不截圖不寫檔案
@@ -201,6 +201,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 4. 通道：預設全部寫 stdout、stderr 保持空；一旦圖片佔用標準輸出（顯式 `--out -`，或根本沒給輸出路徑），
    JSON 整體改走 stderr，兩個通道不會混流。
 5. `captured` 等於 `images` 的條數；一個視窗一張圖，`--monitor all` 則一張螢幕一張圖。
+6. **儲存**：整批最終輸出路徑在取第一張影格之前（也在整屏確認框之前）一次算好。兩個目標算出同一個名字時報
+   `io.output_collision`（離開碼 8），整批一張都不截、一個檔案都不寫 —— 既不替呼叫端改名，也不讓第二張蓋掉第一張。
+   每張圖先寫進目標目錄下唯一的暫存檔案，寫完並刷新之後才改名為目標名稱，所以寫入失敗不會清空也不會刪掉舊檔案。
+   `--no-overwrite` 時「目標在不在」由那一次不許替換的改名當場判定（`io.file_exists`），不做有競態的預檢。
 
 ## 退出碼
 
@@ -256,12 +260,17 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 | `%i` | 序號，從 1 起（`--all` 多視窗、`--monitor all` 多螢幕） |
 | `%h` | 視窗句柄，形如 `0x001B0C48`；螢幕目標給 0 |
 | `%p` | 處理程序 ID；螢幕目標給 0 |
-| `%n` | 螢幕目標給去掉 `\\.\` 前綴的裝置名（如 `DISPLAY1`） |
+| `%n` | 視窗標題；螢幕目標給去掉 `\\.\` 前綴的裝置名（如 `DISPLAY1`）。標題會被清洗成能用的檔案名片段：非法字元換成 `_`、去掉尾端的點與空格、整段剛好是保留裝置名稱（`CON` / `NUL` / `COM1` / `LPT1` …）時加 `_` 前綴、依 80 個 UTF-16 碼元截斷且不劈開代理對 |
 | `%d` | 本地日期 `YYYYMMDD` |
 | `%t` | 本地時間 `HHMMSS` |
 | `%%` | 一個字面上的 `%`；其餘 `%x` 原樣保留兩個字元 |
 
 `--all` 的輸出名裡沒有佔位符時會自動追加 `_序號`，並發出 `note.all_without_placeholder`。
+佔位符分不開目標時（只寫 `%d`，或同一處理程序的兩個視窗寫 `%p`）不會被悄悄改名：整批名字事先算好，撞名就報
+`io.output_collision`。`%d` / `%t` 用的是本批次那一次時鐘，所以跨午夜的一批也全用同一個日期與時間。規劃出的名字
+依絕對路徑、不區分大小寫、逐碼元比較（NTFS 就是這樣看名字的）；字串比較看不見的別名（8.3 短名、硬連結、目錄
+junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一次原子操作判定，所以預檢認不出的佔用同樣不會被靜默替換。
+`--out -` 不是路徑：不展開、不補副檔名、不查碰撞，整批圖依序寫進同一條串流。
 
 ## 文案語言
 
@@ -285,7 +294,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    `match.no_window`（4，條件太窄或目標被最小化）、`match.ambiguous_window`（5，從 `hint` 的候選裡挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候選）、
    `cli.missing_output`（1）、`cli.invalid_format`（1）、`capture.failed`（7）、`capture.access_denied`（6）、
-   `io.write_failed`（8，目錄不存在）、`io.file_exists`（8，搭配 `--no-overwrite`）。
+   `io.write_failed`（8，目錄不存在或提交失敗）、`io.file_exists`（8，搭配 `--no-overwrite`）、
+   `io.output_collision`（8，兩個目標算出同一個輸出名，整批沒截圖也沒寫檔）。
 3. **讀取資料流要分情況**：給 `--out <檔案>` 時 JSON 在 stdout、stderr 是空的，直接解析就行；用 `--out -` 或沒給輸出路徑時
    圖片位元組佔了 stdout，JSON 整體改到 stderr。PowerShell 5.1 裡 `2>&1` 會把 stderr 包裝成錯誤記錄，想同時拿圖片和
    JSON 就用 `1>`/`2>` 分開重新導向。
@@ -301,10 +311,12 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 建置，產物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可選 |
-| `.\tests\cli.ps1` | 77 例輸出契約斷言 + 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
+| `.\tests\cli.ps1` | 105 例輸出契約斷言 + 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
 | `.\scripts\check-lang.ps1` | 四語文案的 key / 佔位符對齊檢查，並確認 exe 裡真的編進了四份資源 |
 | `.\tests\invoker.ps1` | 離線檢查共用的測試程序呼叫器：argv 引號、兩條流同時輸出、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄（不截圖） |
+| `.\tests\build-path.ps1` | 建置路徑判據：離線那層驗暫存批次檔正文只能是 ASCII、VS 環境匯入失敗要在跑 cmake 之前就報錯；真機那層在含中文、空白、括號、百分號的目錄裡跑 Release / Debug / RelWithDebInfo 與 `-Clean`，再把 `%TEMP%` 換成中文目錄建置一次（不截圖；`-OfflineOnly` 只跑離線那層） |
 | `.\tests\smoke.ps1` | 實機冒煙：截自己建立的測試視窗 → 校驗 PNG 尺寸與像素內容 |
+| `.\tests\save.ps1` | 實機檔案儲存與覆蓋保護：每種 `--no-overwrite` 布林寫法對真實檔案的效果、整批輸出名規劃與撞名偵測（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小寫 / 清洗 / 截斷）、原子提交（目標被佔用、目標名是目錄、目錄不存在、寫到一半被硬殺）、併發禁止覆蓋 |
 | `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗 |
 | `.\tests\isolation.ps1` | 實機資源隔離：同名的既有處理程序保持存活且不會被當成目標、並發兩輪互不串、異常退出只清理自身 |
 | `.\tests\screen.ps1` | 實機整張螢幕測試：確認框行為 + 三條螢幕通道 + 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用 |
@@ -316,7 +328,9 @@ PID 與 HWND，因此既不按處理程序名去找目標、也不按處理程�
 `tests\harness.psm1` 放著共用的程序呼叫器（argv 引號規則、兩條流併發消費、有期限的等待、逾時只結束自己
 那棵程序樹），以及暫存目錄與測試視窗的建立與收尾；`tests\invoker.ps1` 就是用來證明這個呼叫器本身的。
 
-`build.ps1` 用 vswhere 定位 VS，並優先使用 VS 自帶的 cmake/ninja。建置要求在 `/W4` 下零警告。
+`build.ps1` 用 vswhere 定位 VS，並優先使用 VS 自帶的 cmake/ninja。倉庫目錄、build 目錄與工具鏈路徑只經子程序的
+環境塊遞給那個暫存批次檔，正文裡一個絕對路徑都不寫，所以倉庫放在含中文、空白、括號或 `%` 的目錄裡也能照常建置，
+而正文一旦混進非 ASCII 會在寫入前被當場攔下（判據見 `.\tests\build-path.ps1`）。建置要求在 `/W4` 下零警告。
 在 Git Bash 裡手動測試要先 `export MSYS2_ARG_CONV_EXCL='*'`，否則 `/help` 會被當成路徑改寫、`--out /tmp/x.png` 會被轉成怪異的路徑。
 
 ## 授權

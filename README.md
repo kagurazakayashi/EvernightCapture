@@ -108,10 +108,10 @@ Capture channel (default wgc; may fail because of the OS version or the window i
   --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 
 Output
-  --out, -o <path|->              Output path; the special value - writes image bytes to stdout. A positional argument works too; giving none is the same as --out -
+  --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite
   --format, -f <name>             Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
   --quality <1-100>               JPEG quality, default 100
-  --no-overwrite                  Fail instead of overwriting an existing target
+  --no-overwrite                  Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
 Miscellaneous
   --dry-run, -d                   Parse and list candidate windows only - no capture, no file written
@@ -216,6 +216,12 @@ Rules:
 4. Streams: by default everything goes to stdout and stderr stays empty; once the image occupies stdout (explicit
    `--out -`, or no output path at all) the whole JSON moves to stderr. The two streams never mix.
 5. `captured` equals the number of `images`; one window per image, and with `--monitor all` one monitor per image.
+6. **Saving**: the whole batch's final absolute output names are computed before the first frame is taken (and
+   before the whole-screen dialog). Two targets resolving to the same name give `io.output_collision` (exit code 8)
+   with nothing captured and nothing written — the tool never renames behind your back and never lets image 2
+   overwrite image 1. Each file is then written to a unique temporary file in the target directory and only renamed
+   onto the target once everything is written and flushed, so a failed write leaves the previous file untouched; with
+   `--no-overwrite` that final rename is itself the "already exists?" check (`io.file_exists`), never a pre-check.
 
 ## Exit codes
 
@@ -279,13 +285,20 @@ Usable anywhere in the `--out` path; multiple images rely on them:
 | `%i` | ordinal, starting at 1 (`--all` windows, `--monitor all` screens) |
 | `%h` | window handle, shaped like `0x001B0C48`; screen targets give 0 |
 | `%p` | process id; screen targets give 0 |
-| `%n` | screen targets give the device name without the `\\.\` prefix (e.g. `DISPLAY1`) |
+| `%n` | window title, or the device name without the `\\.\` prefix for screen targets (e.g. `DISPLAY1`) — cleaned into a file-name fragment: characters illegal in a name become `_`, trailing dots and spaces are dropped, a result that is exactly a reserved device name (`CON`, `NUL`, `COM1`, `LPT1`, …) gets a `_` prefix, and it is cut to 80 UTF-16 units without splitting a surrogate pair |
 | `%d` | local date `YYYYMMDD` |
 | `%t` | local time `HHMMSS` |
 | `%%` | one literal `%`; any other `%x` is kept verbatim |
 
 When `--all` is used without a placeholder the tool appends `_1`, `_2`, … and emits
-`note.all_without_placeholder`.
+`note.all_without_placeholder`. A placeholder that cannot tell the targets apart (`%d` alone, or `%p` for two
+windows of one process) is not renamed silently: the batch is planned up front and collides with `io.output_collision`.
+`%d` and `%t` come from a clock read once per batch, so every image of one run carries the same date and time even if
+the batch crosses midnight. Planned names are compared as absolute paths, case-insensitively by code point (the way
+NTFS treats them); aliases that string comparison cannot see — 8.3 short names, hard links, junctions and symlinks,
+UNC versus drive letters — are settled by the atomic commit instead, so a name the pre-check could not recognise as
+occupied still cannot be silently replaced. `--out -` is not a path: no expansion, no extension, no collision check,
+and every image of the batch is written to the same stream in order.
 
 ## Message language
 
@@ -315,8 +328,9 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose
    from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
    candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `capture.failed` (7),
-   `capture.access_denied` (6), `io.write_failed` (8, directory missing), `io.file_exists` (8, with
-   `--no-overwrite`).
+   `capture.access_denied` (6), `io.write_failed` (8, directory missing or the commit failed), `io.file_exists` (8,
+   with `--no-overwrite`), `io.output_collision` (8, two targets expand to the same output name — nothing was
+   captured).
 3. **Read the right stream**: with `--out <file>` the JSON is on stdout and stderr is empty, so parse stdout
    directly. With `--out -` (or no output path) the image bytes occupy stdout and the whole JSON moves to stderr.
    In PowerShell 5.1 `2>&1` wraps native stderr into error records, so redirect `1>` and `2>` separately if you want
@@ -339,10 +353,12 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 77 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 105 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
+| `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
 | `.\tests\smoke.ps1` | On-device smoke: capture its own test window → validate PNG size and pixel content |
+| `.\tests\save.ps1` | On-device file saving and overwrite protection: every `--no-overwrite` boolean form against a real file, batch output-name planning + collision detection (`%p` / `%n` / `%d` / `%t` / `%%` / unknown `%x` / case / cleaning / truncation), atomic commit (locked target, target is a directory, missing directory, killed mid-run), concurrent `--no-overwrite` race |
 | `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows |
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
 | `.\tests\screen.ps1` | On-device whole-screen test: consent behaviour + three screen channels + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing |
@@ -355,9 +371,13 @@ only the folder it created gets deleted. `tests\harness.psm1` holds the shared p
 quoting, both streams drained concurrently, bounded wait, kills only its own process tree) and the scratch
 directory / window helpers, and `tests\invoker.ps1` is what proves that invoker.
 
-`build.ps1` uses vswhere to find Visual Studio and prefers its bundled cmake/ninja. Builds must stay warning-free
-under `/W4`. When testing by hand in Git Bash, run `export MSYS2_ARG_CONV_EXCL='*'` first — otherwise `/help` gets
-rewritten as a path and `--out /tmp/x.png` turns into a mangled one.
+`build.ps1` uses vswhere to find Visual Studio and prefers its bundled cmake/ninja. Repository, build and
+toolchain paths reach the temporary batch file only through the child process's environment block, so a checkout
+sitting in a directory with Chinese characters, spaces, parentheses or `%` builds just as well as an ASCII one —
+and a batch body containing anything but ASCII is rejected before it is written. That is what
+`.\tests\build-path.ps1` proves. Builds must stay warning-free under `/W4`. When testing by hand in Git Bash,
+run `export MSYS2_ARG_CONV_EXCL='*'` first — otherwise `/help` gets rewritten as a path and
+`--out /tmp/x.png` turns into a mangled one.
 
 ## License
 

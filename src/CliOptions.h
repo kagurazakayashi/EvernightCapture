@@ -82,7 +82,7 @@ struct Options {
     ImageFormat format = ImageFormat::kPng;
     bool formatExplicit = false;      // 是否显式指定过 --format
     int jpegQuality = 100;            // --quality
-    bool overwrite = true;            // --no-overwrite 置 false
+    bool overwrite = true;            // --no-overwrite 置 false（=true 与裸开关同义，=false 取消）
 
     MultiMatch multi = MultiMatch::kAsk;
     int index = 1;                    // multi == kIndex 时有效
@@ -155,6 +155,8 @@ inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavaila
 inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";
 inline constexpr const wchar_t* kWriteFailed = L"io.write_failed";
 inline constexpr const wchar_t* kFileExists = L"io.file_exists";
+// 多个目标算出同一个输出名：整批一张都不截，也不静默改名
+inline constexpr const wchar_t* kOutputCollision = L"io.output_collision";
 }  // namespace codes
 
 // option / value 为空时序列化为 null；hint 用于"是不是想输入 --title"这类纠正建议。

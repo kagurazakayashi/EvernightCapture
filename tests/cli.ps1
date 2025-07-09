@@ -214,6 +214,23 @@ $cases = @(
        Errors = @('cli.invalid_number')
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('notes') } }
 
+    # ---------- 覆盖保护开关的布尔写法（判据在 -v 的 input.overwrite）----------
+    # 裸写与 =true 同义（都是"禁止覆盖"），=false 才是取消禁令；写错的取值在解析期就被拒。
+    # 真机侧（图有没有真的不被覆盖）在 tests\save.ps1。
+    @{ Name = '裸 --no-overwrite = 禁止覆盖'; A = ($ANCHOR + @('-v','--no-overwrite','out.png')); Exit = 0
+       Check = { param($o) $o.input.overwrite -eq $false } }
+    @{ Name = '不给 --no-overwrite 时可覆盖'; A = ($ANCHOR + @('-v','out.png')); Exit = 0
+       Check = { param($o) $o.input.overwrite -eq $true } }
+    @{ Name = '--no-overwrite=false 取消禁令'; A = ($ANCHOR + @('-v','--no-overwrite=false','out.png')); Exit = 0
+       Check = { param($o) $o.input.overwrite -eq $true } }
+    @{ Name = '--no-overwrite 不吃后面的参数（那是输出路径）'
+       A = ($ANCHOR + @('-v','--no-overwrite','out.png')); Exit = 0
+       Check = { param($o) $o.input.overwrite -eq $false -and $o.input.output -like '*out.png' } }
+    @{ Name = '开关写成 =false 对普通开关等于没写'
+       A = ($ANCHOR + @('--json=false','out.png')); Exit = 0; Notes = @() }
+    @{ Name = '--no-overwrite 取值写错照样被拒'; A = @('--no-overwrite=maybe','--pid','1','out.png'); Exit = 1
+       Errors = @('cli.switch_takes_no_value') }
+
     # ---------- 语言选项 ----------
     @{ Name = '--lang 的规范取值全部可用'; A = (@('--pid','1','--lang','zh-TW') + @('out.png')); Exit = 4
        Errors = @('match.no_window') }
@@ -235,6 +252,38 @@ $cases = @(
     @{ Name = '-v 的 input 回显所选语言'; A = (@('--lang','en','-v') + $ANCHOR + @('out.png')); Exit = 0
        Check = { param($o) $o.input.lang -eq 'en' } }
 )
+
+# ---------------------------------------------------------------------------
+# --no-overwrite 的布尔别名逐个过一遍：真值五种写法都是"禁止覆盖"，假值五种都是"取消禁令"。
+# 判据取 -v 的 input.overwrite，不截图；真机侧"旧文件到底变没变"在 tests\save.ps1。
+# ---------------------------------------------------------------------------
+foreach ($alias in @('true', '1', 'yes', 'y', 'on', 'True', 'ON')) {
+    $cases += @{ Name = ("--no-overwrite={0} 与裸开关同义" -f $alias)
+       A = ($ANCHOR + @('-v', ('--no-overwrite=' + $alias), 'out.png')); Exit = 0
+       Check = { param($o) $o.input.overwrite -eq $false } }
+}
+foreach ($alias in @('false', '0', 'no', 'n', 'off', 'FALSE', 'Off')) {
+    $cases += @{ Name = ("--no-overwrite={0} 取消禁止覆盖" -f $alias)
+       A = ($ANCHOR + @('-v', ('--no-overwrite=' + $alias), 'out.png')); Exit = 0
+       Check = { param($o) $o.input.overwrite -eq $true } }
+}
+# 重复给出：最后一个生效（顺序语义与其余选项一致）
+$cases += @{ Name = '--no-overwrite 后面再写 =false 以最后为准'
+   A = ($ANCHOR + @('-v', '--no-overwrite', '--no-overwrite=false', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.overwrite -eq $true } }
+$cases += @{ Name = '--no-overwrite=false 后面再裸写以最后为准'
+   A = ($ANCHOR + @('-v', '--no-overwrite=false', '--no-overwrite', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.overwrite -eq $false } }
+foreach ($bad in @('maybe', '', 'ture', '2')) {
+    $cases += @{ Name = ("--no-overwrite={0} 这种取值在解析期就被拒" -f $bad)
+       A = @('--pid', '1', ('--no-overwrite=' + $bad), 'out.png'); Exit = 1
+       Errors = @('cli.switch_takes_no_value') }
+}
+# 帮助文本要看得见这条布尔语法与"整批名字先算好"
+$cases += @{ Name = '帮助里写了 --no-overwrite 的布尔写法'; A = @('--help'); Exit = 3; Text = $true
+   Has = @('取消这条禁令') }
+$cases += @{ Name = '帮助里写了整批输出名先算好'; A = @('--help'); Exit = 3; Text = $true
+   Has = @('整批输出名在取帧之前一次算好') }
 
 $results = @()
 foreach ($c in $cases) {

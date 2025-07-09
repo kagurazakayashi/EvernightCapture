@@ -50,10 +50,10 @@ opt.oldest	Take the oldest created window
 opt.all	Save one image per matched window
 opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole-screen capture asks for consent in a dialog first, and there is no switch that skips it
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
-opt.out	Output path; the special value - writes image bytes to stdout. A positional argument works too; giving none is the same as --out -
+opt.out	Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
 opt.quality	JPEG quality, default 100
-opt.no-overwrite	Fail instead of overwriting an existing target
+opt.no-overwrite	Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 opt.dry-run	Parse and list candidate windows only - no capture, no file written
 opt.json	Deprecated compatibility switch, no effect: success and errors are already JSON
 opt.verbose	Add the input section to the JSON (all input, normalized) and keep notes
@@ -130,7 +130,7 @@ match.ambiguous_hint	Use --index/--newest/--oldest/--all or add conditions. Cand
 match.untitled	(no title)
 
 # ---------------------------------------------------------------------------
-# Pipeline and file writing (src/Capture.cpp)
+# Pipeline and file writing (src/Capture.cpp, src/OutputPlan.cpp, src/FileSave.cpp)
 # ---------------------------------------------------------------------------
 io.file_exists	Target file already exists (--no-overwrite)
 io.file_exists_hint	Drop that option to overwrite, or choose another output name
@@ -139,6 +139,11 @@ io.open_failed_hint	Does the parent directory exist? Is the path valid (%1)
 io.dir_missing	Output directory does not exist - create it first
 io.write_interrupted	Write to file interrupted
 io.stdout_failed	Failed to write to stdout
+io.output_collision	Several targets resolve to the same output name; nothing was captured or written
+io.output_collision_hint	Targets %1 and %2 both resolve to %3; put a placeholder that tells them apart (%i or %h) into --out
+io.temp_failed	Cannot create the temporary file in the output directory
+io.commit_failed	The finished temporary file could not be renamed onto the target
+io.not_absolute	Output path could not be made absolute, so a same-directory rename cannot be guaranteed
 
 # ---------------------------------------------------------------------------
 # Capture channels (src/CaptureCommon.cpp and each CaptureXxx.cpp)

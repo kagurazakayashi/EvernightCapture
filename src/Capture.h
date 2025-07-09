@@ -38,8 +38,4 @@ struct CaptureOutcome {
 // 执行整条链路。假定 opt 已通过参数校验且至少有一个条件。
 CaptureOutcome RunCapture(const Options& opt);
 
-// 展开 --out 里的占位符：%d 日期 %t 时间 %h 句柄 %p 进程 %i 序号 %n 标题
-std::wstring ExpandOutputPath(const std::wstring& pattern, const std::wstring& hwndHex, uint32_t pid,
-                              size_t ordinal, const std::wstring& title);
-
 }  // namespace ecapture

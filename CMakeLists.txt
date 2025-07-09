@@ -32,6 +32,8 @@ add_executable(ecapture
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/Capture.cpp
+  src/OutputPlan.cpp
+  src/FileSave.cpp
   src/Consent.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp

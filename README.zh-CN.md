@@ -99,10 +99,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --capture, -C <method>          wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)
 
 输出
-  --out, -o <path|->              输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -
+  --out, -o <path|->              输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -。整批输出名在取帧之前一次算好，两个目标算出同一个名字时整批报错，不会静默覆盖
   --format, -f <name>             强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png
   --quality <1-100>               JPEG 质量，默认 100
-  --no-overwrite                  目标已存在时不覆盖，报错退出
+  --no-overwrite                  目标已存在时不覆盖，报错退出（不给取值就是禁止覆盖）；写 --no-overwrite=false（0 / no / n / off）取消这条禁令，=true / 1 / yes / y / on 与不给取值同义。重复给出时最后一个生效
 
 其它
   --dry-run, -d                   只解析并列出候选窗口，不截图不写文件
@@ -201,6 +201,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 4. 通道：默认全部写 stdout、stderr 保持空；一旦图片占用标准输出（显式 `--out -`，或根本没给输出路径），
    JSON 整体改走 stderr，两个通道永不混流。
 5. `captured` 等于 `images` 条数；一个窗口一张图，`--monitor all` 则一块屏一张图。
+6. **保存**：整批最终输出路径在取第一帧之前（也在整屏确认框之前）一次算好。两个目标算出同一个名字时报
+   `io.output_collision`（退出码 8），整批一张都不截、一个文件都不写 —— 既不替调用方改名，也不让第二张盖掉第一张。
+   每张图先写目标目录下唯一的临时文件，写全并刷新之后才改名成目标名，所以写失败不会清空也不会删掉旧文件。
+   `--no-overwrite` 时“目标在不在”由那一次不许替换的改名当场判定（`io.file_exists`），不做有竞态的预检。
 
 ## 退出码
 
@@ -256,12 +260,17 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 | `%i` | 序号，从 1 起（`--all` 多窗口、`--monitor all` 多屏） |
 | `%h` | 窗口句柄，形如 `0x001B0C48`；屏幕目标给 0 |
 | `%p` | 进程 ID；屏幕目标给 0 |
-| `%n` | 屏幕目标给去掉 `\\.\` 前缀的设备名（如 `DISPLAY1`） |
+| `%n` | 窗口标题；屏幕目标给去掉 `\\.\` 前缀的设备名（如 `DISPLAY1`）。标题会被清洗成能用的文件名片段：非法字符换成 `_`、去掉尾部的点与空格、整段正好是保留设备名（`CON` / `NUL` / `COM1` / `LPT1` …）时加 `_` 前缀、按 80 个 UTF-16 码元截断且不劈开代理对 |
 | `%d` | 本地日期 `YYYYMMDD` |
 | `%t` | 本地时间 `HHMMSS` |
 | `%%` | 一个字面 `%`；其余 `%x` 原样保留两个字符 |
 
 `--all` 的输出名里没有占位符时会自动追加 `_序号`，并发 `note.all_without_placeholder`。
+占位符分不开目标时（只写 `%d`，或同一进程的两个窗口写 `%p`）不会被悄悄改名：整批名字事先算好，撞名就报
+`io.output_collision`。`%d` / `%t` 用的是本批次那一次时钟，所以跨午夜的一批也全用同一个日期与时间。规划出的名字
+按绝对路径、不区分大小写、逐码元比较（NTFS 就是这样看名字的）；字符串比较看不见的别名（8.3 短名、硬链接、目录
+junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原子操作判定，所以预检认不出的占用同样不会被静默替换。
+`--out -` 不是路径：不展开、不补扩展名、不查碰撞，整批图按顺序写进同一条流。
 
 ## 文案语言
 
@@ -285,7 +294,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    `match.no_window`（4，条件太窄或目标最小化）、`match.ambiguous_window`（5，从 `hint` 的候选里挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候选）、
    `cli.missing_output`（1）、`cli.invalid_format`（1）、`capture.failed`（7）、`capture.access_denied`（6）、
-   `io.write_failed`（8，目录不存在）、`io.file_exists`（8，配合 `--no-overwrite`）。
+   `io.write_failed`（8，目录不存在或提交失败）、`io.file_exists`（8，配合 `--no-overwrite`）、
+   `io.output_collision`（8，两个目标算出同一个输出名，整批没截图也没写文件）。
 3. **读流要分情况**：给 `--out <文件>` 时 JSON 在 stdout、stderr 是空的，直接解析就行；用 `--out -` 或没给输出路径时
    图片字节占了 stdout，JSON 整体改到 stderr。PowerShell 5.1 里 `2>&1` 会把 stderr 包装成错误记录，想同时拿图片和
    JSON 就 `1>`/`2>` 分开重定向。
@@ -301,10 +311,12 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 77 例输出契约断言 + 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\cli.ps1` | 105 例输出契约断言 + 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
 | `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
+| `.\tests\build-path.ps1` | 构建路径判据：离线一层验临时批处理正文只能是 ASCII、VS 环境导入失败在跑 cmake 之前就报错；真机一层在含中文、空格、括号、百分号的目录里跑 Release / Debug / RelWithDebInfo 与 `-Clean`，再把 `%TEMP%` 换成中文目录构建一次（不截图；`-OfflineOnly` 只跑离线那层） |
 | `.\tests\smoke.ps1` | 真机冒烟：截自己建的测试窗口 → 校验 PNG 尺寸与像素内容 |
+| `.\tests\save.ps1` | 真机文件保存与覆盖保护：每种 `--no-overwrite` 布尔写法对真实文件的效果、整批输出名规划与撞名检测（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小写 / 清洗 / 截断）、原子提交（目标被占用、目标名是目录、目录不存在、写到一半被硬杀）、并发禁止覆盖 |
 | `.\tests\channels.ps1` | 真机通道对比：六条通道 + 遮挡对照，目标与遮挡物都是自建的窗口 |
 | `.\tests\isolation.ps1` | 真机资源隔离：同名的既有进程保持存活且不被当成目标、并发两轮互不串、异常退出只清理自身 |
 | `.\tests\screen.ps1` | 真机整屏测试：确认框行为 + 三条屏幕通道 + 红块定位 + 阴性对照。只有加了 `-SimulateConsent` 才会代答确认框，且只该在专门腾给测试的桌面上这么用 |
@@ -316,7 +328,9 @@ PID 与 HWND，因此既不按进程名去找目标、也不按进程名批量�
 `tests\harness.psm1` 放着共享的进程调用器（argv 引号规则、两条流并发消费、有期限的等待、超时只结束自己
 那棵进程树），以及临时目录与测试窗口的建立和收尾；`tests\invoker.ps1` 就是拿来证明这个调用器本身的。
 
-`build.ps1` 用 vswhere 定位 VS，并优先使用 VS 自带的 cmake/ninja。构建要求 `/W4` 下零警告。
+`build.ps1` 用 vswhere 定位 VS，并优先使用 VS 自带的 cmake/ninja。仓库目录、build 目录与工具链路径只经子进程的
+环境块递给那个临时批处理，正文里一个绝对路径都不写，所以仓库放在含中文、空格、括号或 `%` 的目录里也能照常构建，
+而正文一旦混进非 ASCII 会在写盘前被当场拦下（判据见 `.\tests\build-path.ps1`）。构建要求 `/W4` 下零警告。
 在 Git Bash 里手工测试要先 `export MSYS2_ARG_CONV_EXCL='*'`，否则 `/help` 会被当成路径改写、`--out /tmp/x.png` 会被转成怪路径。
 
 ## 许可

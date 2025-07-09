@@ -18,6 +18,8 @@
 #include "CapturePrintWindow.h"
 #include "Consent.h"
 #include "Encoder.h"
+#include "FileSave.h"
+#include "OutputPlan.h"
 #include "Report.h"
 #include "ScreenMatch.h"
 #include "WindowMatch.h"
@@ -26,147 +28,6 @@ namespace ecapture {
 namespace {
 
 constexpr uint32_t kFrameTimeoutMs = 2000;
-
-std::wstring AbsoluteOfOrRaw(const std::wstring& path) {
-    const DWORD cap = 8 * MAX_PATH;
-    std::vector<wchar_t> buffer(cap);
-    const DWORD n = GetFullPathNameW(path.c_str(), cap, buffer.data(), nullptr);
-    if (n == 0 || n >= cap) return path;
-    return std::wstring(buffer.data());
-}
-
-std::wstring FourDigits(int v) {
-    std::wstring s = std::to_wstring(v);
-    while (s.size() < 4) s.insert(s.begin(), L'0');
-    return s;
-}
-
-std::wstring TwoDigits(int v) {
-    std::wstring s = std::to_wstring(v);
-    if (s.size() < 2) s.insert(s.begin(), L'0');
-    return s;
-}
-
-std::wstring DateToken() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    return FourDigits(st.wYear) + TwoDigits(st.wMonth) + TwoDigits(st.wDay);
-}
-
-std::wstring TimeToken() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-    return TwoDigits(st.wHour) + TwoDigits(st.wMinute) + TwoDigits(st.wSecond);
-}
-
-bool IllegalNameChar(wchar_t c) {
-    return c < 32 || c == L'<' || c == L'>' || c == L':' || c == L'"' || c == L'/' || c == L'\\' ||
-           c == L'|' || c == L'?' || c == L'*';
-}
-
-std::wstring SanitizeForFileName(std::wstring s) {
-    for (auto& c : s) if (IllegalNameChar(c)) c = L'_';
-    while (!s.empty() && (s.back() == L' ' || s.back() == L'.')) s.pop_back();
-    if (s.size() > 80) s.resize(80);
-    return s;
-}
-
-std::wstring ExtensionFor(ImageFormat fmt) {
-    switch (fmt) {
-        case ImageFormat::kJpeg: return L".jpg";
-        case ImageFormat::kBmp: return L".bmp";
-        case ImageFormat::kTiff: return L".tif";
-        case ImageFormat::kGif: return L".gif";
-        default: return L".png";
-    }
-}
-
-bool HasExtension(const std::wstring& path) {
-    const size_t slash = path.find_last_of(L"\\/");
-    const size_t dot = path.find_last_of(L'.');
-    return dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash);
-}
-
-// 占位符展开。窗口目标给句柄 / 进程 / 标题；屏幕目标没有前两者（取到 0），
-// %n 用去掉 "\\.\\" 前缀的设备名，这样 shot_%n.png 每块屏一个文件。
-std::wstring Expand(const std::wstring& pattern, uint64_t hwnd, uint32_t pid,
-                    const std::wstring& name, size_t ordinal) {
-    std::wstring out;
-    wchar_t hwndBuf[24];
-    swprintf(hwndBuf, 24, L"0x%08X", static_cast<unsigned>(hwnd));
-    for (size_t i = 0; i < pattern.size(); ++i) {
-        if (pattern[i] != L'%' || i + 1 >= pattern.size()) {
-            out.push_back(pattern[i]);
-            continue;
-        }
-        const wchar_t token = pattern[++i];
-        switch (token) {
-            case L'd': out += DateToken(); break;
-            case L't': out += TimeToken(); break;
-            case L'h': out += hwndBuf; break;
-            case L'p': out += std::to_wstring(pid); break;
-            case L'i': out += std::to_wstring(ordinal); break;
-            case L'n': out += SanitizeForFileName(name); break;
-            case L'%': out.push_back(L'%'); break;
-            default:
-                out.push_back(L'%');
-                out.push_back(token);
-                break;
-        }
-    }
-    return out;
-}
-
-// 没有占位符时，把序号插在扩展名前面
-std::wstring AppendOrdinal(std::wstring path, size_t ordinal) {
-    const size_t slash = path.find_last_of(L"\\/");
-    const size_t dot = path.find_last_of(L'.');
-    const std::wstring suffix =
-        (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash))
-            ? path.substr(dot) : std::wstring();
-    if (!suffix.empty()) path = path.substr(0, dot);
-    path += L"_" + std::to_wstring(ordinal);
-    path += suffix;
-    return path;
-}
-
-bool WriteAll(const std::wstring& path, const std::vector<uint8_t>& bytes, bool overwrite,
-              Diagnostic* err) {
-    if (!overwrite) {
-        const DWORD attr = GetFileAttributesW(path.c_str());
-        if (attr != INVALID_FILE_ATTRIBUTES) {
-            if (err) *err = Diagnostic{codes::kFileExists, Msg(L"io.file_exists"),
-                                       L"--no-overwrite", path, Msg(L"io.file_exists_hint")};
-            return false;
-        }
-    }
-    HANDLE handle = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) {
-        const DWORD gle = GetLastError();
-        const std::wstring hint = gle == ERROR_PATH_NOT_FOUND
-                                      ? Msg(L"io.dir_missing")
-                                      : Msgf(L"io.open_failed_hint", Msgf(L"err.win32_code", gle));
-        if (err) *err = Diagnostic{codes::kWriteFailed, Msg(L"io.open_failed"), L"--out", path, hint};
-        return false;
-    }
-    size_t offset = 0;
-    while (offset < bytes.size()) {
-        const DWORD chunk =
-            static_cast<DWORD>(std::min<size_t>(bytes.size() - offset, 1u << 20));
-        DWORD written = 0;
-        if (!WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr) || written != chunk) {
-            CloseHandle(handle);
-            if (err) *err = Diagnostic{codes::kWriteFailed, Msg(L"io.write_interrupted"),
-                                       L"--out", path, Msgf(L"err.win32_code", GetLastError())};
-            DeleteFileW(path.c_str());
-            return false;
-        }
-        offset += written;
-    }
-    CloseHandle(handle);
-    return true;
-}
 
 std::wstring HwndHexOf(uint64_t hwnd) {
     wchar_t buf[24];
@@ -329,6 +190,30 @@ CaptureOutcome RunCapture(const Options& opt) {
         return outcome;
     }
 
+    // 输出路径整批先规划好，再问人、再取帧：撞名要在第一张落地之前就报出来，
+    // 而不是截完第一张才发现第二张会把它盖掉（旧实现就是这么静默盖的）。
+    // 放在确认框之前也是为了让调用方别为一注定存不下来的批次去打扰人。
+    std::vector<OutputTarget> planned;
+    planned.reserve(targets.size());
+    for (const Target& t : targets) {
+        OutputTarget item;
+        // %h / %p 只对窗口有意义，屏幕目标给 0；%n 是窗口标题或设备名
+        item.hwnd = t.isScreen ? 0 : t.window.hwnd;
+        item.pid = t.isScreen ? 0 : t.window.pid;
+        item.name = TargetName(t);
+        planned.push_back(std::move(item));
+    }
+    std::vector<std::wstring> paths;
+    std::vector<Diagnostic> planNotes;
+    Diagnostic planErr;
+    // 规划失败时 notes 整个丢掉：那一次什么都没写，"已补扩展名"之类的提示反而误导
+    if (!PlanOutputPaths(opt, planned, &paths, &planNotes, &planErr)) {
+        outcome.errors.push_back(std::move(planErr));
+        outcome.exitCode = EX_IO_FAILED;
+        return outcome;
+    }
+    for (auto& n : planNotes) outcome.notes.push_back(std::move(n));
+
     // 整屏截图先问人：没有命令行旁路，答"否"或弹不出框都不取帧。
     // --dry-run 在上面就已经返回，所以"只看会截到什么"不会被打扰。
     if (opt.ScreenMode()) {
@@ -348,6 +233,7 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         CapturedImage img;
         img.format = FormatName(opt.format);
+        img.file = paths[i];      // 与实际写入的那个名字是同一个字符串
         if (t.isScreen) {
             img.screen = true;
             img.monitorOrdinal = t.screen.ordinal;
@@ -359,28 +245,6 @@ CaptureOutcome RunCapture(const Options& opt) {
             img.title = t.window.title;
             img.windowClass = t.window.className;
             img.imageName = t.window.imageName;
-        }
-
-        // %h / %p 只对窗口有意义，屏幕目标给 0；%n 是窗口标题或设备名
-        const uint64_t hwnd = t.isScreen ? 0 : t.window.hwnd;
-        const uint32_t pid = t.isScreen ? 0 : t.window.pid;
-        const std::wstring name = TargetName(t);
-
-        if (targets.size() > 1) {
-            img.file = opt.output.find(L'%') != std::wstring::npos
-                           ? Expand(opt.output, hwnd, pid, name, i + 1)
-                           : AppendOrdinal(opt.output, i + 1);
-        } else {
-            img.file = Expand(opt.output, hwnd, pid, name, 1);
-        }
-        if (img.file != L"-" && !HasExtension(img.file)) {
-            img.file += ExtensionFor(opt.format);
-            // 文件名被改了要说一声，否则调用方按自己给的名字去找会找不到
-            if (i == 0) {
-                outcome.notes.push_back(Diagnostic{codes::kOutputExtensionAppended,
-                                                   Msg(L"note.output_extension_appended"), L"--out",
-                                                   opt.output, Msgf(L"note.output_extension_hint", img.file)});
-            }
         }
 
         CapturedFrame frame;
@@ -412,12 +276,10 @@ CaptureOutcome RunCapture(const Options& opt) {
             }
         } else {
             Diagnostic writeErr;
-            const std::wstring absolute = AbsoluteOfOrRaw(img.file);
-            if (!WriteAll(absolute, bytes, opt.overwrite, &writeErr)) {
+            if (!SaveFileAtomic(img.file, bytes, opt.overwrite, &writeErr)) {
                 outcome.errors.push_back(std::move(writeErr));
                 continue;
             }
-            img.file = absolute;
         }
         img.bytes = bytes.size();
         img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
