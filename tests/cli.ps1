@@ -66,6 +66,12 @@ $cases = @(
     @{ Name = '--opt=value'; A = ($ANCHOR + @('--format=png','out.x')); Exit = 0; Json = $true }
     @{ Name = '标准输出'; A = ($ANCHOR + @('-o','-')); Exit = 0; Json = $true
        Notes = @('note.pipe_default_format') }
+    # 多目标不许共用 stdout：这一条只在选完目标之后判，判据是实际目标数而不是 --all 这个选项。
+    # dry-run 在取帧之前就返回，所以 -o - 配 --all 在这里仍然合法（真机两侧在 streams.ps1 / save.ps1）。
+    @{ Name = '--all 配 -o - 不在解析期或 dry-run 期被拒'
+       A = ($ANCHOR + @('--all', '-o', '-')); Exit = 0; Json = $true; Notes = @('note.dry_run')
+       Check = { param($o) $o.captured -eq 0 -and
+                            -not (@($o.errors | ForEach-Object code) -contains 'cli.stdout_multiple_targets') } }
     @{ Name = '--all 无占位符 -> note'; A = ($ANCHOR + @('--all','out.png')); Exit = 0
        Notes = @('note.all_without_placeholder') }
     @{ Name = '非 jpeg 时 quality -> note'; A = ($ANCHOR + @('--quality','50','out.png')); Exit = 0
@@ -284,6 +290,8 @@ $cases += @{ Name = '帮助里写了 --no-overwrite 的布尔写法'; A = @('--h
    Has = @('取消这条禁令') }
 $cases += @{ Name = '帮助里写了整批输出名先算好'; A = @('--help'); Exit = 3; Text = $true
    Has = @('整批输出名在取帧之前一次算好') }
+$cases += @{ Name = '帮助里写了标准输出只能一张图'; A = @('--help'); Exit = 3; Text = $true
+   Has = @('标准输出一次只能交付一张图') }
 
 $results = @()
 foreach ($c in $cases) {

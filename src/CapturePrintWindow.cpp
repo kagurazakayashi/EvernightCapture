@@ -21,7 +21,8 @@ bool CaptureWindowPrintWindow(uint64_t hwndValue, uint32_t /*timeoutMs*/, Captur
     const int width = full.right - full.left;
     const int height = full.bottom - full.top;
     if (width <= 0 || height <= 0) {
-        CaptureError(err, kChannel, Msg(L"cap.rect_empty_draw"), Msg(L"cap.window_gone"));
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty_draw"), Msg(L"cap.window_gone"),
+                     codes::kWindowGone);
         return false;
     }
 
@@ -30,8 +31,9 @@ bool CaptureWindowPrintWindow(uint64_t hwndValue, uint32_t /*timeoutMs*/, Captur
         return false;
 
     if (!PrintWindow(hwnd, dib.dc(), kPwRenderFullContent) && !PrintWindow(hwnd, dib.dc(), 0)) {
+        const DWORD gle = LastError();
         CaptureError(err, kChannel, Msg(L"cap.pw.failed"),
-                     Msgf(L"cap.pw.failed_hint", Win32ErrorText()));
+                     Msgf(L"cap.pw.failed_hint", Win32ErrorText(gle)), codes::kCaptureFailed, gle);
         return false;
     }
     dib.ToFrame(kChannel, out);

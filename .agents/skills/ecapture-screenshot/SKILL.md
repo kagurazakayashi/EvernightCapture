@@ -47,7 +47,12 @@ programmatically.
    your template behind your back. A placeholder must actually separate the targets: `%i` or `%h` do, while
    `%d`, `%t`, `%%`, an unknown `%x`, `%p` for two windows of one process, and `%n` for equal (or
    case-equivalent, or truncation-equivalent) titles do not. `%d` / `%t` come from one clock per batch.
-   `--out -` is not a path: no expansion and no collision check.
+   `--out -` is not a path: no expansion and no collision check - and it carries **only one image per run**.
+   If the conditions select more than one target while the output is stdout (explicit `--out -` or no output
+   path at all), the whole batch is rejected with `cli.stdout_multiple_targets` + exit 1 *before* the consent
+   dialog and before the first frame: nothing is captured, no file is written. The check uses the number of
+   targets actually matched, so `--all` that hits a single window may still write stdout. Several PNGs
+   concatenated into one stream are not a decodable image, and `-` is never used as a file-name prefix.
 5. **Writes are atomic and `--no-overwrite` is checked by the write itself.** Bytes land in a unique
    temporary file in the target directory and are renamed onto the target only after everything is written
    and flushed, so a failed write leaves the previous file exactly as it was, and only that run's own
@@ -61,11 +66,28 @@ programmatically.
 - By default all JSON goes to **stdout** and stderr stays empty. As soon as the image occupies stdout
   (explicit `--out -`, or simply no output path at all), the **whole JSON moves to stderr** - the two
   streams never mix. To parse it from a shell, write the image to a file instead of using `--out -`.
+  That routing is decided before any image byte is written, and the emergency document for "even rendering
+  the result threw" follows it too (always stderr; the tool does not re-parse argv to guess). If the result
+  cannot be delivered on the agreed stream, the exit code is **8** even when the other stream took the
+  text - reading the agreed stream is what counts.
 - Keys: `captured` / `images[]` / `errors[]` / `notes[]` / `input` (only with `--verbose`).
   `--quiet` drops `notes` but **never suppresses `errors`**. **Empty fields are omitted entirely**, so
   `option`, `value` and `hint` may simply be absent - never assume a key is there.
 - Branch on `errors[].code`, never on `message` text (that follows `--lang`); code values are only ever
-  added, never renamed.
+  added, never renamed. A capture failure now tells a frame timeout (`capture.frame_timeout`) and a window
+  that disappeared (`capture.window_gone`) apart from a plain `capture.failed` - all still exit 7, but the
+  next step differs: wait and retry versus enumerate the windows again.
+- Errors and notes carry optional location keys, present only when that step really got the value:
+  `target` (which target - `0x…` handle for a window, device name for a screen), `backend` (which channel;
+  on a fully failed `auto` chain it lists the channels actually tried), `stage` (`consent` / `capture` /
+  `encode` / `write` / `stdout`), `hresult` (e.g. `0x80070005`), `win32` (raw `GetLastError`). These do not
+  follow `--lang`. That is how a refusal by the user (`capture.access_denied` + `stage=consent`) stays
+  distinguishable from a technical access denial (`capture.failed` + `hresult=0x80070005`).
+- `images[].source` names the channel that really produced the frame, so under `--capture auto` it is the
+  winning channel rather than `auto` (and a fallback also raises `note.capture_channel`). A backend that
+  throws instead of returning an error only voids its own target: earlier images survive, the remaining
+  targets are still attempted, and the failure is reported as a structured error. Out-of-memory and a lost
+  GPU device end the batch on purpose instead of cycling through backends.
 - Exit codes: `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no match /
   `5` several matches / `6` protected target or refused by the user / `7` capture failed /
   `8` write failed / `9` internal error. `2`/`3`/`4`/`5` are normal control flow, not crashes.
@@ -78,7 +100,7 @@ Window image (`--class CabinetWClass --index 1`):
 ```json
 { "captured": 1,
   "images": [ { "file": "D:\\shots\\epad.png", "bytes": 60198, "width": 1247, "height": 607,
-                "format": "png", "hwnd": "0x000A1146", "pid": 31468,
+                "format": "png", "source": "wgc", "hwnd": "0x000A1146", "pid": 31468,
                 "title": "… - 文件资源管理器", "class": "CabinetWClass",
                 "image": "explorer.exe", "elapsedMs": 156 } ] }
 ```
@@ -90,7 +112,7 @@ whether `monitor` is present):
 ```json
 { "captured": 1,
   "images": [ { "file": "D:\\shots\\screen.png", "bytes": 269354, "width": 1920, "height": 1080,
-                "format": "png", "monitor": 1, "device": "\\\\.\\DISPLAY1",
+                "format": "png", "source": "wgc", "monitor": 1, "device": "\\\\.\\DISPLAY1",
                 "primary": true, "elapsedMs": 156 } ] }
 ```
 

@@ -50,7 +50,7 @@ opt.oldest	取最早建立的視窗
 opt.all	每個匹配視窗各存一張
 opt.monitor	截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕截圖會先彈框徵求同意，且沒有跳過確認的開關
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
-opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋
+opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
 opt.quality	JPEG 品質，預設 100
 opt.no-overwrite	目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
@@ -95,6 +95,8 @@ cli.unhandled_option	內部錯誤：目錄中存在但解析器未處理的選�
 cli.missing_output	缺少輸出路徑，且預設寫標準輸出時未能出圖
 cli.missing_output_hint	顯式給 --out <路徑>，或用 --dry-run 先看視窗是否命中
 cli.internal_error	未預期的內部異常
+cli.stdout_multiple_targets	標準輸出一次只能交付一張影格，這一批有 %1 個目標
+cli.stdout_multiple_targets_hint	給 --out 一個檔案路徑（多目標時請加上 %i、%h 之類可區分目標的佔位符），或把條件縮減到一個目標
 
 # ---------------------------------------------------------------------------
 # 提示（note.*，不影響退出碼）
@@ -149,6 +151,7 @@ io.not_absolute	輸出路徑沒能化成絕對路徑，同目錄改名無從保�
 # 取圖通道（src/CaptureCommon.cpp 與各 CaptureXxx.cpp）
 # ---------------------------------------------------------------------------
 err.win32_code	錯誤碼 %1
+err.exception	處理這個目標時丟出例外（%1）
 cap.rect_empty	視窗矩形為空
 cap.rect_empty_draw	視窗矩形為空，無法繪製
 cap.rect_empty_screen	視窗在螢幕上的矩形為空
@@ -162,6 +165,7 @@ cap.visible_only	該通道只能拷螢幕上可見的部分
 cap.bitblt_failed	BitBlt 螢幕失敗
 cap.unsupported	該取圖方式尚未實現
 cap.auto_failed	auto 的退回通道全部失敗（%1）
+cap.no_detail	該通道回報失敗但未給出原因
 cap.hresult	HRESULT %1
 
 cap.wgc.failed	%1 失敗 (HRESULT %2)
@@ -224,6 +228,7 @@ enc.detail	%1（%2）
 enc.size_zero	影格尺寸為 0，無法編碼
 enc.failed	編碼失敗
 enc.exception	編碼時發生未預期的異常
+enc.empty	編碼器傳回 0 位元組
 
 # ---------------------------------------------------------------------------
 # 螢幕目標（--monitor，src/ScreenMatch.cpp 與各通道的 CaptureScreenXxx）

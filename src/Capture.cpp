@@ -1,14 +1,21 @@
 #include "Capture.h"
 
 #include <algorithm>
+#include <cstring>
 #include <cwctype>
+#include <exception>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <dxgi.h>   // DXGI_ERROR_DEVICE_* 要参与"这条错误是不是致命"的判断
+
+#include <winrt/base.h>   // 后端可能直接抛出 hresult_error，而不是返回错误码
 
 #include "CaptureWgc.h"
 #include "CaptureBitBlt.h"
@@ -19,6 +26,7 @@
 #include "Consent.h"
 #include "Encoder.h"
 #include "FileSave.h"
+#include "Lang.h"
 #include "OutputPlan.h"
 #include "Report.h"
 #include "ScreenMatch.h"
@@ -29,10 +37,86 @@ namespace {
 
 constexpr uint32_t kFrameTimeoutMs = 2000;
 
+// 流水线阶段名统一用 CliOptions.h 的 stages::，这里不再另写一份字面量。
+
 std::wstring HwndHexOf(uint64_t hwnd) {
     wchar_t buf[24];
     swprintf(buf, 24, L"0x%08X", static_cast<unsigned>(hwnd));
     return buf;
+}
+
+// 一次截图的目标：一个窗口，或一整块屏幕。
+struct Target {
+    bool isScreen = false;
+    WindowInfo window;
+    ScreenInfo screen;
+
+    // %n 用的名字
+    std::wstring Name() const { return isScreen ? ScreenDisplayName(screen) : window.title; }
+    // 诊断里标识"是哪个目标"：与 images[].hwnd / images[].device 同源，调用方能对上号
+    std::wstring Tag() const {
+        return isScreen ? ScreenDisplayName(screen) : HwndHexOf(window.hwnd);
+    }
+};
+
+// 抛出来的异常换成结构化诊断。判据只有"换一条通道会不会有区别"：
+// 内存耗尽、显卡设备没了 —— 换了也不会有区别，判致命、终止整批，不许继续换后端。
+void FillFromCurrentException(Diagnostic* diag, const wchar_t* stage, const wchar_t* backend,
+                              bool* fatal) {
+    if (fatal) *fatal = false;
+    if (!diag) return;
+
+    std::wstring detail;
+    try {
+        std::rethrow_exception(std::current_exception());
+    } catch (const winrt::hresult_error& e) {
+        const HRESULT hr = e.code();
+        diag->hresult = HResultText(hr);
+        detail = diag->hresult;
+        const bool deviceLost = hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
+                                hr == DXGI_ERROR_DEVICE_HUNG;
+        if (fatal) *fatal = hr == E_OUTOFMEMORY || deviceLost;
+    } catch (const std::bad_alloc&) {
+        detail = L"std::bad_alloc";
+        if (fatal) *fatal = true;
+    } catch (const std::length_error&) {
+        detail = L"std::length_error";
+        if (fatal) *fatal = true;
+    } catch (const std::exception& e) {
+        // what() 是 ASCII 说明，逐字节宽化（本项目所有对外文字都走宽字符）
+        const char* p = e.what();
+        if (p) {
+            for (; *p; ++p) detail.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+        }
+        if (detail.empty()) detail = L"std::exception";
+    } catch (...) {
+        detail = L"unknown";
+    }
+
+    const bool ioStage = std::wcscmp(stage, stages::kWrite) == 0 ||
+                         std::wcscmp(stage, stages::kStdout) == 0;
+    diag->code = ioStage ? codes::kWriteFailed
+               : std::wcscmp(stage, stages::kEncode) == 0 ? codes::kEncoderUnavailable
+                                                       : codes::kCaptureFailed;
+    diag->message = Msgf(L"err.exception", detail);
+    diag->option = ioStage ? L"--out" : L"--capture";
+    if (backend) {
+        diag->value = backend;
+        diag->backend = backend;
+    }
+    diag->stage = stage;
+}
+
+// 一次后端调用的异常边界：后端"失败"与后端"崩了"必须走同一条出口，否则一个抛异常的后端
+// 会把整条 auto 回退链、把 --all 的其余目标一起带走。
+template <typename Fn>
+bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic* err, bool* fatal) {
+    try {
+        return fn();
+    } catch (...) {
+        FillFromCurrentException(err, stage, backend, fatal);
+        return false;
+    }
 }
 
 // 单个通道的取帧入口
@@ -53,7 +137,8 @@ bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
             break;  // auto 由 CaptureWithMethod 展开成回退链
     }
     if (err) *err = Diagnostic{codes::kUnsupported, Msg(L"cap.unsupported"), L"--capture",
-                               CaptureMethodName(method), std::wstring()};
+                               CaptureMethodName(method), std::wstring(), std::wstring(),
+                               CaptureMethodName(method), stages::kCapture};
     return false;
 }
 
@@ -76,38 +161,60 @@ bool CaptureScreenOneChannel(const ScreenInfo& screen, CaptureMethod method, uin
     if (err) {
         *err = Diagnostic{codes::kUnsupported, Msgf(L"cap.unsupported_for_screen", CaptureMethodName(method)),
                           L"--capture", CaptureMethodName(method),
-                          Msg(L"cap.unsupported_for_screen_hint")};
+                          Msg(L"cap.unsupported_for_screen_hint"), std::wstring(),
+                          CaptureMethodName(method), stages::kCapture};
     }
     return false;
 }
 
 // auto 的回退链：按顺序试到第一个成功的通道。实际用的不是链首时留一条 note，
 // 让调用方知道画面来路不同。
+// 两条规矩：
+//   * 被拒绝（访问被拒 / 用户不让）不是继续换后端的理由 —— 换一条照样不该给，
+//     多问一次只是多扰一次，直接把这条错误交出去。
+//   * 后端抛出异常时按异常性质决定：致命（资源或设备没了）立刻终止整条链，
+//     可恢复的才继续往下试。
 template <typename Try>
 bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, Diagnostic* err,
-                   std::vector<Diagnostic>* notes, Try tryOne) {
+                   std::vector<Diagnostic>* notes, bool* fatal, Try tryOne) {
     std::wstring tried;
     Diagnostic last{};
     for (const CaptureMethod m : chain) {
         CapturedFrame attempt;
         Diagnostic attemptErr{};
-        if (tryOne(m, &attempt, &attemptErr)) {
+        const wchar_t* backend = CaptureMethodName(m);
+        const bool ok = CallBackend(stages::kCapture, backend,
+                                    [&] { return tryOne(m, &attempt, &attemptErr); }, &attemptErr,
+                                    fatal);
+        if (ok) {
             *out = std::move(attempt);
             if (m != chain.front() && notes) {
                 notes->push_back(Diagnostic{
                     codes::kCaptureChannel,
                     Msgf(L"note.capture_channel", CaptureMethodName(chain.front()), CaptureMethodName(m)),
-                    L"--capture", L"auto", std::wstring()});
+                    L"--capture", L"auto", std::wstring(), std::wstring(), backend, stages::kCapture});
             }
             return true;
         }
+        if (attemptErr.code == codes::kAccessDenied) {
+            if (err) *err = std::move(attemptErr);
+            return false;   // 拒绝就是拒绝，不再换后端
+        }
+        if (fatal && *fatal) {
+            if (err) *err = std::move(attemptErr);
+            return false;   // 致命错误：换后端不会有区别
+        }
         if (!tried.empty()) tried += L", ";
-        tried += CaptureMethodName(m);
+        tried += backend;
         last = std::move(attemptErr);
     }
     if (err) {
-        *err = Diagnostic{codes::kCaptureFailed, Msgf(L"cap.auto_failed", tried), L"--capture",
-                          L"auto", last.message};
+        // backend 记的是"真实试过的那几条"，不是请求值 auto —— 调用方要据此判断该重试还是换通道
+        Diagnostic d{codes::kCaptureFailed, Msgf(L"cap.auto_failed", tried), L"--capture", L"auto",
+                     last.message, last.target, tried, stages::kCapture};
+        d.hresult = last.hresult;
+        d.win32 = last.win32;
+        *err = std::move(d);
     }
     return false;
 }
@@ -115,35 +222,51 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, 
 // --capture 分派。auto 对窗口按 wgc -> dwm -> printwindow -> bitblt，对屏幕按
 // wgc -> duplication -> bitblt。显式指定的通道绝不回退：用户要哪个就要哪个。
 bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
-                       Diagnostic* err, std::vector<Diagnostic>* notes) {
-    if (method != CaptureMethod::kAuto) return CaptureOneChannel(hwnd, method, timeoutMs, out, err);
+                       Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
+    if (method != CaptureMethod::kAuto) {
+        return CallBackend(stages::kCapture, CaptureMethodName(method),
+                           [&] { return CaptureOneChannel(hwnd, method, timeoutMs, out, err); }, err,
+                           fatal);
+    }
     const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
                                               CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
-    return FallbackChain(chain, out, err, notes, [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-        return CaptureOneChannel(hwnd, m, timeoutMs, frame, e);
-    });
+    return FallbackChain(chain, out, err, notes, fatal,
+                         [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
+                             return CaptureOneChannel(hwnd, m, timeoutMs, frame, e);
+                         });
 }
 
 bool CaptureScreenWithMethod(const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
-                             CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes) {
-    if (method != CaptureMethod::kAuto)
-        return CaptureScreenOneChannel(screen, method, timeoutMs, out, err);
+                             CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
+                             bool* fatal) {
+    if (method != CaptureMethod::kAuto) {
+        return CallBackend(stages::kCapture, CaptureMethodName(method),
+                           [&] { return CaptureScreenOneChannel(screen, method, timeoutMs, out, err); },
+                           err, fatal);
+    }
     const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDuplication,
-                                             CaptureMethod::kBitBlt};
-    return FallbackChain(chain, out, err, notes, [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-        return CaptureScreenOneChannel(screen, m, timeoutMs, frame, e);
-    });
+                                              CaptureMethod::kBitBlt};
+    return FallbackChain(chain, out, err, notes, fatal,
+                         [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
+                             return CaptureScreenOneChannel(screen, m, timeoutMs, frame, e);
+                         });
 }
 
-// 一次截图的目标：一个窗口，或一整块屏幕。
-struct Target {
-    bool isScreen = false;
-    WindowInfo window;
-    ScreenInfo screen;
-};
-
-std::wstring TargetName(const Target& t) {
-    return t.isScreen ? ScreenDisplayName(t.screen) : t.window.title;
+// 把已经拿到的错误补上"哪个目标、哪一步"。通道填过的 backend 不改：
+// 它写的是自己那一条真实路径，比这里能推断出的更准。
+void TagTarget(Diagnostic* d, const Target& t, const wchar_t* stage) {
+    if (!d) return;
+    // code 恒在是输出契约的一部分：哪一环节漏写了一条诊断，都在这里补成能分支的形状，
+    // 而不是让调用方读到一条没有 code 的条目（那等于整份 JSON 都不能按 code 分支了）。
+    if (d->code.empty()) {
+        const bool ioStage = std::wcscmp(stage, stages::kWrite) == 0 ||
+                             std::wcscmp(stage, stages::kStdout) == 0;
+        d->code = ioStage ? codes::kWriteFailed : codes::kCaptureFailed;
+        d->message = Msg(L"cap.no_detail");
+        d->option = ioStage ? L"--out" : L"--capture";
+    }
+    if (d->target.empty()) d->target = t.Tag();
+    if (d->stage.empty()) d->stage = stage;
 }
 
 }  // namespace
@@ -190,6 +313,20 @@ CaptureOutcome RunCapture(const Options& opt) {
         return outcome;
     }
 
+    // 标准输出与文件路径是两条不同的路：stdout 一次只能交付一张图，多张 PNG 首尾拼在
+    // 同一条流上不是一幅可解码的图像，而旧实现把 "-" 当文件名前缀算出 "-_1.png" 这种
+    // 本地文件更是凭空造路径。所以这里在规划名字、问人、取帧之前就用实际目标数判掉，
+    // 一张都不截、一个文件都不写（判据是目标数而不是 --all：--all 也可能只命中一个）。
+    if (opt.output == L"-" && targets.size() > 1) {
+        outcome.errors.push_back(Diagnostic{codes::kStdoutMultipleTargets,
+                                            Msgf(L"cli.stdout_multiple_targets", targets.size()),
+                                            L"--out", L"-",
+                                            Msgf(L"cli.stdout_multiple_targets_hint", targets.size()),
+                                            std::wstring(), std::wstring(), stages::kPlan});
+        outcome.exitCode = EX_USAGE;
+        return outcome;
+    }
+
     // 输出路径整批先规划好，再问人、再取帧：撞名要在第一张落地之前就报出来，
     // 而不是截完第一张才发现第二张会把它盖掉（旧实现就是这么静默盖的）。
     // 放在确认框之前也是为了让调用方别为一注定存不下来的批次去打扰人。
@@ -200,7 +337,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         // %h / %p 只对窗口有意义，屏幕目标给 0；%n 是窗口标题或设备名
         item.hwnd = t.isScreen ? 0 : t.window.hwnd;
         item.pid = t.isScreen ? 0 : t.window.pid;
-        item.name = TargetName(t);
+        item.name = t.Name();
         planned.push_back(std::move(item));
     }
     std::vector<std::wstring> paths;
@@ -208,6 +345,7 @@ CaptureOutcome RunCapture(const Options& opt) {
     Diagnostic planErr;
     // 规划失败时 notes 整个丢掉：那一次什么都没写，"已补扩展名"之类的提示反而误导
     if (!PlanOutputPaths(opt, planned, &paths, &planNotes, &planErr)) {
+        planErr.stage = stages::kPlan;
         outcome.errors.push_back(std::move(planErr));
         outcome.exitCode = EX_IO_FAILED;
         return outcome;
@@ -221,11 +359,17 @@ CaptureOutcome RunCapture(const Options& opt) {
         for (const auto& t : targets) screens.push_back(t.screen);
         Diagnostic consent;
         if (!AskScreenCaptureConsent(opt, screens, &consent)) {
+            TagTarget(&consent, targets.front(), stages::kConsent);
             outcome.errors.push_back(std::move(consent));
             outcome.exitCode = EX_DENIED;
             return outcome;
         }
     }
+
+    // 到这里结果 JSON 去哪条流就已经定死了（图片占 stdout => JSON 走 stderr）。
+    // 提前声明归属，后面的应急路径与正常路径才不会各说一套：哪怕中途抛异常、
+    // 哪怕一张都没写成，stdout 也不会冒出文字。
+    if (opt.output == L"-") ClaimStdout();
 
     for (size_t i = 0; i < targets.size(); ++i) {
         const Target& t = targets[i];
@@ -247,41 +391,96 @@ CaptureOutcome RunCapture(const Options& opt) {
             img.imageName = t.window.imageName;
         }
 
-        CapturedFrame frame;
-        Diagnostic capErr;
-        const bool got = t.isScreen
-                             ? CaptureScreenWithMethod(t.screen, opt.capture, kFrameTimeoutMs, &frame,
-                                                       &capErr, &outcome.notes)
-                             : CaptureWithMethod(t.window.hwnd, opt.capture, kFrameTimeoutMs, &frame,
-                                                 &capErr, &outcome.notes);
-        if (!got) {
-            outcome.errors.push_back(std::move(capErr));
+        // 一个目标一个事务：这一步之内任何异常都只作废这一个目标，前面成功的图留着。
+        const wchar_t* stage = stages::kCapture;
+        Diagnostic targetErr;
+        bool fatal = false;
+        bool ok = false;
+        bool recorded = false;   // stdout 那条纹路里结果条目已提前入列，末尾不再重复入列
+        std::vector<uint8_t> encoded;
+        try {
+            CapturedFrame frame;
+            ok = CallBackend(stages::kCapture, CaptureMethodName(opt.capture),
+                             [&] {
+                                 return t.isScreen
+                                            ? CaptureScreenWithMethod(t.screen, opt.capture,
+                                                                      kFrameTimeoutMs, &frame,
+                                                                      &targetErr, &outcome.notes,
+                                                                      &fatal)
+                                            : CaptureWithMethod(t.window.hwnd, opt.capture,
+                                                                kFrameTimeoutMs, &frame,
+                                                                &targetErr, &outcome.notes, &fatal);
+                             },
+                             &targetErr, &fatal);
+            if (ok) {
+                img.width = frame.width;
+                img.height = frame.height;
+                img.source = frame.source;   // 真正出图的那条通道，auto 时与请求值不同
+            }
+
+            const wchar_t* backend = img.source.empty() ? CaptureMethodName(opt.capture)
+                                                        : img.source.c_str();
+            if (ok) {
+                stage = stages::kEncode;
+                ok = CallBackend(stage, backend,
+                                 [&] {
+                                     return EncodeFrame(frame, opt.format, opt.jpegQuality, &encoded,
+                                                        &targetErr);
+                                 },
+                                 &targetErr, &fatal);
+            }
+
+            if (ok && img.file == L"-") {
+                stage = stages::kStdout;
+                DWORD ioError = 0;
+                // 结果条目先构造好，再发图片字节：发出去了这一张就算成，
+                // 发不出去就撤回来，captured 与实际到达 stdout 的字节不会互相打脸。
+                img.bytes = encoded.size();
+                img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
+                outcome.images.push_back(img);
+                recorded = true;
+
+                ok = EmitStdoutBytes(encoded, &ioError);
+                if (!ok) {
+                    outcome.images.pop_back();
+                    recorded = false;
+                    targetErr = Diagnostic{codes::kWriteFailed, Msg(L"io.stdout_failed"),
+                                           L"--out", L"-", std::wstring(), t.Tag(), backend,
+                                           stages::kStdout};
+                    targetErr.win32 = ioError;
+                }
+            } else if (ok) {
+                stage = stages::kWrite;
+                Diagnostic writeErr;
+                ok = CallBackend(stage, backend,
+                                 [&] {
+                                     return SaveFileAtomic(img.file, encoded, opt.overwrite,
+                                                           &writeErr);
+                                 },
+                                 &writeErr, &fatal);
+                if (!ok) targetErr = std::move(writeErr);
+            }
+        } catch (...) {
+            // 走到这里说明上面那几层边界之外还有东西抛（例如 std::vector 扩容失败）：
+            // 同样只作废这一个目标，除非它确实是整机级别的资源问题。
+            FillFromCurrentException(&targetErr, stage, CaptureMethodName(opt.capture), &fatal);
+            ok = false;
+        }
+
+        if (!ok) {
+            if (recorded) outcome.images.pop_back();   // 字节没到 stdout，那张不算
+            TagTarget(&targetErr, t, stage);
+            outcome.errors.push_back(std::move(targetErr));
+            if (fatal) {
+                // 致命错误：后面再截也不会有结果，明确终止而不是一条条目标试下去。
+                // 前面已经写出的图与这条诊断都留着，调用方看得到"停在哪"。
+                break;
+            }
             continue;
         }
-        img.width = frame.width;
-        img.height = frame.height;
 
-        std::vector<uint8_t> bytes;
-        Diagnostic encErr;
-        if (!EncodeFrame(frame, opt.format, opt.jpegQuality, &bytes, &encErr)) {
-            outcome.errors.push_back(std::move(encErr));
-            continue;
-        }
-
-        if (img.file == L"-") {
-            if (!EmitStdoutBytes(bytes)) {
-                outcome.errors.push_back(Diagnostic{codes::kWriteFailed, Msg(L"io.stdout_failed"),
-                                                    L"--out", L"-", std::wstring()});
-                continue;
-            }
-        } else {
-            Diagnostic writeErr;
-            if (!SaveFileAtomic(img.file, bytes, opt.overwrite, &writeErr)) {
-                outcome.errors.push_back(std::move(writeErr));
-                continue;
-            }
-        }
-        img.bytes = bytes.size();
+        if (recorded) continue;   // stdout 那条路已经入过列
+        img.bytes = encoded.size();
         img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
         outcome.images.push_back(std::move(img));
     }
@@ -289,9 +488,10 @@ CaptureOutcome RunCapture(const Options& opt) {
     if (outcome.images.empty()) {
         const std::wstring& code =
             outcome.errors.empty() ? std::wstring() : outcome.errors.front().code;
-        outcome.exitCode = code == codes::kWriteFailed || code == codes::kFileExists
-                               ? EX_IO_FAILED
-                               : EX_CAPTURE_FAILED;
+        outcome.exitCode = code == codes::kAccessDenied  ? EX_DENIED
+                         : code == codes::kWriteFailed || code == codes::kFileExists
+                             ? EX_IO_FAILED
+                             : EX_CAPTURE_FAILED;
     } else {
         // 部分成功：图片已写出，但有目标失败 -> 用截图失败码提示调用方看 errors
         outcome.exitCode = outcome.errors.empty() ? EX_OK : EX_CAPTURE_FAILED;

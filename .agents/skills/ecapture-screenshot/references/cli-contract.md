@@ -20,7 +20,7 @@
 | `--newest` / `--oldest` | | 开关 | 取最后/最早创建的窗口 |
 | `--all` | `-a` | 开关 | 每个命中窗口各存一张；与 `--monitor all` 互斥 |
 | `--capture` | `-C` | `wgc`（默认）/`dwm`/`printwindow`/`bitblt`/`duplication`/`auto` | 取图通道。取值写错解析期报 `cli.unknown_capture_method`，不会退化成默认值。屏幕模式只支持 `wgc`/`duplication`/`bitblt`/`auto`，`dwm`/`printwindow` 报 `capture.unsupported` |
-| `--out` | `-o` | 路径或 `-` | `-` = 图片字节写标准输出。也可用位置参数；完全不给时等同 `--out -`。整批的最终绝对路径在取第一帧（以及整屏确认框）之前一次算好：扩展名缺了就补，两个目标算出同一个名字就报 `io.output_collision`+8 且整批不作，绝不静默改名。`-` 不是路径，不参与展开与碰撞检测 |
+| `--out` | `-o` | 路径或 `-` | `-` = 图片字节写标准输出。也可用位置参数；完全不给时等同 `--out -`。整批的最终绝对路径在取第一帧（以及整屏确认框）之前一次算好：扩展名缺了就补，两个目标算出同一个名字就报 `io.output_collision`+8 且整批不作，绝不静默改名。`-` 不是路径，不参与展开与碰撞检测，而且**一次只交付一张图**：选中的目标多于一个而输出是 `-`（含没给输出路径）时，整批在整屏确认框与取第一帧之前就报 `cli.stdout_multiple_targets`+1，一张都不截、一个文件都不写；判据是实际命中的目标数，所以 `--all` 只命中一个窗口时照样可以写 `-` |
 | `--format` | `-f` | `png`/`jpg`/`jpeg`/`bmp`/`tiff`/`gif` | 不给则由扩展名判定；扩展名判不出时用 png 并发 `note.format_defaulted_png`（文件名不改）。**没有 `webp`、没有 `ico`、没有 `auto`** |
 | `--quality` | | 1–100，默认 100 | 只对 jpeg 生效，给别的格式发 `note.quality_ignored` |
 | `--no-overwrite` | | 开关，可写 `=true/false` | 目标已存在时报 `io.file_exists` 且不覆盖。裸写与 `=true/1/yes/y/on` 同义（禁止覆盖），`=false/0/no/n/off` 取消禁令；重复给出时最后一个生效。**已存在与否由最后那次不许替换的改名原子判定**，没有「先查一下」那种竞态预检 |
@@ -41,7 +41,7 @@
 ```json
 { "captured": 1,
   "images": [ … ],
-  "errors": [ { "code","message","option","value","hint" } ],
+  "errors": [ { "code","message","option","value","hint","target","backend","stage","hresult","win32" } ],
   "notes":  [ 同 errors 的形状 ],
   "input":  { … 仅 --verbose } }
 ```
@@ -50,18 +50,34 @@
   `input` 仅 `--verbose`。**为空的字段整个键省略，不输出 `null` 占位。**
 - 输出里**不含**工具名、版本、schema、stage、参数回显之类的元信息。
 - 通道分配：默认全部走 stdout、stderr 为空；一旦图片占用 stdout（`--out -` 或没给输出路径），
-  **整份 JSON 改走 stderr**，两个通道永不混流。
+  **整份 JSON 改走 stderr**，两个通道永不混流。这条判断在任何图片写出之前就定下，连"渲染结果本身抛异常"
+  的兜底诊断也跟着它（一律 stderr，工具不为此再解析一遍命令行）。**约定那条流写不出去就是失败**：
+  退出码 8，即使另一条流补发成功也不留成原来的值。
 - 文本输出只有三种情况：`--help`、`--version`、没给任何条件。
 
 ### 窗口图（`images[]` 每一项）
 
-`file` `bytes` `width` `height` `format` `hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`
+`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`
 
 ### 屏幕图（`--monitor` 且无窗口条件时换这一组字段）
 
-`file` `bytes` `width` `height` `format` `monitor`（编号）`device`（`\DISPLAY1` 之类）`primary`（布尔）`elapsedMs`
+`file` `bytes` `width` `height` `format` `source`（同上）`monitor`（编号）`device`（`\DISPLAY1` 之类）`primary`（布尔）`elapsedMs`
 
 没有窗口可归属，所以 `hwnd` / `pid` / `title` / `class` / `image` 整个不出现——调用方按 `monitor` 是否存在区分两种图。
+`source` 两种图都有：`--capture auto` 回退成功时它写的是链上实际命中的那一条，不是请求值 `auto`。
+
+### 诊断项的定位字段（只在真拿到值时才出现）
+
+| 字段 | 含义 |
+| --- | --- |
+| `target` | 哪个目标：窗口给 `0x…` 句柄（与 `images[].hwnd` 同形），屏幕给设备名（如 `DISPLAY1`） |
+| `backend` | 哪条通道；`auto` 全链失败时列出真实试过的那几条，而不是 `auto` |
+| `stage` | 哪一步：`parse` / `plan` / `consent` / `capture` / `encode` / `write` / `stdout` / `report` |
+| `hresult` | 形如 `0x80070005` 的原值（照实传，不会被 `E_FAIL` / `E_NOINTERFACE` 顶掉） |
+| `win32` | `GetLastError` 的原值（数字，0 不写） |
+
+这几个不随 `--lang` 变，`message` / `hint` 才变。于是"用户拒绝"（`capture.access_denied` + `stage=consent`）
+与"技术性访问被拒"（`capture.failed` + `hresult=0x80070005`）能分开判；黑帧只报"没拿到内容"，不断言成 DRM。
 
 ### `--dry-run` 的候选窗口在哪
 
@@ -88,13 +104,15 @@
 | 5 | 匹配多个窗口 |
 | 6 | 目标受保护或被用户拒绝（含整屏确认框答"否"） |
 | 7 | 截图失败 |
-| 8 | 写文件失败 |
+| 8 | 写文件失败（也含结果 JSON 没送到约定那条流） |
 | 9 | 内部异常 |
 
 退出码与 body 是两套独立信号：先看 `errors`，再看 `captured`，最后才用退出码做粗分支。
 
-- 只有 `io.write_failed`、`io.file_exists` 与 `io.output_collision` 会给出 8；截图/编码阶段的其它失败（含
+- `io.write_failed`、`io.file_exists`、`io.output_collision` 与"结果送不到约定流"给出 8；截图/编码阶段的其它失败（含
   `capture.failed`、`capture.encoder_unavailable`）都给 7；`capture.access_denied` 给 6。
+- 某个后端抛异常（而不是返回失败）只作废它所在的那一个目标：前面成功的图留着，剩下的目标照旧继续；
+  内存耗尽与显卡设备被移除这类"换后端也不会有区别"的错误会明确终止整批。
 - **部分成功**：`--all` / `--monitor all` 里某些目标失败时，已写出的图照样在 `images` 里
   （`captured` 可以大于 0），但退出码仍是 7。所以"退出码非 0"不等于"什么都没拿到"。
 
@@ -107,6 +125,7 @@
 `cli.invalid_regex` `cli.invalid_value` `cli.invalid_format` `cli.unrecognized_extension`
 `cli.unexpected_positional` `cli.missing_output` `cli.duplicate_output` `cli.conflicting_options`
 `cli.unknown_capture_method` `cli.unknown_language` `cli.monitor_conflict` `cli.internal_error`
+`cli.stdout_multiple_targets`（stdout 一次只交付一张图，实际目标多于一个；整批没截也没写，也不弹框）
 `cli.no_condition`（→ 文本帮助 + 2）
 
 **`match.*`**
@@ -115,6 +134,7 @@
 **`capture.*`**
 `capture.access_denied`（6，受保护窗口或整屏确认被拒/弹不出）`capture.unsupported`（1，屏幕模式配 `dwm`/`printwindow`）
 `capture.encoder_unavailable`（7）`capture.failed`（7）
+`capture.frame_timeout`（7，等帧超时：等一下可以重试）`capture.window_gone`（7，目标已经没了：要重新枚举窗口）
 
 **`io.*`**
 `io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）
@@ -175,7 +195,7 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite D:\shots\one.png
 # 4) 每个命中窗口各一张
 ECAPTURE.EXE --pid 12345 --title-contains 报告 --all --out "D:\shots\rpt_%i.png"
 
-# 5) 图片进管道（JSON 于是在 stderr）
+# 5) 图片进管道（JSON 于是在 stderr；stdout 一次只一张，多个目标请写到文件）
 ECAPTURE.EXE --process notepad.exe --out - > D:\shots\snap.png
 
 # 6) 整屏（会弹确认框，必须先跟人打招呼；显式 --out 才看得出"是被拒绝"）

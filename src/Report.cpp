@@ -56,6 +56,12 @@ void DiagnosticArray(Json& j, const std::vector<Diagnostic>& items) {
         OptString(j, L"option", d.option);
         OptString(j, L"value", d.value);
         OptString(j, L"hint", d.hint);
+        // 定位字段：只在这一步真的拿到了值时才出现，不去凑一个"看起来有"的占位
+        OptString(j, L"target", d.target);
+        OptString(j, L"backend", d.backend);
+        OptString(j, L"stage", d.stage);
+        OptString(j, L"hresult", d.hresult);
+        if (d.win32 != 0) j.Key(L"win32").Value(static_cast<long long>(d.win32));
         j.End();
     }
     j.End();
@@ -73,6 +79,7 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         j.Key(L"width").Value(static_cast<long long>(img.width));
         j.Key(L"height").Value(static_cast<long long>(img.height));
         OptString(j, L"format", img.format);
+        OptString(j, L"source", img.source);   // 实际出图的通道，auto 时与请求值不同
         if (img.screen) {
             // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
             j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
@@ -245,7 +252,13 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
 
     // 没给输出路径时图片字节已经占了 stdout，这条"偷懒路径"失败就只回一条
     // cli.missing_output：让调用方补 --out 比堆一串原因更有用（用户明确要求）。
-    if (opt.outputImplicitStdout && code != EX_OK) {
+    // 唯一的例外是"多个目标要写到同一条 stdout"——那本身就是参数用法错误，
+    // 报成"缺少输出路径"会把人引向补 --out（补了也没用），必须原样送出去。
+    const bool stdoutRejected =
+        std::any_of(errors.begin(), errors.end(), [](const Diagnostic& d) {
+            return d.code == codes::kStdoutMultipleTargets;
+        });
+    if (opt.outputImplicitStdout && code != EX_OK && !stdoutRejected) {
         images.clear();
         notes.clear();
         errors = {Diagnostic{codes::kMissingOutput, Msg(L"cli.missing_output"), L"--out", L"-",
@@ -274,8 +287,9 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     out->body = j.Str();
 
     out->exitCode = code;
-    // 图片要占用 stdout 时，JSON 改走 stderr，两个通道永不混流
-    out->toStderr = (opt.output == L"-");
+    // 图片要占用 stdout 时，JSON 改走 stderr，两个通道永不混流。取值与 Main 的兜底路径同源：
+    // 半途异常时（见 Main.cpp）也是同一个判断，不会一处说"在 stderr"另一处写到 stdout。
+    out->toStderr = ResultGoesToStderr(opt);
     (void)argc;
     (void)argv;
     return code;
@@ -285,6 +299,10 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
 // 输出层：UTF-8 直写，绕开 CRT 文本模式；行尾统一 CRLF，避免老式控制台阶梯错位
 // ---------------------------------------------------------------------------
 namespace {
+
+// 图片写 stdout 的那个时点记在这里：BuildResponse 与 Main 的兜底路径都按同一个事实决定
+// 结果送去哪条流，而不是各猜一次给出互相矛盾的答复。
+bool g_stdoutClaimed = false;
 
 std::wstring NormalizeNewlines(const std::wstring& in) {
     std::wstring out;
@@ -314,20 +332,41 @@ bool WriteHandle(DWORD which, const std::wstring& text) {
 
 }  // namespace
 
-bool EmitStdout(const std::wstring& text) { return WriteHandle(STD_OUTPUT_HANDLE, text); }
+bool EmitStdout(const std::wstring& text) {
+    // 图片已占用 stdout 时这里就是硬边界：文字一律改道，绝不让 JSON 混进 PNG 里。
+    // 返回 false 表示"没送到约定通道"，由调用方决定退出码（见 Main.cpp）。
+    if (StdoutClaimed()) return false;
+    return WriteHandle(STD_OUTPUT_HANDLE, text);
+}
 
 bool EmitStderrRaw(const std::wstring& text) { return WriteHandle(STD_ERROR_HANDLE, text); }
 
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes) {
+bool ResultGoesToStderr(const Options& opt) { return opt.output == L"-" || StdoutClaimed(); }
+
+void ClaimStdout() { g_stdoutClaimed = true; }
+
+bool StdoutClaimed() { return g_stdoutClaimed; }
+
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError) {
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (!handle || handle == INVALID_HANDLE_VALUE) return false;
+    if (!handle || handle == INVALID_HANDLE_VALUE) {
+        // 句柄本身就取不到：这里 GetLastError 早就不是失败原因了，照实报"句柄无效"
+        if (ioError) *ioError = ERROR_INVALID_HANDLE;
+        return false;
+    }
+    // 写第一块字节之前就声明归属：哪怕这次只发出去半张图，stdout 也不能再给文字用。
+    ClaimStdout();
     size_t offset = 0;
     while (offset < bytes.size()) {
         const DWORD chunk = static_cast<DWORD>(std::min<size_t>(bytes.size() - offset, 1u << 20));
         DWORD written = 0;
-        if (!WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr) ||
-            written != chunk)
+        const BOOL ok = WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr);
+        if (!ok || written != chunk) {
+            // 立刻取错误码：断管 / 磁盘满 / 句柄失效在这一步是三种不同的故障，
+            // 调用方要靠它区分，晚一步就被后续 API 覆盖了。
+            if (ioError) *ioError = GetLastError();
             return false;
+        }
         offset += written;
     }
     return true;

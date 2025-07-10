@@ -70,7 +70,8 @@ bool EnumerateOutputs(IDXGIDevice* device, std::vector<std::pair<ComPtr<IDXGIOut
     ComPtr<IDXGIAdapter> adapter;
     HRESULT hr = device->GetAdapter(&adapter);
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.adapter"), Msgf(L"cap.hresult", HResultText(hr)));
+        CaptureError(err, kChannel, Msg(L"cap.dup.adapter"), Msgf(L"cap.hresult", HResultText(hr)),
+                     codes::kCaptureFailed, 0, hr);
         return false;
     }
     for (UINT i = 0;; ++i) {
@@ -159,7 +160,8 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     ComPtr<ID3D11Texture2D> desktop;
     HRESULT hr = resource->QueryInterface(IID_PPV_ARGS(&desktop));
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.to_texture"), Msgf(L"cap.hresult", HResultText(hr)));
+        CaptureError(err, kChannel, Msg(L"cap.dup.to_texture"), Msgf(L"cap.hresult", HResultText(hr)),
+                     codes::kCaptureFailed, 0, hr);
         return false;
     }
     D3D11_TEXTURE2D_DESC src{};
@@ -175,8 +177,11 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     stagingDesc.MiscFlags = 0;
     ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(device->CreateTexture2D(&stagingDesc, nullptr, &staging))) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.staging"), std::wstring());
+    const HRESULT stagingHr = device->CreateTexture2D(&stagingDesc, nullptr, &staging);
+    if (FAILED(stagingHr)) {
+        // 这里以前把错误码整个丢掉：只剩一句"建不出来"，无从判断是显存不够还是格式不支持
+        CaptureError(err, kChannel, Msg(L"cap.dup.staging"), Msgf(L"cap.hresult", HResultText(stagingHr)),
+                     codes::kCaptureFailed, 0, stagingHr);
         return false;
     }
     ComPtr<ID3D11DeviceContext> context;
@@ -186,7 +191,8 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
     D3D11_MAPPED_SUBRESOURCE mapped{};
     hr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.map"), Msgf(L"cap.hresult", HResultText(hr)));
+        CaptureError(err, kChannel, Msg(L"cap.dup.map"), Msgf(L"cap.hresult", HResultText(hr)),
+                     codes::kCaptureFailed, 0, hr);
         return false;
     }
     out->width = src.Width;
@@ -211,7 +217,7 @@ bool GrabOutputFrame(ID3D11Device* device, const PickedOutput& picked, uint32_t 
     const HRESULT hr = picked.output1->DuplicateOutput(device, &dup);
     if (FAILED(hr)) {
         CaptureError(err, kChannel, Msgf(L"cap.dup.duplicate", HResultText(hr)),
-                     DuplicationHint(hr));
+                     DuplicationHint(hr), codes::kCaptureFailed, 0, hr);
         return false;
     }
 
@@ -227,7 +233,7 @@ bool GrabOutputFrame(ID3D11Device* device, const PickedOutput& picked, uint32_t 
         const int32_t remaining = static_cast<int32_t>(deadline - GetTickCount());
         if (remaining <= 0) {
             CaptureError(err, kChannel, Msgf(L"cap.dup.timeout", timeoutMs),
-                         DuplicationHint(DXGI_ERROR_WAIT_TIMEOUT));
+                         DuplicationHint(DXGI_ERROR_WAIT_TIMEOUT), codes::kFrameTimeout);
             return false;
         }
         const HRESULT acquire = dup->AcquireNextFrame(
@@ -235,7 +241,7 @@ bool GrabOutputFrame(ID3D11Device* device, const PickedOutput& picked, uint32_t 
         if (acquire == DXGI_ERROR_WAIT_TIMEOUT || acquire == S_FALSE) continue;
         if (FAILED(acquire)) {
             CaptureError(err, kChannel, Msgf(L"cap.dup.acquire", HResultText(acquire)),
-                         DuplicationHint(acquire));
+                         DuplicationHint(acquire), codes::kCaptureFailed, 0, acquire);
             return false;
         }
         const bool presented = info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0;
@@ -290,14 +296,18 @@ bool CropDesktopToRect(CapturedFrame* desktop, const RECT& desktopCoordinates, c
 // 公共路线：建设备 -> 挑输出 -> 取整幅桌面帧 -> 按目标矩形裁
 bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, uint32_t timeoutMs,
                             CapturedFrame* out, Diagnostic* err) {
-    ComPtr<ID3D11Device> device = CreateCaptureDevice();
+    HRESULT deviceHr = S_OK;
+    ComPtr<ID3D11Device> device = CreateCaptureDevice(&deviceHr);
     if (!device) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.device"), std::wstring());
+        CaptureError(err, kChannel, Msg(L"cap.dup.device"), Msgf(L"cap.hresult", HResultText(deviceHr)),
+                     codes::kCaptureFailed, 0, deviceHr);
         return false;
     }
     ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(device.As(&dxgiDevice))) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.dxgi"), std::wstring());
+    const HRESULT qx = device.As(&dxgiDevice);
+    if (FAILED(qx)) {
+        CaptureError(err, kChannel, Msg(L"cap.dup.dxgi"), Msgf(L"cap.hresult", HResultText(qx)),
+                     codes::kCaptureFailed, 0, qx);
         return false;
     }
 

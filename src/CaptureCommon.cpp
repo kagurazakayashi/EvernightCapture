@@ -29,7 +29,7 @@ void EnsureDpiAware() {
     (void)done;
 }
 
-std::wstring Win32ErrorText() { return Msgf(L"err.win32_code", GetLastError()); }
+std::wstring Win32ErrorText(DWORD gle) { return Msgf(L"err.win32_code", gle); }
 
 std::wstring HResultText(HRESULT hr) {
     wchar_t buf[40];
@@ -38,8 +38,14 @@ std::wstring HResultText(HRESULT hr) {
 }
 
 void CaptureError(Diagnostic* err, const wchar_t* channel, const std::wstring& message,
-                  const std::wstring& hint) {
-    if (err) *err = Diagnostic{codes::kCaptureFailed, message, L"--capture", channel, hint};
+                  const std::wstring& hint, const wchar_t* code, DWORD gle, HRESULT hr) {
+    if (!err) return;
+    *err = Diagnostic{code, message, L"--capture", channel, hint, std::wstring(), channel,
+                      stages::kCapture};
+    // 错误码只在"当时真拿到了"的时候才写：0 与 S_OK 都意味着"这一步不是靠 Win32 错误码
+    // 失败的"，填个 0 进去反而让调用方以为有个叫 0 的故障。
+    err->win32 = gle;
+    if (FAILED(hr)) err->hresult = HResultText(hr);
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +78,9 @@ bool Dib::Create(uint32_t width, uint32_t height, Diagnostic* err, const wchar_t
     HDC dc = CreateCompatibleDC(screen);
     ReleaseDC(nullptr, screen);
     if (!dc) {
-        CaptureError(err, channel, Msg(L"cap.create_compat_dc"), Win32ErrorText());
+        const DWORD gle = LastError();
+        CaptureError(err, channel, Msg(L"cap.create_compat_dc"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
         return false;
     }
 
@@ -87,8 +95,11 @@ bool Dib::Create(uint32_t width, uint32_t height, Diagnostic* err, const wchar_t
     void* bits = nullptr;
     HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
     if (!bitmap || !bits) {
+        // 先取码再清理：DeleteDC 也会写最后一次错误码，晚一步就拿不到失败原因了
+        const DWORD gle = LastError();
         DeleteDC(dc);
-        CaptureError(err, channel, Msg(L"cap.create_dib_section"), Win32ErrorText());
+        CaptureError(err, channel, Msg(L"cap.create_dib_section"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
         return false;
     }
     dc_ = dc;
@@ -140,7 +151,8 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out
     const int width = rect.right - rect.left;
     const int height = rect.bottom - rect.top;
     if (width <= 0 || height <= 0) {
-        CaptureError(err, channel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.window_gone"));
+        CaptureError(err, channel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.window_gone"),
+                     codes::kWindowGone);
         return false;
     }
     // 与虚拟屏幕求交：多显示器时虚拟屏幕原点可能在负坐标
@@ -164,7 +176,9 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out
     const BOOL blt = BitBlt(dib.dc(), 0, 0, cw, ch, screen, clip.left, clip.top, SRCCOPY | CAPTUREBLT);
     ReleaseDC(nullptr, screen);
     if (!blt) {
-        CaptureError(err, channel, Msg(L"cap.bitblt_failed"), Win32ErrorText());
+        const DWORD gle = LastError();
+        CaptureError(err, channel, Msg(L"cap.bitblt_failed"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
         return false;
     }
     dib.ToFrame(channel, out);

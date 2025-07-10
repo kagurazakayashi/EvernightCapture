@@ -50,7 +50,7 @@ opt.oldest	Take the oldest created window
 opt.all	Save one image per matched window
 opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole-screen capture asks for consent in a dialog first, and there is no switch that skips it
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
-opt.out	Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite
+opt.out	Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
 opt.quality	JPEG quality, default 100
 opt.no-overwrite	Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
@@ -95,6 +95,8 @@ cli.unhandled_option	Internal error: option is in the catalog but the parser doe
 cli.missing_output	No output path was given, and writing to stdout by default produced no image
 cli.missing_output_hint	Give --out <path> explicitly, or use --dry-run first to check whether a window matches
 cli.internal_error	Unexpected internal error
+cli.stdout_multiple_targets	stdout carries only one image per run; this batch has %1 targets
+cli.stdout_multiple_targets_hint	Give --out a file path (with a placeholder such as %i or %h that tells the targets apart), or narrow the conditions to a single target
 
 # ---------------------------------------------------------------------------
 # Notes (note.*, they never change the exit code)
@@ -149,6 +151,7 @@ io.not_absolute	Output path could not be made absolute, so a same-directory rena
 # Capture channels (src/CaptureCommon.cpp and each CaptureXxx.cpp)
 # ---------------------------------------------------------------------------
 err.win32_code	error code %1
+err.exception	An exception was thrown while handling this target (%1)
 cap.rect_empty	Window rectangle is empty
 cap.rect_empty_draw	Window rectangle is empty, cannot paint
 cap.rect_empty_screen	The window's rectangle on screen is empty
@@ -162,6 +165,7 @@ cap.visible_only	This channel can only copy the visible part of the screen
 cap.bitblt_failed	BitBlt from the screen DC failed
 cap.unsupported	This capture method is not implemented
 cap.auto_failed	Every auto fallback channel failed (%1)
+cap.no_detail	The backend reported failure without giving a reason
 cap.hresult	HRESULT %1
 
 cap.wgc.failed	%1 failed (HRESULT %2)
@@ -224,6 +228,7 @@ enc.detail	%1 (%2)
 enc.size_zero	Frame has size 0, cannot encode
 enc.failed	Encoding failed
 enc.exception	Unexpected exception while encoding
+enc.empty	The encoder returned 0 bytes
 
 # ---------------------------------------------------------------------------
 # Screen target (--monitor, src/ScreenMatch.cpp and the CaptureScreenXxx channels)

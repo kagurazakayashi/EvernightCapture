@@ -65,14 +65,18 @@ private:
 
 bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
     if (!RegisterHostClassOnce()) {
-        CaptureError(err, kChannel, Msg(L"cap.dwm.register_class"), Win32ErrorText());
+        const DWORD gle = LastError();
+        CaptureError(err, kChannel, Msg(L"cap.dwm.register_class"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
         return false;
     }
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kHostClass, L"", WS_POPUP, x_, y_,
                             at.right - at.left, at.bottom - at.top, nullptr, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
     if (!hwnd_) {
-        CaptureError(err, kChannel, Msg(L"cap.dwm.create_host"), Win32ErrorText());
+        const DWORD gle = LastError();
+        CaptureError(err, kChannel, Msg(L"cap.dwm.create_host"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
         return false;
     }
     // 必须真的可见，DWM 才会往它的表面合成；SW_SHOWNA 显示但不抢焦点
@@ -80,8 +84,10 @@ bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
 
     HRESULT hr = DwmRegisterThumbnail(hwnd_, src, &thumb_);
     if (FAILED(hr) || !thumb_) {
+        if (hr == S_OK) hr = E_FAIL;   // 只有"DwmRegisterThumbnail 说成功但没给句柄"才是这种情况
         CaptureError(err, kChannel, Msg(L"cap.dwm.register_thumb"),
-                     Msgf(L"cap.dwm.register_thumb_hint", Msgf(L"cap.hresult", HResultText(hr))));
+                     Msgf(L"cap.dwm.register_thumb_hint", Msgf(L"cap.hresult", HResultText(hr))),
+                     codes::kCaptureFailed, 0, hr);
         return false;
     }
 
@@ -100,7 +106,7 @@ bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
     hr = DwmUpdateThumbnailProperties(thumb_, &props);
     if (FAILED(hr)) {
         CaptureError(err, kChannel, Msg(L"cap.dwm.update_props"),
-                     Msgf(L"cap.hresult", HResultText(hr)));
+                     Msgf(L"cap.hresult", HResultText(hr)), codes::kCaptureFailed, 0, hr);
         return false;
     }
     return true;
@@ -144,7 +150,9 @@ bool GrabViaPrintWindow(const ThumbHost& host, CapturedFrame* out, Diagnostic* e
         return false;
     if (!PrintWindow(host.hwnd(), dib.dc(), kPwRenderFullContent) &&
         !PrintWindow(host.hwnd(), dib.dc(), 0)) {
-        CaptureError(err, kChannel, Msg(L"cap.dwm.pw_failed"), Win32ErrorText());
+        const DWORD gle = LastError();
+        CaptureError(err, kChannel, Msg(L"cap.dwm.pw_failed"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
         return false;
     }
     dib.ToFrame(kChannel, out);
@@ -161,7 +169,9 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedF
 
     const RECT at = WindowScreenRect(src);
     if (at.right <= at.left || at.bottom <= at.top) {
-        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
+        // 矩形已经量不出来 = 这个窗口现在没了（或正被销毁），调用方该重新枚举而不是重试这条通道
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"),
+                     codes::kWindowGone);
         return false;
     }
 
@@ -186,7 +196,8 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedF
         if (err) {
             *err = firstErr.message.empty()
                        ? Diagnostic{codes::kCaptureFailed, Msg(L"cap.dwm.not_composed"), L"--capture",
-                                    kChannel, Msg(L"cap.dwm.not_composed_hint")}
+                                    kChannel, Msg(L"cap.dwm.not_composed_hint"), std::wstring(),
+                                    kChannel, stages::kCapture}
                        : firstErr;
         }
         return false;

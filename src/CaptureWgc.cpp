@@ -21,6 +21,7 @@
 #include <wrl/client.h>
 
 #include "D3dDevice.h"
+#include "CaptureCommon.h"   // CaptureError：backend / stage / hresult 由它统一填
 
 namespace winrt_impl = winrt::impl;
 namespace wgc = winrt::Windows::Graphics::Capture;
@@ -41,50 +42,57 @@ void EnsureWinrtInitialized() {
 
 namespace {
 
-std::wstring HResultText(HRESULT hr) {
-    wchar_t buf[64];
-    swprintf(buf, 64, L"0x%08lX", static_cast<unsigned long>(hr));
-    return buf;
-}
-
-// stepKey 指向 resources 里"某一步失败"的文案（cap.wgc.step.*），套进统一的失败句式
-bool Fail(Diagnostic* err, const wchar_t* stepKey, HRESULT hr) {
-    if (err) {
-        *err = Diagnostic{codes::kCaptureFailed,
-                          Msgf(L"cap.wgc.failed", Msg(stepKey), HResultText(hr)), L"--capture", L"wgc",
-                          Msg(L"cap.wgc.hint")};
-    }
+// stepKey 指向 resources 里"某一步失败"的文案（cap.wgc.step.*），套进统一的失败句式。
+// hr 必须是那一步 API 自己的返回值：这里曾是全文件唯一"没有码可用"的地方，
+// 拿 E_FAIL 顶上去会把"驱动拒了""设备被移除""接口没实现"三种完全不同的故障写成同一条。
+bool Fail(Diagnostic* err, const wchar_t* stepKey, HRESULT hr,
+          const wchar_t* code = codes::kCaptureFailed) {
+    CaptureError(err, L"wgc", Msgf(L"cap.wgc.failed", Msg(stepKey), HResultText(hr)),
+                 Msg(L"cap.wgc.hint"), code, 0, hr);
     return false;
 }
 
-ComPtr<ID3D11Device> CreateDevice() {
-    return CreateCaptureDevice();  // 与桌面复制通道共用一套设备创建策略
+ComPtr<ID3D11Device> CreateDevice(HRESULT* hr) {
+    return CreateCaptureDevice(hr);  // 与桌面复制通道共用一套设备创建策略
 }
 
-wdx11::IDirect3DDevice WrapDevice(ID3D11Device* device) {
+bool WrapDevice(ID3D11Device* device, HRESULT* hr, wdx11::IDirect3DDevice* out) {
     ComPtr<IDXGIDevice> dxgiDevice;
-    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) return nullptr;
+    *hr = device->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+    if (FAILED(*hr)) return false;
     winrt::com_ptr<IInspectable> inspectable;
-    if (FAILED(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.Get(), inspectable.put())))
-        return nullptr;
-    return inspectable.as<wdx11::IDirect3DDevice>();
+    *hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.Get(), inspectable.put());
+    if (FAILED(*hr)) return false;
+    *out = inspectable.as<wdx11::IDirect3DDevice>();
+    if (!*out) {
+        *hr = E_NOINTERFACE;   // 只有这一种情况确实没有更好的码可给
+        return false;
+    }
+    return true;
 }
 
-wgc::GraphicsCaptureItem CreateItem(uint64_t hwnd, HMONITOR monitor) {
+// 从 HWND 或 HMONITOR 建采集项。失败时 *hr 是那条 API 自己的返回值 —— 拿不到采集项与
+// "这台机器没有这个接口"是两件事，诊断必须能分开它们。
+wgc::GraphicsCaptureItem CreateItem(uint64_t hwnd, HMONITOR monitor, HRESULT* hr) {
+    *hr = S_OK;
     try {
         auto factory = winrt::get_activation_factory<wgc::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
         wgc::GraphicsCaptureItem item{nullptr};
-        const HRESULT hr = monitor ? factory->CreateForMonitor(
-                                         monitor,
-                                         winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
-                                         winrt::put_abi(item))
-                                   : factory->CreateForWindow(
-                                         reinterpret_cast<HWND>(hwnd),
-                                         winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
-                                         winrt::put_abi(item));
-        if (FAILED(hr) || !item) return nullptr;
+        *hr = monitor ? factory->CreateForMonitor(
+                            monitor,
+                            winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
+                            winrt::put_abi(item))
+                      : factory->CreateForWindow(
+                            reinterpret_cast<HWND>(hwnd),
+                            winrt::guid_of<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>(),
+                            winrt::put_abi(item));
+        if (FAILED(*hr) || !item) {
+            if (SUCCEEDED(*hr)) *hr = E_UNEXPECTED;   // 说成功却没给东西
+            return nullptr;
+        }
         return item;
-    } catch (const winrt::hresult_error&) {
+    } catch (const winrt::hresult_error& e) {
+        *hr = e.code();
         return nullptr;
     }
 }
@@ -99,8 +107,7 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
     D3D11_TEXTURE2D_DESC desc{};
     src->GetDesc(&desc);
     if (desc.Width == 0 || desc.Height == 0) {
-        if (err) *err = Diagnostic{codes::kCaptureFailed, Msg(L"cap.wgc.frame_zero"), L"--capture",
-                                   L"wgc", Msg(L"cap.wgc.frame_zero_hint")};
+        CaptureError(err, L"wgc", Msg(L"cap.wgc.frame_zero"), Msg(L"cap.wgc.frame_zero_hint"));
         return false;
     }
 
@@ -110,8 +117,8 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
     stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     stagingDesc.MiscFlags = 0;
     ComPtr<ID3D11Texture2D> staging;
-    if (FAILED(device->CreateTexture2D(&stagingDesc, nullptr, &staging)))
-        return Fail(err, L"cap.wgc.step.staging", E_FAIL);
+    const HRESULT stagingHr = device->CreateTexture2D(&stagingDesc, nullptr, &staging);
+    if (FAILED(stagingHr)) return Fail(err, L"cap.wgc.step.staging", stagingHr);
 
     ComPtr<ID3D11DeviceContext> context;
     device->GetImmediateContext(&context);
@@ -140,16 +147,20 @@ bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, D
 // 建帧池 -> 开会话 -> 取一帧 -> 拷进 CPU。窗口与屏幕只有"采集项从哪来"这一步不同。
 bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, CapturedFrame* out,
                Diagnostic* err) {
-    ComPtr<ID3D11Device> device = CreateDevice();
-    if (!device) return Fail(err, L"cap.wgc.step.device", E_FAIL);
+    HRESULT deviceHr = S_OK;
+    ComPtr<ID3D11Device> device = CreateDevice(&deviceHr);
+    if (!device) return Fail(err, L"cap.wgc.step.device", deviceHr);
 
-    const auto winrtDevice = WrapDevice(device.Get());
-    if (!winrtDevice) return Fail(err, L"cap.wgc.step.wrap", E_FAIL);
+    HRESULT wrapHr = S_OK;
+    wdx11::IDirect3DDevice winrtDevice{nullptr};
+    if (!WrapDevice(device.Get(), &wrapHr, &winrtDevice))
+        return Fail(err, L"cap.wgc.step.wrap", wrapHr);
 
     const auto size = item.Size();
     if (size.Width <= 0 || size.Height <= 0) {
-        if (err) *err = Diagnostic{codes::kCaptureFailed, Msg(L"cap.wgc.size_zero"), L"--capture",
-                                   L"wgc", Msg(L"cap.window_gone")};
+        // 采集项说自己没有面积：窗口刚关掉的典型表现（句柄还有效，画面已经没了）
+        CaptureError(err, L"wgc", Msg(L"cap.wgc.size_zero"), Msg(L"cap.window_gone"),
+                     codes::kWindowGone);
         return false;
     }
 
@@ -196,8 +207,8 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, Capture
     } closer{&session, &pool};
 
     if (!frame) {
-        if (err) *err = Diagnostic{codes::kCaptureFailed, Msgf(L"cap.wgc.timeout", timeoutMs),
-                                   L"--capture", L"wgc", Msg(L"cap.wgc.timeout_hint")};
+        CaptureError(err, L"wgc", Msgf(L"cap.wgc.timeout", timeoutMs),
+                     Msg(L"cap.wgc.timeout_hint"), codes::kFrameTimeout);
         return false;
     }
 
@@ -224,8 +235,9 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
     EnsureWinrtInitialized();
     ResetFrame(out);
 
-    const auto item = CreateItem(hwnd, nullptr);
-    if (!item) return Fail(err, L"cap.wgc.step.item", E_NOINTERFACE);
+    HRESULT itemHr = S_OK;
+    const auto item = CreateItem(hwnd, nullptr, &itemHr);
+    if (!item) return Fail(err, L"cap.wgc.step.item", itemHr);
     return GrabFrame(item, timeoutMs, out, err);
 }
 
@@ -234,8 +246,9 @@ bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFram
     EnsureWinrtInitialized();
     ResetFrame(out);
 
-    const auto item = CreateItem(0, reinterpret_cast<HMONITOR>(screen.monitor));
-    if (!item) return Fail(err, L"cap.wgc.step.item_monitor", E_NOINTERFACE);
+    HRESULT itemHr = S_OK;
+    const auto item = CreateItem(0, reinterpret_cast<HMONITOR>(screen.monitor), &itemHr);
+    if (!item) return Fail(err, L"cap.wgc.step.item_monitor", itemHr);
     return GrabFrame(item, timeoutMs, out, err);
 }
 

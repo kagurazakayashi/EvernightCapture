@@ -99,7 +99,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
 
 輸出
-  --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋
+  --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
   --format, -f <name>             強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
   --quality <1-100>               JPEG 品質，預設 100
   --no-overwrite                  目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
@@ -160,6 +160,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
       "width": 1247,
       "height": 607,
       "format": "png",
+      "source": "wgc",
       "hwnd": "0x001B0C48",
       "pid": 31468,
       "title": "D:\\share\\EvernightCapture - 檔案總管",
@@ -198,21 +199,41 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    `notes` 僅非空且未 `--quiet` 時出現；`input` 僅 `--verbose` 時出現。呼叫端先看 `errors` 再讀 `images`。
 2. 診斷項裡為空的欄位整個鍵省略，不會輸出 `null` 佔位。
 3. `code` 值穩定：`cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`，只增不改名。
+   取影格失敗裡「影格逾時」（`capture.frame_timeout`）與「視窗已經沒了」（`capture.window_gone`）各有自己的碼，
+   不再和一般的 `capture.failed` 混在一起——兩者的下一步動作不同（前者可以等一會兒重試，後者要重新列舉）。
 4. 通道：預設全部寫 stdout、stderr 保持空；一旦圖片佔用標準輸出（顯式 `--out -`，或根本沒給輸出路徑），
-   JSON 整體改走 stderr，兩個通道不會混流。
+   JSON 整體改走 stderr，兩個通道不會混流。連渲染結果本身都出異常時的兜底診斷也一律走 stderr（那時
+   無法確定圖片是否已經佔了 stdout）。**結果送不到約定那條串流就是失敗**：退出碼變成 `8`，即使另一條串流
+   寫成功也不改回原來的值——呼叫端依約定串流讀取，讀不到就是沒拿到。
 5. `captured` 等於 `images` 的條數；一個視窗一張圖，`--monitor all` 則一張螢幕一張圖。
-6. **儲存**：整批最終輸出路徑在取第一張影格之前（也在整屏確認框之前）一次算好。兩個目標算出同一個名字時報
-   `io.output_collision`（離開碼 8），整批一張都不截、一個檔案都不寫 —— 既不替呼叫端改名，也不讓第二張蓋掉第一張。
+   **標準輸出一次只能交付一張影格**：命中多個目標（`--all` 或多張螢幕）又要寫 stdout 時，整批在彈確認框和
+   取第一張影格之前就被拒（`cli.stdout_multiple_targets` + 退出碼 1），一張都不截、一個檔案都不寫。判據是
+   實際命中的目標數，所以 `--all` 只命中一個視窗時照樣可以寫 stdout。多張 PNG 首尾接在同一條串流上不是一幅
+   可解碼的影像，工具也不會把 `-` 當檔案名前綴算出 `-_1.png` 那種本機檔案。
+6. `images[].source` 與錯誤裡的 `backend` 寫的都是**真實那條通道**：`--capture auto` 退回成功時 `source`
+   是鏈上那一條而不是 `auto`；退回鏈全失敗時 `backend` 列出實際試過的幾條。視窗圖與螢幕圖都帶這個欄位。
+7. **儲存**：整批最終輸出路徑在取第一張影格之前（也在整屏確認框之前）一次算好。兩個目標算出同一個名字時報
+   `io.output_collision`（退出碼 8），整批一張都不截、一個檔案都不寫 —— 既不替呼叫端改名，也不讓第二張蓋掉第一張。
    每張圖先寫進目標目錄下唯一的暫存檔案，寫完並刷新之後才改名為目標名稱，所以寫入失敗不會清空也不會刪掉舊檔案。
    `--no-overwrite` 時「目標在不在」由那一次不許替換的改名當場判定（`io.file_exists`），不做有競態的預檢。
+8. 每一步的失敗診斷還帶著它自己的座標，只在這一步真拿到了值時才出現：`target`（哪個目標，視窗是
+   `0x…` 句柄、螢幕是裝置名）、`backend`（哪條通道）、`stage`（`consent` / `capture` / `encode` / `write` /
+   `stdout`，解析期的錯誤沒有這個欄位）、`hresult`（`0x80070005` 這樣的原值）、`win32`（`GetLastError` 的原值）。
+   `message` 隨 `--lang` 變，這幾個不變；使用者拒絕（`capture.access_denied` + `stage=consent`）與技術性的存取被拒
+   （`capture.failed` 帶 `hresult=0x80070005`）因此可以分開判。後端回傳的 HRESULT / Win32 錯誤碼會原樣帶出，
+   不會被 `E_FAIL` 或 `E_NOINTERFACE` 頂掉真實的錯誤碼。黑影格不會被斷言成 DRM——文案只列出幾種可能。
 
 ## 退出碼
 
 `0` 成功 / `1` 參數錯 / `2` 未給條件 / `3` `--help` / `4` 無匹配視窗 / `5` 匹配多個視窗 /
 `6` 目標受保護或被拒絕 / `7` 截圖失敗 / `8` 寫檔案失敗 / `9` 內部異常。新增語義只會追加編號。
+`8` 也涵蓋「結果 JSON 送不到約定那條串流」（寫 stdout / stderr 失敗），那種情況下另一條串流上補發的文字不算交付。
 
 退出碼與 body 是兩套獨立的訊號，`2`/`3`/`4`/`5` 是正常控制流而不是當機。**允許部分成功**：`--all` 或
 `--monitor all` 裡某些目標失敗時，已寫出的圖仍在 `images` 裡（`captured` 可以大於 0），但退出碼是 `7`。
+某個後端崩了（拋出例外而不是回傳失敗）也只作廢它所在的那一個目標：前面的圖留著，這條失敗以 `capture.failed`
+帶在 `errors` 裡。記憶體耗盡、顯示裝置被移除（`DXGI_ERROR_DEVICE_REMOVED` / `_RESET` / `_HUNG`）這類換後端
+也不會有分別的錯誤會明確終止整批，而不是一條條試下去。存取被拒與使用者拒絕都不是繼續退回的理由。
 
 ## 取圖方式
 
@@ -243,7 +264,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 - 點「是」之後會等 1 秒才取影格，避免把對話框的關閉動畫拍進圖裡；確認框本身不會出現在圖中。
 - `--dry-run` 和「按螢幕過濾視窗」模式不取整張螢幕畫面，所以不彈框。
 - 想區分「被人拒絕」和「路徑沒給對」就必須顯式給 `--out`：不給輸出路徑時任何失敗都收斂成
-  `cli.missing_output` + 退出碼 1，真實原因不外洩。
+  `cli.missing_output` + 退出碼 1，真實原因不外洩。唯一的例外是「多個目標要共用 stdout」
+  （`cli.stdout_multiple_targets`），那條本來就是參數錯，報成缺少輸出路徑反而會把人引向補 `--out`。
+- 多張螢幕 + 寫 stdout（`--monitor all --out -`）在彈框之前就被拒：一次確認換不來「每張螢幕一張圖擠進同一條串流」。
+  只有一張螢幕時 `--monitor all` 是一個目標，那條路仍然按單張走 stdout。
 
 `--monitor`（省略取值）與 `--monitor primary` 是主螢幕，`--monitor 2` 是第 2 張螢幕，`--monitor all` 每張螢幕一張。
 編號按 `EnumDisplayMonitors` 的順序、從 1 起；越界報 `match.monitor_out_of_range`（退出碼 1），`hint` 裡列出本機全部螢幕。
@@ -270,7 +294,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 `io.output_collision`。`%d` / `%t` 用的是本批次那一次時鐘，所以跨午夜的一批也全用同一個日期與時間。規劃出的名字
 依絕對路徑、不區分大小寫、逐碼元比較（NTFS 就是這樣看名字的）；字串比較看不見的別名（8.3 短名、硬連結、目錄
 junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一次原子操作判定，所以預檢認不出的佔用同樣不會被靜默替換。
-`--out -` 不是路徑：不展開、不補副檔名、不查碰撞，整批圖依序寫進同一條串流。
+`--out -` 不是路徑：不展開、不補副檔名、不查碰撞；而標準輸出一次只交付一張影格，所以那條串流上永遠不會有整批圖
+（見前面「輸出形式」的規則）。
 
 ## 文案語言
 
@@ -293,13 +318,18 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 2. **依 `errors[].code` 分支，不要比對 `message` 文字**（那會隨 `--lang` 變）。常用的幾條：
    `match.no_window`（4，條件太窄或目標被最小化）、`match.ambiguous_window`（5，從 `hint` 的候選裡挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候選）、
-   `cli.missing_output`（1）、`cli.invalid_format`（1）、`capture.failed`（7）、`capture.access_denied`（6）、
+   `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多個目標要共用
+   同一條 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等影格逾時）、
+   `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.access_denied`（6）、
    `io.write_failed`（8，目錄不存在或提交失敗）、`io.file_exists`（8，搭配 `--no-overwrite`）、
    `io.output_collision`（8，兩個目標算出同一個輸出名，整批沒截圖也沒寫檔）。
+   每條錯誤還帶 `target` / `backend` / `stage` / `hresult` / `win32`（見前面「輸出形式」的規則），拿到多少寫多少，
+   不必從 `message` 裡摳。
 3. **讀取資料流要分情況**：給 `--out <檔案>` 時 JSON 在 stdout、stderr 是空的，直接解析就行；用 `--out -` 或沒給輸出路徑時
-   圖片位元組佔了 stdout，JSON 整體改到 stderr。PowerShell 5.1 裡 `2>&1` 會把 stderr 包裝成錯誤記錄，想同時拿圖片和
-   JSON 就用 `1>`/`2>` 分開重新導向。
-4. **別把非 0 退出碼當成全盤失敗**：部分成功時 `captured` 大於 0 而退出碼是 7，已經寫出的圖照樣可用。
+   圖片位元組佔了 stdout，JSON 整體改到 stderr。stdout 一次只交付一張圖，多個目標請寫到檔案。PowerShell 5.1 裡
+   `2>&1` 會把 stderr 包裝成錯誤記錄，想同時拿圖片和 JSON 就用 `1>`/`2>` 分開重新導向。
+4. **別把非 0 退出碼當成全盤失敗**：部分成功時 `captured` 大於 0 而退出碼是 7，已經寫出的圖照樣可用；
+   `images[].source` 會告訴你那張圖實際出自哪條通道。
 5. **退出碼 0 不等於畫面是對的**：受保護內容、某些播放器的驅動會在成功回傳的同時給你黑影格。要判斷正確性就校驗像素——
    例如把一個純色視窗蓋住目標再截，看拿到的是目標內容還是遮擋物；至少比對 `width`/`height` 與目標視窗矩形。
 6. **整張螢幕要先問人**：`--monitor` 截整張螢幕會彈出模態框並擋住處理程序直到人回應，沒有旁路。自動化流程裡別把它當成「隨手
@@ -311,7 +341,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 建置，產物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可選 |
-| `.\tests\cli.ps1` | 105 例輸出契約斷言 + 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
+| `.\tests\cli.ps1` | 107 例輸出契約斷言 + 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
 | `.\scripts\check-lang.ps1` | 四語文案的 key / 佔位符對齊檢查，並確認 exe 裡真的編進了四份資源 |
 | `.\tests\invoker.ps1` | 離線檢查共用的測試程序呼叫器：argv 引號、兩條流同時輸出、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄（不截圖） |
 | `.\tests\build-path.ps1` | 建置路徑判據：離線那層驗暫存批次檔正文只能是 ASCII、VS 環境匯入失敗要在跑 cmake 之前就報錯；真機那層在含中文、空白、括號、百分號的目錄裡跑 Release / Debug / RelWithDebInfo 與 `-Clean`，再把 `%TEMP%` 換成中文目錄建置一次（不截圖；`-OfflineOnly` 只跑離線那層） |
@@ -320,6 +350,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗 |
 | `.\tests\isolation.ps1` | 實機資源隔離：同名的既有處理程序保持存活且不會被當成目標、並發兩輪互不串、異常退出只清理自身 |
 | `.\tests\screen.ps1` | 實機整張螢幕測試：確認框行為 + 三條螢幕通道 + 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用 |
+| `.\tests\streams.ps1` | 實機標準串流與結構化結果可靠性：單個目標寫 stdout、多個目標被拒、判據是實際命中的目標數、多螢幕被拒而且確認框根本不彈、診斷的定位欄位、批次中途失敗時保留前面已經成功的圖、結果送不到約定的那條串流時報 8（只截自己建的視窗） |
 | `.\tests\window_shot.bat` | 給人跑的批次檔：編譯測試視窗程式 → 逐通道截圖 → 開啟截圖目錄 → 只結束自己起的那個 PID |
 | `.\scripts\mkreadme.ps1` | 用各語言 `--help` 的原樣輸出重新產生四份 README 的說明段 |
 

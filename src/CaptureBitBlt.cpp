@@ -17,7 +17,8 @@ bool CaptureWindowBitBlt(uint64_t hwndValue, uint32_t /*timeoutMs*/, CapturedFra
 
     const RECT rect = WindowScreenRect(hwnd);
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
-        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
+        CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"),
+                     codes::kWindowGone);
         return false;
     }
     return GrabScreenRect(rect, kChannel, out, err);

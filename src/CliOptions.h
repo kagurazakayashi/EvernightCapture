@@ -126,6 +126,9 @@ inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_me
 inline constexpr const wchar_t* kUnknownLanguage = L"cli.unknown_language";
 inline constexpr const wchar_t* kMonitorConflict = L"cli.monitor_conflict";
 inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
+// 多个目标却要写到标准输出：标准输出一次只能交付一张图，属参数用法错误（退出码 1）。
+// 判据是"实际命中的目标数"，所以 --all / --monitor all 只命中一个时仍然放行。
+inline constexpr const wchar_t* kStdoutMultipleTargets = L"cli.stdout_multiple_targets";
 // 参数层（退出码 2 / 3）
 inline constexpr const wchar_t* kNoCondition = L"cli.no_condition";
 // 提示（不影响退出码）
@@ -153,19 +156,47 @@ inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
 inline constexpr const wchar_t* kUnsupported = L"capture.unsupported";
 inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavailable";
 inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";
+// 帧超时与窗口消失：旧版这两种都写成 capture.failed，只能靠 message 分辨。
+// 退出码仍是 7（截图失败），但这两类调用方的下一步动作不同（前者可重试、后者要重新枚举），
+// 所以各给一个稳定的新码；capture.failed 保留给其它取帧失败。
+inline constexpr const wchar_t* kFrameTimeout = L"capture.frame_timeout";
+inline constexpr const wchar_t* kWindowGone = L"capture.window_gone";
 inline constexpr const wchar_t* kWriteFailed = L"io.write_failed";
 inline constexpr const wchar_t* kFileExists = L"io.file_exists";
 // 多个目标算出同一个输出名：整批一张都不截，也不静默改名
 inline constexpr const wchar_t* kOutputCollision = L"io.output_collision";
 }  // namespace codes
 
-// option / value 为空时序列化为 null；hint 用于"是不是想输入 --title"这类纠正建议。
+// 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。
+namespace stages {
+inline constexpr const wchar_t* kParse = L"parse";      // 命令行解析自身（异常兜底）
+inline constexpr const wchar_t* kPlan = L"plan";        // 整批输出名规划
+inline constexpr const wchar_t* kConsent = L"consent";  // 整屏截图的人工确认框
+inline constexpr const wchar_t* kCapture = L"capture";  // 取帧后端
+inline constexpr const wchar_t* kEncode = L"encode";    // 编码成 png / jpg / ...
+inline constexpr const wchar_t* kWrite = L"write";      // 原子写文件
+inline constexpr const wchar_t* kStdout = L"stdout";    // 图片字节写标准输出
+inline constexpr const wchar_t* kReport = L"report";    // 结果渲染与送出
+}  // namespace stages
+
+// 诊断项：code 恒在，其余为空时整个键省略（不输出 null 占位）。hint 用于"是不是想输入 --title"
+// 这类纠正建议；下面几个定位字段只在对应那一步真拿到值时才出现，调用方据此分支而不必从
+// message 里抠 —— message / hint 是人看的文字（随 --lang 变），这几个是机器看的坐标（不变）。
 struct Diagnostic {
     std::wstring code;
     std::wstring message;
     std::wstring option;
     std::wstring value;
     std::wstring hint;
+    // 出错的那个目标：窗口给 "0x001A0B4C"（与 images[].hwnd 同形），屏幕给 "DISPLAY1"
+    std::wstring target;
+    // 真实产出（或真实尝试过）的通道名，来自实际执行路径；auto 回退链失败时是链上试过的
+    // 那些通道，不是请求值 "auto"
+    std::wstring backend;
+    // 流水线阶段：capture / encode / write / stdout / consent / report
+    std::wstring stage;
+    std::wstring hresult;  // "0x80070005" 形式
+    uint32_t win32 = 0;    // GetLastError 的原值，0 = 不适用
 };
 
 struct ParseResult {

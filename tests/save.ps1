@@ -13,7 +13,8 @@
       4. %d / %t 一个批次只取一次时钟
       5. 写文件是原子的：目标要么保持原样要么整体换成新内容，失败只清自己的临时文件
       6. 多个进程同时对同一路径禁止覆盖写入：最多一个成功，其余 io.file_exists，胜出那张完整
-      7. --out - 不参与路径展开，也不会在工作目录里凭空写出文件
+      7. --out - 不参与路径展开：命中多个目标时整批被拒（stdout 一次只交付一张），
+         既不写文件也不往 stdout 发图；单目标那条路的标准流规矩在 tests\streams.ps1
       8. 本机注入不了的两项（短写、网络共享上的提交语义）如实记成未验证
 .EXAMPLE
     .\tests\save.ps1
@@ -475,21 +476,23 @@ try {
     Assert-Ec (@(Get-Temps $dir6).Count -eq 0) '回显那一次留下了临时文件'
 
     # =========================================================================
-    Write-Host "`n=== 6) --out - 不参与路径展开 ==="
+    Write-Host "`n=== 6) 标准输出不参与路径展开，也不许一次交付两张 ==="
     # =========================================================================
     $dir7 = New-ShotDir 'stdout'
     $pair3 = Start-EcWindow -RunDir $run -Class "ec-save-pipe-$tag" -Title "管道成对 $tag" -Rect $RECT_B -Seed 15 -Windows 2
+    # 两个目标写同一条 stdout：旧实现会把两张 PNG 首尾拼起来，还会算出 "-__1.png" 这种
+    # 把特殊值当文件名前缀的本地文件。现在整批在取帧之前就被拒，一个文件都不该出现。
     $pipe = Invoke-EcProcess -FilePath $Exe -TimeoutMs 60000 -WorkingDirectory $dir7 -Arguments @(
         '--hwnd', (Get-EcHwndHex $pair3.Hwnds[0]), '--hwnd', (Get-EcHwndHex $pair3.Hwnds[1]),
         '--all', '--out', '-')
     $pj = Get-JsonOf @{ Stdout = ''; Stderr = $pipe.Stderr }
-    Assert-Ec ($pipe.Exit -eq 0) "--all 写标准输出失败（exit=$($pipe.Exit) $($pipe.Stderr)）"
-    Assert-Ec ($pj -and $pj.captured -eq 2) "标准输出那一次 captured=$($pj.captured)，期望 2"
-    $files = @(@($pj.images) | ForEach-Object { $_.file } | Sort-Object -Unique)
-    $msg = '标准输出时 file 该是单横杠：[' + ($files -join ' ') + ']'
-    Assert-Ec ($files.Count -eq 1 -and $files[0] -eq '-') $msg
-    Assert-Ec ($pipe.StdoutBytes.Length -gt 200) 'stdout 里没有两份图片字节'
-    Assert-Ec (@(Get-ChildItem -LiteralPath $dir7 -File).Count -eq 0) '--out - 在工作目录里写出了文件'
+    Assert-Ec ($pipe.Exit -eq 1) `
+        "多目标写标准输出该报参数错（exit=$($pipe.Exit) $($pipe.Stderr)）"
+    Assert-Ec ($pj -and (@(Get-Codes $pj.errors) -contains 'cli.stdout_multiple_targets')) `
+        "多目标写标准输出的 code 不对：[$(if ($pj) { (Get-Codes $pj.errors) -join ',' } else { 'JSON 解析失败' })]"
+    Assert-Ec ($pj -and $pj.captured -eq 0 -and @($pj.images).Count -eq 0) '被拒的那一次居然报了图'
+    Assert-Ec ($pipe.StdoutBytes.Length -eq 0) 'stdout 被写了东西（该整份留给 JSON，而 JSON 在 stderr）'
+    Assert-Ec (@(Get-ChildItem -LiteralPath $dir7 -File -Recurse).Count -eq 0) '--out - 在工作目录里写出了文件'
     Stop-EcWindow -Window $pair3
 } finally {
     Stop-EcOwnedWindows

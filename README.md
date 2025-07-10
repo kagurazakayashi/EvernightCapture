@@ -108,7 +108,7 @@ Capture channel (default wgc; may fail because of the OS version or the window i
   --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 
 Output
-  --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite
+  --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
   --format, -f <name>             Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
   --quality <1-100>               JPEG quality, default 100
   --no-overwrite                  Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
@@ -173,6 +173,7 @@ A window image (real shape of the output; the numbers come from one actual captu
       "width": 1247,
       "height": 607,
       "format": "png",
+      "source": "wgc",
       "hwnd": "0x001B0C48",
       "pid": 31468,
       "title": "D:\\share\\EvernightCapture - File Explorer",
@@ -213,25 +214,59 @@ Rules:
    `--verbose`. Look at `errors` before reading `images`.
 2. Empty fields of a diagnostic drop the whole key — there is no `null` placeholder.
 3. `code` values are stable: `cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
+   Among frame failures, "the frame never arrived" (`capture.frame_timeout`) and "the target window is gone"
+   (`capture.window_gone`) each have their own code instead of being lumped in with the generic `capture.failed` —
+   the next step differs between them (wait and retry versus enumerate the windows again).
 4. Streams: by default everything goes to stdout and stderr stays empty; once the image occupies stdout (explicit
-   `--out -`, or no output path at all) the whole JSON moves to stderr. The two streams never mix.
+   `--out -`, or no output path at all) the whole JSON moves to stderr. The two streams never mix. Even the
+   last-resort diagnostic for "building the result itself threw" always goes to stderr (at that moment there is no way
+   to tell whether image bytes already claimed stdout, and the tool will not re-parse the command line to guess).
+   **A result that cannot reach the agreed stream is an I/O failure**: the exit code becomes `8`, and a text copy that
+   did get through on the other stream never restores the original value — a caller reads the agreed stream, so not
+   finding it there means not getting it.
 5. `captured` equals the number of `images`; one window per image, and with `--monitor all` one monitor per image.
-6. **Saving**: the whole batch's final absolute output names are computed before the first frame is taken (and
+   **stdout delivers exactly one image per run**: when more than one target is hit (`--all`, or several monitors) and
+   stdout is the destination, the whole batch is refused before the consent dialog and before the first frame
+   (`cli.stdout_multiple_targets` + exit code 1) — nothing captured, no file written. The judgement uses the number of
+   targets actually matched, so `--all` that hits a single window may still write to stdout. PNGs concatenated head to
+   tail on one stream are not a decodable image, and the tool will not treat `-` as a file-name prefix that produces
+   local files like `-_1.png`.
+6. `images[].source` and the `backend` field of an error always name the **channel that really ran**: when
+   `--capture auto` falls back successfully, `source` names the link of that chain which delivered the frame rather
+   than `auto`; when the whole fallback chain fails, `backend` lists the channels that were actually tried. Window
+   images and screen images both carry `source`.
+7. **Saving**: the whole batch's final absolute output names are computed before the first frame is taken (and
    before the whole-screen dialog). Two targets resolving to the same name give `io.output_collision` (exit code 8)
    with nothing captured and nothing written — the tool never renames behind your back and never lets image 2
    overwrite image 1. Each file is then written to a unique temporary file in the target directory and only renamed
    onto the target once everything is written and flushed, so a failed write leaves the previous file untouched; with
    `--no-overwrite` that final rename is itself the "already exists?" check (`io.file_exists`), never a pre-check.
+8. Every step's failure diagnostic also carries its own coordinates, present only when that step really obtained the
+   value: `target` (which target — a `0x…` handle for a window, a device name such as `DISPLAY1` for a monitor),
+   `backend` (which channel), `stage` (`consent` / `capture` / `encode` / `write` / `stdout`; parse-time errors have
+   no stage at all), `hresult` (a raw value shaped like `0x80070005`), `win32` (the raw `GetLastError()` number).
+   `message` follows `--lang` while these never do, so a refusal by a human (`capture.access_denied` + `stage=consent`)
+   and a technical access denial (`capture.failed` carrying `hresult=0x80070005`) can be told apart. The HRESULT and
+   Win32 code the backend handed back are passed through as they are instead of being masked by `E_FAIL` or
+   `E_NOINTERFACE`. A black frame is never asserted to be DRM — the wording only lists the possibilities.
 
 ## Exit codes
 
 `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no matching window /
 `5` several matches / `6` target protected or refused / `7` capture failed / `8` write failed / `9` internal error.
 New meanings only ever append numbers.
+`8` also covers "the result JSON could not reach the agreed stream" (writing stdout or stderr failed); text delivered
+on the other stream does not count as delivery in that case.
 
 The exit code and the body are two independent signals; `2`/`3`/`4`/`5` are normal control flow, not crashes.
 **Partial success is allowed**: with `--all` or `--monitor all`, if some targets fail the images already written
-stay in `images` (`captured` can be greater than 0) while the exit code is `7`.
+stay in `images` (`captured` can be greater than 0) while the exit code is `7`. A backend that throws instead of
+returning a failure invalidates only the single target it was working on: the images before it stay, the fallback
+chain and the remaining `--all` targets are not dragged down with it, and the failure rides in `errors` as
+`capture.failed`. Errors where switching backend would make no difference — running out of memory, the display device
+being removed (`DXGI_ERROR_DEVICE_REMOVED` / `DXGI_ERROR_DEVICE_RESET` / `DXGI_ERROR_DEVICE_HUNG`) — end the whole
+batch deliberately instead of being retried one target at a time. An access denial, or a human refusal, is never a
+reason to keep falling back.
 
 ## Capture channels
 
@@ -266,7 +301,12 @@ first** (it lists the target monitor, the channel, and where the image goes). On
   the dialog itself never appears in the image.
 - `--dry-run` and "filter windows by monitor" take no whole-screen frame, so no dialog appears.
 - To tell "a human refused" apart from "the path was wrong" you must pass `--out` explicitly: without an output
-  path every failure collapses into `cli.missing_output` + exit code 1, and the real reason is not leaked.
+  path every failure collapses into `cli.missing_output` + exit code 1, and the real reason is not leaked. The single
+  exception is "several targets want to share stdout" (`cli.stdout_multiple_targets`) — that one is a bad argument to
+  begin with, and folding it into "missing output path" would only steer people towards adding `--out`.
+- Several monitors plus stdout (`--monitor all --out -`) is refused before the dialog appears: one confirmation cannot
+  buy "one image per monitor squeezed into the same stream". With only one monitor attached, `--monitor all` is a
+  single target and that path still delivers one image on stdout.
 
 `--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
 `--monitor all` one image per monitor. Numbers follow the `EnumDisplayMonitors` order and start at 1; out of range
@@ -298,7 +338,8 @@ the batch crosses midnight. Planned names are compared as absolute paths, case-i
 NTFS treats them); aliases that string comparison cannot see — 8.3 short names, hard links, junctions and symlinks,
 UNC versus drive letters — are settled by the atomic commit instead, so a name the pre-check could not recognise as
 occupied still cannot be silently replaced. `--out -` is not a path: no expansion, no extension, no collision check,
-and every image of the batch is written to the same stream in order.
+and since stdout delivers only one image per run, there is never a batch to write into that stream (see the output
+rules above).
 
 ## Message language
 
@@ -327,16 +368,20 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`). The codes you actually hit:
    `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose
    from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
-   candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `capture.failed` (7),
-   `capture.access_denied` (6), `io.write_failed` (8, directory missing or the commit failed), `io.file_exists` (8,
-   with `--no-overwrite`), `io.output_collision` (8, two targets expand to the same output name — nothing was
-   captured).
+   candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `cli.stdout_multiple_targets` (1, several targets
+   want to share one stdout), `capture.failed` (7), `capture.frame_timeout` (7, waiting for the frame ran out),
+   `capture.window_gone` (7, the target is already gone — enumerate again), `capture.access_denied` (6),
+   `io.write_failed` (8, directory missing or the commit failed), `io.file_exists` (8, with `--no-overwrite`),
+   `io.output_collision` (8, two targets expand to the same output name — nothing was captured).
+   Every error also carries `target` / `backend` / `stage` / `hresult` / `win32` (see the output rules above) as far as
+   that step really had them, so there is no need to dig values out of `message`.
 3. **Read the right stream**: with `--out <file>` the JSON is on stdout and stderr is empty, so parse stdout
    directly. With `--out -` (or no output path) the image bytes occupy stdout and the whole JSON moves to stderr.
-   In PowerShell 5.1 `2>&1` wraps native stderr into error records, so redirect `1>` and `2>` separately if you want
-   both the image and the JSON.
+   stdout hands over one image at a time, so write several targets to files. In PowerShell 5.1 `2>&1` wraps native
+   stderr into error records, so redirect `1>` and `2>` separately if you want both the image and the JSON.
 4. **Do not treat a non-zero exit code as total failure**: on partial success `captured` is greater than 0 while the
-   exit code is 7, and the images already on disk are perfectly usable.
+   exit code is 7, the images already on disk are perfectly usable, and `images[].source` tells you which channel each
+   one actually came from.
 5. **Exit code 0 does not mean the picture is correct**: protected content and some player drivers hand you black
    frames while reporting success. Verify pixels to be sure — for instance put a solid-colour window on top of the
    target and capture again, then check whether you got the target's content or the cover; at minimum compare
@@ -353,7 +398,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 105 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 107 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
@@ -362,6 +407,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows |
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
 | `.\tests\screen.ps1` | On-device whole-screen test: consent behaviour + three screen channels + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing |
+| `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8 (only its own windows are captured) |
 | `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel → open the screenshot folder → end just that PID |
 | `.\scripts\mkreadme.ps1` | Regenerates the help block of all four READMEs from each language's `--help` output |
 

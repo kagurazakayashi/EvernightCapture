@@ -15,6 +15,7 @@ struct CapturedImage {
     uint32_t width = 0;
     uint32_t height = 0;
     std::wstring format;       // "png" 等
+    std::wstring source;       // 真正产出这帧的通道名（auto 回退后可能是链尾那一条）
     std::wstring hwndHex;
     uint32_t pid = 0;
     std::wstring title;

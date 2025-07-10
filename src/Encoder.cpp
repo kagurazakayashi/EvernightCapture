@@ -30,11 +30,13 @@ std::wstring HresultText(winrt::hresult hr) {
 }
 
 bool Err(Diagnostic* out, const wchar_t* code, std::wstring message, const std::wstring& format,
-         const std::wstring& detail) {
+         const std::wstring& detail, const std::wstring& hresult = std::wstring()) {
     if (!out) return false;
     const std::wstring hint = Msgf(L"enc.available", AvailableFormats());
     *out = Diagnostic{code, std::move(message), L"--format", format,
-                      detail.empty() ? hint : Msgf(L"enc.detail", hint, detail)};
+                      detail.empty() ? hint : Msgf(L"enc.detail", hint, detail),
+                      std::wstring(), std::wstring(), stages::kEncode};
+    out->hresult = hresult;   // 只在真拿得到 HRESULT 的那条文路上出现，别填个 0 进去
     return false;
 }
 
@@ -87,6 +89,12 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality,
         encoder.FlushAsync().get();
 
         const uint64_t size = stream.Size();
+        if (size == 0) {
+            // 编码器一声不响地给了 0 字节：这也是一次失败，必须留下诊断，
+            // 否则调用方拿到的 errors 里会出现一条没有 code 的条目。
+            return Err(err, codes::kEncoderUnavailable, Msg(L"enc.failed"), label,
+                       Msg(L"enc.empty"));
+        }
         bytes->assign(static_cast<size_t>(size), 0);
         if (size > 0) {
             wss::DataReader reader(stream.GetInputStreamAt(0));
@@ -96,7 +104,7 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality,
         return !bytes->empty();
     } catch (const winrt::hresult_error& e) {
         return Err(err, codes::kEncoderUnavailable, Msg(L"enc.failed"), label,
-                     Msgf(L"cap.hresult", HresultText(e.code())));
+                     Msgf(L"cap.hresult", HresultText(e.code())), HresultText(e.code()));
     } catch (const std::exception&) {
         return Err(err, codes::kEncoderUnavailable, Msg(L"enc.exception"), label, std::wstring());
     }

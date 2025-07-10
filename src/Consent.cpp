@@ -35,9 +35,12 @@ std::wstring TargetList(const std::vector<ScreenInfo>& screens) {
 }
 
 Diagnostic Refused(const std::vector<ScreenInfo>& screens, const wchar_t* key,
-                   const std::wstring& hint) {
-    return Diagnostic{codes::kAccessDenied, Msg(key), L"--monitor",
-                      std::to_wstring(screens.size()), hint};
+                   const std::wstring& hint, DWORD gle = 0) {
+    Diagnostic d{codes::kAccessDenied, Msg(key), L"--monitor", std::to_wstring(screens.size()),
+                 hint};
+    d.stage = stages::kConsent;
+    d.win32 = gle;
+    return d;
 }
 
 }  // namespace
@@ -56,6 +59,9 @@ bool AskScreenCaptureConsent(const Options& opt, const std::vector<ScreenInfo>& 
     const int answer = MessageBoxW(nullptr, body.c_str(), Msg(L"consent.title").c_str(),
                                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND |
                                        MB_TOPMOST);
+    // MessageBoxW 返回 0 = 根本没弹出框（服务会话、没有交互桌面）。这时没有人能回答"是"，
+    // 按拒绝处理。
+    const DWORD gle = answer == 0 ? LastError() : 0;   // 先取码：拼文案会读资源，会把错误码覆盖
     if (answer == IDYES) {
         Sleep(kDialogSettleMs);
         return true;
@@ -64,11 +70,9 @@ bool AskScreenCaptureConsent(const Options& opt, const std::vector<ScreenInfo>& 
         if (err) *err = Refused(screens, L"consent.denied", Msg(L"consent.denied_hint"));
         return false;
     }
-    // 返回 0：MessageBoxW 调用失败（不在交互桌面、窗口站没有桌面、安全桌面里）。
-    // 这时没有人能回答"是"，按拒绝处理。
     if (err) {
         *err = Refused(screens, L"consent.unavailable",
-                       Msgf(L"consent.unavailable_hint", Win32ErrorText()));
+                       Msgf(L"consent.unavailable_hint", Win32ErrorText(gle)), gle);
     }
     return false;
 }

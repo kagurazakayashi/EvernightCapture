@@ -33,12 +33,21 @@ struct CapturedFrame {
 // GetWindowRect 给的是缩放后坐标，截出来就是错位或只有一半。
 void EnsureDpiAware();
 
-std::wstring Win32ErrorText();
+// 失败点当场取错误码：文案要用 Msg / Msgf 去读资源，那一路 API 会把上一次的 GetLastError
+// 覆盖掉，所以"取码"必须排在拼文案之前，由调用方显式做一次。
+inline DWORD LastError() { return GetLastError(); }
+
+// 只负责把已经取到的码写成给人看的文字（不再自己去问 GetLastError）
+std::wstring Win32ErrorText(DWORD gle);
 std::wstring HResultText(HRESULT hr);
 
-// 统一的取帧失败诊断：code = capture.failed，option = --capture，value = 通道名
+// 统一的取帧诊断：option = --capture，value 与 backend 都是这条通道的名字。
+// code 默认 capture.failed；帧超时与窗口消失各有自己的稳定码（调用方处理方式不同：
+// 前者等一会儿还能重试，后者要重新枚举窗口）。stage 在这里定为 capture，
+// target 由流水线补（只有它知道当前处理的是哪个目标）。
 void CaptureError(Diagnostic* err, const wchar_t* channel, const std::wstring& message,
-                  const std::wstring& hint);
+                  const std::wstring& hint, const wchar_t* code = codes::kCaptureFailed,
+                  DWORD gle = 0, HRESULT hr = S_OK);
 
 // 32 位自上而下 DIB 段：内存布局即 BGRA8，行距恒等于 width * 4
 class Dib {

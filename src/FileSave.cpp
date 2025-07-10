@@ -84,10 +84,14 @@ std::wstring BaseOf(const std::wstring& path) {
     return slash == std::wstring::npos ? path : path.substr(slash + 1);
 }
 
-// 出问题时把 Win32 错误码拼进提示里。gle 必须在任何其它 API 之前取，否则就被覆盖了。
+// 出问题时把 Win32 错误码同时写成给人看的提示与机器可判的字段。
+// gle 必须在失败点立刻取走（任何 Msg / 资源读取都会把它覆盖掉），所以由调用方传进来。
 Diagnostic IoError(const std::wstring& path, const wchar_t* messageKey, DWORD gle) {
-    return Diagnostic{codes::kWriteFailed, Msg(messageKey), L"--out", path,
-                      Msgf(L"err.win32_code", gle)};
+    Diagnostic d{codes::kWriteFailed, Msg(messageKey), L"--out", path,
+                 Msgf(L"err.win32_code", gle)};
+    d.stage = stages::kWrite;
+    d.win32 = gle;
+    return d;
 }
 
 }  // namespace
@@ -99,7 +103,8 @@ bool SaveFileAtomic(const std::wstring& path, const std::vector<uint8_t>& bytes,
         // 调用方给的不是绝对路径，落到哪由当前目录决定，也就无法保证同卷改名。
         if (err) {
             *err = Diagnostic{codes::kWriteFailed, Msg(L"io.open_failed"), L"--out", path,
-                              Msg(L"io.not_absolute")};
+                              Msg(L"io.not_absolute"), std::wstring(), std::wstring(),
+                              stages::kWrite};
         }
         return false;
     }
@@ -134,7 +139,9 @@ bool SaveFileAtomic(const std::wstring& path, const std::vector<uint8_t>& bytes,
             const std::wstring hint = createGle == ERROR_PATH_NOT_FOUND
                                           ? Msg(L"io.dir_missing")
                                           : Msgf(L"io.open_failed_hint", Msgf(L"err.win32_code", createGle));
-            *err = Diagnostic{codes::kWriteFailed, Msg(L"io.temp_failed"), L"--out", path, hint};
+            *err = Diagnostic{codes::kWriteFailed, Msg(L"io.temp_failed"), L"--out", path, hint,
+                              std::wstring(), std::wstring(), stages::kWrite};
+            err->win32 = createGle;
         }
         return false;
     }
@@ -168,11 +175,13 @@ bool SaveFileAtomic(const std::wstring& path, const std::vector<uint8_t>& bytes,
         temp.Dismiss();
         return true;
     }
-    const DWORD gle = GetLastError();
+    const DWORD gle = GetLastError();   // 先取码：下面拼文案要读资源，错误码会被覆盖
     if (!overwrite && (gle == ERROR_FILE_EXISTS || gle == ERROR_ALREADY_EXISTS)) {
         if (err) {
             *err = Diagnostic{codes::kFileExists, Msg(L"io.file_exists"), L"--no-overwrite", path,
-                              Msg(L"io.file_exists_hint")};
+                              Msg(L"io.file_exists_hint"), std::wstring(), std::wstring(),
+                              stages::kWrite};
+            err->win32 = gle;
         }
         return false;
     }

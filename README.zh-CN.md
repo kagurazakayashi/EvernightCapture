@@ -99,7 +99,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --capture, -C <method>          wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)
 
 输出
-  --out, -o <path|->              输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -。整批输出名在取帧之前一次算好，两个目标算出同一个名字时整批报错，不会静默覆盖
+  --out, -o <path|->              输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -。整批输出名在取帧之前一次算好，两个目标算出同一个名字时整批报错，不会静默覆盖。标准输出一次只能交付一张图，命中多个目标时整批报参数错误、一张都不截
   --format, -f <name>             强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png
   --quality <1-100>               JPEG 质量，默认 100
   --no-overwrite                  目标已存在时不覆盖，报错退出（不给取值就是禁止覆盖）；写 --no-overwrite=false（0 / no / n / off）取消这条禁令，=true / 1 / yes / y / on 与不给取值同义。重复给出时最后一个生效
@@ -160,6 +160,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
       "width": 1247,
       "height": 607,
       "format": "png",
+      "source": "wgc",
       "hwnd": "0x001B0C48",
       "pid": 31468,
       "title": "D:\\share\\EvernightCapture - 文件资源管理器",
@@ -173,6 +174,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 屏幕图（`--monitor` 且没有窗口条件时）没有窗口可归属，换成 `monitor` / `device` / `primary` 三个字段，
 `hwnd` / `pid` / `title` / `class` / `image` 整个不出现——调用方按 `monitor` 是否存在区分两种图。
+两种图都带 `source`，写的是真正出图的那条通道（`--capture auto` 回退成功时它是链上命中的那一条，不是 `auto`）。
 
 出错（`--hwnd` 写了非法值）：
 
@@ -198,21 +200,39 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    `notes` 仅非空且未 `--quiet` 时出现；`input` 仅 `--verbose` 时出现。调用方先看 `errors` 再读 `images`。
 2. 诊断项里为空的字段整个键省略，不会输出 `null` 占位。
 3. `code` 值稳定：`cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`，只增不改名。
+   取帧失败里"帧超时"（`capture.frame_timeout`）与"窗口已经没了"（`capture.window_gone`）各有自己的码，
+   不再和一般的 `capture.failed` 混在一起——两者的下一步动作不同（前者可以等一会儿重试，后者要重新枚举）。
 4. 通道：默认全部写 stdout、stderr 保持空；一旦图片占用标准输出（显式 `--out -`，或根本没给输出路径），
-   JSON 整体改走 stderr，两个通道永不混流。
+   JSON 整体改走 stderr，两个通道永不混流。连渲染结果本身都出异常时的兜底诊断也一律走 stderr（那时
+   无法确定图片是否已经占了 stdout）。**结果送不到约定那条流就是失败**：退出码变成 `8`，即使另一条流
+   写成功也不改回原来的值——调用方按约定流读，读不到就是没拿到。
 5. `captured` 等于 `images` 条数；一个窗口一张图，`--monitor all` 则一块屏一张图。
-6. **保存**：整批最终输出路径在取第一帧之前（也在整屏确认框之前）一次算好。两个目标算出同一个名字时报
+   **标准输出一次只能交付一张图**：命中多个目标（`--all` 或多个屏幕）又要写 stdout 时，整批在弹确认框和
+   取第一帧之前就被拒（`cli.stdout_multiple_targets` + 退出码 1），一张都不截、一个文件都不写。判据是
+   实际命中的目标数，所以 `--all` 只命中一个窗口时照样可以写 stdout。多张 PNG 首尾拼在同一条流上不是一幅
+   可解码的图像，工具也不会把 `-` 当文件名前缀算出 `-_1.png` 那种本地文件。
+6. `images[].source` 与错误里的 `backend` 写的都是**真实那条通道**：`--capture auto` 回退成功时 `source`
+   是链上那一条而不是 `auto`；回退链全失败时 `backend` 列出实际试过的几条。
+7. **保存**：整批最终输出路径在取第一帧之前（也在整屏确认框之前）一次算好。两个目标算出同一个名字时报
    `io.output_collision`（退出码 8），整批一张都不截、一个文件都不写 —— 既不替调用方改名，也不让第二张盖掉第一张。
    每张图先写目标目录下唯一的临时文件，写全并刷新之后才改名成目标名，所以写失败不会清空也不会删掉旧文件。
    `--no-overwrite` 时“目标在不在”由那一次不许替换的改名当场判定（`io.file_exists`），不做有竞态的预检。
+8. 每一步的失败诊断还带着它自己的坐标，只在这一步真拿到了值时才出现：`target`（哪个目标，窗口是
+   `0x…` 句柄、屏幕是设备名）、`backend`（哪条通道）、`stage`（`consent` / `capture` / `encode` / `write` /
+   `stdout`）、`hresult`（`0x80070005` 这样的原值）、`win32`（`GetLastError` 的原值）。`message` 随 `--lang`
+   变，这几个不变；用户拒绝（`capture.access_denied` + `stage=consent`）与技术性访问被拒（`capture.failed`
+   带 `hresult=0x80070005`）因此可以分开判。黑帧不会被断言成 DRM——文案只列出几种可能。
 
 ## 退出码
 
 `0` 成功 / `1` 参数错 / `2` 未给条件 / `3` `--help` / `4` 无匹配窗口 / `5` 匹配多个窗口 /
 `6` 目标受保护或被拒绝 / `7` 截图失败 / `8` 写文件失败 / `9` 内部异常。新增语义只会追加编号。
+`8` 也覆盖"结果 JSON 送不到约定那条流"（写 stdout / stderr 失败），那种情况下另一条流上补发的文字不算交付。
 
 退出码与 body 是两套独立信号，`2`/`3`/`4`/`5` 是正常控制流而不是崩溃。**允许部分成功**：`--all` 或
 `--monitor all` 里某些目标失败时，已写出的图仍在 `images` 里（`captured` 可以大于 0），但退出码是 `7`。
+某个后端崩了（抛异常而不是返回失败）也只作废它所在的那一个目标：前面的图留着，这条失败以 `capture.failed`
+带在 `errors` 里。内存耗尽、显卡设备被移除这类换后端也不会有区别的错误会明确终止整批，而不是一条条试下去。
 
 ## 取图方式
 
@@ -243,7 +263,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 - 点"是"之后会等 1 秒再取帧，避免把对话框的关闭动画拍进图里；确认框本身不会出现在图中。
 - `--dry-run` 和"按屏过滤窗口"模式不取整屏画面，所以不弹框。
 - 想区分"被人拒绝"和"路径没给对"就必须显式给 `--out`：不给输出路径时任何失败都塌成
-  `cli.missing_output` + 退出码 1，真实原因不外泄。
+  `cli.missing_output` + 退出码 1，真实原因不外泄。唯一的例外是"多个目标要共用 stdout"
+  （`cli.stdout_multiple_targets`），那条本来就是参数错，报成缺少输出路径反而会把人引向补 `--out`。
+- 多块屏 + 写 stdout（`--monitor all --out -`）在弹框之前就被拒：一次确认换不来"每块屏一张图挤进同一条流"。
+  只有一块屏时 `--monitor all` 是一个目标，那条路仍然按单张走 stdout。
 
 `--monitor`（省略取值）与 `--monitor primary` 是主屏，`--monitor 2` 是第 2 块屏，`--monitor all` 每块屏一张。
 编号按 `EnumDisplayMonitors` 的顺序、从 1 起；越界报 `match.monitor_out_of_range`（退出码 1），`hint` 里列出本机全部屏幕。
@@ -270,7 +293,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 `io.output_collision`。`%d` / `%t` 用的是本批次那一次时钟，所以跨午夜的一批也全用同一个日期与时间。规划出的名字
 按绝对路径、不区分大小写、逐码元比较（NTFS 就是这样看名字的）；字符串比较看不见的别名（8.3 短名、硬链接、目录
 junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原子操作判定，所以预检认不出的占用同样不会被静默替换。
-`--out -` 不是路径：不展开、不补扩展名、不查碰撞，整批图按顺序写进同一条流。
+`--out -` 不是路径：不展开、不补扩展名、不查碰撞，而且一次只交付一张图——占位符在这里没有任何作用，
+命中多个目标又要写 stdout 时整批报 `cli.stdout_multiple_targets`+1（见《输出形式》的规则 5）。
 
 ## 文案语言
 
@@ -293,13 +317,18 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 2. **按 `errors[].code` 分支，不要匹配 `message` 文字**（那随 `--lang` 变）。常用的几条：
    `match.no_window`（4，条件太窄或目标最小化）、`match.ambiguous_window`（5，从 `hint` 的候选里挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候选）、
-   `cli.missing_output`（1）、`cli.invalid_format`（1）、`capture.failed`（7）、`capture.access_denied`（6）、
+   `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多个目标要共用
+   同一条 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等帧超时）、
+   `capture.window_gone`（7，目标已经没了，该重新枚举）、`capture.access_denied`（6）、
    `io.write_failed`（8，目录不存在或提交失败）、`io.file_exists`（8，配合 `--no-overwrite`）、
    `io.output_collision`（8，两个目标算出同一个输出名，整批没截图也没写文件）。
+   每条错误还带 `target` / `backend` / `stage` / `hresult` / `win32`（见上一节），拿到多少写多少，
+   不必从 `message` 里抠。
 3. **读流要分情况**：给 `--out <文件>` 时 JSON 在 stdout、stderr 是空的，直接解析就行；用 `--out -` 或没给输出路径时
-   图片字节占了 stdout，JSON 整体改到 stderr。PowerShell 5.1 里 `2>&1` 会把 stderr 包装成错误记录，想同时拿图片和
-   JSON 就 `1>`/`2>` 分开重定向。
-4. **别把非 0 退出码当全盘失败**：部分成功时 `captured` 大于 0 而退出码是 7，已经落地的图照样可用。
+   图片字节占了 stdout，JSON 整体改到 stderr。stdout 一次只交付一张图，多个目标请写到文件。PowerShell 5.1 里
+   `2>&1` 会把 stderr 包装成错误记录，想同时拿图片和 JSON 就 `1>`/`2>` 分开重定向。
+4. **别把非 0 退出码当全盘失败**：部分成功时 `captured` 大于 0 而退出码是 7，已经落地的图照样可用；
+   `images[].source` 会告诉你那张图实际出自哪条通道。
 5. **退出码 0 不等于画面是对的**：受保护内容、某些播放器驱动会在成功返回的同时给你黑帧。要判正确性就校验像素——
    比如把一个纯色窗口盖住目标再截，看拿到的是目标内容还是遮挡物；至少比对 `width`/`height` 与目标窗口矩形。
 6. **整屏要先问人**：`--monitor` 截整屏会弹模态框并阻塞进程直到人答复，没有旁路。自动化流程里别把它当"随手能拿的
@@ -311,7 +340,8 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 105 例输出契约断言 + 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\cli.ps1` | 107 例输出契约断言 + 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒（含隐式 stdout 不被折叠成"缺少输出路径"）、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8（只截自建的窗口） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
 | `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
 | `.\tests\build-path.ps1` | 构建路径判据：离线一层验临时批处理正文只能是 ASCII、VS 环境导入失败在跑 cmake 之前就报错；真机一层在含中文、空格、括号、百分号的目录里跑 Release / Debug / RelWithDebInfo 与 `-Clean`，再把 `%TEMP%` 换成中文目录构建一次（不截图；`-OfflineOnly` 只跑离线那层） |
