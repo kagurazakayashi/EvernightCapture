@@ -80,6 +80,18 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         j.Key(L"height").Value(static_cast<long long>(img.height));
         OptString(j, L"format", img.format);
         OptString(j, L"source", img.source);   // 实际出图的通道，auto 时与请求值不同
+        // 来路这三项是隐私判据：这一帧是"窗口自己的画面"还是"屏幕上那块区域"，以及那块区域
+        // 在哪。调用方（包括 AI）必须能看到它，--quiet 也不抑制（images 段从来不被抑制）。
+        OptString(j, L"path", img.path);
+        OptString(j, L"scope", img.scope);
+        if (img.rect.right > img.rect.left && img.rect.bottom > img.rect.top) {
+            j.Key(L"rect").Obj()
+                .Key(L"x").Value(static_cast<long long>(img.rect.left))
+                .Key(L"y").Value(static_cast<long long>(img.rect.top))
+                .Key(L"width").Value(static_cast<long long>(img.rect.right - img.rect.left))
+                .Key(L"height").Value(static_cast<long long>(img.rect.bottom - img.rect.top))
+                .End();
+        }
         if (img.screen) {
             // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
             j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
@@ -124,6 +136,9 @@ void WriteInputEcho(Json& j, const Options& opt) {
     // 覆盖策略也回显出来：--no-overwrite 的布尔写法（裸写 / =true / =false）只有这样才能
     // 在不截图的情况下被断言（布尔别名一共有十种写法）。
     j.Key(L"overwrite").Value(opt.overwrite);
+    // --yes 同理：它是"跳过窗口内容路径的确认"这个决定的最终结果，重复给出时最后一个生效，
+    // 断言它不必真的去截一张图（也不必打扰人）。
+    j.Key(L"yes").Value(opt.yes);
     if (opt.monitor.given) {
         if (opt.monitor.all) j.Key(L"monitor").Value(L"all");
         else if (opt.monitor.ordinal == 0) j.Key(L"monitor").Value(L"primary");
@@ -145,6 +160,7 @@ const wchar_t* GroupTitle(const std::wstring& group) {
     if (group == L"match") return L"grp.match";
     if (group == L"pick") return L"grp.pick";
     if (group == L"capture") return L"grp.capture";
+    if (group == L"consent") return L"grp.consent";
     if (group == L"output") return L"grp.output";
     return L"grp.behavior";
 }
@@ -172,7 +188,8 @@ std::wstring HelpText() {
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
-    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"output", L"behavior"};
+    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"consent", L"output",
+                               L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);
@@ -199,10 +216,12 @@ std::wstring HelpText() {
     t += Msg(L"help.exit1") + L"\r\n";
     t += Msg(L"help.exit2") + L"\r\n";
     t += Msg(L"help.status") + L"\r\n";
+    // 授权这件事写在选项目录里（grp.consent 那一行 + --yes 的说明），不另立一段正文：
+    // 免得同一个规矩在两处各写一遍，改了一处忘了另一处。
     t += L"\r\n";
     t += Msg(L"help.examples") + L"\r\n";
     for (const wchar_t* key : {L"help.example1", L"help.example2", L"help.example3", L"help.example4",
-                               L"help.example5", L"help.example6"}) {
+                               L"help.example5", L"help.example6", L"help.example7"}) {
         t += L"  " + Msg(key) + L"\r\n";
     }
     return t;
@@ -252,13 +271,20 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
 
     // 没给输出路径时图片字节已经占了 stdout，这条"偷懒路径"失败就只回一条
     // cli.missing_output：让调用方补 --out 比堆一串原因更有用（用户明确要求）。
-    // 唯一的例外是"多个目标要写到同一条 stdout"——那本身就是参数用法错误，
+    // 例外一："多个目标要写到同一条 stdout"——那本身就是参数用法错误，
     // 报成"缺少输出路径"会把人引向补 --out（补了也没用），必须原样送出去。
+    // 例外二：确认这一关的结果（被答"否"、或这个会话根本没有可交互的桌面）。塌成"缺少输出
+    // 路径"会让调用方以为补个 --out 就成功，于是又发起一次截图 —— 而真实原因是没有人的同意。
     const bool stdoutRejected =
         std::any_of(errors.begin(), errors.end(), [](const Diagnostic& d) {
             return d.code == codes::kStdoutMultipleTargets;
         });
-    if (opt.outputImplicitStdout && code != EX_OK && !stdoutRejected) {
+    const bool consentRefused =
+        std::any_of(errors.begin(), errors.end(), [](const Diagnostic& d) {
+            return d.stage == stages::kConsent &&
+                   (d.code == codes::kAccessDenied || d.code == codes::kConsentUnavailable);
+        });
+    if (opt.outputImplicitStdout && code != EX_OK && !stdoutRejected && !consentRefused) {
         images.clear();
         notes.clear();
         errors = {Diagnostic{codes::kMissingOutput, Msg(L"cli.missing_output"), L"--out", L"-",

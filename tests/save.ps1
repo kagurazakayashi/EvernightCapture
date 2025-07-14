@@ -118,7 +118,7 @@ function Start-Shot {
     foreach ($h in $Hwnds) { $argv += @('--hwnd', $h) }
     if ($All) { $argv += '--all' }
     if ($Extra) { $argv += $Extra }
-    $argv += @('--out', $Out)
+    $argv += @('--yes', '--out', $Out)
     # 工作目录设成输出目录，任何"以相对路径落地"的东西都跑不掉；目录本身不存在时不设，
     # 否则子进程连启动都会失败，判据就变成"起不来"而不是"写不进去了"。
     $workdir = if ($Out -eq '-') { $run.Path } else { Split-Path -Parent $Out }
@@ -249,7 +249,7 @@ try {
         $watch = [Diagnostics.Stopwatch]::StartNew()
         $r = Invoke-EcProcess -FilePath $Exe -TimeoutMs 30000 -ProbeTimeoutMs 12000 `
              -WorkingDirectory $killDir `
-             -Arguments @('--hwnd', $bigHex, '--format', 'bmp', '--out', $killTarget) `
+             -Arguments @('--hwnd', $bigHex, '--format', 'bmp', '--yes', '--out', $killTarget) `
              -Probe {
                 param($p)
                 if ($watch.ElapsedMilliseconds -lt $delay) { return $false }
@@ -292,7 +292,7 @@ try {
     $n = 0
     foreach ($n in 1..5) {
         $p = Start-Process -FilePath $Exe `
-             -ArgumentList (Format-EcWindowsArgv -Arguments @('--hwnd', $soloHex, '--no-overwrite', '--out', $race)) `
+             -ArgumentList (Format-EcWindowsArgv -Arguments @('--hwnd', $soloHex, '--no-overwrite', '--yes', '--out', $race)) `
              -NoNewWindow -PassThru -WorkingDirectory $dir3 `
              -RedirectStandardOutput (Join-Path $dir3 "log-$n.out") `
              -RedirectStandardError (Join-Path $dir3 "log-$n.err")

@@ -156,13 +156,22 @@ bool GrabViaPrintWindow(const ThumbHost& host, CapturedFrame* out, Diagnostic* e
         return false;
     }
     dib.ToFrame(kChannel, out);
+    out->path = paths::kDwmThumbnail;
     return true;
+}
+
+// 宿主窗口摆在屏幕上之后要拷的那块矩形：以整窗外框（含 DWM 那圈不可见边框）为左上角，
+// 尺寸用宿主窗口自己的大小 —— 也就是实际会从屏幕上读走的那一片。
+RECT OverlayRect(const ThumbHost& host, const RECT& full) {
+    const RECT rc = host.Rect();
+    return RECT{full.left, full.top, full.left + (rc.right - rc.left),
+                full.top + (rc.bottom - rc.top)};
 }
 
 }  // namespace
 
-bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedFrame* out,
-                               Diagnostic* err) {
+bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGate& gate,
+                               const std::wstring& targetKey, CapturedFrame* out, Diagnostic* err) {
     const HWND src = reinterpret_cast<HWND>(hwndValue);
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
@@ -185,12 +194,18 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedF
     Diagnostic firstErr;
     if (GrabViaPrintWindow(host, &frame, &firstErr) && !FrameIsFlat(frame)) {
         *out = std::move(frame);
-        return true;
+        return true;   // 窗口内容路径：屏幕上没有任何动静，也不需要桌面凭证
     }
 
     // 退路：PW_RENDERFULLCONTENT 要 Win8.1+，更早的系统只能把宿主窗口盖到目标位置上，
-    // 再从屏幕拷那块矩形。
-    host.MoveOver(at);
+    // 再从屏幕拷那块矩形。这一条读的是桌面像素 —— 先回授权判定器重新确认，
+    // 人点头之后才把宿主窗口摆上屏幕（不然确认框开着的时候屏幕上就多了个东西）。
+    const RECT full = WindowFullRect(src);
+    const RECT over = OverlayRect(host, full);
+    std::optional<DesktopPermit> permit;
+    if (!gate.AuthorizeDesktop(paths::kDwmScreen, targetKey, over, &permit, err)) return false;
+
+    host.MoveOver(full);
     PumpMessagesFor(wait);
     if (!host.OnTopOfItsRect()) {
         if (err) {
@@ -202,7 +217,12 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, CapturedF
         }
         return false;
     }
-    return GrabScreenRect(host.Rect(), kChannel, out, err);
+    if (!permit) {   // 判定器说可以却没给凭证：宁可什么都不截
+        CaptureError(err, kChannel, Msg(L"cap.consent.stale"), Msg(L"cap.consent.stale_hint"),
+                     codes::kConsentStale);
+        return false;
+    }
+    return GrabScreenRect(host.Rect(), kChannel, paths::kDwmScreen, *permit, out, err);
 }
 
 }  // namespace ecapture

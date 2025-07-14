@@ -26,8 +26,9 @@ previously implemented `magnification` channel was removed (reasons in AGENTS.md
 - **Six capture channels**: capture a window that is covered by something else (`wgc` / `dwm` / `printwindow`), or
   deliberately copy only the pixels visible on screen (`bitblt` / `duplication`)
 - **Many windows at once**: `--all` saves one image per matched window, named with placeholders like `%i`
-- **Human consent for whole-screen capture**: `--monitor` on a whole screen always shows a modal confirmation
-  dialog first — **there is no command-line or environment-variable bypass**
+- **Screenshot authorization**: any capture that really grabs a frame asks in a modal dialog first, reliable
+  window paths included; `--yes` skips that ask **only** for paths whose frame is bound to the selected window
+  itself — anything sampling desktop pixels always needs a person and no switch can skip it
 - **Four message languages**: `zh-CN` / `zh-TW` / `en` / `ja`, defaulting to the system display language, all
   embedded as resources inside the exe
 - **Machine-readable JSON**: capture results and errors only — no tool name, version, schema or argument echo
@@ -39,11 +40,11 @@ both automatically.
 
 ```powershell
 .\build.ps1                                  # Release, output: build\ecapture.exe
-ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
+ECAPTURE.EXE --process notepad.exe D:\shots\epad.png   # a dialog asks before the frame is taken
 ```
 
-The output directory must **already exist** — the tool never creates one. To see what would be matched first
-(no capture, no file written):
+The output directory must **already exist** — the tool never creates one. To see what would be matched first (no
+capture, no file written, and no consent dialog):
 
 ```powershell
 ECAPTURE.EXE --process notepad.exe --dry-run --out D:\shots\_probe.png
@@ -64,7 +65,10 @@ ECAPTURE.EXE --pid 12345 --title-contains Report --all "D:\shots\rpt_%i.png"
 # Image bytes on stdout (JSON then moves to stderr)
 ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
 
-# Whole screen: always asks for consent, no skip switch exists
+# Window capture without being asked: --yes only covers a path that reads the window itself
+ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
+
+# Whole screen: that path reads desktop pixels, so a person has to answer -- --yes cannot skip it
 ECAPTURE.EXE --monitor primary --out D:\shots\screen.png
 ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 ```
@@ -86,7 +90,7 @@ Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all 
        ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
 
 Capture target (without --monitor only the window conditions below are used)
-  --monitor, -m [<n|primary|all>] Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole-screen capture asks for consent in a dialog first, and there is no switch that skips it
+  --monitor, -m [<n|primary|all>] Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
 
 Window match conditions (repeat one option for OR, combine different options with AND)
   --hwnd <handle>                 Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x
@@ -106,6 +110,9 @@ When several windows match (mutually exclusive)
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
   --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+
+Capture authorization (a real capture asks first; --yes skips window-content paths)
+  --yes, -y                       Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 
 Output
   --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
@@ -136,6 +143,7 @@ Examples:
   ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
   ECAPTURE.EXE --process notepad.exe --out - > snap.png
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
+  ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -174,6 +182,14 @@ A window image (real shape of the output; the numbers come from one actual captu
       "height": 607,
       "format": "png",
       "source": "wgc",
+      "path": "wgc",
+      "scope": "window",
+      "rect": {
+        "x": 688,
+        "y": 29,
+        "width": 1247,
+        "height": 607
+      },
       "hwnd": "0x001B0C48",
       "pid": 31468,
       "title": "D:\\share\\EvernightCapture - File Explorer",
@@ -187,7 +203,9 @@ A window image (real shape of the output; the numbers come from one actual captu
 
 A screen image (`--monitor` with no window conditions) has no window to attribute, so it swaps those fields for
 `monitor` / `device` / `primary`, and `hwnd` / `pid` / `title` / `class` / `image` do not appear at all — callers
-tell the two kinds apart by checking whether `monitor` exists.
+tell the two kinds apart by checking whether `monitor` exists. Both kinds carry `path` / `scope` / `rect`: a whole
+screen is `screen.wgc` / `screen.bitblt` / `screen.duplication` with `scope` `desktop`, while `--monitor <n>`
+together with window conditions still produces window images with `scope` `window`.
 
 An error (`--hwnd` given a garbage value):
 
@@ -212,7 +230,11 @@ Rules:
 1. `captured` and `images` are always present (`[]` when empty); `errors` appears whenever it is non-empty
    (`--quiet` cannot suppress it); `notes` appears only when non-empty and not `--quiet`; `input` appears only with
    `--verbose`. Look at `errors` before reading `images`.
-2. Empty fields of a diagnostic drop the whole key — there is no `null` placeholder.
+2. Empty fields of a diagnostic drop the whole key — there is no `null` placeholder. The three fields describing
+   where a frame came from are the one thing never dropped by `--quiet`: every image carries `path` (the internal
+   route that really ran — `wgc`, `printwindow`, `dwm.thumbnail`, `dwm.screen`, `bitblt.screen`,
+   `duplication.frame`, `screen.wgc`, …), `scope` (`window` or `desktop`, derived from `path`) and `rect` (the area
+   of the screen that route was authorized to sample; omitted only when it cannot be measured).
 3. `code` values are stable: `cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
    Among frame failures, "the frame never arrived" (`capture.frame_timeout`) and "the target window is gone"
    (`capture.window_gone`) each have their own code instead of being lumped in with the generic `capture.failed` —
@@ -234,9 +256,11 @@ Rules:
 6. `images[].source` and the `backend` field of an error always name the **channel that really ran**: when
    `--capture auto` falls back successfully, `source` names the link of that chain which delivered the frame rather
    than `auto`; when the whole fallback chain fails, `backend` lists the channels that were actually tried. Window
-   images and screen images both carry `source`.
+   images and screen images both carry `source`. `images[].path` is finer than that: one channel can hold several
+   routes, and the authorization is decided by the route, not by the label — `dwm.thumbnail` reads the window's own
+   pixels while `dwm.screen` (that channel's internal fallback) reads the screen.
 7. **Saving**: the whole batch's final absolute output names are computed before the first frame is taken (and
-   before the whole-screen dialog). Two targets resolving to the same name give `io.output_collision` (exit code 8)
+   before any consent dialog). Two targets resolving to the same name give `io.output_collision` (exit code 8)
    with nothing captured and nothing written — the tool never renames behind your back and never lets image 2
    overwrite image 1. Each file is then written to a unique temporary file in the target directory and only renamed
    onto the target once everything is written and flushed, so a failed write leaves the previous file untouched; with
@@ -245,15 +269,21 @@ Rules:
    value: `target` (which target — a `0x…` handle for a window, a device name such as `DISPLAY1` for a monitor),
    `backend` (which channel), `stage` (`consent` / `capture` / `encode` / `write` / `stdout`; parse-time errors have
    no stage at all), `hresult` (a raw value shaped like `0x80070005`), `win32` (the raw `GetLastError()` number).
-   `message` follows `--lang` while these never do, so a refusal by a human (`capture.access_denied` + `stage=consent`)
-   and a technical access denial (`capture.failed` carrying `hresult=0x80070005`) can be told apart. The HRESULT and
-   Win32 code the backend handed back are passed through as they are instead of being masked by `E_FAIL` or
-   `E_NOINTERFACE`. A black frame is never asserted to be DRM — the wording only lists the possibilities.
+   `message` follows `--lang` while these never do. Consent failures are their own branch:
+   `capture.access_denied` means somebody answered "No" or closed the dialog, `capture.consent_unavailable` means
+   the dialog could not be shown at all (no interactive desktop) — both are exit code `6`, both carry
+   `stage=consent`, `target`, `backend` (the channel) and `value` (the route), and neither is a technical access
+   denial (`capture.failed` carrying `hresult=0x80070005`), which is what makes them tellable apart. A target that
+   moved or resized after the answer gives `capture.consent_stale` at `stage=capture` instead: exit code `7`,
+   retryable by selecting the target again.
+   The HRESULT and Win32 code the backend handed back are passed through as they are instead of being masked by
+   `E_FAIL` or `E_NOINTERFACE`. A black frame is never asserted to be DRM — the wording only lists the possibilities.
 
 ## Exit codes
 
 `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no matching window /
-`5` several matches / `6` target protected or refused / `7` capture failed / `8` write failed / `9` internal error.
+`5` several matches / `6` target protected, refused on the confirmation dialog, or no dialog could be shown /
+`7` capture failed / `8` write failed / `9` internal error.
 New meanings only ever append numbers.
 `8` also covers "the result JSON could not reach the agreed stream" (writing stdout or stderr failed); text delivered
 on the other stream does not count as delivery in that case.
@@ -265,8 +295,9 @@ returning a failure invalidates only the single target it was working on: the im
 chain and the remaining `--all` targets are not dragged down with it, and the failure rides in `errors` as
 `capture.failed`. Errors where switching backend would make no difference — running out of memory, the display device
 being removed (`DXGI_ERROR_DEVICE_REMOVED` / `DXGI_ERROR_DEVICE_RESET` / `DXGI_ERROR_DEVICE_HUNG`) — end the whole
-batch deliberately instead of being retried one target at a time. An access denial, or a human refusal, is never a
-reason to keep falling back.
+batch deliberately instead of being retried one target at a time. An access denial is never a reason to keep
+falling back, and neither is a refusal: once somebody answers "No" (or no dialog can be shown), the rest of that
+request is not attempted — no other backend, no second ask, while every image already completed stays in `images`.
 
 ## Capture channels
 
@@ -281,6 +312,8 @@ reason to keep falling back.
 
 - Want "the window's own content", even if something is on top of it: keep the default `wgc`. Want "what the screen
   looks like right now", occluder included: use `bitblt` or `duplication`.
+- Whether a capture has to ask a person is decided by the route it really takes, not by the value you typed — see
+  the next section.
 - A bad `--capture` value fails during parsing with `cli.unknown_capture_method` (exit code 1) and **never degrades
   to the default channel**; only `auto` may fall back, and a successful fallback emits `note.capture_channel`.
 - DRM / protected content is always black. Driver-level black bars (some players) are defeated by some channels and
@@ -289,32 +322,67 @@ reason to keep falling back.
   during parsing with `capture.unsupported` (exit code 1). In screen mode `auto` falls back wgc → duplication →
   bitblt.
 
-## Whole-screen capture and consent
+## Screenshot authorization and `--yes`
 
-`--monitor` with no window conditions captures a whole screen, and that **always shows a modal confirmation dialog
-first** (it lists the target monitor, the channel, and where the image goes). Only "Yes" lets a frame be taken:
+Any capture that really grabs a frame asks first, in a modal dialog — **the reliable window paths included**. What
+never asks, because nothing is captured: giving no conditions (text help + `2`), `--help`, `--version`, `--dry-run`,
+no match (`4`), several matches (`5`), parse errors (`1`) and output-plan failures such as `io.output_collision`
+(`8`) — every output name is settled before the first question.
 
-- **No command-line bypass and no environment-variable bypass.** If no dialog can be shown (service session, no
-  interactive desktop) it is treated as a refusal.
-- Answering "No", or being unable to show the dialog, both give `capture.access_denied` + exit code `6`, no file.
-- After "Yes" the tool waits one second before grabbing a frame, so the dialog's close animation is not captured;
-  the dialog itself never appears in the image.
-- `--dry-run` and "filter windows by monitor" take no whole-screen frame, so no dialog appears.
-- To tell "a human refused" apart from "the path was wrong" you must pass `--out` explicitly: without an output
-  path every failure collapses into `cli.missing_output` + exit code 1, and the real reason is not leaked. The single
-  exception is "several targets want to share stdout" (`cli.stdout_multiple_targets`) — that one is a bad argument to
-  begin with, and folding it into "missing output path" would only steer people towards adding `--out`.
-- Several monitors plus stdout (`--monitor all --out -`) is refused before the dialog appears: one confirmation cannot
-  buy "one image per monitor squeezed into the same stream". With only one monitor attached, `--monitor all` is a
-  single target and that path still delivers one image on stdout.
+`--yes` (`-y`, a positive boolean: bare or `=true/1/yes/y/on` turns it on, `=false/0/no/n/off` turns it off, the
+last occurrence wins, and `-v` echoes the result as `input.yes`) skips the ask for **one tier only** — the paths
+whose frame is bound to the selected window itself and never sample desktop pixels. It guarantees nothing else: not
+a valid image, not permissions, not protected content, not errors, not overwrite protection. What decides the tier
+is the route actually taken, never the channel label:
+
+| Route (`images[].path`) | Where the pixels come from | Without `--yes` | With `--yes` |
+| --- | --- | --- | --- |
+| `wgc`, `printwindow`, `dwm.thumbnail` | the selected window itself | asked once | not asked |
+| `dwm.screen`, `bitblt.screen`, `duplication.frame` | the area of the screen behind/around that window | asked | **still asked** |
+| `screen.wgc`, `screen.bitblt`, `screen.duplication` | a whole monitor | asked | **still asked** |
+
+A route that is unknown or cannot be proven is treated as a desktop route, so a new channel that forgot to register
+itself ends up stricter rather than looser. `--monitor` together with window conditions filters **windows**, so those
+images follow the window rows above.
+
+- **Nothing skips a desktop route**: not `--yes`, not `--quiet`, not an environment variable, not stdin, not who the
+  caller is. That is the whole point of the tiering.
+- One confirmation covers the batch of targets this request listed, so several backends or windows do not each
+  re-prompt. Consent is never cached across requests, never widened to a target the dialog did not show, and
+  approving a window-content capture is never approval of a desktop one: `--capture auto` with `--yes` may run the
+  window routes silently, but asks before it enters a desktop route.
+- After a refusal, a closed dialog, or an unavailable interactive desktop, the rest of that request stops — no
+  fallback to another backend, no retry, no second ask — while every image already completed stays in `images`.
+- If a target's area moves or the monitor topology changes, the authorization covering it is void and the tool asks
+  again; a frame already bound to the old area gives `capture.consent_stale` (exit code `7`, retry by selecting the
+  target again).
+- The dialog puts the default focus on "No" and lists the targets with their areas, the route about to be taken, each
+  expanded absolute output path (or "standard output"), and whether other windows can end up in the image; when the
+  route reads the desktop it also says out loud that the `--yes` passed does not apply here. It closes before the
+  frame is taken so it never appears in the picture, and after "Yes" the tool still waits about a second, because the
+  close animation is still on the DWM screen.
+- With no interactive desktop (service session, scheduled task, lock screen) a window-content capture with `--yes`
+  goes ahead normally, while a desktop route can only be refused — it never proceeds just because the dialog could
+  not be shown. A refusal gives `capture.access_denied` + `6`, an undisplayable dialog the distinct
+  `capture.consent_unavailable` + `6`; both carry `stage=consent`, `target`, `backend` and the route in `value`.
+- Being refused is **not** folded into `cli.missing_output`, so you see "a person said no" even without an output
+  path. Every other failure on that shortcut path still collapses into `cli.missing_output` + exit code `1` with the
+  real reason held back, and the only other exception stays `cli.stdout_multiple_targets` — several targets wanting
+  to share one stdout is a bad argument, and "missing output path" would only steer people towards adding `--out`.
+- Several monitors plus stdout (`--monitor all --out -`) is refused before any dialog appears: one confirmation
+  cannot buy "one image per monitor squeezed into the same stream". With only one monitor attached, `--monitor all`
+  is a single target and that path still delivers one image on stdout.
+- Honest limit: this is a plain `MessageBox`. It is mis-click protection for cooperative automation — it cannot tell
+  whether a human or a script pressed the button, and it does not defend against a same-privilege process that
+  intends to bypass it. What it does guarantee is that a caller following these rules gets asked at least once.
 
 `--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
 `--monitor all` one image per monitor. Numbers follow the `EnumDisplayMonitors` order and start at 1; out of range
 gives `match.monitor_out_of_range` (exit code 1) with every local monitor listed in `hint`. `--monitor <n>` together
 with window conditions means "filter windows by monitor" (a window overlapping that monitor matches, and a window
-spanning monitors matches on both), still producing window images and no dialog. `--monitor all` is mutually
-exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1), but disambiguation options
-such as `--all` and `--index` do not count as matching conditions and may accompany it.
+spanning monitors matches on both), still producing window images, so the window rows of the table above apply.
+`--monitor all` is mutually exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1),
+but disambiguation options such as `--all` and `--index` do not count as matching conditions and may accompany it.
 
 ## File name placeholders
 
@@ -360,8 +428,8 @@ The tool is designed for programmatic calls; following these conventions is the 
 repository also ships a skill that teaches an agent to drive it: `.agents/skills/ecapture-screenshot/` (contains
 `SKILL.md`, `references/cli-contract.md`, and a copy of the exe).
 
-1. **Probe with `--dry-run` first**, then disambiguate, then capture for real. `--dry-run` takes no frame and writes
-   no file; candidates are in `notes[0].value`, shaped like
+1. **Probe with `--dry-run` first**, then disambiguate, then capture for real. `--dry-run` takes no frame, writes no
+   file and shows no consent dialog; candidates are in `notes[0].value`, shaped like
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`. Note that `--dry-run` still requires
    `--out`, otherwise `cli.missing_output` + 1; and **`--dry-run` alone with no window condition = text help + exit
    code 2**.
@@ -370,7 +438,9 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
    candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `cli.stdout_multiple_targets` (1, several targets
    want to share one stdout), `capture.failed` (7), `capture.frame_timeout` (7, waiting for the frame ran out),
-   `capture.window_gone` (7, the target is already gone — enumerate again), `capture.access_denied` (6),
+   `capture.window_gone` (7, the target is already gone — enumerate again), `capture.access_denied` (6, somebody
+   answered "No"), `capture.consent_unavailable` (6, this session has no interactive desktop, so nobody could answer),
+   `capture.consent_stale` (7, the target moved after consent — select it again and expect a fresh ask),
    `io.write_failed` (8, directory missing or the commit failed), `io.file_exists` (8, with `--no-overwrite`),
    `io.output_collision` (8, two targets expand to the same output name — nothing was captured).
    Every error also carries `target` / `backend` / `stage` / `hresult` / `win32` (see the output rules above) as far as
@@ -380,16 +450,18 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    stdout hands over one image at a time, so write several targets to files. In PowerShell 5.1 `2>&1` wraps native
    stderr into error records, so redirect `1>` and `2>` separately if you want both the image and the JSON.
 4. **Do not treat a non-zero exit code as total failure**: on partial success `captured` is greater than 0 while the
-   exit code is 7, the images already on disk are perfectly usable, and `images[].source` tells you which channel each
-   one actually came from.
+   exit code is 7, the images already on disk are perfectly usable, and `images[].source` / `path` / `scope` name the
+   channel, the route inside it, and whether that frame is the window's own pixels or desktop pixels.
 5. **Exit code 0 does not mean the picture is correct**: protected content and some player drivers hand you black
    frames while reporting success. Verify pixels to be sure — for instance put a solid-colour window on top of the
    target and capture again, then check whether you got the target's content or the cover; at minimum compare
    `width`/`height` against the target window rectangle.
-6. **Ask a human before capturing a whole screen**: `--monitor` on a full screen pops a modal dialog and blocks the
-   process until somebody answers, with no bypass. Don't treat it as a freely available screenshot in automation;
-   tell the user first, and pass `--out` explicitly. If you only need one window, don't escalate to the whole
-   screen.
+6. **Expect a dialog before the first frame**: with no `--yes`, every real capture blocks until somebody answers,
+   plain window captures included. Add `--yes` when the target is one window and the route stays a window-content one
+   (`wgc` / `printwindow` / `dwm.thumbnail`); for `bitblt`, `duplication`, `dwm`'s screen fallback or any whole screen
+   it changes nothing and a person has to answer — tell the user first and pass `--out` explicitly. Afterwards read
+   `images[].scope`: `desktop` means other windows, open documents and notifications may be in that picture. If you
+   only need one window, do not escalate to the whole screen.
 7. To reliably target "some application", prefer `--process`/`--exe` plus `--class`; title matching is
    case-sensitive and unreliable across locales.
 
@@ -398,22 +470,25 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 107 output-contract assertions + stream separation + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 135 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms included) + stream separation + multi-language checks (all `--dry-run`, no capture) |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
 | `.\tests\smoke.ps1` | On-device smoke: capture its own test window → validate PNG size and pixel content |
 | `.\tests\save.ps1` | On-device file saving and overwrite protection: every `--no-overwrite` boolean form against a real file, batch output-name planning + collision detection (`%p` / `%n` / `%d` / `%t` / `%%` / unknown `%x` / case / cleaning / truncation), atomic commit (locked target, target is a directory, missing directory, killed mid-run), concurrent `--no-overwrite` race |
-| `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows |
+| `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows. The window-content channels run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` sample the desktop, so their image judgements need `-SimulateConsent` and are recorded as SKIP ("not verified") without it |
+| `.\tests\consent.ps1` | Consent tiers: an offline layer runs the whole `ConsentGate` state machine against an injected fake prompt (`build\ecapture-consent-tests.exe`, from `tests\consent_state.cpp`), and the on-device layer answers every dialog "No" to check which paths must ask, what a refusal reports (`code` / `stage` / `target` / `value`), that nothing lands on disk, and that `images[].path` / `scope` / `rect` are right. Never answers "Yes" on a human's behalf |
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
-| `.\tests\screen.ps1` | On-device whole-screen test: consent behaviour + three screen channels + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing |
-| `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8 (only its own windows are captured) |
-| `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel → open the screenshot folder → end just that PID |
+| `.\tests\screen.ps1` | On-device whole-screen test: three screen channels (all desktop routes, so every one of them must ask) + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing; without it the judgements that need an answer are recorded as SKIP |
+| `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8 (only its own windows are captured, the desktop-route case again needs `-SimulateConsent`) |
+| `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel (a person clicks the dialogs) → whole-screen step → open the screenshot folder → end just that PID |
 | `.\scripts\mkreadme.ps1` | Regenerates the help block of all four READMEs from each language's `--help` output |
 
 Every desktop test targets a window of its own: `tests\helper\ec_window.cs` compiles into the run's
 scratch folder and the test keeps that PID and HWND, so nothing is ever found or killed by image name and
-only the folder it created gets deleted. `tests\harness.psm1` holds the shared process invoker (argv
+only the folder it created gets deleted. Those tests pass `--yes` when they need a window image, which is the
+one case where no dialog appears at all; a desktop route is only exercised with `-SimulateConsent`, or by a person
+clicking in `tests\window_shot.bat`. `tests\harness.psm1` holds the shared process invoker (argv
 quoting, both streams drained concurrently, bounded wait, kills only its own process tree) and the scratch
 directory / window helpers, and `tests\invoker.ps1` is what proves that invoker.
 

@@ -91,6 +91,7 @@ struct Options {
     bool captureExplicit = false;                  // 是否显式指定过 --capture
 
     bool dryRun = false;              // --dry-run：只解析并打印候选信息（本阶段的默认行为）
+    bool yes = false;                 // --yes：免掉"只取所选窗口画面"那条路径的确认，桌面像素路径无效
     bool json = false;                // --json
     bool verbose = false;             // -v / --verbose（本阶段默认开启详细回显，便于验证）
     bool quiet = false;               // -q / --quiet
@@ -153,6 +154,12 @@ inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
 inline constexpr const wchar_t* kIndexOutOfRange = L"match.index_out_of_range";
 inline constexpr const wchar_t* kMonitorOutOfRange = L"match.monitor_out_of_range";
 inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
+// 确认框弹不出来（服务会话、计划任务、锁屏：那里没有人能答"是"）。它与"人答了否"分开给码，
+// 调用方才知道该换会话再来，而不是把这次失败当成"用户不让"再问一遍。退出码同样算 6。
+inline constexpr const wchar_t* kConsentUnavailable = L"capture.consent_unavailable";
+// 确认之后目标又挪了位置或变了大小：要取的矩形已经不在人批准的那一片里，于是不取。
+// 这不是拒绝（那是 capture.access_denied），而是一次可以重来的截图失败：重新枚举、再问一次。
+inline constexpr const wchar_t* kConsentStale = L"capture.consent_stale";
 inline constexpr const wchar_t* kUnsupported = L"capture.unsupported";
 inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavailable";
 inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";

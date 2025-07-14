@@ -55,7 +55,7 @@ function Invoke-EcWorkerRound {
 
         # 1) 精确命中：--hwnd 只有一个可能结果，归属字段必须全是自己的
         $shot = Get-EcRunFile -RunDir $run -Name 'own.png'
-        $r = Invoke-Ecapture @('--hwnd', (Get-EcHwndHex $window.Hwnd), '--out', $shot)
+        $r = Invoke-Ecapture @('--hwnd', (Get-EcHwndHex $window.Hwnd), '--yes', '--out', $shot)
         $o = $null
         try { $o = $r.Stdout | ConvertFrom-Json } catch { }
         Assert-Ec ($r.Exit -eq 0 -and $o -and $o.captured -eq 1) "--hwnd 精确命中失败（exit=$($r.Exit)）"
@@ -84,7 +84,7 @@ function Invoke-EcWorkerRound {
             "图 $($stats.Width)x$($stats.Height) 与窗口矩形对不上"
 
         # 4) 进程名 + 本轮类名这个组合必须只命中本轮，邻居在同名进程里也不算目标
-        $r2 = Invoke-Ecapture @('--process', 'ecwindow.exe', '--class', $Class, '--out',
+        $r2 = Invoke-Ecapture @('--process', 'ecwindow.exe', '--class', $Class, '--yes', '--out',
                                (Get-EcRunFile -RunDir $run -Name 'own2.png'))
         $o2 = $null
         try { $o2 = $r2.Stdout | ConvertFrom-Json } catch { }

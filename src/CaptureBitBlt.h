@@ -8,12 +8,14 @@
 
 namespace ecapture {
 
-// 只拿得到屏幕上当前可见的部分：被别的窗口挡住就截到挡住它的窗口，
-// 完全在屏幕外时直接报错。需要被遮挡的内容请用 wgc / dwm / printwindow。
-bool CaptureWindowBitBlt(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err);
+// 两个入口都必须带桌面凭证：这条通道只会 GrabScreenRect，取的是屏幕上那块矩形此刻的样子，
+// 即使最后正好是窗口大小，也仍然可能含其它窗口的像素（被挡住就截到挡住它的那个）。
+// 需要被遮挡的内容请用 wgc / dwm 的缩略图主路径 / printwindow。
+bool CaptureWindowBitBlt(uint64_t hwnd, uint32_t timeoutMs, const DesktopPermit& permit,
+                         CapturedFrame* out, Diagnostic* err);
 
 // 整块屏幕本来就是"屏幕上当前的样子"，不需要 z 序判定，也不受窗口位置影响。
-bool CaptureScreenBitBlt(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFrame* out,
-                         Diagnostic* err);
+bool CaptureScreenBitBlt(const ScreenInfo& screen, uint32_t timeoutMs, const DesktopPermit& permit,
+                         CapturedFrame* out, Diagnostic* err);
 
 }  // namespace ecapture

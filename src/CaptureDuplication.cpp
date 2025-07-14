@@ -294,8 +294,8 @@ bool CropDesktopToRect(CapturedFrame* desktop, const RECT& desktopCoordinates, c
 }
 
 // 公共路线：建设备 -> 挑输出 -> 取整幅桌面帧 -> 按目标矩形裁
-bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, uint32_t timeoutMs,
-                            CapturedFrame* out, Diagnostic* err) {
+bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, const wchar_t* path,
+                            uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err) {
     HRESULT deviceHr = S_OK;
     ComPtr<ID3D11Device> device = CreateCaptureDevice(&deviceHr);
     if (!device) {
@@ -321,14 +321,16 @@ bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, uint32_t
     CapturedFrame desktop;
     if (!GrabOutputFrame(device.Get(), picked, timeoutMs, &desktop, err)) return false;
     if (!CropDesktopToRect(&desktop, picked.desc.DesktopCoordinates, rect, err)) return false;
+    // 裁成窗口大小不改变来路：这一帧取自显示器合成分，仍然是桌面像素。
+    desktop.path = path;
     *out = std::move(desktop);
     return true;
 }
 
 }  // namespace
 
-bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFrame* out,
-                              Diagnostic* err) {
+bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, const DesktopPermit& permit,
+                              CapturedFrame* out, Diagnostic* err) {
     const HWND hwnd = reinterpret_cast<HWND>(hwndValue);
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
@@ -338,11 +340,12 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, CapturedFr
         CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
         return false;
     }
-    return CaptureRectDuplication(ext, nullptr, timeoutMs, out, err);
+    if (!PermitCovers(permit, ext, kChannel, err)) return false;
+    return CaptureRectDuplication(ext, nullptr, paths::kDuplicationFrame, timeoutMs, out, err);
 }
 
-bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFrame* out,
-                              Diagnostic* err) {
+bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs,
+                              const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err) {
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
 
@@ -350,7 +353,9 @@ bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs, Capt
         CaptureError(err, kChannel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.screen_rect_broken"));
         return false;
     }
-    return CaptureRectDuplication(screen.bounds, &screen, timeoutMs, out, err);
+    if (!PermitCovers(permit, screen.bounds, kChannel, err)) return false;
+    return CaptureRectDuplication(screen.bounds, &screen, paths::kScreenDuplication, timeoutMs, out,
+                                  err);
 }
 
 }  // namespace ecapture

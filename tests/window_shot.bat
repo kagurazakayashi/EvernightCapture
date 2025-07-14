@@ -168,7 +168,9 @@ IF exist "%SHOT%" DEL "%SHOT%"
 
 :s_retry
 SET /a ATTEMPT+=1
-"%ECAPTURE%" %TARG% --capture %CH% --out "%SHOT%" >nul 2>&1
+REM  --yes 只免掉"只取所选窗口画面"那几条通道的确认框（wgc / dwm 缩略图 / printwindow）。
+REM  bitblt 与 duplication 取的是屏幕像素，仍然一定会弹框 - 那一步请人自己点"是"。
+"%ECAPTURE%" %TARG% --capture %CH% --yes --out "%SHOT%" >nul 2>&1
 SET "ERC=%ERRORLEVEL%"
 IF "%ERC%"=="0" GOTO :s_file
 IF %ATTEMPT% geq 2 GOTO :s_err

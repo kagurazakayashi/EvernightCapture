@@ -18,6 +18,7 @@ help.output2	      --help / --version 以及不給條件時是文字
 help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
 help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
 help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在
+
 help.examples	示例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
 help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
@@ -25,11 +26,13 @@ help.example3	ECAPTURE.EXE --pid 12345 --title-contains 報告 --all D:\shots\rp
 help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
+help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 help.no_condition	未指定任何匹配條件，因此顯示說明。
 grp.target	截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
 grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
 grp.pick	匹配到多個視窗時（互斥）
 grp.capture	取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
+grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
 grp.output	輸出
 grp.behavior	其他
 
@@ -48,8 +51,9 @@ opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
 opt.newest	取最後建立的視窗
 opt.oldest	取最早建立的視窗
 opt.all	每個匹配視窗各存一張
-opt.monitor	截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕截圖會先彈框徵求同意，且沒有跳過確認的開關
-opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
+opt.monitor	截圖目標螢幕的編號，從 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
 opt.quality	JPEG 品質，預設 100
@@ -251,16 +255,23 @@ note.dry_run_monitor	--dry-run：已選出 %1 張螢幕，未截圖也未寫檔�
 # ---------------------------------------------------------------------------
 # 整張螢幕截圖的人工確認（src/Consent.cpp）
 # ---------------------------------------------------------------------------
-consent.title	EvernightCapture 要截取整張螢幕
-consent.head	本工具準備截取螢幕畫面，需要你同意。
-consent.targets	目標螢幕（共 %1 張）：%2
-consent.plan	擷取通道 %1，圖片寫往 %2
-consent.warning	截到的是螢幕上此刻的全部可見內容：其他視窗、開啟的檔案、通知、桌面上的文字都可能進圖。
+consent.title	EvernightCapture 要截圖，需要你同意
+consent.head	本工具準備截取畫面，需要你同意。
+consent.targets	目標（共 %1 個）：%2
+consent.plan	取圖方式 %1，實際路徑 %2，圖片寫往 %3
 consent.dialog_closes	本對話框會在截圖開始前關閉，不會出現在圖裡。
 consent.ask	允許現在截圖嗎？
-consent.denied	使用者拒絕了整張螢幕截圖
-consent.denied_hint	未擷取任何畫面，也沒有寫檔案。只要某個視窗的話，去掉 --monitor 改用視窗條件
+consent.target_line	%1（區域 %2,%3 尺寸 %4x%5）
+consent.scope_window	這條路徑只取所選視窗自己的畫面，不會從桌面取樣其它視窗的像素。
+consent.scope_desktop	這條路徑取的是螢幕上那塊區域此刻的樣子：其它視窗、開啟的文件、通知、桌面上的文字都可能進圖。
+consent.yes_desktop	你給的 --yes 對這條路徑不生效：會拍到桌面像素的截圖必須問人。
+consent.yes_window	只想以後不被問：這類只取視窗畫面的路徑可以帶 --yes（會拍到桌面的路徑仍然一定要問）。
+consent.more_targets	另有 %1 個目標未列出
+consent.denied	使用者拒絕了這次截圖
+consent.denied_hint_window	未截取任何畫面，也沒有寫入檔案。這條路徑只取所選視窗自己的畫面，帶 --yes 就不再彈框（會拍到桌面的路徑仍然一定要問）
+consent.denied_hint_desktop	未截取任何畫面，也沒有寫入檔案。這條路徑會拍到桌面像素，--yes 與 --quiet 都跳不過；只要某個視窗的話改用 wgc / printwindow / dwm 並帶 --yes
 consent.unavailable	無法顯示確認對話框，已按拒絕處理
 consent.unavailable_hint	這個工作階段沒有可互動的桌面（服務、排程工作或鎖屏狀態），沒有人能同意截圖。%1
+cap.consent.stale	確認之後目標的位置或大小變了，這次沒有截
+cap.consent.stale_hint	要取樣的矩形已經不在你批准的那一片螢幕範圍內。重新選定目標再截一次（會再問一遍）
 consent.output_stdout	標準輸出
-consent.more_screens	另有 %1 張螢幕未列出

@@ -32,6 +32,7 @@ add_executable(ecapture
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/Capture.cpp
+  src/CaptureScope.cpp
   src/OutputPlan.cpp
   src/FileSave.cpp
   src/Consent.cpp
@@ -95,3 +96,34 @@ set_property(TARGET ecapture PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CON
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   set_property(TARGET ecapture PROPERTY LINK_FLAGS "/OPT:REF /OPT:ICF")
 endif()
+
+# ---------------------------------------------------------------------------
+# 截图授权状态机的离线判据（由 tests\consent.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：授权这件事必须用"注入假的应答器 + 假的屏幕布局"来跑完整状态机
+# （升级要重新确认、拒绝之后不再换后端、目标挪位置作废凭证……），而这些判据一条都不能靠
+# 发布版里的测试开关实现 —— ECAPTURE.EXE 里不许有能跳过确认的后门。所以这里把纯逻辑那几份
+# 源文件单独编一个测试程序，假应答器与假拓扑从测试代码里注入。
+# 不碰 WinRT / D3D / 编码，所以链接项里一个图形相关的库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-consent-tests
+  tests/consent_state.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CaptureCommon.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  src/ScreenMatch.cpp
+  src/WindowMatch.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-consent-tests PRIVATE resources src)
+target_compile_features(ecapture-consent-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-consent-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-consent-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-consent-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-consent-tests PRIVATE
+  user32.lib kernel32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-consent-tests PROPERTIES OUTPUT_NAME "ecapture-consent-tests")
+set_property(TARGET ecapture-consent-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")

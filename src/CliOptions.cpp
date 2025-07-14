@@ -169,6 +169,9 @@ struct OptionSpec {
     // 名字带 no- 的开关：写出去的字段是"开关取反后的值"，所以 --no-overwrite=true 与裸开关同义，
     // --no-overwrite=false 才是取消禁止覆盖。见解析循环里对 inlineValue 的处理。
     bool inverted = false;
+    // 正向布尔开关也要接收 =false 写法（值仍然落到 Apply，重复给出时最后一个生效）。
+    // 不加这个标记的开关写 --flag=false 等于没写，那是仓库里既有的普通开关语义。
+    bool valueAlways = false;
 };
 
 constexpr OptionSpec kOptions[] = {
@@ -192,6 +195,9 @@ constexpr OptionSpec kOptions[] = {
     {L"all", L"a", false, L"pick", L"", nullptr, L"opt.all"},
     // ---- 取图方式 ----
     {L"capture", L"C", true, L"capture", L"<method>", kCaptureValues, L"opt.capture"},
+    // ---- 截图授权 ----
+    // --yes 只免掉窗口内容路径的确认框；会拍到桌面像素的那几条永远问人（见 src/Consent.h）。
+    {L"yes", L"y", false, L"consent", L"", nullptr, L"opt.yes", false, false, true},
     // ---- 输出 ----
     {L"out", L"o", true, L"output", L"<path|->", nullptr, L"opt.out"},
     {L"format", L"f", true, L"output", L"<name>", kFormatValues, L"opt.format"},
@@ -591,6 +597,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             return;
         }
         if (name == L"dry-run") { opt.dryRun = true; return; }
+        // 正向布尔但认 =false：裸写与 =true/1/yes/y/on 都是"跳过窗口内容路径的确认"，
+        // =false/0/no/n/off 取消它；每次整字段赋值，所以重复给出时最后一个生效。
+        if (name == L"yes") { opt.yes = (value != L"0"); return; }
         if (name == L"json") { opt.json = true; return; }
         if (name == L"verbose") { opt.verbose = true; return; }
         if (name == L"quiet") { opt.quiet = true; return; }
@@ -688,8 +697,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                         Msgf(L"cli.switch_no_value_hint", flag));
                     continue;
                 }
-                // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令
-                if (!b && !spec->inverted) continue;
+                // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令。
+                // --yes 这类带 valueAlways 的正向开关也要认 =false（=false 就是"不许跳过确认"）。
+                if (!b && !spec->inverted && !spec->valueAlways) continue;
                 boolArg = b ? L"1" : L"0";
             }
             Apply(*spec, boolArg);

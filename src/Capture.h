@@ -5,6 +5,11 @@
 #include <string>
 #include <vector>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>   // RECT（images[].rect 用的是屏幕矩形）
+
 #include "CliOptions.h"
 
 namespace ecapture {
@@ -16,6 +21,13 @@ struct CapturedImage {
     uint32_t height = 0;
     std::wstring format;       // "png" 等
     std::wstring source;       // 真正产出这帧的通道名（auto 回退后可能是链尾那一条）
+    // 实际走的那条内部路径名（"dwm.thumbnail" / "dwm.screen" / "bitblt.screen" / ...）。
+    // 一条通道可以有多条路径，光看 source 分不出"读的是窗口自己的画面"还是"读的是屏幕"。
+    std::wstring path;
+    // 这一帧的像素来源："window" = 只有所选窗口自己的画面，"desktop" = 屏幕上那块区域，
+    // 可能含其它窗口。由 path 算出来，所以它与实际授权的那次判断同源，不会各说一套。
+    std::wstring scope;
+    RECT rect{};               // 授权与实际取样的那块屏幕矩形（量不出来时整个键不输出）
     std::wstring hwndHex;
     uint32_t pid = 0;
     std::wstring title;

@@ -145,7 +145,20 @@ RECT WindowScreenRect(HWND hwnd) {
 // 屏幕取图、消息泵与 z 序验证
 // ---------------------------------------------------------------------------
 
-bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out, Diagnostic* err) {
+bool PermitCovers(const DesktopPermit& permit, const RECT& area, const wchar_t* channel,
+                  Diagnostic* err) {
+    if (permit.Covers(area)) return true;
+    // 凭证是授权判定器在人看过的那块区域上签发的。现在要取的矩形不在它里面，说明目标在
+    // 确认之后挪了位置或变了大小 —— 换一块屏幕位置去截就等于截了别人批准之外的画面。
+    CaptureError(err, channel, Msg(L"cap.consent.stale"), Msg(L"cap.consent.stale_hint"),
+                 codes::kConsentStale);
+    return false;
+}
+
+bool GrabScreenRect(const RECT& rect, const wchar_t* channel, const wchar_t* path,
+                    const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err) {
+    if (!PermitCovers(permit, rect, channel, err)) return false;
+
     const int left = rect.left;
     const int top = rect.top;
     const int width = rect.right - rect.left;
@@ -182,6 +195,7 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out
         return false;
     }
     dib.ToFrame(channel, out);
+    out->path = path ? path : paths::kUnknown;
     return true;
 }
 

@@ -50,6 +50,7 @@ struct Target {
     bool isScreen = false;
     WindowInfo window;
     ScreenInfo screen;
+    RECT area{};  // 授权与 JSON 都用它：窗口 = 整窗外框矩形，屏幕 = 该屏矩形
 
     // %n 用的名字
     std::wstring Name() const { return isScreen ? ScreenDisplayName(screen) : window.title; }
@@ -57,7 +58,30 @@ struct Target {
     std::wstring Tag() const {
         return isScreen ? ScreenDisplayName(screen) : HwndHexOf(window.hwnd);
     }
+    // 给人看的那一行（弹框与 hint 用）
+    std::wstring Describe() const {
+        return isScreen ? DescribeScreen(screen) : DescribeWindow(window);
+    }
 };
+
+// 一次通道尝试的授权结果。桌面路径必须带着判定器签发的凭证才准去读屏幕像素，
+// 所以这里把"判过了"和"凭证在手上"绑成同一件事：凭证没拿到就是没判过。
+struct AttemptAuth {
+    bool ok = false;
+    std::optional<DesktopPermit> permit;
+};
+
+AttemptAuth AuthorizeAttempt(ConsentGate& gate, const wchar_t* path, const std::wstring& targetKey,
+                             const RECT& area, Diagnostic* err) {
+    AttemptAuth auth;
+    if (ScopeOf(path) != PixelScope::kDesktop) {
+        auth.ok = gate.AuthorizeWindow(path, targetKey, err);
+        return auth;
+    }
+    auth.ok = gate.AuthorizeDesktop(path, targetKey, area, &auth.permit, err) &&
+              auth.permit.has_value();
+    return auth;
+}
 
 // 抛出来的异常换成结构化诊断。判据只有"换一条通道会不会有区别"：
 // 内存耗尽、显卡设备没了 —— 换了也不会有区别，判致命、终止整批，不许继续换后端。
@@ -119,20 +143,32 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
     }
 }
 
-// 单个通道的取帧入口
-bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
+// 单个通道的取帧入口。进任何一条通道之前先过授权判定：
+//   窗口内容路径 —— --yes 免问，否则整批问一次；
+//   桌面路径 —— 永远问人，并换来那张凭证，没有它就调不动那条通道的取像素函数。
+bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
+                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
                        Diagnostic* err) {
+    const wchar_t* path = WindowPathOf(method);
+    AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, area, err);
+    if (!auth.ok) {
+        // 一帧都不去取。诊断里补上"是哪条通道要去的"：路径名在 value，通道名在 backend。
+        if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
+        return false;
+    }
+
     switch (method) {
         case CaptureMethod::kWgc:
             return CaptureWindowWgc(hwnd, timeoutMs, out, err);
         case CaptureMethod::kDwmThumbnail:
-            return CaptureWindowDwmThumbnail(hwnd, timeoutMs, out, err);
+            // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去
+            return CaptureWindowDwmThumbnail(hwnd, timeoutMs, gate, targetKey, out, err);
         case CaptureMethod::kPrintWindow:
             return CaptureWindowPrintWindow(hwnd, timeoutMs, out, err);
         case CaptureMethod::kBitBlt:
-            return CaptureWindowBitBlt(hwnd, timeoutMs, out, err);
+            return CaptureWindowBitBlt(hwnd, timeoutMs, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
-            return CaptureWindowDuplication(hwnd, timeoutMs, out, err);
+            return CaptureWindowDuplication(hwnd, timeoutMs, *auth.permit, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureWithMethod 展开成回退链
     }
@@ -144,15 +180,24 @@ bool CaptureOneChannel(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, 
 
 // 屏幕目标的单通道取帧。dwm / printwindow 取的是"某个窗口的画面"，屏幕上并没有
 // 这么一个窗口可让它们画，所以这两种通道在解析期就已经被挡在屏幕目标之外。
-bool CaptureScreenOneChannel(const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
-                             CapturedFrame* out, Diagnostic* err) {
+// 剩下的三条（wgc / duplication / bitblt）拍的都是那块屏上此刻的一切，全部是桌面路径。
+bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey, const ScreenInfo& screen,
+                             CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
+                             Diagnostic* err) {
+    const wchar_t* path = ScreenPathOf(method);
+    AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, screen.bounds, err);
+    if (!auth.ok) {
+        if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
+        return false;   // 没通过授权：整块屏幕一个像素都不读
+    }
+
     switch (method) {
         case CaptureMethod::kWgc:
-            return CaptureScreenWgc(screen, timeoutMs, out, err);
+            return CaptureScreenWgc(screen, timeoutMs, *auth.permit, out, err);
         case CaptureMethod::kBitBlt:
-            return CaptureScreenBitBlt(screen, timeoutMs, out, err);
+            return CaptureScreenBitBlt(screen, timeoutMs, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
-            return CaptureScreenDuplication(screen, timeoutMs, out, err);
+            return CaptureScreenDuplication(screen, timeoutMs, *auth.permit, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureScreenWithMethod 展开成回退链
         default:
@@ -196,9 +241,10 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, 
             }
             return true;
         }
-        if (attemptErr.code == codes::kAccessDenied) {
+        if (attemptErr.code == codes::kAccessDenied ||
+            attemptErr.code == codes::kConsentUnavailable || attemptErr.code == codes::kConsentStale) {
             if (err) *err = std::move(attemptErr);
-            return false;   // 拒绝就是拒绝，不再换后端
+            return false;   // 授权这一关的结果不换后端重跑：拒绝就是拒绝，位置变了就重新确认
         }
         if (fatal && *fatal) {
             if (err) *err = std::move(attemptErr);
@@ -221,34 +267,44 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, 
 
 // --capture 分派。auto 对窗口按 wgc -> dwm -> printwindow -> bitblt，对屏幕按
 // wgc -> duplication -> bitblt。显式指定的通道绝不回退：用户要哪个就要哪个。
-bool CaptureWithMethod(uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
+bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
+                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
                        Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
-                           [&] { return CaptureOneChannel(hwnd, method, timeoutMs, out, err); }, err,
-                           fatal);
+                           [&] {
+                               return CaptureOneChannel(gate, targetKey, area, hwnd, method,
+                                                        timeoutMs, out, err);
+                           },
+                           err, fatal);
     }
     const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
                                               CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
     return FallbackChain(chain, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureOneChannel(hwnd, m, timeoutMs, frame, e);
+                             return CaptureOneChannel(gate, targetKey, area, hwnd, m, timeoutMs,
+                                                      frame, e);
                          });
 }
 
-bool CaptureScreenWithMethod(const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
+bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
+                             const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
                              CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
                              bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
-                           [&] { return CaptureScreenOneChannel(screen, method, timeoutMs, out, err); },
+                           [&] {
+                               return CaptureScreenOneChannel(gate, targetKey, screen, method,
+                                                              timeoutMs, out, err);
+                           },
                            err, fatal);
     }
     const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDuplication,
                                               CaptureMethod::kBitBlt};
     return FallbackChain(chain, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureScreenOneChannel(screen, m, timeoutMs, frame, e);
+                             return CaptureScreenOneChannel(gate, targetKey, screen, m, timeoutMs,
+                                                            frame, e);
                          });
 }
 
@@ -283,12 +339,16 @@ CaptureOutcome RunCapture(const Options& opt) {
             Target t;
             t.isScreen = true;
             t.screen = s;
+            t.area = s.bounds;
             targets.push_back(std::move(t));
         }
     } else {
         for (const auto& w : SelectWindows(opt, &outcome.errors, &outcome.notes)) {
             Target t;
             t.window = w;
+            // 窗口目标用整窗外框当授权范围：桌面路径实际会从屏幕上读走的就是这一块
+            // （DWM 那条退路摆的覆盖窗口也按它对齐），比可见边框矩形更宽一点而不是更窄。
+            t.area = WindowFullRect(reinterpret_cast<HWND>(w.hwnd));
             targets.push_back(std::move(t));
         }
     }
@@ -340,11 +400,11 @@ CaptureOutcome RunCapture(const Options& opt) {
         item.name = t.Name();
         planned.push_back(std::move(item));
     }
-    std::vector<std::wstring> paths;
+    std::vector<std::wstring> plannedPaths;
     std::vector<Diagnostic> planNotes;
     Diagnostic planErr;
     // 规划失败时 notes 整个丢掉：那一次什么都没写，"已补扩展名"之类的提示反而误导
-    if (!PlanOutputPaths(opt, planned, &paths, &planNotes, &planErr)) {
+    if (!PlanOutputPaths(opt, planned, &plannedPaths, &planNotes, &planErr)) {
         planErr.stage = stages::kPlan;
         outcome.errors.push_back(std::move(planErr));
         outcome.exitCode = EX_IO_FAILED;
@@ -352,19 +412,33 @@ CaptureOutcome RunCapture(const Options& opt) {
     }
     for (auto& n : planNotes) outcome.notes.push_back(std::move(n));
 
-    // 整屏截图先问人：没有命令行旁路，答"否"或弹不出框都不取帧。
-    // --dry-run 在上面就已经返回，所以"只看会截到什么"不会被打扰。
-    if (opt.ScreenMode()) {
-        std::vector<ScreenInfo> screens;
-        for (const auto& t : targets) screens.push_back(t.screen);
-        Diagnostic consent;
-        if (!AskScreenCaptureConsent(opt, screens, &consent)) {
-            TagTarget(&consent, targets.front(), stages::kConsent);
-            outcome.errors.push_back(std::move(consent));
-            outcome.exitCode = EX_DENIED;
-            return outcome;
-        }
+    // 授权判定器到这里才建立：目标已选定、输出名已展开，弹框上写的就是它将要截的那些东西。
+    // 前面那几关（无匹配 / 歧义、--dry-run、stdout 一次一张、整批名字规划）都在它之前，
+    // 所以注定什么都没截的调用不会先打扰人一次。
+    //
+    // 这里只建立判定器，不预先弹框：要不要问、问几次，取决于每个目标实际走的那条路径
+    //（见 CaptureOneChannel）。带 --yes 的窗口内容路径可以一次都不弹；会拍到桌面像素的
+    // 那几条一定会弹，且 --yes 在其中不起作用。
+    DialogConsentPrompt prompt;
+    GateConfig gateCfg;
+    gateCfg.yes = opt.yes;
+    gateCfg.captureLabel = CaptureMethodName(opt.capture);
+    for (const Target& t : targets) {
+        GateTarget gt;
+        gt.screen = t.isScreen;
+        gt.key = t.Tag();
+        gt.area = t.area;
+        gt.description = Msgf(L"consent.target_line", t.Describe(),
+                              static_cast<long long>(gt.area.left),
+                              static_cast<long long>(gt.area.top),
+                              static_cast<long long>(gt.area.right - gt.area.left),
+                              static_cast<long long>(gt.area.bottom - gt.area.top));
+        gateCfg.targets.push_back(std::move(gt));
     }
+    for (const std::wstring& p : plannedPaths) {
+        gateCfg.outputs.push_back(p == L"-" ? Msg(L"consent.output_stdout") : p);
+    }
+    ConsentGate gate(std::move(gateCfg), prompt);
 
     // 到这里结果 JSON 去哪条流就已经定死了（图片占 stdout => JSON 走 stderr）。
     // 提前声明归属，后面的应急路径与正常路径才不会各说一套：哪怕中途抛异常、
@@ -372,12 +446,18 @@ CaptureOutcome RunCapture(const Options& opt) {
     if (opt.output == L"-") ClaimStdout();
 
     for (size_t i = 0; i < targets.size(); ++i) {
-        const Target& t = targets[i];
+        Target& t = targets[i];
         const ULONGLONG started = GetTickCount64();
+
+        // 量一遍当下的矩形再交给判定器：确认框上写的区域与实际要取样的区域必须是同一块。
+        // 目标在确认之后挪走或变大，凭证的 Covers 就会拒绝，这一次不截。
+        if (!t.isScreen) t.area = WindowFullRect(reinterpret_cast<HWND>(t.window.hwnd));
+        gate.SetTargetArea(t.Tag(), t.area);
 
         CapturedImage img;
         img.format = FormatName(opt.format);
-        img.file = paths[i];      // 与实际写入的那个名字是同一个字符串
+        img.file = plannedPaths[i];   // 与实际写入的那个名字是同一个字符串
+        img.rect = t.area;            // 授权与实际取样的那块屏幕矩形
         if (t.isScreen) {
             img.screen = true;
             img.monitorOrdinal = t.screen.ordinal;
@@ -403,11 +483,12 @@ CaptureOutcome RunCapture(const Options& opt) {
             ok = CallBackend(stages::kCapture, CaptureMethodName(opt.capture),
                              [&] {
                                  return t.isScreen
-                                            ? CaptureScreenWithMethod(t.screen, opt.capture,
-                                                                      kFrameTimeoutMs, &frame,
-                                                                      &targetErr, &outcome.notes,
-                                                                      &fatal)
-                                            : CaptureWithMethod(t.window.hwnd, opt.capture,
+                                            ? CaptureScreenWithMethod(gate, t.Tag(), t.screen,
+                                                                      opt.capture, kFrameTimeoutMs,
+                                                                      &frame, &targetErr,
+                                                                      &outcome.notes, &fatal)
+                                            : CaptureWithMethod(gate, t.Tag(), t.area,
+                                                                t.window.hwnd, opt.capture,
                                                                 kFrameTimeoutMs, &frame,
                                                                 &targetErr, &outcome.notes, &fatal);
                              },
@@ -416,6 +497,10 @@ CaptureOutcome RunCapture(const Options& opt) {
                 img.width = frame.width;
                 img.height = frame.height;
                 img.source = frame.source;   // 真正出图的那条通道，auto 时与请求值不同
+                // 实际路径与像素来源：这一帧到底是"窗口自己的画面"还是"屏幕上那块区域"，
+                // 调用方要靠它判断自己拿到了什么，--quiet 也不许把它藏起来。
+                img.path = frame.path.empty() ? std::wstring(paths::kUnknown) : frame.path;
+                img.scope = ScopeName(ScopeOf(img.path));
             }
 
             const wchar_t* backend = img.source.empty() ? CaptureMethodName(opt.capture)
@@ -471,9 +556,10 @@ CaptureOutcome RunCapture(const Options& opt) {
             if (recorded) outcome.images.pop_back();   // 字节没到 stdout，那张不算
             TagTarget(&targetErr, t, stage);
             outcome.errors.push_back(std::move(targetErr));
-            if (fatal) {
-                // 致命错误：后面再截也不会有结果，明确终止而不是一条条目标试下去。
-                // 前面已经写出的图与这条诊断都留着，调用方看得到"停在哪"。
+            if (fatal || gate.Refused()) {
+                // 致命错误，或者已经有人在确认框上答过"否"（包括根本弹不出框）：
+                // 剩下那些目标不再换后端、不再重试，也不再问第二次 —— 直接停在这里。
+                // 前面已经写出的图与这条诊断都留着，调用方看得到"停在哪、为什么停"。
                 break;
             }
             continue;
@@ -488,7 +574,8 @@ CaptureOutcome RunCapture(const Options& opt) {
     if (outcome.images.empty()) {
         const std::wstring& code =
             outcome.errors.empty() ? std::wstring() : outcome.errors.front().code;
-        outcome.exitCode = code == codes::kAccessDenied  ? EX_DENIED
+        outcome.exitCode = code == codes::kAccessDenied || code == codes::kConsentUnavailable
+                             ? EX_DENIED
                          : code == codes::kWriteFailed || code == codes::kFileExists
                              ? EX_IO_FAILED
                              : EX_CAPTURE_FAILED;

@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include "CliOptions.h"
+#include "Consent.h"
 
 namespace ecapture {
 
@@ -27,6 +28,8 @@ struct CapturedFrame {
     uint32_t height = 0;
     uint32_t stride = 0;
     std::wstring source;  // 产出这帧的通道名，如 "wgc"
+    std::wstring path;    // 实际走的那条内部路径名（"dwm.thumbnail" / "dwm.screen" / ...）
+                          // scope 由它算出来，所以图里写的来源与当初授权的是同一件事
 };
 
 // 让屏幕坐标与物理像素一致：GDI 通道按屏幕矩形取图，被 DPI 虚拟化时
@@ -79,8 +82,16 @@ RECT WindowFullRect(HWND hwnd);
 // 用户实际看到的矩形：优先 DWMWA_EXTENDED_FRAME_BOUNDS，否则退回完整矩形
 RECT WindowScreenRect(HWND hwnd);
 
-// 从屏幕 DC 取一块矩形（超出虚拟屏幕的部分被丢掉）
-bool GrabScreenRect(const RECT& rect, const wchar_t* channel, CapturedFrame* out, Diagnostic* err);
+// 从屏幕 DC 取一块矩形（超出虚拟屏幕的部分被丢掉）。
+// permit 是必需参数：这张凭证只能由授权判定器发出，所以任何"从屏幕上拿像素"的代码都绕不过
+// 那次人工确认 —— 包括通道自己在内部临时改走屏幕取图的那条退路。
+bool GrabScreenRect(const RECT& rect, const wchar_t* channel, const wchar_t* path,
+                    const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err);
+
+// 取样之前核对凭证：批准的是那一块，现在要取的必须是它里面的一块。
+// 不覆盖 = 目标在确认之后挪了位置或变了大小，这次不截（宁可少截一张也不拍别人的画面）。
+bool PermitCovers(const DesktopPermit& permit, const RECT& area, const wchar_t* channel,
+                  Diagnostic* err);
 
 // 没有消息循环时，泵消息等 ms 毫秒：DWM 要几帧才把缩略图合成出来
 void PumpMessagesFor(uint32_t ms);

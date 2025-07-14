@@ -760,6 +760,56 @@ function Click-EcDialogButton {
 # ----------------------------------------------------------------------------
 # 图像度量：尺寸 + 颜色种数 + 红色占比 + 上半部主色
 # ----------------------------------------------------------------------------
+function Invoke-EcConsentShot {
+    <#
+    .SYNOPSIS
+        起一次 ECAPTURE 截图，并把"确认框到底弹没弹"作为结果一起交回来。
+    .DESCRIPTION
+        截图授权分级之后，真机判据必须能区分三种情况：
+          * 压根不该弹框（带 --yes 的窗口内容路径、--dry-run、参数错、无匹配、输出预检失败）
+            —— 用 -ExpectNoDialog：探测一发现 #32770 就算失败，且不再等；
+          * 该弹框、人自己点（默认）—— 不带 -Answer，函数只报告"弹过了"，不替人决定；
+          * 该弹框、测试代答（只在专门腾出来的无隐私桌面上用 -Answer）——
+            IDYES=6 放行、IDNO=7 拒绝。代人点"是"等于替人同意，默认不做。
+        弹框与否由本进程窗口枚举判断（只查这个 PID 的窗口），不去碰别人弹出的对话框。
+        返回对象：Exit / Stdout / Stderr / StdoutBytes / Dialog（弹过）/ Clicked（点到了）。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [int]$Answer = 0,                       # 0 = 只看不点；6 = 是；7 = 否
+        [switch]$ExpectNoDialog,
+        [int]$DialogWaitMs = 8000,
+        [int]$TimeoutMs = 120000
+    )
+
+    $probe = {
+        param($p)
+        # Find-EcDialog 交回来的是 IntPtr，而 PowerShell 不把 [IntPtr]::Zero 当假值看：
+        # 必须显式比一次，否则"根本没弹框"也会被读成"弹过了"（踩过一次）。
+        $h = Find-EcDialog -ProcessId ([int]$p.Id)
+        if ($h -eq [IntPtr]::Zero) { return '' }
+        $script:EcConsentSeen = $true
+        if ($Answer -gt 0) {
+            $script:EcConsentClicked = (Click-EcDialogButton -Dialog $h -ButtonId $Answer)
+        }
+        return 'seen'
+    }
+    $script:EcConsentSeen = $false
+    $script:EcConsentClicked = $false
+    # 不弹框的用例只探测一小会儿（弹了才算失败），否则整个超时会白等在那里
+    $wait = if ($ExpectNoDialog) { 1200 } else { $DialogWaitMs }
+    $r = Invoke-EcProcess -FilePath $Exe -Arguments $Arguments -TimeoutMs $TimeoutMs `
+        -Probe $probe -ProbeIntervalMs 60 -ProbeTimeoutMs $wait
+    return [pscustomobject]@{
+        Exit = $r.Exit; Stdout = $r.Stdout; Stderr = $r.Stderr; StdoutBytes = $r.StdoutBytes
+        TimedOut = $r.TimedOut
+        Dialog = ($script:EcConsentSeen -eq $true)
+        Clicked = ($script:EcConsentClicked -eq $true)
+        Raw = $r
+    }
+}
+
 function Get-EcSignatureRgb {
     <#
         与 tests\helper\ec_window.cs 里 SignatureColor() 同一套公式，两边各自实现一遍是有意的：

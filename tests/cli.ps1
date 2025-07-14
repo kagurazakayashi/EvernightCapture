@@ -293,6 +293,56 @@ $cases += @{ Name = '帮助里写了整批输出名先算好'; A = @('--help'); 
 $cases += @{ Name = '帮助里写了标准输出只能一张图'; A = @('--help'); Exit = 3; Text = $true
    Has = @('标准输出一次只能交付一张图') }
 
+# ---------------------------------------------------------------------------
+# --yes 的布尔别名与授权分级：判据取 -v 的 input.yes，不截图也不打扰人。
+# 真机侧"到底弹不弹框"在 tests\consent.ps1，状态机那些分支在 tests\consent_state.cpp。
+# ---------------------------------------------------------------------------
+foreach ($alias in @('true', '1', 'yes', 'y', 'on', 'True', 'ON')) {
+    $cases += @{ Name = ("--yes={0} 是同意跳过窗口内容路径的确认" -f $alias)
+       A = ($ANCHOR + @('-v', ('--yes=' + $alias), 'out.png')); Exit = 0
+       Check = { param($o) $o.input.yes -eq $true } }
+}
+foreach ($alias in @('false', '0', 'no', 'n', 'off', 'FALSE', 'Off')) {
+    $cases += @{ Name = ("--yes={0} 仍然要问人" -f $alias)
+       A = ($ANCHOR + @('-v', ('--yes=' + $alias), 'out.png')); Exit = 0
+       Check = { param($o) $o.input.yes -eq $false } }
+}
+$cases += @{ Name = '不给 --yes 时默认要问人'
+   A = ($ANCHOR + @('-v', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.yes -eq $false } }
+$cases += @{ Name = '-y 短形式同样生效'
+   A = ($ANCHOR + @('-v', '-y', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.yes -eq $true } }
+$cases += @{ Name = '-yq 这类开关簇里也认 -y'
+   A = ($ANCHOR + @('-v', '-yq', 'out.png')); Exit = 0
+   Check = { param($o) ($o.input.yes -eq $true -and $null -eq $o.notes) } }
+$cases += @{ Name = '--yes 后面再写 =false 以最后为准'
+   A = ($ANCHOR + @('-v', '--yes', '--yes=false', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.yes -eq $false } }
+$cases += @{ Name = '--yes=false 后面再裸写以最后为准'
+   A = ($ANCHOR + @('-v', '--yes=false', '--yes', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.yes -eq $true } }
+foreach ($bad in @('maybe', '', 'tru', '2')) {
+    $cases += @{ Name = ("--yes={0} 这种取值在解析期就被拒" -f $bad)
+       A = @('--pid', '1', ('--yes=' + $bad), 'out.png'); Exit = 1
+       Errors = @('cli.switch_takes_no_value') }
+}
+# --yes 不是选择条件：一个条件都不给时仍是"文本帮助 + 退出码 2"，绝不会顺手去截桌面
+$cases += @{ Name = '--yes 不替代条件，没条件就还是帮助而不是截屏'
+   A = @('--yes', 'out.png'); Exit = 2; Text = $true; Has = @('未指定任何匹配条件') }
+# 只读查询不弹框：--dry-run 带着 --yes、带着 --monitor 都只给 dry_run 那条 note，一条错都没有
+$cases += @{ Name = '--dry-run 带 --yes 与 --monitor 也不弹框不取帧'
+   A = @('--monitor', '1', '--dry-run', '--yes', '-v', 'out.png'); Exit = 0
+   Errors = @(); Notes = @('note.dry_run_monitor')
+   Check = { param($o) ($o.input.yes -eq $true -and $o.input.target -eq 'screen' -and
+                        $o.captured -eq 0) } }
+$cases += @{ Name = '帮助里写了 --yes 这一级授权'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--yes', '只取所选窗口画面') }
+$cases += @{ Name = '帮助里写了会拍到桌面的一律要问、--yes 跳不过'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('跳不过') }
+$cases += @{ Name = '帮助里 --monitor 那条不再说"没有跳过的开关"'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('整块屏幕拍的是桌面像素') }
+
 $results = @()
 foreach ($c in $cases) {
     $r = Invoke-Ec $c.A

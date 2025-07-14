@@ -30,6 +30,9 @@ bool CaptureWindowPrintWindow(uint64_t hwndValue, uint32_t /*timeoutMs*/, Captur
     if (!dib.Create(static_cast<uint32_t>(width), static_cast<uint32_t>(height), err, kChannel))
         return false;
 
+    // PrintWindow 是"让这个窗口自己画到给它的 DC"，那块 DC 是新建的 DIB 而不是屏幕；
+    // 上面 dib.Create 里取屏幕 DC 只为了拿一个兼容的像素格式，没有读回任何像素。
+    // 所以这条路径属于窗口内容路径，不需要桌面凭证。
     if (!PrintWindow(hwnd, dib.dc(), kPwRenderFullContent) && !PrintWindow(hwnd, dib.dc(), 0)) {
         const DWORD gle = LastError();
         CaptureError(err, kChannel, Msg(L"cap.pw.failed"),
@@ -47,6 +50,7 @@ bool CaptureWindowPrintWindow(uint64_t hwndValue, uint32_t /*timeoutMs*/, Captur
                   static_cast<uint32_t>(vis.right - vis.left),
                   static_cast<uint32_t>(vis.bottom - vis.top));
     }
+    out->path = paths::kPrintWindow;
     return true;
 }
 

@@ -238,18 +238,26 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(hwnd, nullptr, &itemHr);
     if (!item) return Fail(err, L"cap.wgc.step.item", itemHr);
-    return GrabFrame(item, timeoutMs, out, err);
+    if (!GrabFrame(item, timeoutMs, out, err)) return false;
+    out->path = paths::kWgc;  // 采集项就是这个窗口自己，帧里没有桌面像素
+    return true;
 }
 
-bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, CapturedFrame* out,
-                      Diagnostic* err) {
+bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const DesktopPermit& permit,
+                      CapturedFrame* out, Diagnostic* err) {
     EnsureWinrtInitialized();
     ResetFrame(out);
+
+    // 整块屏幕的 WGC 拍到的是那块屏上此刻的一切，跟拷屏幕 DC 是同一级风险：
+    // 没有人的确认凭证就不建采集项。
+    if (!PermitCovers(permit, screen.bounds, L"wgc", err)) return false;
 
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(0, reinterpret_cast<HMONITOR>(screen.monitor), &itemHr);
     if (!item) return Fail(err, L"cap.wgc.step.item_monitor", itemHr);
-    return GrabFrame(item, timeoutMs, out, err);
+    if (!GrabFrame(item, timeoutMs, out, err)) return false;
+    out->path = paths::kScreenWgc;
+    return true;
 }
 
 }  // namespace ecapture

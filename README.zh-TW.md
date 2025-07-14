@@ -22,7 +22,8 @@
 - **按條件篩視窗**：句柄 / 處理程序 ID / 映像檔案名 / 完整路徑 / 標題（精確、包含、正則）/ 視窗類名，不同選項之間是 AND、同一選項寫多次是 OR
 - **六條取圖通道**：被遮擋的視窗也能截（`wgc` / `dwm` / `printwindow`），或者刻意只拷螢幕上看得見的像素（`bitblt` / `duplication`）
 - **多視窗一次截完**：`--all` 每個命中視窗各存一張，搭配 `%i` 這類佔位符命名
-- **整張螢幕截圖附人工確認**：`--monitor` 截整張螢幕前一定先彈出模態確認框，**沒有命令列也沒有環境變數旁路**
+- **截圖授權**：凡是真要取影格的截圖，連可靠的視窗通道也一樣，一定先彈出模態確認框；`--yes` 只免掉「影格綁在
+  所選視窗本身、不從桌面取樣」那一層的確認——任何會拍到桌面像素的路徑一定要人回答，沒有開關能跳過
 - **四語文案**：`zh-CN` / `zh-TW` / `en` / `ja`，預設跟隨系統顯示語言，全部編在 exe 的資源裡
 - **機器讀的 JSON**：只裝擷取結果與錯誤，不含工具名、版本、schema、參數回顯之類的元資訊
 
@@ -32,10 +33,10 @@
 
 ```powershell
 .\build.ps1                                  # Release，產物 build\ecapture.exe
-ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
+ECAPTURE.EXE --process notepad.exe D:\shots\epad.png   # 取影格之前會先彈一次確認框
 ```
 
-輸出目錄必須**已經存在**，工具不會建立目錄。先看看會命中誰（不截圖、不寫檔案）：
+輸出目錄必須**已經存在**，工具不會建立目錄。先看看會命中誰（不截圖、不寫檔案、也不彈框）：
 
 ```powershell
 ECAPTURE.EXE --process notepad.exe --dry-run --out D:\shots\_probe.png
@@ -56,7 +57,10 @@ ECAPTURE.EXE --pid 12345 --title-contains 报告 --all "D:\shots\rpt_%i.png"
 # 圖片位元組走標準輸出（此時 JSON 改走 stderr）
 ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
 
-# 整張螢幕：一定會先彈確認框，而且沒有跳過開關
+# 截單一視窗又不想被問：--yes 只對「只取所選視窗畫面」那條路徑有效
+ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
+
+# 整張螢幕：拍的是桌面像素，一定要人回答，--yes 跳不過
 ECAPTURE.EXE --monitor primary --out D:\shots\screen.png
 ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 ```
@@ -77,7 +81,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
       ECAPTURE.EXE --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
 
 截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
-  --monitor, -m [<n|primary|all>] 截圖目標螢幕的編號，由 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕截圖會先彈框徵求同意，且沒有跳過確認的開關
+  --monitor, -m [<n|primary|all>] 截圖目標螢幕的編號，從 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 
 視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
   --hwnd <handle>                 視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x
@@ -96,7 +100,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --all, -a                       每個匹配視窗各存一張
 
 取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
-  --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt)
+  --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+
+截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
+  --yes, -y                       跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 
 輸出
   --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
@@ -127,6 +134,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
   ECAPTURE.EXE --process notepad.exe --out - > snap.png
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
+  ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -161,6 +169,14 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
       "height": 607,
       "format": "png",
       "source": "wgc",
+      "path": "wgc",
+      "scope": "window",
+      "rect": {
+        "x": 688,
+        "y": 29,
+        "width": 1247,
+        "height": 607
+      },
       "hwnd": "0x001B0C48",
       "pid": 31468,
       "title": "D:\\share\\EvernightCapture - 檔案總管",
@@ -174,6 +190,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 螢幕圖（`--monitor` 且沒有視窗條件時）沒有視窗可歸屬，換成 `monitor` / `device` / `primary` 三個欄位，
 `hwnd` / `pid` / `title` / `class` / `image` 整個不出現——呼叫端依 `monitor` 是否存在區分兩種圖。
+兩種圖都帶 `path` / `scope` / `rect`：整張螢幕那種是 `screen.wgc` / `screen.bitblt` / `screen.duplication`，
+`scope` 是 `desktop`；而 `--monitor` 配視窗條件出的仍是視窗圖，`scope` 是 `window`。
 
 出錯（`--hwnd` 寫了非法值）：
 
@@ -197,7 +215,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 1. `captured` 與 `images` 恆在（空時 `[]`）；`errors` 只要非空就必須出現（`--quiet` 也抑制不掉）；
    `notes` 僅非空且未 `--quiet` 時出現；`input` 僅 `--verbose` 時出現。呼叫端先看 `errors` 再讀 `images`。
-2. 診斷項裡為空的欄位整個鍵省略，不會輸出 `null` 佔位。
+2. 診斷項裡為空的欄位整個鍵省略，不會輸出 `null` 佔位。描述這一影格來路的三個欄位是唯一的例外，`--quiet`
+   也抑制不掉：每張圖都帶 `path`（實際走的那條內部路徑——`wgc`、`printwindow`、`dwm.thumbnail`、
+   `dwm.screen`、`bitblt.screen`、`duplication.frame`、`screen.wgc` 等）、`scope`（由 `path` 判出的
+   `window` 或 `desktop`）與 `rect`（那條路徑被授權取樣的螢幕區域；量得不出來時才省略）。
 3. `code` 值穩定：`cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`，只增不改名。
    取影格失敗裡「影格逾時」（`capture.frame_timeout`）與「視窗已經沒了」（`capture.window_gone`）各有自己的碼，
    不再和一般的 `capture.failed` 混在一起——兩者的下一步動作不同（前者可以等一會兒重試，後者要重新列舉）。
@@ -212,28 +233,36 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    可解碼的影像，工具也不會把 `-` 當檔案名前綴算出 `-_1.png` 那種本機檔案。
 6. `images[].source` 與錯誤裡的 `backend` 寫的都是**真實那條通道**：`--capture auto` 退回成功時 `source`
    是鏈上那一條而不是 `auto`；退回鏈全失敗時 `backend` 列出實際試過的幾條。視窗圖與螢幕圖都帶這個欄位。
-7. **儲存**：整批最終輸出路徑在取第一張影格之前（也在整屏確認框之前）一次算好。兩個目標算出同一個名字時報
+   `images[].path` 比它更細：一條通道可能含好幾條路徑，授權是按實際走的那條判的，不是按通道名判——
+   `dwm.thumbnail` 取的是視窗自己的畫面，`dwm.screen`（同一條通道的螢幕退路）取的是螢幕。
+7. **儲存**：整批最終輸出路徑在取第一張影格之前（也在任何確認框之前）一次算好。兩個目標算出同一個名字時報
    `io.output_collision`（退出碼 8），整批一張都不截、一個檔案都不寫 —— 既不替呼叫端改名，也不讓第二張蓋掉第一張。
    每張圖先寫進目標目錄下唯一的暫存檔案，寫完並刷新之後才改名為目標名稱，所以寫入失敗不會清空也不會刪掉舊檔案。
    `--no-overwrite` 時「目標在不在」由那一次不許替換的改名當場判定（`io.file_exists`），不做有競態的預檢。
 8. 每一步的失敗診斷還帶著它自己的座標，只在這一步真拿到了值時才出現：`target`（哪個目標，視窗是
    `0x…` 句柄、螢幕是裝置名）、`backend`（哪條通道）、`stage`（`consent` / `capture` / `encode` / `write` /
    `stdout`，解析期的錯誤沒有這個欄位）、`hresult`（`0x80070005` 這樣的原值）、`win32`（`GetLastError` 的原值）。
-   `message` 隨 `--lang` 變，這幾個不變；使用者拒絕（`capture.access_denied` + `stage=consent`）與技術性的存取被拒
-   （`capture.failed` 帶 `hresult=0x80070005`）因此可以分開判。後端回傳的 HRESULT / Win32 錯誤碼會原樣帶出，
-   不會被 `E_FAIL` 或 `E_NOINTERFACE` 頂掉真實的錯誤碼。黑影格不會被斷言成 DRM——文案只列出幾種可能。
+   `message` 隨 `--lang` 變，這幾個不變。授權這一關的錯自成一類：`capture.access_denied` 是有人在確認框上答了
+   「否」或是把框關掉，`capture.consent_unavailable` 是這台機器根本沒有可互動的桌面、框彈不出來——兩者都是
+   退出碼 `6`，都帶 `stage=consent`、`target`、`backend`（通道）與 `value`（那條路徑），也都不是技術性的存取被拒
+   （`capture.failed` 帶 `hresult=0x80070005`），這樣才分得開。確認之後目標挪了位置或變了大小給
+   `capture.consent_stale`，`stage=capture`、退出碼 `7`，重新選目標再截就會再問一次。後端回傳的 HRESULT / Win32
+   錯誤碼會原樣帶出，不會被 `E_FAIL` 或 `E_NOINTERFACE` 頂掉真實的錯誤碼。黑影格不會被斷言成 DRM——文案只列出幾種可能。
 
 ## 退出碼
 
 `0` 成功 / `1` 參數錯 / `2` 未給條件 / `3` `--help` / `4` 無匹配視窗 / `5` 匹配多個視窗 /
-`6` 目標受保護或被拒絕 / `7` 截圖失敗 / `8` 寫檔案失敗 / `9` 內部異常。新增語義只會追加編號。
+`6` 目標受保護、在確認框上被答「否」、或框根本彈不出來 / `7` 截圖失敗 / `8` 寫檔案失敗 / `9` 內部異常。
+新增語義只會追加編號。
 `8` 也涵蓋「結果 JSON 送不到約定那條串流」（寫 stdout / stderr 失敗），那種情況下另一條串流上補發的文字不算交付。
 
 退出碼與 body 是兩套獨立的訊號，`2`/`3`/`4`/`5` 是正常控制流而不是當機。**允許部分成功**：`--all` 或
 `--monitor all` 裡某些目標失敗時，已寫出的圖仍在 `images` 裡（`captured` 可以大於 0），但退出碼是 `7`。
 某個後端崩了（拋出例外而不是回傳失敗）也只作廢它所在的那一個目標：前面的圖留著，這條失敗以 `capture.failed`
 帶在 `errors` 裡。記憶體耗盡、顯示裝置被移除（`DXGI_ERROR_DEVICE_REMOVED` / `_RESET` / `_HUNG`）這類換後端
-也不會有分別的錯誤會明確終止整批，而不是一條條試下去。存取被拒與使用者拒絕都不是繼續退回的理由。
+也不會有分別的錯誤會明確終止整批，而不是一條條試下去。存取被拒不是繼續退回的理由，被人拒絕也不是：一旦有人答
+「否」（或這個工作階段根本彈不出框），本次請求剩下的目標一律不再嘗試——不換後端、不重試、也不再問第二遍，
+之前已經完成的圖全部留在 `images` 裡。
 
 ## 取圖方式
 
@@ -248,32 +277,60 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 - 想要「那個視窗自己的畫面」（就算被別的東西蓋住）就用預設的 `wgc`；想要「螢幕上此刻的樣子」（連遮擋物一起）用
   `bitblt` 或 `duplication`。
+- 要不要問人，取決於這條路徑實際從哪裡取像素，而不是取決於你敲的通道名——見下一節。
 - `--capture` 取值寫錯在解析期就報 `cli.unknown_capture_method`（退出碼 1），**不會退回成預設通道**；
   只有 `auto` 允許退回，退回成功會發出 `note.capture_channel` 說明實際用了哪條。
 - DRM / 受保護內容一律是黑畫面；驅動造成的黑框（部分播放器）有的通道能過、有的不能，不保證。
 - 整張螢幕截圖只走 `wgc` / `duplication` / `bitblt`；`--monitor` 配 `dwm` 或 `printwindow` 在解析期報
   `capture.unsupported`（退出碼 1）。`auto` 在螢幕模式下按 wgc → duplication → bitblt 退回。
 
-## 整張螢幕截圖與隱私確認
+## 截圖授權與 --yes
 
-給了 `--monitor` 且沒有視窗條件就是截整張螢幕，這時**一定先彈出一個模態確認框**（列出目標螢幕、走哪條通道、
-圖去哪裡），只有點「是」才取影格：
+凡是真要取影格的截圖，都先彈出一個模態確認框，**可靠的視窗通道也一樣**。不彈框也不截的只有這些：沒給任何條件
+（文字說明 + `2`）、`--help`、`--version`、`--dry-run`、無匹配（`4`）、匹配多個（`5`）、解析期參數錯（`1`）、
+以及輸出名規劃失敗（例如 `io.output_collision` + `8`）——整批名字在任何一次發問之前就算完了。
 
-- **沒有命令列旁路，也沒有環境變數旁路**。彈不出框（服務工作階段、沒有可互動的桌面）按拒絕處理。
-- 答「否」或彈不出都是 `capture.access_denied` + 退出碼 `6`，不寫檔案。
-- 點「是」之後會等 1 秒才取影格，避免把對話框的關閉動畫拍進圖裡；確認框本身不會出現在圖中。
-- `--dry-run` 和「按螢幕過濾視窗」模式不取整張螢幕畫面，所以不彈框。
-- 想區分「被人拒絕」和「路徑沒給對」就必須顯式給 `--out`：不給輸出路徑時任何失敗都收斂成
-  `cli.missing_output` + 退出碼 1，真實原因不外洩。唯一的例外是「多個目標要共用 stdout」
-  （`cli.stdout_multiple_targets`），那條本來就是參數錯，報成缺少輸出路徑反而會把人引向補 `--out`。
-- 多張螢幕 + 寫 stdout（`--monitor all --out -`）在彈框之前就被拒：一次確認換不來「每張螢幕一張圖擠進同一條串流」。
+`--yes`（`-y`，正向布林開關：裸寫或 `=true/1/yes/y/on` 是開，`=false/0/no/n/off` 是關，重複給出時最後一個生效，
+`-v` 的 `input.yes` 回顯最終結果）只免掉**一層**確認：影格綁在所選視窗本身、絕不從桌面取樣的那些路徑。
+它別的一概不保證：不保證圖是有效的、不忽略權限、不管受保護內容、不管錯誤、也不管覆蓋保護。
+決定屬於哪一層的是實際走的那條路徑，不是通道名：
+
+| 路徑（`images[].path`） | 像素從哪裡來 | 不給 `--yes` | 給了 `--yes` |
+| --- | --- | --- | --- |
+| `wgc`、`printwindow`、`dwm.thumbnail` | 只有所選視窗自己 | 問一次 | 不問 |
+| `dwm.screen`、`bitblt.screen`、`duplication.frame` | 那個視窗所在的那塊螢幕區域 | 要問 | **照樣要問** |
+| `screen.wgc`、`screen.bitblt`、`screen.duplication` | 整張螢幕 | 要問 | **照樣要問** |
+
+判不出來或沒登記的路徑一律按桌面路徑處理，所以新增通道忘了登記只會更嚴不會更鬆。`--monitor` 與視窗條件同時
+給出時篩的是**視窗**，出的仍是視窗圖，所以按上面視窗那兩行走。
+
+- **桌面路徑沒有任何旁路**：`--yes`、`--quiet`、環境變數、stdin、呼叫者是誰，都跳不過它——分層就是為了這件事。
+- 一次確認可以覆蓋本次請求裡明確列出的那一批目標，所以多條後端、多個視窗不會各問一遍。但授權絕不跨請求快取，
+  也不會擴大到框上沒列出的目標，「同意截視窗畫面」更不等於「同意截桌面」：`--capture auto` 配 `--yes` 可以不打擾人
+  地走完視窗那幾條，可一旦進入桌面路徑就必須再問一次。
+- 一旦有人答「否」、框被關掉、或者根本沒有可互動的桌面，本次請求剩下的截圖就停了：不換後端、不重試、不再問第二遍，
+  已經完成的圖留在 `images` 裡。
+- 目標區域挪動過、或者螢幕拓撲變了，覆蓋它的授權當場作廢並重新問一次；已經綁在舊區域上的那一影格給
+  `capture.consent_stale`（退出碼 `7`，重新選目標再截）。
+- 確認框的預設焦點在「否」上，內容列出目標及其區域、將要走的那條路徑、每張圖展開後的絕對路徑（或「標準輸出」）、
+  以及畫面裡會不會混進別的視窗；這條路徑會拍到桌面時，框上還明寫著「你給的 `--yes` 對它不生效」。框在取影格之前
+  就已經關閉，所以不會出現在圖中；點「是」之後工具仍要等約 1 秒，因為關閉動畫還留在 DWM 的畫面上。
+- 沒有可互動桌面時（服務工作階段、排程工作、鎖屏），帶 `--yes` 的視窗內容截圖照舊正常完成，而桌面路徑只能被拒絕——
+  絕不會因為「彈不出框」就放行。答「否」給 `capture.access_denied` + `6`，彈不出框給新的穩定碼
+  `capture.consent_unavailable` + `6`；兩者都帶 `stage=consent`、`target`、`backend`，`value` 寫的是那條路徑。
+- 被拒絕**不再**收斂成 `cli.missing_output`，所以就算沒給輸出路徑，呼叫端也看得見「是人拒了」。這條偷懶路徑上其餘
+  失敗照舊一律收斂成 `cli.missing_output` + 退出碼 1、真實原因不外洩；另一個例外還是 `cli.stdout_multiple_targets`
+  ——多個目標要共用同一條 stdout 本來就是參數錯，報成缺少輸出路徑反而會把人引向補 `--out`。
+- 多張螢幕 + 寫 stdout（`--monitor all --out -`）在任何彈框之前就被拒：一次確認換不來「每張螢幕一張圖擠進同一條串流」。
   只有一張螢幕時 `--monitor all` 是一個目標，那條路仍然按單張走 stdout。
+- 說清楚邊界：這就是一個 `MessageBox`。它是給合作式自動化（人或 AI）準備的誤點防護，既證明不了按下按鈕的是人，
+  也擋不住同一個權限等級裡存心要繞過的處理程序。它能保證的是：照這套規矩跑的呼叫端，一定會被問上這一次。
 
 `--monitor`（省略取值）與 `--monitor primary` 是主螢幕，`--monitor 2` 是第 2 張螢幕，`--monitor all` 每張螢幕一張。
 編號按 `EnumDisplayMonitors` 的順序、從 1 起；越界報 `match.monitor_out_of_range`（退出碼 1），`hint` 裡列出本機全部螢幕。
 `--monitor <n>` 與視窗條件同時給出＝按螢幕過濾視窗（視窗矩形與該螢幕有重疊即命中，跨螢幕視窗在兩張螢幕上都算），
-出的仍是視窗圖，也不彈確認框。`--monitor all` 與任何視窗**匹配**條件互斥（報 `cli.monitor_conflict`，退出碼 1），
-但 `--all` / `--index` 這類消歧選項不算匹配條件，可以和它搭配。
+出的仍是視窗圖，所以按上面視窗那兩行的規矩授權。`--monitor all` 與任何視窗**匹配**條件互斥
+（報 `cli.monitor_conflict`，退出碼 1），但 `--all` / `--index` 這類消歧選項不算匹配條件，可以和它搭配。
 
 ## 檔案名佔位符
 
@@ -312,7 +369,8 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 這個工具就是為程式化呼叫設計，照下面這套約定做最省事。專案裡還附了一份教 AI 使用它的 skill：
 `.agents/skills/ecapture-screenshot/`（裡有 `SKILL.md`、`references/cli-contract.md` 和一份 exe 副本）。
 
-1. **先 `--dry-run` 探一次**，再消歧，最後真的截圖。`--dry-run` 不取影格也不寫檔案，候選在 `notes[0].value`：
+1. **先 `--dry-run` 探一次**，再消歧，最後真的截圖。`--dry-run` 不取影格、不寫檔案、也不彈確認框，候選在
+   `notes[0].value`：
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。注意 `--dry-run` 仍要求給 `--out`，
    否則報 `cli.missing_output` + 1；而**只給 `--dry-run` 不給任何視窗條件 = 文字說明 + 退出碼 2**。
 2. **依 `errors[].code` 分支，不要比對 `message` 文字**（那會隨 `--lang` 變）。常用的幾條：
@@ -320,7 +378,9 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候選）、
    `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多個目標要共用
    同一條 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等影格逾時）、
-   `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.access_denied`（6）、
+   `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.access_denied`（6，有人在確認框上答了「否」）、
+   `capture.consent_unavailable`（6，這個工作階段沒有可互動的桌面，沒人能夠同意）、
+   `capture.consent_stale`（7，確認之後目標挪了位置，要重新選目標並再問一次）、
    `io.write_failed`（8，目錄不存在或提交失敗）、`io.file_exists`（8，搭配 `--no-overwrite`）、
    `io.output_collision`（8，兩個目標算出同一個輸出名，整批沒截圖也沒寫檔）。
    每條錯誤還帶 `target` / `backend` / `stage` / `hresult` / `win32`（見前面「輸出形式」的規則），拿到多少寫多少，
@@ -329,11 +389,14 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    圖片位元組佔了 stdout，JSON 整體改到 stderr。stdout 一次只交付一張圖，多個目標請寫到檔案。PowerShell 5.1 裡
    `2>&1` 會把 stderr 包裝成錯誤記錄，想同時拿圖片和 JSON 就用 `1>`/`2>` 分開重新導向。
 4. **別把非 0 退出碼當成全盤失敗**：部分成功時 `captured` 大於 0 而退出碼是 7，已經寫出的圖照樣可用；
-   `images[].source` 會告訴你那張圖實際出自哪條通道。
+   `images[].source` / `path` / `scope` 分別告訴你那張圖出自哪條通道、走了哪條內部路徑、像素是視窗自己的還是螢幕上的。
 5. **退出碼 0 不等於畫面是對的**：受保護內容、某些播放器的驅動會在成功回傳的同時給你黑影格。要判斷正確性就校驗像素——
    例如把一個純色視窗蓋住目標再截，看拿到的是目標內容還是遮擋物；至少比對 `width`/`height` 與目標視窗矩形。
-6. **整張螢幕要先問人**：`--monitor` 截整張螢幕會彈出模態框並擋住處理程序直到人回應，沒有旁路。自動化流程裡別把它當成「隨手
-   能拿的全螢幕圖」；呼叫前告知使用者、並顯式給 `--out`。只想截某個視窗就不要升格成整張螢幕。
+6. **預設會被彈框打斷**：不給 `--yes` 時，任何真實截圖（連只截一個視窗也算）都會擋住處理程序直到有人回應。
+   目標是一個視窗、而且走的是視窗內容路徑（`wgc` / `printwindow` / `dwm.thumbnail`）時才適合加 `--yes`；對
+   `bitblt`、`duplication`、`dwm` 的螢幕退路以及任何整張螢幕，這個開關一點作用都沒有，一定要人回答——呼叫前先告知
+   使用者，並顯式給 `--out`。事後讀 `images[].scope`：寫成 `desktop` 就代表圖裡可能混進別的視窗、開啟的文件與通知。
+   只想截某個視窗，就不要把目標升格成整張螢幕。
 7. 想穩定拿到「某個應用程式」，優先使用 `--process`/`--exe` + `--class`；標題比對區分大小寫，跨語言環境不可靠。
 
 ## 建置與測試
@@ -341,15 +404,16 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 建置，產物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可選 |
-| `.\tests\cli.ps1` | 107 例輸出契約斷言 + 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
+| `.\tests\cli.ps1` | 135 例輸出契約斷言（含 `--yes` 與 `--no-overwrite` 的每種布林寫法）+ 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
 | `.\scripts\check-lang.ps1` | 四語文案的 key / 佔位符對齊檢查，並確認 exe 裡真的編進了四份資源 |
 | `.\tests\invoker.ps1` | 離線檢查共用的測試程序呼叫器：argv 引號、兩條流同時輸出、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄（不截圖） |
 | `.\tests\build-path.ps1` | 建置路徑判據：離線那層驗暫存批次檔正文只能是 ASCII、VS 環境匯入失敗要在跑 cmake 之前就報錯；真機那層在含中文、空白、括號、百分號的目錄裡跑 Release / Debug / RelWithDebInfo 與 `-Clean`，再把 `%TEMP%` 換成中文目錄建置一次（不截圖；`-OfflineOnly` 只跑離線那層） |
 | `.\tests\smoke.ps1` | 實機冒煙：截自己建立的測試視窗 → 校驗 PNG 尺寸與像素內容 |
 | `.\tests\save.ps1` | 實機檔案儲存與覆蓋保護：每種 `--no-overwrite` 布林寫法對真實檔案的效果、整批輸出名規劃與撞名偵測（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小寫 / 清洗 / 截斷）、原子提交（目標被佔用、目標名是目錄、目錄不存在、寫到一半被硬殺）、併發禁止覆蓋 |
-| `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗 |
+| `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗。視窗內容那幾條帶 `--yes` 跑，一旦彈框就判失敗；`bitblt` / `duplication` 取的是桌面像素，它們的畫面判據要加 `-SimulateConsent` 才跑，不加就如實記 SKIP（未驗證） |
+| `.\tests\consent.ps1` | 截圖授權分級：離線那層用注入的假應答器與假螢幕佈局把 `ConsentGate` 整台狀態機跑完（`build\ecapture-consent-tests.exe`，原始碼 `tests\consent_state.cpp`）；實機那層把所有確認框一律代答「否」，判哪些路徑必須彈、被拒之後報什麼（`code` / `stage` / `target` / `value`）、有沒有落地，以及 `images[].path` / `scope` / `rect` 對不對。絕不代人答「是」 |
 | `.\tests\isolation.ps1` | 實機資源隔離：同名的既有處理程序保持存活且不會被當成目標、並發兩輪互不串、異常退出只清理自身 |
-| `.\tests\screen.ps1` | 實機整張螢幕測試：確認框行為 + 三條螢幕通道 + 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用 |
+| `.\tests\screen.ps1` | 實機整張螢幕測試：三條螢幕通道（都屬於桌面路徑，每一條都必須彈框）+ 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用；不加時凡是要答框的判據一律記 SKIP（未驗證） |
 | `.\tests\streams.ps1` | 實機標準串流與結構化結果可靠性：單個目標寫 stdout、多個目標被拒、判據是實際命中的目標數、多螢幕被拒而且確認框根本不彈、診斷的定位欄位、批次中途失敗時保留前面已經成功的圖、結果送不到約定的那條串流時報 8（只截自己建的視窗） |
 | `.\tests\window_shot.bat` | 給人跑的批次檔：編譯測試視窗程式 → 逐通道截圖 → 開啟截圖目錄 → 只結束自己起的那個 PID |
 | `.\scripts\mkreadme.ps1` | 用各語言 `--help` 的原樣輸出重新產生四份 README 的說明段 |

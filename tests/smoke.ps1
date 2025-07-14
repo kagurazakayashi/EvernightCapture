@@ -38,7 +38,7 @@ try {
     Write-Host "`n=== 截到文件并校验图片 ==="
     $img = Get-EcRunFile -RunDir $run -Name "target.$Format"
     $r = Invoke-Ecapture -Arguments @('--pid', [string]$window.Pid, '--class', $class,
-                                      '--format', $Format, '--out', $img)
+                                      '--format', $Format, '--yes', '--out', $img)
     Assert-Ec ($r.Exit -eq 0) "截图退出码 $($r.Exit)，应为 0（stderr: $($r.Stderr)）"
     $o = $null
     try { $o = $r.Stdout | ConvertFrom-Json } catch { Assert-Ec $false "输出不是合法 JSON：$_" }
@@ -76,7 +76,7 @@ try {
     # ---------- 2) 写到标准输出：二进制不得被转码，JSON 必须整体改走 stderr ----------
     Write-Host "`n=== -o - ：图片字节占 stdout，JSON 走 stderr ==="
     $p = Invoke-EcProcess -FilePath $Exe -TimeoutMs 60000 -Arguments @(
-        '--pid', [string]$window.Pid, '--class', $class, '--format', $Format, '-o', '-')
+        '--pid', [string]$window.Pid, '--class', $class, '--format', $Format, '--yes', '-o', '-')
     $json = $null
     try { $json = $p.Stderr | ConvertFrom-Json } catch { }
     $b = $p.StdoutBytes

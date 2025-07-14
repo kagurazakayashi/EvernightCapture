@@ -18,6 +18,7 @@ help.output2	       --help / --version and the no-conditions case are plain text
 help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
 help.exit2	        6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
 help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
+
 help.examples	Examples:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
 help.example2	ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
@@ -25,11 +26,13 @@ help.example3	ECAPTURE.EXE --pid 12345 --title-contains Report --all D:\shots\rp
 help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
+help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 help.no_condition	No match condition was given, so this help is shown.
 grp.target	Capture target (without --monitor only the window conditions below are used)
 grp.match	Window match conditions (repeat one option for OR, combine different options with AND)
 grp.pick	When several windows match (mutually exclusive)
 grp.capture	Capture channel (default wgc; may fail because of the OS version or the window itself)
+grp.consent	Capture authorization (a real capture asks first; --yes skips window-content paths)
 grp.output	Output
 grp.behavior	Miscellaneous
 
@@ -48,8 +51,9 @@ opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
 opt.newest	Take the most recently created window
 opt.oldest	Take the oldest created window
 opt.all	Save one image per matched window
-opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole-screen capture asks for consent in a dialog first, and there is no switch that skips it
+opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+opt.yes	Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 opt.out	Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
 opt.quality	JPEG quality, default 100
@@ -251,16 +255,23 @@ note.dry_run_monitor	--dry-run: %1 monitor(s) selected, nothing captured and no 
 # ---------------------------------------------------------------------------
 # Human consent for whole-screen captures (src/Consent.cpp)
 # ---------------------------------------------------------------------------
-consent.title	EvernightCapture wants to capture the whole screen
-consent.head	This tool is about to capture screen pixels and needs your consent.
-consent.targets	Target monitor(s), %1 in total: %2
-consent.plan	Channel %1, image goes to %2
-consent.warning	The image holds everything currently visible on screen: other windows, open documents, notifications, text on the desktop.
+consent.title	EvernightCapture wants to take a screenshot
+consent.head	This tool is about to capture pixels and needs your consent.
+consent.targets	Target(s), %1 in total: %2
+consent.plan	Channel %1, actual path %2, image goes to %3
 consent.dialog_closes	This dialog closes before the capture starts, so it will not appear in the image.
 consent.ask	Allow the capture now?
-consent.denied	The user refused the whole-screen capture
-consent.denied_hint	Nothing was captured and no file was written. To grab a single window, drop --monitor and use the window conditions
+consent.target_line	%1 (area %2,%3 size %4x%5)
+consent.scope_window	This path takes only the selected window's own pixels; nothing is sampled from the desktop.
+consent.scope_desktop	This path takes whatever is on screen in that area right now: other windows, open documents, notifications and text on the desktop can end up in the image.
+consent.yes_desktop	The --yes you passed does not apply to this path: a capture that reads desktop pixels always has to ask a person.
+consent.yes_window	If you do not want to be asked again: window-content paths like this one accept --yes (paths that read the desktop still ask).
+consent.more_targets	%1 more target(s) not listed
+consent.denied	The user refused this capture
+consent.denied_hint_window	Nothing was captured and no file was written. This path only takes the selected window itself, so with --yes it stops asking (paths that read the desktop still ask)
+consent.denied_hint_desktop	Nothing was captured and no file was written. This path reads desktop pixels, so neither --yes nor --quiet skips it; to grab one window use wgc / printwindow / dwm with --yes
 consent.unavailable	The consent dialog could not be shown, treated as a refusal
 consent.unavailable_hint	This session has no interactive desktop (service, scheduled task or lock screen), so nobody could consent. %1
+cap.consent.stale	The target moved or resized after you confirmed, so nothing was captured
+cap.consent.stale_hint	The rectangle to sample is no longer inside the area you approved. Select the target again and retry (you will be asked again)
 consent.output_stdout	standard output
-consent.more_screens	%1 more monitor(s) not listed
