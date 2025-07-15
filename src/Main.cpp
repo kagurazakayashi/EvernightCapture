@@ -13,6 +13,7 @@
 #include "CliOptions.h"
 #include "Json.h"
 #include "Report.h"
+#include "Worker.h"
 
 namespace {
 
@@ -38,6 +39,13 @@ std::wstring EmergencyDoc(const char* what, const wchar_t* stage) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+    // 工作模式（父进程为隔离执行而起的辅助进程）在解析任何选项**之前**分诊：
+    // 它不是一个选项，走正常解析只会被报成 cli.unknown_option；而它自己既不产生 JSON、
+    // 也不写标准输出，唯一的出口是那条绑定了本次父进程的管道（见 src/Worker.h）。
+    if (argc > 1 && ecapture::LooksLikeWorkerInvocation(argv[1])) {
+        return ecapture::RunWorkerMode(argc, argv);
+    }
+
     ecapture::Response resp;
 
     try {

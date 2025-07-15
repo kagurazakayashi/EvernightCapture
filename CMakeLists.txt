@@ -33,6 +33,10 @@ add_executable(ecapture
   src/ScreenMatch.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
+  src/Deadline.cpp
+  src/Worker.cpp
+  src/WorkerProtocol.cpp
+  src/WinrtApartment.cpp
   src/OutputPlan.cpp
   src/FileSave.cpp
   src/Consent.cpp
@@ -126,4 +130,39 @@ target_link_libraries(ecapture-consent-tests PRIVATE
   user32.lib kernel32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-consent-tests PROPERTIES OUTPUT_NAME "ecapture-consent-tests")
 set_property(TARGET ecapture-consent-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 隔离执行那套内部消息格式的离线判据（由 tests\worker.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：格式层最要紧的判据是"畸形消息整条作废"——截断、超长、
+# 保留段非 0、状态码没登记、像素字节数与行距不自洽。这些字节组合用真父子进程去造
+# 既慢又造不全，而发布版 ECAPTURE.EXE 里绝不该有能喂自定义消息的入口。
+# 期限那条判据要读 --lang 那套资源，所以把 Lang/CliOptions 与 .rc 一起编进来。
+# 这里不链 Worker.cpp：它要起辅助进程，也要用到几条取图通道，而格式与期限这两层判据
+# 都只需要纯数据的那几份源文件。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-worker-tests
+  tests/isolation_state.cpp
+  src/WorkerProtocol.cpp
+  src/Deadline.cpp
+  src/WindowMatch.cpp
+  src/ScreenMatch.cpp
+  src/CaptureCommon.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-worker-tests PRIVATE resources src)
+target_compile_features(ecapture-worker-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-worker-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-worker-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-worker-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-worker-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_source_files_properties(resources/ecapture.rc PROPERTIES OBJECT_DEPENDS "${ECAPTURE_RC_INPUTS}")
+set_target_properties(ecapture-worker-tests PROPERTIES OUTPUT_NAME "ecapture-worker-tests")
+set_property(TARGET ecapture-worker-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

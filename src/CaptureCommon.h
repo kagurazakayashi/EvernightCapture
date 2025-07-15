@@ -32,6 +32,38 @@ struct CapturedFrame {
                           // scope 由它算出来，所以图里写的来源与当初授权的是同一件事
 };
 
+// 会卡住的那几步（PrintWindow / DWM 缩略图 / 条件求值里的正则回溯）失败在哪一步的原因码。
+// 辅助进程只报这个码 + 系统错误码，**不报文字**：文案由父进程按 --lang 现场取，
+// 于是四种语言都不必跟着协议走。数值是管道里的线上格式，改顺序或改含义要同步
+// 改 WorkerProtocol.h 的 kProtocolVersion。
+enum class BlockedStatus : uint32_t {
+    kOk = 0,
+    kRectEmpty = 1,          // 目标窗口矩形已经量不出来（窗口没了 / 正被销毁）
+    kDibCreate = 2,          // 建 DIB 失败
+    kPrintWindowFailed = 3,  // PrintWindow 带 flag 与不带 flag 两次都返回 FALSE（窗口自己画到 DC）
+    kHostClass = 4,          // 注册 DWM 宿主窗口类失败
+    kHostCreate = 5,         // 建宿主窗口失败
+    kRegisterThumb = 6,      // DwmRegisterThumbnail 失败
+    kUpdateProps = 7,        // DwmUpdateThumbnailProperties 失败
+    kHostRectEmpty = 8,      // 宿主窗口自己的矩形量不出来
+    kRegexInvalid = 9,       // 正则编不出来（解析期已挡过一遍，正常走不到这里）
+    kBadTask = 10,           // 交来的任务不合法（尺寸 / 条数超限）
+    kInternal = 11,          // 那一步抛了异常（ASCII 细节在 detail）
+    kHostPrintWindowFailed = 12,  // 对宿主窗口的 PrintWindow 两次都返回 FALSE（dwm 通道）
+    kRegexTooComplex = 13,  // 回溯复杂度超限：模式语法没问题，但这台机器的正则库拒绝把它跑完
+};
+
+// 一次"只读某个窗口自己的画面"的调用结果。放在这里是因为它既能在本进程里产生，
+// 也能在辅助进程里产生（见 Worker.h），两边共用同一个形状。
+struct RenderOutcome {
+    BlockedStatus status = BlockedStatus::kOk;
+    DWORD win32 = 0;
+    HRESULT hresult = S_OK;
+    std::string detail;   // 只放 ASCII 细节（异常 what()），不放大自然语言
+    CapturedFrame frame;
+};
+
+
 // 让屏幕坐标与物理像素一致：GDI 通道按屏幕矩形取图，被 DPI 虚拟化时
 // GetWindowRect 给的是缩放后坐标，截出来就是错位或只有一半。
 void EnsureDpiAware();
@@ -39,6 +71,11 @@ void EnsureDpiAware();
 // 失败点当场取错误码：文案要用 Msg / Msgf 去读资源，那一路 API 会把上一次的 GetLastError
 // 覆盖掉，所以"取码"必须排在拼文案之前，由调用方显式做一次。
 inline DWORD LastError() { return GetLastError(); }
+
+// 把当前异常换成一段**只含 ASCII** 的细节（异常 what() 本来就是窄字符）。
+// 隔离执行时这段文字要穿过管道交给父进程，所以这里不放本地化文案：
+// 辅助进程只说"崩在哪"，说什么话由父进程按 --lang 决定。
+void DetailFromCurrentException(std::string* detail);
 
 // 只负责把已经取到的码写成给人看的文字（不再自己去问 GetLastError）
 std::wstring Win32ErrorText(DWORD gle);

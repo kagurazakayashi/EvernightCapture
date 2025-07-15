@@ -18,7 +18,4 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
 bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const DesktopPermit& permit,
                       CapturedFrame* out, Diagnostic* err);
 
-// WinRT 套间只需初始化一次；内部自带幂等保护。
-void EnsureWinrtInitialized();
-
 }  // namespace ecapture

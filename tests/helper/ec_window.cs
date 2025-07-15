@@ -12,6 +12,10 @@
 //   streams  两条流同时大量输出，验证并发读取与二进制不转码
 //   hang     先留下可诊断输出再睡死，验证超时只结束本次拥有的进程树
 //
+// 窗口模式还可以 --block-print-ms N：故意不处理 WM_PRINT，把这条消息所在的线程堵住 N 毫秒，
+// 用来造"目标应用的线程卡住了"那种局面 —— 父进程里那次 PrintWindow 于是永不返回，
+// 而窗口本身还活着。到点自己醒来，之后的请求照旧能截。
+//
 // 窗口模式带父进程看门狗与最长存活时间：测试异常退出时不会留下孤儿窗口，
 // 也不需要按进程名批量收尾。
 //
@@ -160,6 +164,7 @@ namespace EcTestHelper
         [DllImport("gdi32")]
         public static extern IntPtr GetStockObject(int index);
 
+
     }
 
     internal sealed class Options
@@ -182,6 +187,9 @@ namespace EcTestHelper
         public int Spawn;
         public int Seconds = 3600;
         public int Windows = 1;           // --windows N：同一进程建几扇自有窗口（%p 撞名要有这个才造得出来）
+        public int BlockPrintMs;        // >0：WM_PRINT / WM_PRINTCLIENT 到了就堵在这条消息里
+        public bool NoRedirect;         // WS_EX_NOREDIRECTIONBITMAP：没有 DWM 缓存面，取图只能走 WM_PRINT
+        public int StallMs;             // >0：收到 WM_USER+7 之后把这条消息线程堵住这么久
         public int PayloadStart = -1;     // "--" 之后的第一条：args 模式把它之后全当数据
         public string PidFile;            // 把自己的 PID 写进这个文件：给 cmd 脚本精确收尾用
     }
@@ -193,6 +201,7 @@ namespace EcTestHelper
         private const uint WS_VISIBLE = 0x10000000u;
         private const uint WS_SYSMENU = 0x00080000u;
         private const uint WS_EX_TOPMOST = 0x00000008u;
+        private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000u;
         private const uint SWP_NOSIZE = 0x0001u;
         private const uint SWP_NOMOVE = 0x0002u;
         private const uint SWP_NOACTIVATE = 0x0010u;
@@ -200,6 +209,9 @@ namespace EcTestHelper
         private const uint WM_DESTROY = 0x0002u;
         private const uint WM_CLOSE = 0x0010u;
         private const uint WM_PAINT = 0x000Fu;
+        private const uint WM_PRINT = 0x0317u;
+        private const uint WM_PRINTCLIENT = 0x0318u;
+        private const uint WM_USER_STALL = 0x0407u;   // WM_USER+7：测试专用"现在把线程堵住"信号
         private const int WHITE_BRUSH = 0;
         private const uint SYNCHRONIZE = 0x00100000u;
         private const uint INFINITE = 0xFFFFFFFFu;
@@ -210,6 +222,7 @@ namespace EcTestHelper
         private static IntPtr g_hwnd = IntPtr.Zero;
         private static readonly List<IntPtr> g_windows = new List<IntPtr>();   // --windows N 时不止一扇
         private static int g_openWindows;                                       // 关到最后一扇才退出消息循环
+        private static int g_blockedPrints;   // 被 --block-print-ms 堵过几次（排障时打印用）
         private static readonly List<string> g_classes = new List<string>();    // 本次注册过的类名，收尾逐个注销
         private static Native.WndProcDelegate g_wndProc;      // 必须长期持有，否则委托被 GC 后回调会崩
         private static Options g_opt = new Options();
@@ -277,6 +290,15 @@ namespace EcTestHelper
                         if (o.Windows < 1 || o.Windows > 8) { throw new ArgumentException("--windows wants 1..8"); }
                         break;
                     case "--pid-file": o.PidFile = Need(args, ref i, key); break;
+                    case "--no-redirect": o.NoRedirect = true; break;
+                    case "--stall-ms":
+                        o.StallMs = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture);
+                        if (o.StallMs < 0 || o.StallMs > 120000) { throw new ArgumentException("--stall-ms wants 0..120000"); }
+                        break;
+                    case "--block-print-ms":
+                        o.BlockPrintMs = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture);
+                        if (o.BlockPrintMs < 0 || o.BlockPrintMs > 120000) { throw new ArgumentException("--block-print-ms wants 0..120000"); }
+                        break;
                     case "--rect":
                         value = Need(args, ref i, key);
                         string[] parts = value.Split(',');
@@ -321,6 +343,12 @@ namespace EcTestHelper
             wc.hbrBackground = Native.GetStockObject(WHITE_BRUSH);   // 类背景刷：擦背景时也有内容，不留黑底
 
             uint exStyle = opt.TopMost ? WS_EX_TOPMOST : 0u;
+            if (opt.NoRedirect)
+            {
+                // 没有重定向表面：PrintWindow(PW_RENDERFULLCONTENT) 就没有 DWM 缓存面可拷，
+                // 只能把 WM_PRINT 发给窗口自己 —— 于是"目标应用卡住"这件事真的会卡住调用方。
+                exStyle |= WS_EX_NOREDIRECTIONBITMAP;
+            }
             uint style = WS_POPUP | WS_VISIBLE | WS_SYSMENU;
 
             // --windows N：同一个进程建好几扇自有窗口（类名 <class>、<class>-2 …，标题全都一样）。
@@ -394,6 +422,28 @@ namespace EcTestHelper
                 try { Paint(hWnd, hdc); }
                 finally { Native.EndPaint(hWnd, ref ps); }
                 return IntPtr.Zero;
+            }
+            if (message == WM_USER_STALL)
+            {
+                // "目标应用的这条消息线程不处理任何事"的现场：坐在 WM_USER+7 里不返回。
+                // 于是别人给它发消息都要等它 —— 枚举窗口时的 WM_GETTEXT 是必然要等的，
+                // 而 Win10 之后 PrintWindow(PW_RENDERFULLCONTENT) 走 DWM 缓存面、压根不给
+                // 窗口发 WM_PRINT（实测如此），所以卡住跨进程调用的判据用这条消息来做。
+                // 到点自己醒：窗口没被杀，之后的请求仍然截得到。
+                if (g_opt.StallMs > 0) { Thread.Sleep(g_opt.StallMs); }
+                return IntPtr.Zero;
+            }
+            if (message == WM_PRINT || message == WM_PRINTCLIENT)
+            {
+                // 故意坐在这条消息里不返回：PrintWindow 是把绘制请求发给目标窗口的线程并同步等它画完，
+                // 于是调用方那一次调用会一直卡住。这就是"超时参数在 PrintWindow 上没有中断点"的现场。
+                // 到点自己醒：窗口没被杀、也没被结束进程，之后的请求仍然截得到。
+                if (g_opt.BlockPrintMs > 0)
+                {
+                    Interlocked.Increment(ref g_blockedPrints);
+                    Thread.Sleep(g_opt.BlockPrintMs);
+                }
+                return Native.DefWindowProcW(hWnd, message, wParam, lParam);
             }
             if (message == WM_CLOSE) { Native.DestroyWindow(hWnd); return IntPtr.Zero; }
             if (message == WM_DESTROY)

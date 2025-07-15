@@ -42,6 +42,16 @@ std::wstring ImagePathOf(HWND hwnd) {
     return result;
 }
 
+// 异常 what() 是窄字符，只留可打印 ASCII：这段细节要穿过管道交给父进程。
+std::string AsciiDetail(const char* what) {
+    std::string out;
+    for (const char* p = what ? what : ""; p && *p; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        if (c >= 32 && c < 127) out.push_back(*p);
+    }
+    return out;
+}
+
 // 编译一次正则在枚举前，避免每个窗口重复构造
 struct Compiled {
     std::vector<uint64_t> hwnds;
@@ -66,7 +76,15 @@ bool OnAnyScreen(const Compiled& c, const WindowInfo& w) {
     return false;
 }
 
-bool Matches(const Compiled& c, const WindowInfo& w) {
+// 正则求值时的失败要就地记下：异常不许穿过 EnumWindows 那条回调边界
+// （回调是被 user32 调的，那条栈上没有 C++ 的展开信息，异常会绕到调用栈外面去）。
+struct RegexFault {
+    bool hit = false;
+    BlockedStatus status = BlockedStatus::kOk;
+    std::string detail;
+};
+
+bool Matches(const Compiled& c, const WindowInfo& w, RegexFault* fault) {
     const std::wstring imageLower = ToLowerPlain(w.imageName);
     const std::wstring pathLower = ToLowerPlain(w.imagePath);
     const std::wstring classLower = ToLowerPlain(w.className);
@@ -98,9 +116,23 @@ bool Matches(const Compiled& c, const WindowInfo& w) {
         if (!any) return false;
     }
     if (!c.titleRegexes.empty()) {
-        any = std::any_of(c.titleRegexes.begin(), c.titleRegexes.end(), [&](const std::wregex& re) {
-            return std::regex_search(w.title, re);
-        });
+        for (const std::wregex& re : c.titleRegexes) {
+            try {
+                if (std::regex_search(w.title, re)) { any = true; break; }
+            } catch (const std::regex_error& e) {
+                // MSVC 的正则库对回溯复杂度有一道内置上限（error_complexity），失控的模式
+                // 会在这里被挡下来，而不是永远跑下去 —— 那是"能中断"的那一类。
+                if (fault && !fault->hit) {
+                    fault->hit = true;
+                    fault->status = e.code() == std::regex_constants::error_complexity
+                                        ? BlockedStatus::kRegexTooComplex
+                                        : BlockedStatus::kRegexInvalid;
+                    fault->detail = AsciiDetail(e.what());
+                }
+                any = false;
+                break;
+            }
+        }
         if (!any) return false;
     }
     if (!c.classes.empty()) {
@@ -115,6 +147,7 @@ struct CollectState {
     std::vector<WindowInfo>* all;      // 命中且可见
     std::vector<WindowInfo>* iconic;   // 命中但最小化（用于给提示）
     int32_t order = 0;
+    RegexFault fault;                  // 正则被上限挡下时的记录（不让异常穿出回调）
 };
 
 BOOL CALLBACK CollectCallback(HWND hwnd, LPARAM lParam) {
@@ -154,7 +187,8 @@ BOOL CALLBACK CollectCallback(HWND hwnd, LPARAM lParam) {
     if (!IsWindowVisible(hwnd)) return TRUE;
     if (w.width <= 0 || w.height <= 0) return TRUE;
 
-    if (!Matches(*state->compiled, w)) return TRUE;
+    if (state->fault.hit) return TRUE;   // 已经报废的求值不必再往下数
+    if (!Matches(*state->compiled, w, &state->fault)) return TRUE;
     // 最小化的窗口只为 hint 收集，屏幕限制只管真正的目标
     if (!w.iconic && !OnAnyScreen(*state->compiled, w)) return TRUE;
     if (w.iconic) state->iconic->push_back(w);
@@ -189,49 +223,79 @@ std::wstring DescribeWindow(const WindowInfo& w) {
     return s;
 }
 
-std::vector<WindowInfo> SelectWindows(const Options& opt, std::vector<Diagnostic>* errors,
-                                      std::vector<Diagnostic>* notes) {
-    (void)notes;  // 预留：以后放"命中但被过滤"的提示
+// ---------------------------------------------------------------------------
+// 条件求值：枚举 + AND/OR 判定（含正则）。这一半没有中断点，所以要限期限时得整半交给
+// 辅助进程（Worker.h 的 kTaskMatchWindows），在这里加"检查点"是假的期限。
+// 结果只带原因码，不带文案 —— 这条函数在另一个进程里也要能跑。
+// ---------------------------------------------------------------------------
+MatchOutcome EnumerateMatches(const MatchRequest& req) {
+    MatchOutcome outcome;
     Compiled c;
-    c.hwnds = opt.match.hwnds;
-    c.pids = opt.match.pids;
-    for (const auto& s : opt.match.processes) {
+    c.hwnds = req.match.hwnds;
+    c.pids = req.match.pids;
+    for (const auto& s : req.match.processes) {
         std::wstring v = ToLowerPlain(s);
         if (v.find(L'.') == std::wstring::npos) v += L".exe";
         c.processes.push_back(std::move(v));
     }
-    for (const auto& s : opt.match.exePaths) c.exePaths.push_back(ToLowerPlain(s));
-    c.titles = opt.match.titles;
-    c.titleContains = opt.match.titleContains;
-    for (const auto& s : opt.match.classes) c.classes.push_back(ToLowerPlain(s));
-    for (const auto& expr : opt.match.titleRegexes) {
+    for (const auto& s : req.match.exePaths) c.exePaths.push_back(ToLowerPlain(s));
+    c.titles = req.match.titles;
+    c.titleContains = req.match.titleContains;
+    for (const auto& s : req.match.classes) c.classes.push_back(ToLowerPlain(s));
+    for (const auto& expr : req.match.titleRegexes) {
         try {
             c.titleRegexes.emplace_back(expr, std::regex_constants::ECMAScript);
-        } catch (const std::regex_error&) {
-            Diagnostic d{codes::kInvalidRegex, Msg(L"cli.regex_late"), L"--title-regex", expr, L""};
-            errors->push_back(std::move(d));
-            return {};
+        } catch (const std::regex_error& e) {
+            // 语法在解析期已经挡过一遍；走到这里说明这台机器的标准库拒绝编译它。
+            // 只把机器码与 ASCII 细节交回去，本地化文案由父进程拼。
+            outcome.status = BlockedStatus::kRegexInvalid;
+            outcome.detail = AsciiDetail(e.what());
+            return outcome;
         }
     }
+    c.onScreens = req.onScreens;
 
-    // --monitor 与窗口条件同时给出：条件照旧，只是只在所选那块屏上找
-    std::wstring monitorLabel;
-    if (opt.monitor.given) {
-        if (opt.monitor.all) monitorLabel = L"all";
-        else if (opt.monitor.ordinal == 0) monitorLabel = L"primary";
-        else monitorLabel = std::to_wstring(opt.monitor.ordinal);
-        c.onScreens = SelectedScreenRects(opt, errors);
-        if (!errors->empty()) return {};
+    // 求值过程中的 regex_error：MSVC 的正则库对回溯复杂度有一道内置上限
+    // （error_complexity），所以失控的模式会以异常中断，而不是永远跑下去。
+    // 这是"能中断"的那一类，照实换成稳定诊断；时间上限另由期限那条路保证（Worker.h）。
+    CollectState state{&c, &outcome.hits, &outcome.iconic, 0};
+    try {
+        EnumWindows(CollectCallback, reinterpret_cast<LPARAM>(&state));
+    } catch (...) {
+        outcome.status = BlockedStatus::kInternal;
+        outcome.detail = "unknown";
+        outcome.hits.clear();
+        outcome.iconic.clear();
+        return outcome;
     }
-
-    std::vector<WindowInfo> hits;
-    std::vector<WindowInfo> iconic;
-    CollectState state{&c, &hits, &iconic, 0};
-    EnumWindows(CollectCallback, reinterpret_cast<LPARAM>(&state));
-
-    std::sort(hits.begin(), hits.end(),
+    if (state.fault.hit) {
+        // 正则被本机正则库的上限挡下：状态码与细节照实交回去，
+        // 半套命中列表不能交回调用方 —— 那看起来像"就这些窗口"，实际是"数到一半就停了"。
+        outcome.status = state.fault.status;
+        outcome.detail = state.fault.detail;
+        outcome.hits.clear();
+        outcome.iconic.clear();
+        return outcome;
+    }
+    std::sort(outcome.hits.begin(), outcome.hits.end(),
               [](const WindowInfo& a, const WindowInfo& b) { return a.zOrder < b.zOrder; });
+    return outcome;
+}
 
+std::wstring MonitorLabelOf(const Options& opt) {
+    if (!opt.monitor.given) return std::wstring();
+    if (opt.monitor.all) return L"all";
+    if (opt.monitor.ordinal == 0) return L"primary";
+    return std::to_wstring(opt.monitor.ordinal);
+}
+
+// ---------------------------------------------------------------------------
+// 选择策略：只对着已经拿到手的列表做决定，不碰窗口也不碰正则，所以永远在父进程里跑。
+// ---------------------------------------------------------------------------
+std::vector<WindowInfo> SelectFromHits(const Options& opt, const std::vector<WindowInfo>& hits,
+                                       const std::vector<WindowInfo>& iconic,
+                                       const std::wstring& monitorLabel,
+                                       std::vector<Diagnostic>* errors) {
     const auto fail = [&](Diagnostic d) {
         errors->push_back(std::move(d));
         return std::vector<WindowInfo>{};

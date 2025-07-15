@@ -1,7 +1,7 @@
 # ECAPTURE 调用契约（v0.4.0）
 
 本文是给调用方的参考。选项清单的**权威来源始终是 `ECAPTURE.EXE --help`**（退出码 3），
-本文只在它之外补充截图授权的两级判据、JSON 字段、诊断码全表、命名占位符和各 shell 的坑。
+本文只在它之外补充截图授权的两级判据、期限与阻塞隔离、JSON 字段、诊断码全表、命名占位符和各 shell 的坑。
 
 ## 全部选项
 
@@ -14,20 +14,22 @@
 | `--exe` | | 完整路径 | 忽略大小写 |
 | `--title` | `-t` | 精确标题 | **区分大小写**的整串相等；中文标题直接可用（入口是宽字符，不经 UTF-8→ACP） |
 | `--title-contains` | `-T` | 子串 | 同样区分大小写 |
-| `--title-regex` | `-R` | ECMAScript 正则 | 解析期即校验，写错立刻报 `cli.invalid_regex` |
+| `--title-regex` | `-R` | ECMAScript 正则 | 解析期即校验，写错立刻报 `cli.invalid_regex`；匹配期撞上引擎的回溯复杂度上限同样报它（`stage=match`+1，加大 `--timeout-ms` 没用，见「期限与阻塞隔离」） |
 | `--class` | `-c` | 窗口类名 | 忽略大小写，如 `Notepad` / `CabinetWClass` / `UnityWndClass` |
 | `--index` | `-i` | 从 1 起 | 多匹配消歧，按可见性/叠放次序排序 |
 | `--newest` / `--oldest` | | 开关 | 取最后/最早创建的窗口 |
 | `--all` | `-a` | 开关 | 每个命中窗口各存一张；与 `--monitor all` 互斥 |
 | `--capture` | `-C` | `wgc`（默认）/`dwm`/`printwindow`/`bitblt`/`duplication`/`auto` | 取图通道。取值写错解析期报 `cli.unknown_capture_method`，不会退化成默认值。**要不要问人，不看这里写的通道名，看实际走的那条内部路径**（`images[].path`，全表见「截图授权」一节）：`dwm` 的缩略图路径只取窗口画面，它那条"把宿主窗口盖到目标位置上再拷屏幕"的退路 `dwm.screen` 取的是桌面像素。屏幕模式只支持 `wgc`/`duplication`/`bitblt`/`auto`，`dwm`/`printwindow` 报 `capture.unsupported`（整屏 `wgc` 也是桌面像素） |
 | `--yes` | `-y` | 开关，可写 `=true/false` | **截图授权**：只免掉"只取所选窗口画面"那几条路径（`wgc` / `printwindow` / `dwm.thumbnail`）的确认框。裸写与 `=true/1/yes/y/on` = 开，`=false/0/no/n/off` = 关（它虽是正向开关，写 `=false` 却**有意义**：明确要问），重复给出时最后一个生效，最终结果由 `-v` 的 `input.yes` 回显；写成两头都不沾的取值（`--yes=maybe`）解析期就报 `cli.switch_takes_no_value`+1，不会当成"开了"。**其它一概不保证**：不保证目标真交出有效帧、不越过权限、不解除受保护内容、不吞掉任何错误，也不影响覆盖保护。凡是从屏幕上取像素的路径（`bitblt`、`duplication`、任何整屏、`dwm` 的屏幕退路）一定会弹框，这个开关跳不过 |
+| `--timeout-ms` | | 毫秒，0–86400000 | **自动阶段的总预算**：从选定目标起，匹配（含 `--title-regex` 求值）、`auto` 的后端重试、等帧、编码、写文件 / 写 stdout 共用这一份剩余时间，整批只发一次，没有哪一步或哪个目标能另领一份。省略或 `0` = 不设总预算，此时被隔离进辅助进程执行的那几步（见「期限与阻塞隔离」）仍有内置 5000 ms 上限兜底，`--capture printwindow` / `dwm` 不再能无限期卡住。预算耗尽时受影响的那张图**不写**：按阶段报 `match.timeout`（`stage=match`）/ `capture.timeout`（`stage=capture`，编码超时也算它）/ `io.timeout`（`stage=write`/`stdout`，退出码 8）；剩下的目标不再开始，已经写好的图留着。等人工确认**不计入**这条预算。只认十进制（`0x…` 拒收），重复给出最后一个生效，最终结果由 `-v` 的 `input.timeoutMs` 回显 |
+| `--consent-timeout-ms` | | 毫秒，0–86400000 | 确认框最多等人回答多久；省略或 `0` = 一直等。超时按**拒绝**处理而绝不当作同意：报 `capture.consent_timeout` + 退出码 6、`stage=consent`。这一段单独计时，**不消耗** `--timeout-ms` 的预算；点「是」之后那约 1 秒的关框动画缓冲属于人工阶段，不会为了赶预算被跳过。取值写法与回显同上（`input.consentTimeoutMs`） |
 | `--out` | `-o` | 路径或 `-` | `-` = 图片字节写标准输出。也可用位置参数；完全不给时等同 `--out -`。整批的最终绝对路径**在任何确认框与第一帧之前**一次算好（框上列的就是这些名字）：扩展名缺了就补，两个目标算出同一个名字就报 `io.output_collision`+8 且整批不作，绝不静默改名。`-` 不是路径，不参与展开与碰撞检测，而且**一次只交付一张图**：选中的目标多于一个而输出是 `-`（含没给输出路径）时，整批在确认框与取第一帧之前就报 `cli.stdout_multiple_targets`+1，一张都不截、一个文件都不写；判据是实际命中的目标数，所以 `--all` 只命中一个窗口时照样可以写 `-` |
 | `--format` | `-f` | `png`/`jpg`/`jpeg`/`bmp`/`tiff`/`gif` | 不给则由扩展名判定；扩展名判不出时用 png 并发 `note.format_defaulted_png`（文件名不改）。**没有 `webp`、没有 `ico`、没有 `auto`** |
 | `--quality` | | 1–100，默认 100 | 只对 jpeg 生效，给别的格式发 `note.quality_ignored` |
 | `--no-overwrite` | | 开关，可写 `=true/false` | 目标已存在时报 `io.file_exists` 且不覆盖。裸写与 `=true/1/yes/y/on` 同义（禁止覆盖），`=false/0/no/n/off` 取消禁令；重复给出时最后一个生效。**已存在与否由最后那次不许替换的改名原子判定**，没有「先查一下」那种竞态预检 |
 | `--dry-run` | `-d` | 开关 | 选完窗口就返回，只给 `note.dry_run`；不取帧、不写文件、**在任何确认框之前就已返回**（注定什么都没截的调用不会先打扰人一次）。但仍要求给 `--out` |
 | `--json` | `-j` | 开关 | 已废弃、无副作用（成功与错误本来就是 JSON）；用它会收到 `note.json_flag_deprecated` |
-| `--verbose` | `-v` | 开关 | JSON 追加 `input` 段（规范化后的全部输入，含最终生效的 `lang`、`overwrite` 与 `yes`） |
+| `--verbose` | `-v` | 开关 | JSON 追加 `input` 段（规范化后的全部输入，含最终生效的 `lang`、`overwrite`、`yes` 与 `timeoutMs` / `consentTimeoutMs`） |
 | `--quiet` | `-q` | 开关 | 省略 `notes`；**`errors` 不受抑制**，`images[]` 也一条不会少（`path` / `scope` / `rect` 那三项是隐私判据，尤其不许被藏起来） |
 | `--lang` | `-l` | `auto`（默认，跟随系统显示语言）/`zh-CN`/`zh-TW`/`en`/`ja` | 只影响给人看的 `message`/`hint`/`--help`；`code`、JSON 键名、取值枚举、`0x…` 句柄一律不变。取值宽容：忽略大小写、`_` 与 `-` 等价、`zh_TW`/`zh-Hant`/`cht`/`tw`/`chs`/`cn`/`jp` 都认。写错报 `cli.unknown_language` |
 | `--help` | `-h` | | 文本帮助，退出码 3 |
@@ -75,6 +77,9 @@
 
 - **可靠窗口截图带 `--yes`**（`wgc` / `printwindow` / `dwm` 缩略图这三条窗口内容路径）：不然脚本会卡在没人能点的框上，
   而 `--yes` 又确实管不到桌面那一级，所以该带就带、不该指望它就别指望。
+- **脚本 / AI 调用给 `--timeout-ms`**（例如 5000）配 `--yes`（窗口内容路径）：目标 UI 线程挂死也拖不垮调用方。
+  `--yes` 照旧管不到桌面路径（`bitblt` / `duplication` / 任何整屏 / `dwm` 的屏幕退路）——那些一定弹框，
+  现在还可能超时成 `capture.consent_timeout`。等人工确认不消耗 `--timeout-ms`，人答得慢不会把自动阶段预算吃光。
 - **会拍到别家窗口时先向用户说明范围**（要 `bitblt` / `duplication`、要整屏、或 `auto` 有可能退到桌面路径），
   启动之后**等用户本人在框上点「是」**。
 - **不得用脚本、`SendMessage`、UI 自动化代点**那个框——代点等于替人做了这个决定。
@@ -89,8 +94,10 @@
   展开后的绝对输出路径（或"标准输出"）、这一级会不会把别的窗口拍进图；桌面那一级还明确写着 `--yes` 对它不生效。
 - 点"是"之后工具等约 1 秒才取帧——框的关闭动画还在 DWM 画面上时立刻截会拍到残影；框一定在第一帧之前就没了。
 - 答"否"或把框关掉 → `capture.access_denied` + 退出码 6、`stage=consent`。
+  在 `--consent-timeout-ms` 之内没有人回答 → `capture.consent_timeout` + 退出码 6、`stage=consent`：
+  **超时按"拒绝"处理，绝不当作同意**，之后剩下的采集同样停止。这段等待单独计时，不吃 `--timeout-ms` 的预算。
   框根本弹不出来 → `capture.consent_unavailable` + 退出码 6、`stage=consent`：**这不是人说了不**，
-  下一步是换个有交互桌面的会话，而不是再问一遍。两条都带 `target`、`backend`（通道名）、`value`（实际那条路径名）。
+  下一步是换个有交互桌面的会话，而不是再问一遍。三条都带 `target`、`backend`（通道名）、`value`（实际那条路径名）。
 - 批准之后目标又挪了位置或变了大小 → `capture.consent_stale` + 退出码 7、`stage=capture`：
   这一张不取，可重试（重新选定目标，再让人确认一次）。
 - **任何一次拒绝之后，这一次请求剩下的截图全部停止**：不换后端、不重试，之前已经写好的图留着。
@@ -100,6 +107,41 @@
   光给它绝不等于"那就顺手拍张桌面"）、无匹配（4）、多匹配（5）、解析期错误（1）、
   输出名规划失败（如 `io.output_collision` 8）、以及 `--dry-run`。
 - 诚实边界：普通 MessageBox 只是合作式自动化的误操作防护，不能鉴别人类点击，也挡不住同权限存心绕过的进程。
+
+## 期限与阻塞隔离（`--timeout-ms` / `--consent-timeout-ms`）
+
+**自动阶段的预算整批只发一份**：目标选定之后，匹配（含 `--title-regex` 求值、取挂死窗口的标题）、
+`auto` 的后端重试、等帧、编码、写文件 / 写 stdout 共用同一份剩余时间，没有哪一步或哪个目标能另领一份。
+耗尽时受影响的那张图**不落地**，按阶段给码：`match.timeout`（`stage=match`）/ `capture.timeout`
+（`stage=capture`，编码超时也算它）/ `io.timeout`（`stage=write` / `stdout`，退出码 8）。
+剩下的目标不再开始，已经写好的图留着（同「部分成功」规矩）。省略或 `0` = 不设总预算，但即便如此，
+被隔离进辅助进程执行的那几步仍有内置 5000 ms 上限兜底，`printwindow` / `dwm` 不再能无限期卡住。
+
+等人工确认**不计入**这份预算：`--consent-timeout-ms` 单独给确认框限时，超时按拒绝处理
+（`capture.consent_timeout`，见上一节），绝不因为"没人反对"就当同意。
+
+### 阻塞隔离（内部机制，不是公开选项）
+
+- `printwindow`（这条通道本身，以及 `dwm` 回读的那次 `PrintWindow`）与**用了 `--title-regex` 或设了预算时的窗口匹配**，
+  现在跑在一个隐藏的同 EXE 辅助进程里。期限到点，父进程只结束**它自己起的**那个辅助进程；
+  目标应用的窗口从来不会被杀，也不会留下孤儿 worker（作业对象 + 管道 + 空闲看门狗）。
+- 调用方要知道的：**没有公开的 `--worker` 入口**，它不能被用来绕开确认框，辅助进程永远不读桌面像素，
+  辅助进程内部的退出码**不属于契约**。
+- 这套机制自己的失败（辅助进程起不来 / 管道断了 / 消息对不上协议 / 任务不合法，文案是 `cap.worker.*`）
+  统一以 `capture.worker_failed` + 退出码 7 报出来，带 `stage` / `backend`；`hint` 里附辅助进程最后那个退出码。
+  它与 `capture.failed` 分开给码，是因为下一步不同：这条要查的是执行环境（权限、策略、杀软），
+  而不是"目标窗口是不是受保护"。
+- `--title-regex` 写出灾难性回溯的模式现在是**照实说**的：`cli.invalid_regex` + 退出码 1、`stage=match`，
+  消息讲的是回溯复杂度（正则引擎自己的复杂度上限）。**加大 `--timeout-ms` 没有用**——改写模式，或者用 `--title-contains`。
+
+### 诚实边界（这些是限制，不是保证）
+
+- 预算在**可中断点**和"杀掉辅助进程"这两处生效。没有取消点的阻塞系统调用——原子写文件那几步、
+  往堵住的标准输出管道里写、无视取消请求的 WinRT 编码器——是**开始前检查预算、结束后再计时**，
+  不会在调用中途被抢占。
+- 实测 Win10 19045 上 `PrintWindow(PW_RENDERFULLCONTENT)` 从 DWM 缓存的合成面渲染、根本不发 `WM_PRINT`，
+  所以"目标卡在 `WM_PRINT` 里"这个场景在那里拖不住父进程；会等目标线程的是**不带 flag 的那次退路
+  `PrintWindow`**。别宣称卡死场景在每个 Windows 版本上都可达。
 
 ## JSON 结构
 
@@ -145,7 +187,7 @@
 | --- | --- |
 | `target` | 哪个目标：窗口给 `0x…` 句柄（与 `images[].hwnd` 同形），屏幕给设备名（如 `DISPLAY1`） |
 | `backend` | 哪条通道；`auto` 全链失败时列出真实试过的那几条，而不是 `auto`。授权类诊断（`stage=consent`）给的是**通道名**（`bitblt` / `dwm` / `wgc`…） |
-| `stage` | 哪一步：`parse` / `plan` / `consent` / `capture` / `encode` / `write` / `stdout` / `report`。`consent` = 人工确认这一关（答"否"、弹不出），`capture` 里也可能出"批了之后目标挪了位置"（`capture.consent_stale`） |
+| `stage` | 哪一步：`parse` / `match` / `plan` / `consent` / `capture` / `encode` / `write` / `stdout` / `report`。`match` = 目标匹配求值这一步（`match.timeout`，以及回溯复杂度版的 `cli.invalid_regex`），`consent` = 人工确认这一关（答"否"、弹不出、`--consent-timeout-ms` 内没人答），`capture` 里也可能出"批了之后目标挪了位置"（`capture.consent_stale`） |
 | `value` | 出错那个取值/名字；**在 `stage=consent` 的授权诊断上它是内部路径名**（`bitblt.screen` / `dwm.screen` / `screen.wgc`…），与 `backend` 的通道名分开发，所以调用方既能按通道分支、也看得见实际走了哪条支路 |
 | `hresult` | 形如 `0x80070005` 的原值（照实传，不会被 `E_FAIL` / `E_NOINTERFACE` 顶掉） |
 | `win32` | `GetLastError` 的原值（数字，0 不写） |
@@ -153,6 +195,7 @@
 这几个不随 `--lang` 变，`message` / `hint` 才变。于是"用户拒绝"（`capture.access_denied` + `stage=consent`）、
 "没有人能答"（`capture.consent_unavailable` + `stage=consent`）、"批了之后画面已经变了"
 （`capture.consent_stale` + `stage=capture`）与"技术性访问被拒"（`capture.failed` + `hresult=0x80070005`）能分开判；
+`capture.worker_failed` 说的是本工具自己的辅助进程没能跑起来，与前两者都不同；
 黑帧只报"没拿到内容"，不断言成 DRM，也不写成 `capture.access_denied`。
 
 ### `--dry-run` 的候选窗口在哪
@@ -178,16 +221,17 @@
 | 3 | `--help` |
 | 4 | 无匹配窗口 |
 | 5 | 匹配多个窗口 |
-| 6 | 这次截图没拿到人的同意：人在确认框上答"否"或把框关掉（`capture.access_denied`），或那个会话根本没有可交互的桌面、框弹不出来（`capture.consent_unavailable`）；也包括目标受保护 |
-| 7 | 截图失败 |
-| 8 | 写文件失败（也含结果 JSON 没送到约定那条流） |
+| 6 | 这次截图没拿到人的同意：人在确认框上答"否"或把框关掉（`capture.access_denied`），那个会话根本没有可交互的桌面、框弹不出来（`capture.consent_unavailable`），或在 `--consent-timeout-ms` 之内没有人回答（`capture.consent_timeout`）；也包括目标受保护 |
+| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`） |
+| 8 | 写文件失败（也含结果 JSON 没送到约定那条流，以及预算耗尽落在写/stdout 阶段的 `io.timeout`） |
 | 9 | 内部异常 |
 
 退出码与 body 是两套独立信号：先看 `errors`，再看 `captured`，最后才用退出码做粗分支。
 
-- `io.write_failed`、`io.file_exists`、`io.output_collision` 与"结果送不到约定流"给出 8；截图/编码阶段的其它失败（含
-  `capture.failed`、`capture.encoder_unavailable`、`capture.consent_stale`）都给 7；`capture.access_denied` 与
-  `capture.consent_unavailable` 给 6（两条都算"这一张没人批准"，但下一步动作不同：前者是有人答了否，后者是那里没有桌面可弹）。
+- `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout` 与"结果送不到约定流"给出 8；截图/编码阶段的其它失败（含
+  `capture.failed`、`capture.timeout`、`capture.encoder_unavailable`、`capture.consent_stale`、`capture.worker_failed`）都给 7；`capture.access_denied`、
+  `capture.consent_unavailable` 与 `capture.consent_timeout` 给 6（都算"这一张没人批准"，但下一步动作不同：
+  有人答了否 / 那里没有桌面可弹 / 人在 `--consent-timeout-ms` 之内没答）。
 - 某个后端抛异常（而不是返回失败）只作废它所在的那一个目标：前面成功的图留着，剩下的目标照旧继续；
   内存耗尽与显卡设备被移除这类"换后端也不会有区别"的错误会明确终止整批。
 - **部分成功**：`--all` / `--monitor all` 里某些目标失败时，已写出的图照样在 `images` 里
@@ -204,23 +248,32 @@
 `cli.unknown_capture_method` `cli.unknown_language` `cli.monitor_conflict` `cli.internal_error`
 `cli.stdout_multiple_targets`（stdout 一次只交付一张图，实际目标多于一个；整批没截也没写，也不弹框）
 `cli.no_condition`（→ 文本帮助 + 2）
+`cli.invalid_regex` 还有匹配期这一处：模式撞上正则引擎的回溯复杂度上限（`stage=match` + 1，消息说的就是回溯复杂度）——
+**加大 `--timeout-ms` 没有用**，改写模式或换 `--title-contains`
 
 **`match.*`**
 `match.no_window`（4）`match.ambiguous_window`（5）`match.index_out_of_range`（1）`match.monitor_out_of_range`（1）
+`match.timeout`（7，`--timeout-ms` 预算在窗口/屏幕匹配途中耗尽——含正则求值或取挂死窗口的标题，`stage=match`；
+加大预算或简化条件）
 
 **`capture.*`**
 `capture.access_denied`（6，人在确认框上答"否"或把框关掉——窗口内容路径没带 `--yes` 时也要弹，所以这一条不再只代表整屏。
 受保护内容不给这个码：它表现为黑帧，由 `capture.failed` 一类照实说"没拿到内容"）
 `capture.consent_unavailable`（6，确认框根本弹不出来：服务会话 / 计划任务 / 锁屏，那里没有交互桌面，
 **不是人说了不**——该换会话，而不是把同一个框再弹一遍）
+`capture.consent_timeout`（6，`--consent-timeout-ms` 之内没有人回答确认框：按拒绝处理而**不是**同意，
+之后剩下的采集同样停止，同 `capture.access_denied`）
 `capture.consent_stale`（7，批准之后目标又挪了位置或变了大小，要取样的矩形已经不在人批准的那一片里：
 这一张不取，可以重新选目标再问一次）
 `capture.unsupported`（1，屏幕模式配 `dwm`/`printwindow`）
-`capture.encoder_unavailable`（7）`capture.failed`（7）
+`capture.encoder_unavailable`（7）`capture.failed`（7）`capture.worker_failed`（7，`cap.worker.*` 那组辅助进程机制的失败：
+起不来 / 管道断 / 协议不符 / 任务不合法，`hint` 里附辅助进程最后那个退出码）
+`capture.timeout`（7，`--timeout-ms` 在取帧或编码阶段耗尽，`stage=capture`：`printwindow`/`dwm` 多半是目标
+UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 `capture.frame_timeout`（7，等帧超时：等一下可以重试）`capture.window_gone`（7，目标已经没了：要重新枚举窗口）
 
 **`io.*`**
-`io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）
+`io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）`io.timeout`（8，`--timeout-ms` 在写文件 / 写 stdout 阶段耗尽，`stage=write`/`stdout`：已截好的那一张也不写）
 
 **`note.*`（不是错误，`--quiet` 会去掉）**
 `note.dry_run` `note.capture_channel`（`auto` 回退后实际用了哪条）`note.duplicate_value`
@@ -299,4 +352,9 @@ ECAPTURE.EXE --class CabinetWClass --index 1 --capture auto --yes --out D:\shots
 
 # 10) 给英文环境的人看诊断文字
 ECAPTURE.EXE --process notepad.exe --yes --out D:\shots\a.png --lang en
+
+# 11) 脚本里不许卡死：自动阶段一份总预算，耗尽给 match/capture/io.timeout（图不写、好图留着）；
+#     等人工确认另计，超时算拒绝（capture.consent_timeout，退出码 6）
+ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --out D:\shots\epad.png
+ECAPTURE.EXE --monitor primary --consent-timeout-ms 60000 --out D:\shots\screen.png
 ```

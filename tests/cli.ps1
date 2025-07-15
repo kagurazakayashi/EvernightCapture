@@ -342,6 +342,50 @@ $cases += @{ Name = '帮助里写了会拍到桌面的一律要问、--yes 跳�
    A = @('--help'); Exit = 3; Text = $true; Has = @('跳不过') }
 $cases += @{ Name = '帮助里 --monitor 那条不再说"没有跳过的开关"'
    A = @('--help'); Exit = 3; Text = $true; Has = @('整块屏幕拍的是桌面像素') }
+# ---------------------------------------------------------------------------
+# 期限（--timeout-ms / --consent-timeout-ms）：判据写在 -v 的 input 回显里，
+# 全部带 --dry-run —— 验"参数最终落到什么值"不必真的去等一个超时。
+# ---------------------------------------------------------------------------
+$cases += @{ Name = '不给期限时两项都是 0（不设总预算）'
+   A = ($ANCHOR + @('-v', 'out.png')); Exit = 0
+   Check = { param($o) ($o.input.timeoutMs -eq 0 -and $o.input.consentTimeoutMs -eq 0) } }
+$cases += @{ Name = '--timeout-ms 回显毫秒数'
+   A = ($ANCHOR + @('-v', '--timeout-ms', '5000', 'out.png')); Exit = 0
+   Check = { param($o) ($o.input.timeoutMs -eq 5000 -and $o.input.consentTimeoutMs -eq 0) } }
+$cases += @{ Name = '--consent-timeout-ms 回显毫秒数'
+   A = ($ANCHOR + @('-v', '--consent-timeout-ms', '60000', 'out.png')); Exit = 0
+   Check = { param($o) ($o.input.consentTimeoutMs -eq 60000 -and $o.input.timeoutMs -eq 0) } }
+$cases += @{ Name = '两条期限同时给出互不影响'
+   A = ($ANCHOR + @('-v', '--timeout-ms=1500', '--consent-timeout-ms=2500', 'out.png')); Exit = 0
+   Check = { param($o) ($o.input.timeoutMs -eq 1500 -and $o.input.consentTimeoutMs -eq 2500) } }
+$cases += @{ Name = '期限重复给出以最后为准'
+   A = ($ANCHOR + @('-v', '--timeout-ms', '9000', '--timeout-ms', '300', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.timeoutMs -eq 300 } }
+$cases += @{ Name = '期限写 0 是明确不设这项期限（不是缺省值 1）'
+   A = ($ANCHOR + @('-v', '--timeout-ms', '0', '--consent-timeout-ms', '0', 'out.png')); Exit = 0
+   Check = { param($o) ($o.input.timeoutMs -eq 0 -and $o.input.consentTimeoutMs -eq 0) } }
+foreach ($bad in @('abc', '1.5', '-1', '0x10', '1_000', '86400001', '')) {
+    $cases += @{ Name = ("期限取值 {0} 在解析期就被拒" -f ($bad | ForEach-Object { if ($_ -eq '') { '(空)' } else { $_ } }))
+       A = @('--class', 'Shell_TrayWnd', '--timeout-ms', $bad, 'out.png'); Exit = 1
+       Errors = @('cli.invalid_number') }
+}
+$cases += @{ Name = '确认期限取值越界同样被拒'
+   A = @('--class', 'Shell_TrayWnd', '--consent-timeout-ms', '86400001', 'out.png'); Exit = 1
+   Errors = @('cli.invalid_number') }
+# 取值缺失时它会吃掉下一个参数（整轮的 --lang 就在后面），所以这条判的是"下一个参数
+# 被当成取值之后必须按数字校验拒掉"，而不是静默当作没给
+$cases += @{ Name = '--timeout-ms 后面跟的是选项名时按非法数字拒收'
+   A = @('--class', 'Shell_TrayWnd', '--timeout-ms', '--dry-run', 'out.png'); Exit = 1
+   Errors = @('cli.invalid_number')
+   Check = { param($o) $o.errors[0].option -eq '--timeout-ms' } }
+# 帮助里要写清这两件事：预算是整批一份，确认超时按拒绝而不是默认同意
+$cases += @{ Name = '帮助里有期限一节，两条参数都在'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('期限', '--timeout-ms', '--consent-timeout-ms') }
+$cases += @{ Name = '帮助写明预算是"共用这一份剩余时间"而不是每步一份'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('共用这一份剩余时间') }
+$cases += @{ Name = '帮助写明确认到点按拒绝、动画缓冲不省'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('绝不按"默认同意"', '关闭动画') }
+
 
 $results = @()
 foreach ($c in $cases) {
@@ -413,6 +457,8 @@ foreach ($r in $results) {
 }
 
 Write-Host ''
+
+
 Write-Host ("共 {0} 例，通过 {1}，失败 {2}" -f $cases.Count, $pass, $fail) -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
 if ($fail) { exit 1 }
 
@@ -448,7 +494,9 @@ $PROBE = @(
     @{ Name = '开关不接受取值'; A = @('--json=maybe', '--pid', '1', 'out.png'); Exit = 1 },
     @{ Name = '屏幕编号越界'; A = @('--monitor', '99', '--dry-run', 'out.png'); Exit = 1 },
     @{ Name = '整屏不支持的通道'; A = @('--monitor', 'primary', '--capture', 'dwm', 'out.png'); Exit = 1 },
-    @{ Name = 'all 与窗口条件冲突'; A = @('--monitor', 'all', '--class', 'Shell_TrayWnd', 'out.png'); Exit = 1 }
+    @{ Name = 'all 与窗口条件冲突'; A = @('--monitor', 'all', '--class', 'Shell_TrayWnd', 'out.png'); Exit = 1 },
+    @{ Name = '期限取值非法'; A = @('--class', 'Shell_TrayWnd', '--timeout-ms', 'abc', 'out.png'); Exit = 1 },
+    @{ Name = '正则失控（匹配阶段的诊断）'; A = @('--title-regex', '(a+)+$', '--dry-run', 'out.png'); Exit = 1 }
 )
 $bad = 0
 

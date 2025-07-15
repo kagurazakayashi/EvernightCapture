@@ -58,6 +58,9 @@ struct ConsentReply {
     ConsentAnswer answer = ConsentAnswer::kUnavailable;
     // answer == kUnavailable 时这才是"为什么弹不出来"的 GetLastError 原值；其余为 0。
     DWORD win32 = 0;
+    // 这一条是"期限到点、由本工具把框按'否'关掉"的标记：与"人自己点了否"同为拒绝，
+    // 但调用方要能分清（--consent-timeout-ms 到点 vs 人不同意）。
+    bool timedOut = false;
 };
 
 // 弹框这一件事的接口。测试里注入假的应答器，就能在没有桌面的情况下把整台状态机跑完。
@@ -68,9 +71,19 @@ public:
 };
 
 // 真机上那一个：模态 MessageBox，默认焦点在"否"上。
+//
+// 确认框跑在一条专门的线程上，本线程只负责等它 —— 因为 MessageBoxW 自己是阻塞的，
+// 而 --consent-timeout-ms 要求"到点没人答就按拒绝处理"，那就必须有一个能主动把框关掉的
+// 观察者。这条线程一定在 MessageBox 返回之后才被收尾（不靠 TerminateThread 抛弃它）。
+// timeoutMs = 0 表示一直等人回答。
 class DialogConsentPrompt final : public IConsentPrompt {
 public:
+    explicit DialogConsentPrompt(uint64_t timeoutMs = 0) : timeoutMs_(timeoutMs) {}
+
     ConsentReply Ask(const ConsentQuestion& question) override;
+
+private:
+    uint64_t timeoutMs_ = 0;
 };
 
 // 一次桌面取样的凭证。构造函数私有，唯一的发出者是 ConsentGate，而 GrabScreenRect、
@@ -114,6 +127,10 @@ struct GateConfig {
     std::vector<GateTarget> targets;        // 本次全部目标
     std::vector<std::wstring> outputs;      // 整批展开后的输出（"-" 用"标准输出"那行代替）
     std::wstring captureLabel;              // 弹框里那句"取图方式"（人话，随 --lang 变）
+    // 人工确认最多等多久（--consent-timeout-ms）。0 = 一直等。
+    // 这一段计时与 --timeout-ms 那份自动处理预算**分开**：等一个人不是在处理任务，
+    // 把等待的时间算进自动预算会让"人离开了键盘"变成"截图失败"。
+    uint64_t consentTimeoutMs = 0;
 };
 
 // 屏幕拓扑的取值函数。测试注入假布局，真机用 EnumScreens。
@@ -155,7 +172,7 @@ private:
     ConsentQuestion MakeQuestion(const wchar_t* path, PixelScope scope,
                                  const std::vector<GateTarget>& listed) const;
     Diagnostic Denied(const wchar_t* path, const std::wstring& targetKey, PixelScope scope,
-                      bool unavailable, DWORD gle) const;
+                      bool unavailable, DWORD gle, bool timedOut) const;
     // 人同意之后：把当前列出的目标区域冻结成本次桌面授权
     void GrantDesktop(const std::vector<GateTarget>& listed);
     bool DesktopGrantedFor(const std::wstring& targetKey, const RECT& area, RECT* approved) const;
@@ -167,6 +184,10 @@ private:
 
     Level windowLevel_ = Level::kNotAsked;
     Level desktopLevel_ = Level::kNotAsked;
+    // 拒绝的原因（人答否 / 弹不出框 / 期限到点）要粘住：后面那些目标不再问第二遍，
+    // 但它们各自的诊断得说清当初是哪一种，而不是统统写成"被拒绝"。
+    bool lastDenyUnavailable_ = false;
+    bool lastDenyTimedOut_ = false;
     std::vector<GateTarget> desktopAreas_;  // 答"是"那一刻的目标快照（不随窗口移动更新）
     int windowAsks_ = 0;
     int desktopAsks_ = 0;

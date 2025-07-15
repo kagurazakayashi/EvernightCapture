@@ -90,6 +90,13 @@ struct Options {
     CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
     bool captureExplicit = false;                  // 是否显式指定过 --capture
 
+    // --timeout-ms：自动处理阶段的**总**预算（匹配、后端重试、取帧等待、编码、提交共用这一份，
+    // 每一步只拿"还剩多少"）。0 = 不设总预算，此时各隔离调用仍受内置上限约束（Worker.h）。
+    uint64_t timeoutMs = 0;
+    // --consent-timeout-ms：人工确认框最多等多久。0 = 一直等。到点按"拒绝"处理，
+    // 绝不按"默认同意"处理；这段等待不占上面那份自动处理预算。
+    uint64_t consentTimeoutMs = 0;
+
     bool dryRun = false;              // --dry-run：只解析并打印候选信息（本阶段的默认行为）
     bool yes = false;                 // --yes：免掉"只取所选窗口画面"那条路径的确认，桌面像素路径无效
     bool json = false;                // --json
@@ -167,7 +174,22 @@ inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";
 // 退出码仍是 7（截图失败），但这两类调用方的下一步动作不同（前者可重试、后者要重新枚举），
 // 所以各给一个稳定的新码；capture.failed 保留给其它取帧失败。
 inline constexpr const wchar_t* kFrameTimeout = L"capture.frame_timeout";
+// 本工具自己的辅助进程出了问题（起不来、管道断了、消息不合本协议、任务不合法），
+// 而不是目标窗口拒绝对话。它和 capture.failed 分开给码：调用方看到这条就知道
+// 该查的是这台机器的执行环境（权限、杀软、策略），而不是"目标是不是受保护"。退出码仍是 7。
+inline constexpr const wchar_t* kWorkerFailed = L"capture.worker_failed";
 inline constexpr const wchar_t* kWindowGone = L"capture.window_gone";
+// 期限。三条各归一个阶段，因为调用方的下一步不同：
+//   match.timeout    —— 条件求值（含 --title-regex 的正则）没在预算内跑完，重来或加大预算
+//   capture.timeout  —— 取帧 / 编码没在预算内完成（含"辅助进程被中止"这种情况）
+//   io.timeout       —— 写文件或写标准输出的预算已尽，还没开工
+// 前两条退出码仍是 7，io.timeout 是 8（与它们各自的失败同类）。
+inline constexpr const wchar_t* kMatchTimeout = L"match.timeout";
+inline constexpr const wchar_t* kCaptureTimeout = L"capture.timeout";
+inline constexpr const wchar_t* kIoTimeout = L"io.timeout";
+// 确认框在 --consent-timeout-ms 之内没人应答。它是"按拒绝处理"，与"人答了否"同为 6，
+// 但分开给码：调用方据此知道"再问一次可能就有人在"，而不是"这个人不同意"。
+inline constexpr const wchar_t* kConsentTimeout = L"capture.consent_timeout";
 inline constexpr const wchar_t* kWriteFailed = L"io.write_failed";
 inline constexpr const wchar_t* kFileExists = L"io.file_exists";
 // 多个目标算出同一个输出名：整批一张都不截，也不静默改名
@@ -177,6 +199,7 @@ inline constexpr const wchar_t* kOutputCollision = L"io.output_collision";
 // 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。
 namespace stages {
 inline constexpr const wchar_t* kParse = L"parse";      // 命令行解析自身（异常兜底）
+inline constexpr const wchar_t* kMatch = L"match";      // 条件求值（枚举窗口 + 正则）
 inline constexpr const wchar_t* kPlan = L"plan";        // 整批输出名规划
 inline constexpr const wchar_t* kConsent = L"consent";  // 整屏截图的人工确认框
 inline constexpr const wchar_t* kCapture = L"capture";  // 取帧后端

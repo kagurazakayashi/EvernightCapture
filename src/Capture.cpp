@@ -24,6 +24,7 @@
 #include "CaptureDuplication.h"
 #include "CapturePrintWindow.h"
 #include "Consent.h"
+#include "Deadline.h"
 #include "Encoder.h"
 #include "FileSave.h"
 #include "Lang.h"
@@ -31,10 +32,14 @@
 #include "Report.h"
 #include "ScreenMatch.h"
 #include "WindowMatch.h"
+#include "Worker.h"
 
 namespace ecapture {
 namespace {
 
+// 等帧的内置上限：wgc / duplication 等一帧最多等多久，dwm 泵消息最多泵多久。
+// 给了 --timeout-ms 时它还要被剩余预算压一道（Deadline::ClampWait），所以"总预算只剩
+// 300 ms"不会在这里被花成 2000 ms。没给 --timeout-ms 时它照旧生效。
 constexpr uint32_t kFrameTimeoutMs = 2000;
 
 // 流水线阶段名统一用 CliOptions.h 的 stages::，这里不再另写一份字面量。
@@ -146,9 +151,12 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
 // 单个通道的取帧入口。进任何一条通道之前先过授权判定：
 //   窗口内容路径 —— --yes 免问，否则整批问一次；
 //   桌面路径 —— 永远问人，并换来那张凭证，没有它就调不动那条通道的取像素函数。
+//
+// timeoutMs 是"这一步自己愿意等多久"（等帧、泵消息），dl 是"这一次运行还剩多少预算"。
+// 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
 bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
-                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
-                       Diagnostic* err) {
+                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, const Deadline& dl,
+                       CapturedFrame* out, Diagnostic* err) {
     const wchar_t* path = WindowPathOf(method);
     AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, area, err);
     if (!auth.ok) {
@@ -156,19 +164,21 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
         if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
         return false;
     }
+    const uint32_t wait = dl.ClampWait(timeoutMs);
 
     switch (method) {
         case CaptureMethod::kWgc:
-            return CaptureWindowWgc(hwnd, timeoutMs, out, err);
+            return CaptureWindowWgc(hwnd, wait, out, err);
         case CaptureMethod::kDwmThumbnail:
             // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去
-            return CaptureWindowDwmThumbnail(hwnd, timeoutMs, gate, targetKey, out, err);
+            return CaptureWindowDwmThumbnail(hwnd, wait, gate, targetKey, dl, out, err);
         case CaptureMethod::kPrintWindow:
-            return CaptureWindowPrintWindow(hwnd, timeoutMs, out, err);
+            // 这条一律走辅助进程：PrintWindow 同步等目标窗口的线程，本进程里没有中断点
+            return CaptureWindowPrintWindow(hwnd, dl, out, err);
         case CaptureMethod::kBitBlt:
-            return CaptureWindowBitBlt(hwnd, timeoutMs, *auth.permit, out, err);
+            return CaptureWindowBitBlt(hwnd, wait, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
-            return CaptureWindowDuplication(hwnd, timeoutMs, *auth.permit, out, err);
+            return CaptureWindowDuplication(hwnd, wait, *auth.permit, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureWithMethod 展开成回退链
     }
@@ -181,23 +191,24 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
 // 屏幕目标的单通道取帧。dwm / printwindow 取的是"某个窗口的画面"，屏幕上并没有
 // 这么一个窗口可让它们画，所以这两种通道在解析期就已经被挡在屏幕目标之外。
 // 剩下的三条（wgc / duplication / bitblt）拍的都是那块屏上此刻的一切，全部是桌面路径。
-bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey, const ScreenInfo& screen,
-                             CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
-                             Diagnostic* err) {
+bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
+                             const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
+                             const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
     const wchar_t* path = ScreenPathOf(method);
     AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, screen.bounds, err);
     if (!auth.ok) {
         if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
         return false;   // 没通过授权：整块屏幕一个像素都不读
     }
+    const uint32_t wait = dl.ClampWait(timeoutMs);
 
     switch (method) {
         case CaptureMethod::kWgc:
-            return CaptureScreenWgc(screen, timeoutMs, *auth.permit, out, err);
+            return CaptureScreenWgc(screen, wait, *auth.permit, out, err);
         case CaptureMethod::kBitBlt:
-            return CaptureScreenBitBlt(screen, timeoutMs, *auth.permit, out, err);
+            return CaptureScreenBitBlt(screen, wait, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
-            return CaptureScreenDuplication(screen, timeoutMs, *auth.permit, out, err);
+            return CaptureScreenDuplication(screen, wait, *auth.permit, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureScreenWithMethod 展开成回退链
         default:
@@ -214,17 +225,24 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey, c
 
 // auto 的回退链：按顺序试到第一个成功的通道。实际用的不是链首时留一条 note，
 // 让调用方知道画面来路不同。
-// 两条规矩：
+// 三条规矩：
 //   * 被拒绝（访问被拒 / 用户不让）不是继续换后端的理由 —— 换一条照样不该给，
 //     多问一次只是多扰一次，直接把这条错误交出去。
 //   * 后端抛出异常时按异常性质决定：致命（资源或设备没了）立刻终止整条链，
 //     可恢复的才继续往下试。
+//   * 预算已经用尽就不再试下一条：回退链最容易把"一次截图"变成"四次各拿一份完整超时"，
+//     而 --timeout-ms 要管的就是这种重复领取。
 template <typename Try>
-bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, Diagnostic* err,
-                   std::vector<Diagnostic>* notes, bool* fatal, Try tryOne) {
+bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, CapturedFrame* out,
+                   Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal, Try tryOne) {
     std::wstring tried;
     Diagnostic last{};
     for (const CaptureMethod m : chain) {
+        if (dl.Spent()) {
+            if (err) *err = BudgetSpent(dl, codes::kCaptureTimeout, stages::kCapture,
+                                         CaptureMethodName(m));
+            return false;
+        }
         CapturedFrame attempt;
         Diagnostic attemptErr{};
         const wchar_t* backend = CaptureMethodName(m);
@@ -268,43 +286,44 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, CapturedFrame* out, 
 // --capture 分派。auto 对窗口按 wgc -> dwm -> printwindow -> bitblt，对屏幕按
 // wgc -> duplication -> bitblt。显式指定的通道绝不回退：用户要哪个就要哪个。
 bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
-                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, CapturedFrame* out,
-                       Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
+                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, const Deadline& dl,
+                       CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
+                       bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureOneChannel(gate, targetKey, area, hwnd, method,
-                                                        timeoutMs, out, err);
+                                                        timeoutMs, dl, out, err);
                            },
                            err, fatal);
     }
     const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
                                               CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
-    return FallbackChain(chain, out, err, notes, fatal,
+    return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureOneChannel(gate, targetKey, area, hwnd, m, timeoutMs,
+                             return CaptureOneChannel(gate, targetKey, area, hwnd, m, timeoutMs, dl,
                                                       frame, e);
                          });
 }
 
 bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
                              const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
-                             CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
-                             bool* fatal) {
+                             const Deadline& dl, CapturedFrame* out, Diagnostic* err,
+                             std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureScreenOneChannel(gate, targetKey, screen, method,
-                                                              timeoutMs, out, err);
+                                                              timeoutMs, dl, out, err);
                            },
                            err, fatal);
     }
     const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDuplication,
                                               CaptureMethod::kBitBlt};
-    return FallbackChain(chain, out, err, notes, fatal,
+    return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureScreenOneChannel(gate, targetKey, screen, m, timeoutMs,
-                                                            frame, e);
+                                                            dl, frame, e);
                          });
 }
 
@@ -327,11 +346,71 @@ void TagTarget(Diagnostic* d, const Target& t, const wchar_t* stage) {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// 目标选择：屏幕目标直接按 --monitor 取；窗口目标先做条件求值，再按选择策略消歧。
+//
+// 条件求值这一步有两条执行路线，判据不是用户有没有要求，而是"这一步有没有中断点"：
+//   * 用了 --title-regex —— std::regex 的编译与回溯匹配都没有可查的中断点，
+//     而"限制模式串长度"根本不是执行期限（短串一样能爆炸性回溯）。所以放进辅助进程，
+//     到点就结束那个进程（Worker.h）。语法在解析期已经校验过一遍，这里跑的是匹配。
+//   * 设了 --timeout-ms —— 连"给每个顶层窗口取标题"都可能被一扇挂住的窗口拖住
+//     （GetWindowText 是往那个线程发消息并等它回），所以整步也放进辅助进程。
+//   * 两者都没有 —— 照旧在本进程枚举，与没有期限机制时的行为完全一致。
+// 消歧（SelectFromHits）只对着已经拿到手的列表做决定，永远在本进程跑。
+// ---------------------------------------------------------------------------
+namespace {
+
+std::vector<WindowInfo> PickWindows(const Options& opt, const Deadline& dl,
+                                    std::vector<Diagnostic>* errors) {
+    std::vector<RECT> onScreens;
+    if (opt.monitor.given) {
+        onScreens = SelectedScreenRects(opt, errors);
+        if (!errors->empty()) return {};
+    }
+    const bool isolate = !opt.match.titleRegexes.empty() || dl.Enabled();
+
+    std::vector<WindowInfo> hits;
+    std::vector<WindowInfo> iconic;
+    if (isolate) {
+        Diagnostic err;
+        if (!IsolatedMatch(opt.match, onScreens, dl, &hits, &iconic, &err)) {
+            // 期限到了 / 辅助进程没起来 / 消息不合：都照实报，不悄悄退回本进程再跑一遍 ——
+            // 那样等于把期限当成建议，而慢的那一步下一次还会再慢一遍。
+            if (err.code == codes::kMatchTimeout || err.code == codes::kInvalidRegex) {
+                errors->push_back(std::move(err));
+            } else {
+                err.code = codes::kCaptureFailed;
+                errors->push_back(std::move(err));
+            }
+            return {};
+        }
+    } else {
+        MatchRequest req;
+        req.match = opt.match;
+        req.onScreens = onScreens;
+        const MatchOutcome m = EnumerateMatches(req);
+        if (m.status != BlockedStatus::kOk) {
+            errors->push_back(
+                BlockedToDiagnostic(m.status, 0, S_OK, m.detail, L"match", stages::kMatch));
+            return {};
+        }
+        hits = std::move(m.hits);
+        iconic = std::move(m.iconic);
+    }
+    return SelectFromHits(opt, hits, iconic, MonitorLabelOf(opt), errors);
+}
+
+}  // namespace
+
 CaptureOutcome RunCapture(const Options& opt) {
     CaptureOutcome outcome;
 
     // 屏幕矩形必须与物理像素一致，否则 GDI 通道会截偏
     EnsureDpiAware();
+
+    // 整条自动处理链路共用这一份预算：目标选择、后端重试、等帧、编码、提交。
+    // 人工确认那一段不计在这里（见 GateConfig.consentTimeoutMs 与 --consent-timeout-ms）。
+    const Deadline dl = Deadline::FromTotalMs(opt.timeoutMs);
 
     std::vector<Target> targets;
     if (opt.ScreenMode()) {
@@ -343,7 +422,7 @@ CaptureOutcome RunCapture(const Options& opt) {
             targets.push_back(std::move(t));
         }
     } else {
-        for (const auto& w : SelectWindows(opt, &outcome.errors, &outcome.notes)) {
+        for (const auto& w : PickWindows(opt, dl, &outcome.errors)) {
             Target t;
             t.window = w;
             // 窗口目标用整窗外框当授权范围：桌面路径实际会从屏幕上读走的就是这一块
@@ -355,8 +434,11 @@ CaptureOutcome RunCapture(const Options& opt) {
     if (!outcome.errors.empty()) {
         const std::wstring& code = outcome.errors.front().code;
         outcome.exitCode = code == codes::kAmbiguousWindow ? EX_AMBIGUOUS
-                         : code == codes::kIndexOutOfRange || code == codes::kMonitorOutOfRange
+                         : code == codes::kIndexOutOfRange || code == codes::kMonitorOutOfRange ||
+                                 code == codes::kInvalidRegex
                              ? EX_USAGE
+                         : code == codes::kMatchTimeout || code == codes::kCaptureTimeout
+                             ? EX_CAPTURE_FAILED
                              : EX_NO_MATCH;
         return outcome;
     }
@@ -419,10 +501,12 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 这里只建立判定器，不预先弹框：要不要问、问几次，取决于每个目标实际走的那条路径
     //（见 CaptureOneChannel）。带 --yes 的窗口内容路径可以一次都不弹；会拍到桌面像素的
     // 那几条一定会弹，且 --yes 在其中不起作用。
-    DialogConsentPrompt prompt;
+    // 确认框的等待时长走 --consent-timeout-ms（与上面那份自动预算分开计时）：0 = 一直等人。
+    DialogConsentPrompt prompt(opt.consentTimeoutMs);
     GateConfig gateCfg;
     gateCfg.yes = opt.yes;
     gateCfg.captureLabel = CaptureMethodName(opt.capture);
+    gateCfg.consentTimeoutMs = opt.consentTimeoutMs;
     for (const Target& t : targets) {
         GateTarget gt;
         gt.screen = t.isScreen;
@@ -448,6 +532,17 @@ CaptureOutcome RunCapture(const Options& opt) {
     for (size_t i = 0; i < targets.size(); ++i) {
         Target& t = targets[i];
         const ULONGLONG started = GetTickCount64();
+
+        // 批次语义：预算是**整批一份**，不是一个目标一份。剩下的预算已经用尽时，
+        // 后面的目标一个都不开工（不取帧、不弹框、不写文件），各自留下一条 capture.timeout，
+        // 调用方因此看得见"这一批停在哪、前面那几张还在不在"。
+        if (dl.Spent()) {
+            Diagnostic d = BudgetSpent(dl, codes::kCaptureTimeout, stages::kCapture,
+                                       CaptureMethodName(opt.capture));
+            d.target = t.Tag();
+            outcome.errors.push_back(std::move(d));
+            break;
+        }
 
         // 量一遍当下的矩形再交给判定器：确认框上写的区域与实际要取样的区域必须是同一块。
         // 目标在确认之后挪走或变大，凭证的 Covers 就会拒绝，这一次不截。
@@ -485,11 +580,11 @@ CaptureOutcome RunCapture(const Options& opt) {
                                  return t.isScreen
                                             ? CaptureScreenWithMethod(gate, t.Tag(), t.screen,
                                                                       opt.capture, kFrameTimeoutMs,
-                                                                      &frame, &targetErr,
+                                                                      dl, &frame, &targetErr,
                                                                       &outcome.notes, &fatal)
                                             : CaptureWithMethod(gate, t.Tag(), t.area,
                                                                 t.window.hwnd, opt.capture,
-                                                                kFrameTimeoutMs, &frame,
+                                                                kFrameTimeoutMs, dl, &frame,
                                                                 &targetErr, &outcome.notes, &fatal);
                              },
                              &targetErr, &fatal);
@@ -509,10 +604,24 @@ CaptureOutcome RunCapture(const Options& opt) {
                 stage = stages::kEncode;
                 ok = CallBackend(stage, backend,
                                  [&] {
-                                     return EncodeFrame(frame, opt.format, opt.jpegQuality, &encoded,
-                                                        &targetErr);
+                                     return EncodeFrame(frame, opt.format, opt.jpegQuality, dl,
+                                                        &encoded, &targetErr);
                                  },
                                  &targetErr, &fatal);
+            }
+
+            // 提交这一步（写文件 / 写标准输出）同样不许重新领一份预算：预算已经用尽就在这里
+            // 停下，帧被丢掉而不落地。已经取到的像素在磁盘写坏之前丢弃，比"先写了再说"干净。
+            // 这一关是**开工之前**的判定：真开始写之后，磁盘写与被人堵住的管道都没有中断点，
+            // 期限对它们只能在完工之后核对 —— 这条边界写在 README 与 AGENTS.md 里。
+            if (ok && dl.Spent()) {
+                const bool toStdout = img.file == L"-";
+                targetErr = BudgetSpent(dl, codes::kIoTimeout,
+                                        toStdout ? stages::kStdout : stages::kWrite, backend);
+                targetErr.option = L"--out";
+                targetErr.value = img.file;
+                ok = false;
+                stage = toStdout ? stages::kStdout : stages::kWrite;
             }
 
             if (ok && img.file == L"-") {
@@ -574,9 +683,11 @@ CaptureOutcome RunCapture(const Options& opt) {
     if (outcome.images.empty()) {
         const std::wstring& code =
             outcome.errors.empty() ? std::wstring() : outcome.errors.front().code;
-        outcome.exitCode = code == codes::kAccessDenied || code == codes::kConsentUnavailable
-                             ? EX_DENIED
-                         : code == codes::kWriteFailed || code == codes::kFileExists
+        outcome.exitCode = code == codes::kAccessDenied || code == codes::kConsentUnavailable ||
+                             code == codes::kConsentTimeout
+                         ? EX_DENIED
+                         : code == codes::kWriteFailed || code == codes::kFileExists ||
+                                 code == codes::kIoTimeout
                              ? EX_IO_FAILED
                              : EX_CAPTURE_FAILED;
     } else {

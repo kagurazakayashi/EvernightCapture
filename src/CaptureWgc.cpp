@@ -1,5 +1,6 @@
 #include "CaptureWgc.h"
 
+#include "WinrtApartment.h"
 #include <thread>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -30,16 +31,6 @@ namespace wdx11 = winrt::Windows::Graphics::DirectX::Direct3D11;
 using Microsoft::WRL::ComPtr;
 
 namespace ecapture {
-
-void EnsureWinrtInitialized() {
-    static bool initialized = [] {
-        const HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
-        // S_FALSE / RPC_E_CHANGED_MODE 表示已经初始化过，不算错
-        return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
-    }();
-    (void)initialized;
-}
-
 namespace {
 
 // stepKey 指向 resources 里"某一步失败"的文案（cap.wgc.step.*），套进统一的失败句式。
@@ -232,7 +223,9 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, Capture
 }  // namespace
 
 bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err) {
-    EnsureWinrtInitialized();
+    HRESULT aptHr = S_OK;
+    // 套间是按线程的：不能拿"进程里初始化过一次"当凭证（见 WinrtApartment.h）
+    if (!EnsureWinrtOnThisThread(&aptHr)) return Fail(err, L"cap.wgc.step.apartment", aptHr);
     ResetFrame(out);
 
     HRESULT itemHr = S_OK;
@@ -245,7 +238,9 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
 
 bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const DesktopPermit& permit,
                       CapturedFrame* out, Diagnostic* err) {
-    EnsureWinrtInitialized();
+    HRESULT aptHr = S_OK;
+    // 套间是按线程的：不能拿"进程里初始化过一次"当凭证（见 WinrtApartment.h）
+    if (!EnsureWinrtOnThisThread(&aptHr)) return Fail(err, L"cap.wgc.step.apartment", aptHr);
     ResetFrame(out);
 
     // 整块屏幕的 WGC 拍到的是那块屏上此刻的一切，跟拷屏幕 DC 是同一级风险：

@@ -1,6 +1,7 @@
 #include "CaptureCommon.h"
 
 #include <algorithm>
+#include <exception>
 #include <string>
 
 #include <dwmapi.h>
@@ -30,6 +31,24 @@ void EnsureDpiAware() {
 }
 
 std::wstring Win32ErrorText(DWORD gle) { return Msgf(L"err.win32_code", gle); }
+
+void DetailFromCurrentException(std::string* detail) {
+    if (!detail) return;
+    detail->clear();
+    try {
+        std::rethrow_exception(std::current_exception());
+    } catch (const std::exception& e) {
+        // 只留可打印的 ASCII：这段文字要穿过管道，非 ASCII 字节按码点宽化会得到一堆怪字符，
+        // 反而把"崩在哪"这条信息弄丢。
+        for (const char* p = e.what(); p && *p; ++p) {
+            const unsigned char c = static_cast<unsigned char>(*p);
+            if (c >= 32 && c < 127) detail->push_back(*p);
+        }
+        if (detail->empty()) *detail = "std::exception";
+    } catch (...) {
+        *detail = "unknown";
+    }
+}
 
 std::wstring HResultText(HRESULT hr) {
     wchar_t buf[40];

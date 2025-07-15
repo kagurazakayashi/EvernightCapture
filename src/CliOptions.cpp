@@ -149,6 +149,9 @@ void SelectLanguageFromCommandLine(int argc, wchar_t* const* argv) {
 constexpr const wchar_t* kFormatValues[] = {
     L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", nullptr};
 
+// --timeout-ms / --consent-timeout-ms 的上限：24 小时。再大的数字基本上是把期限当成装饰，
+// 而那正是这条参数要解决的问题，所以宁可不接受。
+constexpr uint64_t kMaxTimeoutMs = 86400000ull;
 constexpr const wchar_t* kCaptureValues[] = {
     L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
 
@@ -198,6 +201,11 @@ constexpr OptionSpec kOptions[] = {
     // ---- 截图授权 ----
     // --yes 只免掉窗口内容路径的确认框；会拍到桌面像素的那几条永远问人（见 src/Consent.h）。
     {L"yes", L"y", false, L"consent", L"", nullptr, L"opt.yes", false, false, true},
+    // ---- 期限 ----
+    // --timeout-ms 是自动处理阶段的总预算，不是"每一步各得一份"；确认框的等待另算
+    // （--consent-timeout-ms，到点按拒绝处理）。见 src/Deadline.h 与 src/Worker.h。
+    {L"timeout-ms", L"", true, L"timeout", L"<ms>", nullptr, L"opt.timeout-ms"},
+    {L"consent-timeout-ms", L"", true, L"timeout", L"<ms>", nullptr, L"opt.consent-timeout-ms"},
     // ---- 输出 ----
     {L"out", L"o", true, L"output", L"<path|->", nullptr, L"opt.out"},
     {L"format", L"f", true, L"output", L"<name>", kFormatValues, L"opt.format"},
@@ -537,6 +545,27 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             else if (v == L"duplication") opt.capture = CaptureMethod::kDuplication;
             else opt.capture = CaptureMethod::kAuto;  // 取值已在上面按 kCaptureValues 校验过
             opt.captureExplicit = true;
+            return;
+        }
+
+        // ---- 期限 ----
+        // 只认十进制毫秒数：0x 前缀、下划线这种"句柄写法"放到时长上只会让人算错。
+        // 0 有含义（= 不设这项期限），所以不能顺手把空值当 0。
+        if (name == L"timeout-ms" || name == L"consent-timeout-ms") {
+            const bool consentOnly = name == L"consent-timeout-ms";
+            const std::wstring v = Trim(value);
+            uint64_t ms = 0;
+            const bool digits = !v.empty() && v.size() <= 8 &&
+                                std::all_of(v.begin(), v.end(),
+                                            [](wchar_t c) { return std::iswdigit(c) != 0; });
+            if (digits) ms = std::wcstoull(v.c_str(), nullptr, 10);
+            if (!digits || ms > kMaxTimeoutMs) {
+                Err(codes::kInvalidNumber, Msgf(L"cli.timeout_value", kMaxTimeoutMs),
+                    L"--" + name, value);
+                return;
+            }
+            if (consentOnly) opt.consentTimeoutMs = ms;
+            else opt.timeoutMs = ms;
             return;
         }
 

@@ -27,12 +27,14 @@ help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
+help.example8	ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
 help.no_condition	未指定任何匹配條件，因此顯示說明。
 grp.target	截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
 grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
 grp.pick	匹配到多個視窗時（互斥）
 grp.capture	取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
 grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
+grp.timeout	執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
 grp.output	輸出
 grp.behavior	其他
 
@@ -54,6 +56,8 @@ opt.all	每個匹配視窗各存一張
 opt.monitor	截圖目標螢幕的編號，從 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
 opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
+opt.timeout-ms	自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
+opt.consent-timeout-ms	確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
 opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
 opt.quality	JPEG 品質，預設 100
@@ -80,6 +84,8 @@ cli.exe_no_path	--exe 取值不含路徑分隔符，看起來只是檔案名；�
 cli.class_empty	--class 不能為空
 cli.regex_invalid	--title-regex 正則運算式無效 (regex_error code=%1): %2
 cli.regex_hint	ECMAScript 語法；量詞前要有可重複項，字元類別裡的 [ 需要配對
+cli.regex_too_complex	正則的回溯複雜度超過本機正則庫的上限，這次匹配沒有跑完
+cli.regex_too_complex_hint	語法本身沒問題。改分子串比對 --title-contains，或把模式裡能確定的部分前移、拿掉巢狀量詞（例如 (a+)+ 換成 a+）。庫的上限擋下來時加大 --timeout-ms 不會有幫助：%1
 cli.regex_late	正則運算式在該階段重新編譯失敗
 cli.index_value	--index 是從 1 開始的序號
 cli.unknown_capture_method	--capture 取值不在允許清單內
@@ -88,6 +94,7 @@ cli.duplicate_output	重複的 --out，輸出路徑只能有一個
 cli.output_duplicate_positional	輸出路徑重複：--out 與位置參數只能給一個
 cli.format_value	--format 取值不在允許清單內
 cli.quality_value	--quality 需要在 1..100 之間
+cli.timeout_value	毫秒數不合法：要寫十進位，0 到 %1（0 = 不設這項期限）
 cli.switch_no_value	該開關不接受取值，直接寫選項名即可
 cli.switch_no_value_hint	%1（開）或 %1=false（關）
 cli.unknown_option	未知選項
@@ -169,6 +176,16 @@ cap.visible_only	該通道只能拷螢幕上可見的部分
 cap.bitblt_failed	BitBlt 螢幕失敗
 cap.unsupported	該取圖方式尚未實現
 cap.auto_failed	auto 的退回通道全部失敗（%1）
+cap.timeout	自動處理預算 %1 ms 已用盡（實際用時 %2 ms）
+cap.timeout_hint	加大 --timeout-ms，或換一條不會卡住的取圖通道（被遮擋的視窗用 wgc / dwm）；沒有可中斷等待點的那一步只能靠期限到點時中止本工具的輔助程序
+cap.worker.spawn_failed	輔助程序沒能啟動，這次取圖沒有執行
+cap.worker.spawn_failed_hint	printwindow 與 dwm 的讀回在本工具的輔助程序裡執行（那種呼叫會同步等目標視窗，沒有中斷點）。啟動失敗通常是權限、原則或殺軟攔截：%1
+cap.worker.channel_failed	與輔助程序的管道斷了，這次取圖沒有拿到結果
+cap.worker.channel_failed_hint	輔助程序可能被外部結束或自己崩了（它最後的退出碼是 %1；60 以上表示它按綁定校驗拒絕執行，-1 表示當時還在跑）。父程序只結束自己起的那一個程序，不碰目標應用
+cap.worker.protocol_failed	輔助程序交回的消息不合本協議，結果已丟棄
+cap.worker.protocol_failed_hint	nonce 或協議版本對不上時整條作廢：寧可報失敗，也不把別人的或殘缺的結果當成這一次的的成功
+cap.worker.bad_task	交給輔助程序的任務不合法，未執行
+cap.worker.bad_task_hint	視窗尺寸或條件筆數超出上限（邊長 16384、總影素 64MiB、每個條件群組 1024 筆）
 cap.no_detail	該通道回報失敗但未給出原因
 cap.hresult	HRESULT %1
 
@@ -183,6 +200,7 @@ cap.wgc.step.session	建立擷取工作階段
 cap.wgc.step.access	取影格表面存取子
 cap.wgc.step.surface	取影格表面
 cap.wgc.step.texture	影格表面轉紋理
+cap.wgc.step.apartment	初始化 WinRT 套間
 cap.wgc.frame_zero	取到的影格尺寸為 0
 cap.wgc.frame_zero_hint	視窗可能已最小化或剛被關閉
 cap.wgc.size_zero	擷取目標目前尺寸為 0，無法擷取
@@ -233,6 +251,8 @@ enc.size_zero	影格尺寸為 0，無法編碼
 enc.failed	編碼失敗
 enc.exception	編碼時發生未預期的異常
 enc.empty	編碼器傳回 0 位元組
+enc.too_large	編碼結果過大（%1 位元組），無法讀回
+enc.apartment	執行緒無法初始化 WinRT 套間（%1）
 
 # ---------------------------------------------------------------------------
 # 螢幕目標（--monitor，src/ScreenMatch.cpp 與各通道的 CaptureScreenXxx）
@@ -272,6 +292,9 @@ consent.denied_hint_window	未截取任何畫面，也沒有寫入檔案。這�
 consent.denied_hint_desktop	未截取任何畫面，也沒有寫入檔案。這條路徑會拍到桌面像素，--yes 與 --quiet 都跳不過；只要某個視窗的話改用 wgc / printwindow / dwm 並帶 --yes
 consent.unavailable	無法顯示確認對話框，已按拒絕處理
 consent.unavailable_hint	這個工作階段沒有可互動的桌面（服務、排程工作或鎖屏狀態），沒有人能同意截圖。%1
+consent.timeout	確認框在 --consent-timeout-ms 之內沒人回答，已按拒絕處理
+consent.timeout_hint	沒有拍到任何東西，也沒寫檔。這不是「使用者不同意」，只是沒人應答：確認的人還在時可以再來一次
+consent.deadline_line	請在 %1 毫秒內回答；到點仍沒人回答就按「否」處理，不會預設同意。
 cap.consent.stale	確認之後目標的位置或大小變了，這次沒有截
 cap.consent.stale_hint	要取樣的矩形已經不在你批准的那一片螢幕範圍內。重新選定目標再截一次（會再問一遍）
 consent.output_stdout	標準輸出

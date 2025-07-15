@@ -27,12 +27,14 @@ help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
+help.example8	ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
 help.no_condition	No match condition was given, so this help is shown.
 grp.target	Capture target (without --monitor only the window conditions below are used)
 grp.match	Window match conditions (repeat one option for OR, combine different options with AND)
 grp.pick	When several windows match (mutually exclusive)
 grp.capture	Capture channel (default wgc; may fail because of the OS version or the window itself)
 grp.consent	Capture authorization (a real capture asks first; --yes skips window-content paths)
+grp.timeout	Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
 grp.output	Output
 grp.behavior	Miscellaneous
 
@@ -54,6 +56,8 @@ opt.all	Save one image per matched window
 opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 opt.yes	Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
+opt.timeout-ms	Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
+opt.consent-timeout-ms	How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
 opt.out	Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
 opt.quality	JPEG quality, default 100
@@ -80,6 +84,8 @@ cli.exe_no_path	--exe value has no path separator and looks like a bare file nam
 cli.class_empty	--class must not be empty
 cli.regex_invalid	--title-regex pattern is invalid (regex_error code=%1): %2
 cli.regex_hint	ECMAScript syntax; a quantifier needs something to repeat, and [ inside a character class must be paired
+cli.regex_too_complex	The regex exceeded this machine's backtracking complexity limit, so the match did not finish
+cli.regex_too_complex_hint	The pattern itself is valid. Use --title-contains for substring matching, or pin down the deterministic part and drop nested quantifiers ((a+)+ becomes a+). When the library enforces its own limit, raising --timeout-ms does not help: %1
 cli.regex_late	The regular expression failed to compile again at this stage
 cli.index_value	--index is a 1-based ordinal
 cli.unknown_capture_method	--capture value is not in the allowed list
@@ -88,6 +94,7 @@ cli.duplicate_output	Duplicate --out: there can be only one output path
 cli.output_duplicate_positional	Duplicate output path: give either --out or the positional argument, not both
 cli.format_value	--format value is not in the allowed list
 cli.quality_value	--quality must be between 1 and 100
+cli.timeout_value	Invalid number of milliseconds: write decimal, 0 to %1 (0 = no limit for this)
 cli.switch_no_value	This switch takes no value; just write the option name
 cli.switch_no_value_hint	%1 (on) or %1=false (off)
 cli.unknown_option	Unknown option
@@ -169,6 +176,16 @@ cap.visible_only	This channel can only copy the visible part of the screen
 cap.bitblt_failed	BitBlt from the screen DC failed
 cap.unsupported	This capture method is not implemented
 cap.auto_failed	Every auto fallback channel failed (%1)
+cap.timeout	Automatic budget of %1 ms exhausted (took %2 ms)
+cap.timeout_hint	Raise --timeout-ms, or use a channel that cannot get stuck (wgc / dwm for an occluded window); a step with no interruptible wait can only be stopped by killing this tool's helper process when the deadline fires
+cap.worker.spawn_failed	The helper process could not be started, so this capture did not run
+cap.worker.spawn_failed_hint	printwindow and the dwm read-back run inside a helper process of this tool (those calls wait for the target window and have no interrupt point). A failure here usually means a policy, permission or antivirus blocked it: %1
+cap.worker.channel_failed	The pipe to the helper process broke; this capture got no result
+cap.worker.channel_failed_hint	The helper may have been killed externally or crashed on its own (its last exit code was %1; 60 and up means it refused on the binding checks, -1 means it was still running). The parent only ever terminates the process it started, never the target application
+cap.worker.protocol_failed	The helper sent a message that does not match this protocol; the result was discarded
+cap.worker.protocol_failed_hint	A mismatching nonce or protocol version invalidates the whole message: better a reported failure than someone else's or a truncated result counted as this run's success
+cap.worker.bad_task	The task handed to the helper process is not valid and was not executed
+cap.worker.bad_task_hint	Window size or condition count exceeded the limits (16384 per side, 64MiB of pixels, 1024 values per condition)
 cap.no_detail	The backend reported failure without giving a reason
 cap.hresult	HRESULT %1
 
@@ -183,6 +200,7 @@ cap.wgc.step.session	create the capture session
 cap.wgc.step.access	get the frame surface accessor
 cap.wgc.step.surface	get the frame surface
 cap.wgc.step.texture	convert the frame surface to a texture
+cap.wgc.step.apartment	initialize the WinRT apartment
 cap.wgc.frame_zero	The captured frame has size 0
 cap.wgc.frame_zero_hint	The window may be minimized or just closed
 cap.wgc.size_zero	The capture target currently has size 0 and cannot be captured
@@ -233,6 +251,8 @@ enc.size_zero	Frame has size 0, cannot encode
 enc.failed	Encoding failed
 enc.exception	Unexpected exception while encoding
 enc.empty	The encoder returned 0 bytes
+enc.too_large	Encoded output too large (%1 bytes) to read back
+enc.apartment	This thread could not initialize a WinRT apartment (%1)
 
 # ---------------------------------------------------------------------------
 # Screen target (--monitor, src/ScreenMatch.cpp and the CaptureScreenXxx channels)
@@ -272,6 +292,9 @@ consent.denied_hint_window	Nothing was captured and no file was written. This pa
 consent.denied_hint_desktop	Nothing was captured and no file was written. This path reads desktop pixels, so neither --yes nor --quiet skips it; to grab one window use wgc / printwindow / dwm with --yes
 consent.unavailable	The consent dialog could not be shown, treated as a refusal
 consent.unavailable_hint	This session has no interactive desktop (service, scheduled task or lock screen), so nobody could consent. %1
+consent.timeout	Nobody answered the consent dialog within --consent-timeout-ms; treated as a refusal
+consent.timeout_hint	Nothing was captured and no file was written. This is not "the user disagrees" - nobody answered; ask again while someone is around
+consent.deadline_line	Please answer within %1 milliseconds; if nobody answers this is treated as "No", never as consent.
 cap.consent.stale	The target moved or resized after you confirmed, so nothing was captured
 cap.consent.stale_hint	The rectangle to sample is no longer inside the area you approved. Select the target again and retry (you will be asked again)
 consent.output_stdout	standard output

@@ -26,12 +26,14 @@ help.example4	ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
 help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
+help.example8	ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
 help.no_condition	一致条件が指定されていないため、ヘルプを表示しています。
 grp.target	取得対象（--monitor を付けない場合は下のウィンドウ条件だけで探します）
 grp.match	ウィンドウ検索条件（同一オプションの繰り返しは OR、異なるオプションは同時成立）
 grp.pick	複数のウィンドウに一致したとき（排他）
 grp.capture	画面取得方式（既定 wgc；OS のバージョンやウィンドウの性質で失敗することがある）
 grp.consent	撮影の承諾（実際の撮影では既定で確認します。--yes はウィンドウ内容の経路だけ省略）
+grp.timeout	実行期限（自動処理区間の総予算。承諾を待つ時間は別計算で、期限切れは拒否として扱います）
 grp.output	出力
 grp.behavior	その他
 
@@ -53,6 +55,8 @@ opt.all	一致した各ウィンドウから 1 枚ずつ保存
 opt.monitor	対象モニタの番号 1 始まり（ディスプレイ設定の順序）；primary = 主モニタ、all = モニタごとに 1 枚。ウィンドウ条件なしでは画面全体を、指定するとそのモニタに重なるウィンドウだけを撮ります。値は省略可（= primary）で後続引数を飲み込まないため --monitor out.png はそのまま出力先です。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できません。モニタによるウィンドウ絞り込みは従来どおりウィンドウ画像です
 opt.capture	wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
 opt.yes	ウィンドウ自身の画像だけを使う経路の確認を省略します。有効な画像を保証せず、権限・保護コンテンツ・エラー・上書き保護にも影響しません。画面からサンプルする経路（bitblt、duplication、画面全体のあらゆる経路、dwm の画面フォールバック）は必ずダイアログを出します。--yes=false は明示的に確認を
+opt.timeout-ms	自動処理区間の総予算（ミリ秒）。対象の選択に成功した時点から、条件評価・バックエンド再試行・フレーム取得・エンコード・ファイル書き込みが同じ残り時間を共有し、どの段階も予算を新しく受け取り直すことはありません。指定なしまたは 0 = 総予算なし。その場合も隔離実行は組み込み上限（5000 ミリ秒）で抑えます。承諾ダイアログを待つ時間はここには含めません（--consent-timeout-ms を参照）。予算を使い切った時点でその画像は書き出されず、段階に応じ match.timeout / capture.timeout / io.timeout を返します
+opt.consent-timeout-ms	承諾ダイアログが応答を待つ最長時間（ミリ秒）。指定なしまたは 0 = 応答があるまで待ち続けます。期限切れは「拒否」として扱い、「既定で同意」には決してしません（capture.consent_timeout）。この待機は別計算で、--timeout-ms の予算を消費しません。はい を押した後のおよそ 1 秒の閉じるアニメーション待ちもこの段階に含め、期限に間に合わせるために省略することはありません
 opt.out	出力パス。特殊値 - は画像バイトを標準出力へ書き込む。位置引数でも指定でき、パスを全く与えないと --out - と同じ。一括分の出力名は画面取得前にまとめて確定します。2 つのターゲットが同じ名前に 解決される場合はエラーになり、黙って上書きすることはありません。stdout には一度に 1 枚だけ出力できるため、複数のターゲットにヒットしたバッチはパラメータエラーとなり、1 枚も取得しません
 opt.format	エンコード形式を指定。未指定なら出力ファイルの拡張子から判定し、それも判別不能なら png
 opt.quality	JPEG の品質、既定 100
@@ -79,6 +83,8 @@ cli.exe_no_path	--exe の値にパス区切り文字がなく、ファイル名�
 cli.class_empty	--class は空にできません
 cli.regex_invalid	--title-regex の正規表現が不正です (regex_error code=%1): %2
 cli.regex_hint	ECMAScript 構文。量子の前には繰り返し対象が必要で、文字クラス内の [ は対応する ] が必要です
+cli.regex_too_complex	正規表現のバックトラック複雑度がこの機のライブラリの上限を超え、照合は完了しませんでした
+cli.regex_too_complex_hint	パターンの構文自体は正しくありません。部分一致なら --title-contains を使い、確定できる部を前に移して入れ子の量詞を外してください（(a+)+ は a+ へ）。ライブラリ自身の上限で止まっている場合、--timeout-ms を大きくしても解決しません：%1
 cli.regex_late	正規表現はこの段階で再コンパイルに失敗しました
 cli.index_value	--index は 1 始まりの番号です
 cli.unknown_capture_method	--capture の値は許可された一覧にありません
@@ -87,6 +93,7 @@ cli.duplicate_output	--out が重複しています。出力パスは 1 つだ�
 cli.output_duplicate_positional	出力パスが重複しています。--out と位置引数のどちらか一方だけ指定してください
 cli.format_value	--format の値は許可された一覧にありません
 cli.quality_value	--quality は 1..100 の範囲で指定してください
+cli.timeout_value	ミリ秒数が不正です：10 進数で 0 から %1 の範囲（0 = この期限を設けない）
 cli.switch_no_value	このスイッチは値を受け取りません。オプション名だけをを書いてください
 cli.switch_no_value_hint	%1（On）または %1=false（Off）
 cli.unknown_option	不明なオプション
@@ -168,6 +175,16 @@ cap.visible_only	このチャネルは画面上に見える部分だけをコピ
 cap.bitblt_failed	画面 DC からの BitBlt に失敗しました
 cap.unsupported	この画面取得方式は未実装です
 cap.auto_failed	auto のフォールバック先がすべて失敗しました（%1）
+cap.timeout	自動処理の予算 %1 ms を使い切りました（実際 %2 ms）
+cap.timeout_hint	--timeout-ms を大きくするか、詰まり取得経路（遮られたウィンドウなら wgc / dwm）に切り替えてください。割り込み可能な待機点がない段階は、期限到来時に本ツールのヘルパープロセスを中止するしかありません
+cap.worker.spawn_failed	ヘルパープロセスを起動できなかったため、この画像取得は実行されませんでした
+cap.worker.spawn_failed_hint	printwindow と dwm の読み戻しは本ツールのヘルパープロセス内で実行されます（あの呼び出しは対象ウィンドウを同期して待ち、割り込み点がありません）。起動失敗は通常、権限・ポリシー・ウイルス対策ソフトによるブロックです：%1
+cap.worker.channel_failed	ヘルパープロセスとのパイプが切れたため、結果を得られませんでした
+cap.worker.channel_failed_hint	ヘルパープロセスは外部から終了されたか、独自にクラッシュした可能性があります（最終の終了コードは %1。60 以上は規約検証で実行を拒否したことを、-1 はまだ稼働中だったことを意味します）。親プロセスが終了するのは自分が起動したプロセスだけで、対象アプリには手を出しません
+cap.worker.protocol_failed	ヘルパープロセスが返したメッセージが本規約に合わないため、破棄しました
+cap.worker.protocol_failed_hint	nonce または規約バージョンが一致しない場合はメッセージ全体を無効扱いします。他人の結果や途中切れの結果を今回の成功として扱うくらいなら失敗を報告します
+cap.worker.bad_task	ヘルパープロセスに渡されたタスクが不正なため実行しませんでした
+cap.worker.bad_task_hint	ウィンドウサイズまたは条件の数が上限を超えています（一辺 16384、総ピクセル 64MiB、条件グループあたり 1024 件）
 cap.no_detail	このバックエンドは失敗を報告しましたが理由を返していません
 cap.hresult	HRESULT %1
 
@@ -182,6 +199,7 @@ cap.wgc.step.session	キャプチャセッションの作成
 cap.wgc.step.access	フレームサーフェスのアクセッサ取得
 cap.wgc.step.surface	フレームサーフェスの取得
 cap.wgc.step.texture	フレームサーフェスのテクスチャ変換
+cap.wgc.step.apartment	WinRT アパートメントの初期化
 cap.wgc.frame_zero	取得したフレームのサイズが 0 です
 cap.wgc.frame_zero_hint	ウィンドウが最小化中または直前に閉じられた可能性があります
 cap.wgc.size_zero	取得対象の現在のサイズが 0 のため取得できません
@@ -232,6 +250,8 @@ enc.size_zero	フレームサイズが 0 のためエンコードできません
 enc.failed	エンコードに失敗しました
 enc.exception	エンコード中に予期しない例外が発生しました
 enc.empty	エンコーダーが 0 バイトを返しました
+enc.too_large	エンコード結果が大きすぎます（%1 バイト）。読み戻せません
+enc.apartment	このスレッドで WinRT アパートメントを初期化できませんでした（%1）
 
 # ---------------------------------------------------------------------------
 # モニタ対象（--monitor、src/ScreenMatch.cpp と各チャネルの CaptureScreenXxx）
@@ -271,6 +291,9 @@ consent.denied_hint_window	何も撮影せず、ファイルも書きません�
 consent.denied_hint_desktop	何も撮影せず、ファイルも書きませんでした。この経路はデスクトップのピクセルを読むため --yes でも --quiet でも省略できません。一つのウィンドウだけなら wgc / printwindow / dwm に --yes を付けてください
 consent.unavailable	確認ダイアログを表示できないため、拒否として扱いました
 consent.unavailable_hint	このセッションには対話できるデスクトップがありません（サービス、タスクスケジューラ、ロック状態など）。同意できる人がいません。%1
+consent.timeout	承諾ダイアログに --consent-timeout-ms 以内に応答がなかったため、拒否として扱いました
+consent.timeout_hint	何も撮影せず、ファイルも書きませんでした。「ユーザーが反対した」のではなく応答が無いだけです。確認できる人がいる状況ならもう一度お試しください
+consent.deadline_line	%1 ミリ秒以内にご回答ください。応答が無ければ期限時点で「いいえ」として扱い、既定で同意にはしません。
 cap.consent.stale	確認の対象の位置またはサイズが変わったため、撮影しませんでした
 cap.consent.stale_hint	取得する矩形が、承諾済みの画面領域の外に出ています。対象を選び直して再度実行してください（再び確認します）
 consent.output_stdout	標準出力

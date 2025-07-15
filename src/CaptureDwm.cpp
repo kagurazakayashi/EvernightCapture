@@ -7,11 +7,14 @@
 
 #include <dwmapi.h>
 
+#include <algorithm>
+#include <exception>
 #include <string>
 #include <utility>
 
 #include "CaptureCommon.h"
 #include "ImageOps.h"
+#include "Worker.h"
 
 namespace ecapture {
 namespace {
@@ -49,7 +52,9 @@ public:
     ThumbHost(const ThumbHost&) = delete;
     ThumbHost& operator=(const ThumbHost&) = delete;
 
-    bool Start(HWND src, const RECT& at, Diagnostic* err);
+    // 失败只给原因码 + 系统错误码（这条函数在本进程与辅助进程里都要能跑，
+    // 而辅助进程不产出任何本地化文字）。
+    bool Start(HWND src, const RECT& at, BlockedStatus* fail, DWORD* gle, HRESULT* hr);
     // 从屏幕外挪到源窗口位置上，供退路（从屏幕拷）使用
     void MoveOver(const RECT& at);
     bool OnTopOfItsRect() const;
@@ -63,31 +68,27 @@ private:
     int y_ = kOffscreen;
 };
 
-bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
+bool ThumbHost::Start(HWND src, const RECT& at, BlockedStatus* fail, DWORD* gle, HRESULT* hr) {
     if (!RegisterHostClassOnce()) {
-        const DWORD gle = LastError();
-        CaptureError(err, kChannel, Msg(L"cap.dwm.register_class"), Win32ErrorText(gle),
-                     codes::kCaptureFailed, gle);
+        if (fail) *fail = BlockedStatus::kHostClass;
+        if (gle) *gle = LastError();
         return false;
     }
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kHostClass, L"", WS_POPUP, x_, y_,
                             at.right - at.left, at.bottom - at.top, nullptr, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
     if (!hwnd_) {
-        const DWORD gle = LastError();
-        CaptureError(err, kChannel, Msg(L"cap.dwm.create_host"), Win32ErrorText(gle),
-                     codes::kCaptureFailed, gle);
+        if (fail) *fail = BlockedStatus::kHostCreate;
+        if (gle) *gle = LastError();
         return false;
     }
     // 必须真的可见，DWM 才会往它的表面合成；SW_SHOWNA 显示但不抢焦点
     ShowWindow(hwnd_, SW_SHOWNA);
 
-    HRESULT hr = DwmRegisterThumbnail(hwnd_, src, &thumb_);
-    if (FAILED(hr) || !thumb_) {
-        if (hr == S_OK) hr = E_FAIL;   // 只有"DwmRegisterThumbnail 说成功但没给句柄"才是这种情况
-        CaptureError(err, kChannel, Msg(L"cap.dwm.register_thumb"),
-                     Msgf(L"cap.dwm.register_thumb_hint", Msgf(L"cap.hresult", HResultText(hr))),
-                     codes::kCaptureFailed, 0, hr);
+    const HRESULT regHr = DwmRegisterThumbnail(hwnd_, src, &thumb_);
+    if (FAILED(regHr) || !thumb_) {
+        if (fail) *fail = BlockedStatus::kRegisterThumb;
+        if (hr) *hr = SUCCEEDED(regHr) ? E_POINTER : regHr;
         return false;
     }
 
@@ -103,14 +104,15 @@ bool ThumbHost::Start(HWND src, const RECT& at, Diagnostic* err) {
     props.fVisible = TRUE;
     props.fSourceClientAreaOnly = FALSE;  // 连标题栏和边框，与其它通道的整窗画面一致
     props.rcDestination = RECT{0, 0, rc.right - rc.left, rc.bottom - rc.top};
-    hr = DwmUpdateThumbnailProperties(thumb_, &props);
-    if (FAILED(hr)) {
-        CaptureError(err, kChannel, Msg(L"cap.dwm.update_props"),
-                     Msgf(L"cap.hresult", HResultText(hr)), codes::kCaptureFailed, 0, hr);
+    const HRESULT propHr = DwmUpdateThumbnailProperties(thumb_, &props);
+    if (FAILED(propHr)) {
+        if (fail) *fail = BlockedStatus::kUpdateProps;
+        if (hr) *hr = propHr;
         return false;
     }
     return true;
 }
+
 
 void ThumbHost::MoveOver(const RECT& at) {
     const RECT rc = WindowFullRect(hwnd_);
@@ -136,27 +138,33 @@ bool ThumbHost::OnTopOfItsRect() const {
     return true;
 }
 
-// 主路径：对屏幕外的宿主窗口调 PrintWindow，走 DWM 的重定向位图，屏幕上毫无动静
-bool GrabViaPrintWindow(const ThumbHost& host, CapturedFrame* out, Diagnostic* err) {
+// 主路径：对屏幕外的宿主窗口调 PrintWindow，走 DWM 的重定向位图，屏幕上毫无动静。
+// 只给原因码，因为这条函数在辅助进程里跑 —— 那里没有本地化文案，也不该有。
+bool GrabViaPrintWindow(const ThumbHost& host, CapturedFrame* out, BlockedStatus* fail,
+                        DWORD* gle) {
     const RECT rc = host.Rect();
     const int width = rc.right - rc.left;
     const int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) {
-        CaptureError(err, kChannel, Msg(L"cap.dwm.host_zero"), std::wstring());
+        if (fail) *fail = BlockedStatus::kHostRectEmpty;
         return false;
     }
+    Diagnostic dibErr;
     Dib dib;
-    if (!dib.Create(static_cast<uint32_t>(width), static_cast<uint32_t>(height), err, kChannel))
+    if (!dib.Create(static_cast<uint32_t>(width), static_cast<uint32_t>(height), &dibErr, kChannel)) {
+        if (fail) *fail = BlockedStatus::kDibCreate;
+        if (gle) *gle = dibErr.win32;
         return false;
+    }
     if (!PrintWindow(host.hwnd(), dib.dc(), kPwRenderFullContent) &&
         !PrintWindow(host.hwnd(), dib.dc(), 0)) {
-        const DWORD gle = LastError();
-        CaptureError(err, kChannel, Msg(L"cap.dwm.pw_failed"), Win32ErrorText(gle),
-                     codes::kCaptureFailed, gle);
+        if (fail) *fail = BlockedStatus::kHostPrintWindowFailed;
+        if (gle) *gle = LastError();
         return false;
     }
     dib.ToFrame(kChannel, out);
     out->path = paths::kDwmThumbnail;
+    if (fail) *fail = BlockedStatus::kOk;
     return true;
 }
 
@@ -168,10 +176,60 @@ RECT OverlayRect(const ThumbHost& host, const RECT& full) {
                 full.top + (rc.bottom - rc.top)};
 }
 
+// 退路里"没盖住目标位置 / 没抢到 z 序"那条诊断：优先沿用主路径失败的那一条（它更具体），
+// 主路径只是因为画面是单色而失败时，就说"内容没被合成出来"。
+Diagnostic NotComposed(const Diagnostic& earlier) {
+    if (!earlier.message.empty()) return earlier;
+    Diagnostic d;
+    d.code = codes::kCaptureFailed;
+    d.message = Msg(L"cap.dwm.not_composed");
+    d.option = L"--capture";
+    d.value = kChannel;
+    d.hint = Msg(L"cap.dwm.not_composed_hint");
+    d.backend = kChannel;
+    d.stage = stages::kCapture;
+    return d;
+}
+
 }  // namespace
 
+RenderOutcome RenderDwmThumbnailContent(uint64_t hwndValue, uint32_t waitMs) {
+    RenderOutcome o;
+    try {
+        const HWND src = reinterpret_cast<HWND>(hwndValue);
+        const RECT at = WindowScreenRect(src);
+        if (at.right <= at.left || at.bottom <= at.top) {
+            o.status = BlockedStatus::kRectEmpty;
+            return o;
+        }
+        ThumbHost host;
+        if (!host.Start(src, at, &o.status, &o.win32, &o.hresult)) {
+            o.frame = CapturedFrame{};
+            return o;
+        }
+        // DWM 异步合成，先泵一会儿消息再取。宿主窗口在 -32000，屏幕上不会有任何动静。
+        PumpMessagesFor(waitMs);
+        BlockedStatus grabFail = BlockedStatus::kOk;
+        DWORD gle = 0;
+        if (!GrabViaPrintWindow(host, &o.frame, &grabFail, &gle)) {
+            o = RenderOutcome{};
+            o.status = grabFail;
+            o.win32 = gle;
+            return o;
+        }
+        o.status = BlockedStatus::kOk;
+        return o;
+    } catch (...) {
+        o = RenderOutcome{};
+        o.status = BlockedStatus::kInternal;
+        DetailFromCurrentException(&o.detail);
+        return o;
+    }
+}
+
 bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGate& gate,
-                               const std::wstring& targetKey, CapturedFrame* out, Diagnostic* err) {
+                               const std::wstring& targetKey, const Deadline& dl,
+                               CapturedFrame* out, Diagnostic* err) {
     const HWND src = reinterpret_cast<HWND>(hwndValue);
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
@@ -183,38 +241,59 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGa
                      codes::kWindowGone);
         return false;
     }
+    if (dl.Spent()) {
+        *err = BudgetSpent(dl, codes::kCaptureTimeout, stages::kCapture, kChannel);
+        return false;
+    }
 
-    ThumbHost host;
-    if (!host.Start(src, at, err)) return false;
-    const uint32_t wait = timeoutMs < kComposeWaitMs ? timeoutMs : kComposeWaitMs;
+    // 主路径在辅助进程里跑：读 DWM 重定向位图的那次 PrintWindow 会同步等目标窗口的线程，
+    // 而那次等待没有中断点。等待时长已经被剩余预算压过，所以"预算只剩 100 ms"时不会
+    // 在子进程里空耗 700 ms。
+    const uint32_t want = timeoutMs < kComposeWaitMs ? timeoutMs : kComposeWaitMs;
+    const uint32_t wait = dl.ClampWait(want);
 
-    // DWM 异步合成，先泵一会儿消息再取
-    PumpMessagesFor(wait);
     CapturedFrame frame;
-    Diagnostic firstErr;
-    if (GrabViaPrintWindow(host, &frame, &firstErr) && !FrameIsFlat(frame)) {
+    Diagnostic earlier;
+    const bool mainOk = IsolatedDwmThumbnail(hwndValue, wait, dl, &frame, &earlier);
+    if (mainOk && !FrameIsFlat(frame)) {
         *out = std::move(frame);
         return true;   // 窗口内容路径：屏幕上没有任何动静，也不需要桌面凭证
+    }
+    if (!mainOk && (earlier.code == codes::kCaptureTimeout || earlier.code == codes::kConsentTimeout ||
+                    earlier.code == codes::kWindowGone || earlier.code == codes::kAccessDenied ||
+                    earlier.code == codes::kConsentUnavailable ||
+                    earlier.code == codes::kWorkerFailed)) {
+        // 期限已经用尽、本工具的辅助进程自己坏了、目标已经没了、或者授权那一关已经过了/被拒：
+        // 都不该再用"把宿主窗口盖到目标位置上拷一块屏幕"去掩盖。
+        *err = std::move(earlier);
+        return false;
     }
 
     // 退路：PW_RENDERFULLCONTENT 要 Win8.1+，更早的系统只能把宿主窗口盖到目标位置上，
     // 再从屏幕拷那块矩形。这一条读的是桌面像素 —— 先回授权判定器重新确认，
     // 人点头之后才把宿主窗口摆上屏幕（不然确认框开着的时候屏幕上就多了个东西）。
+    if (dl.Spent()) {
+        *err = BudgetSpent(dl, codes::kCaptureTimeout, stages::kCapture, kChannel);
+        return false;
+    }
+    ThumbHost host;
+    BlockedStatus startFail = BlockedStatus::kOk;
+    DWORD startGle = 0;
+    HRESULT startHr = S_OK;
+    if (!host.Start(src, at, &startFail, &startGle, &startHr)) {
+        *err = BlockedToDiagnostic(startFail, startGle, startHr, std::string(), kChannel,
+                                  stages::kCapture);
+        return false;
+    }
     const RECT full = WindowFullRect(src);
     const RECT over = OverlayRect(host, full);
     std::optional<DesktopPermit> permit;
     if (!gate.AuthorizeDesktop(paths::kDwmScreen, targetKey, over, &permit, err)) return false;
 
     host.MoveOver(full);
-    PumpMessagesFor(wait);
+    PumpMessagesFor(dl.ClampWait(want));
     if (!host.OnTopOfItsRect()) {
-        if (err) {
-            *err = firstErr.message.empty()
-                       ? Diagnostic{codes::kCaptureFailed, Msg(L"cap.dwm.not_composed"), L"--capture",
-                                    kChannel, Msg(L"cap.dwm.not_composed_hint"), std::wstring(),
-                                    kChannel, stages::kCapture}
-                       : firstErr;
-        }
+        if (err) *err = NotComposed(earlier);
         return false;
     }
     if (!permit) {   // 判定器说可以却没给凭证：宁可什么都不截

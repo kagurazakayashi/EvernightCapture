@@ -29,6 +29,10 @@ previously implemented `magnification` channel was removed (reasons in AGENTS.md
 - **Screenshot authorization**: any capture that really grabs a frame asks in a modal dialog first, reliable
   window paths included; `--yes` skips that ask **only** for paths whose frame is bound to the selected window
   itself — anything sampling desktop pixels always needs a person and no switch can skip it
+- **Deadlines that hold**: `--timeout-ms` is one budget for the whole automatic stage (matching, backend retries,
+  frame waits, encoding, writing) and `--consent-timeout-ms` times the human dialog separately; calls that wait on
+  another process (`PrintWindow`, the DWM read-back, regex evaluation) run in a helper process the tool can stop,
+  so a wedged target window can no longer wedge this tool
 - **Four message languages**: `zh-CN` / `zh-TW` / `en` / `ja`, defaulting to the system display language, all
   embedded as resources inside the exe
 - **Machine-readable JSON**: capture results and errors only — no tool name, version, schema or argument echo
@@ -114,6 +118,10 @@ Capture channel (default wgc; may fail because of the OS version or the window i
 Capture authorization (a real capture asks first; --yes skips window-content paths)
   --yes, -y                       Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 
+Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
+  --timeout-ms <ms>               Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
+  --consent-timeout-ms <ms>       How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
+
 Output
   --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
   --format, -f <name>             Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
@@ -144,6 +152,7 @@ Examples:
   ECAPTURE.EXE --process notepad.exe --out - > snap.png
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
   ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
+  ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -282,8 +291,9 @@ Rules:
 ## Exit codes
 
 `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no matching window /
-`5` several matches / `6` target protected, refused on the confirmation dialog, or no dialog could be shown /
-`7` capture failed / `8` write failed / `9` internal error.
+`5` several matches / `6` target protected, refused on the confirmation dialog, nobody answered it within
+`--consent-timeout-ms`, or no dialog could be shown / `7` capture failed, an exhausted `--timeout-ms` budget
+included / `8` write failed, a budget exhausted in the write/stdout stage included / `9` internal error.
 New meanings only ever append numbers.
 `8` also covers "the result JSON could not reach the agreed stream" (writing stdout or stderr failed); text delivered
 on the other stream does not count as delivery in that case.
@@ -383,6 +393,45 @@ with window conditions means "filter windows by monitor" (a window overlapping t
 spanning monitors matches on both), still producing window images, so the window rows of the table above apply.
 `--monitor all` is mutually exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1),
 but disambiguation options such as `--all` and `--index` do not count as matching conditions and may accompany it.
+
+## Deadlines and calls that block (`--timeout-ms` / `--consent-timeout-ms`)
+
+`--timeout-ms <ms>` is a **total** budget for the automatic part of the run, measured on a monotonic clock from
+the moment targets start being selected. Window/screen matching (including `--title-regex`), the `auto` fallback
+chain, frame waits, encoding and the final commit all spend **the same** budget: no step and no further target of
+the batch gets a fresh copy, so four backends cannot each wait 2 seconds and two targets cannot each wait again.
+Omitted or `0` means no overall budget; even then every isolated call is bounded by a built-in 5000 ms cap, which
+is what the old `timeoutMs` argument should have done. When the budget runs out the affected image is **not**
+written — `match.timeout` (`stage=match`) when the budget died while evaluating conditions, `capture.timeout`
+(`stage=capture`, encoding included), `io.timeout` (`stage=write` / `stdout`, exit code `8`) — the remaining
+targets of the batch are not started, and images already written stay in `images`. Partial batches therefore behave
+exactly like partial capture failures: exit code non-zero, whatever already landed is still delivered.
+
+Waiting for a person is a **separate** clock: `--consent-timeout-ms <ms>` bounds the confirmation dialog only and
+never eats the automatic budget (somebody stepping away is not "the machine is slow"). If nobody answers in time
+the request is **refused** — `capture.consent_timeout`, exit code `6` — and never treated as consent, and the
+rest of the batch stops just like after an explicit "No". Omitted or `0` waits forever, as before. The ~1 second
+buffer after "Yes", which keeps the dialog's close animation out of the picture, belongs to the human stage and is
+never skipped to make a deadline: what is bounded is the waiting for an answer, not the settle time after one.
+
+**Where the blocking actually goes.** `PrintWindow` hands the target window a draw request and waits for its
+thread; `--capture printwindow` and the `dwm` read-back do exactly that, and there is no interrupt point inside
+the call to check a deadline against. So does `std::regex`: a pattern such as `(a+)+$` against a long title can
+backtrack for minutes, and a length limit on the pattern is not an execution deadline. Those calls now run in a
+helper process of the same `ECAPTURE.EXE`, fed one already-parsed task over a private pipe; when the deadline
+expires the parent stops **its own** helper process and reports the timeout. The target application's window is
+never killed, and no worker can outlive the parent (a kill-on-close job object plus a broken-pipe check and an
+idle watchdog). What that does **not** change: the helper only ever reads a single window's own picture or lists
+top-level windows, it never samples desktop pixels and never writes files, so every desktop route still goes
+through the authorization above — there is no `--worker` option, and nothing about `--yes` gets weaker.
+
+Honest limits, stated as limits: the budget bites at interruptible points and by stopping the helper. The atomic
+file write, a stdout pipe that somebody stopped draining, and a WinRT encoder that ignores the cancel request have
+no cancellation point, so those are gated before they start and timed after they finish — not preempted
+mid-call. And on Windows 10 19045 `PrintWindow(PW_RENDERFULLCONTENT)` renders from the DWM-cached surface without
+ever sending `WM_PRINT`, so a window that hangs inside `WM_PRINT` does not stall the parent there; the fallback
+`PrintWindow` call without that flag is the one that waits for the target's thread. Do not assume the wedged
+scenario is reachable on every Windows build — assume only that this tool returns within its deadline.
 
 ## File name placeholders
 

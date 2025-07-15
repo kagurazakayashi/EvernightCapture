@@ -53,6 +53,8 @@ public static class EcHarnessWin {
   [DllImport("user32")] public static extern IntPtr GetDlgItem(IntPtr h, int id);
   [DllImport("user32")] public static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, IntPtr l);
   [DllImport("user32")] public static extern bool IsWindow(IntPtr h);
+  [DllImport("user32")] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
+  [DllImport("user32")] public static extern bool SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr res);
   [DllImport("user32")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
   [DllImport("user32")] public static extern bool SetProcessDPIAware();
 }
@@ -308,6 +310,39 @@ function Stop-EcOwnProcess {
 function Test-EcProcessAlive {
     param([Parameter(Mandatory)][int]$ProcessId)
     return [bool](Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+}
+
+function Get-EcProcessesFromPath {
+    <#
+        按"映像的完整路径"数出还在跑的进程，返回 PID 列表。
+        为什么按路径而不是按名字：被测工具会为自己起辅助进程，判据要问的是
+        "这一次构建的产物有没有遗留"，而不是"机器上有没有叫 ecapture 的进程"
+        （别人的同名进程、或另一个 checkout 的产物都不该被算进来，更不该被收尾）。
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $leaf = [IO.Path]::GetFileName($Path)
+    $full = (Get-Item -LiteralPath $Path).FullName
+    $found = @()
+    foreach ($p in @(Get-Process -Name ($leaf -replace '\.[^.]+$', '') -ErrorAction SilentlyContinue)) {
+        try {
+            if ($p.Path -and ($p.Path -eq $full)) { $found += [int]$p.Id }
+        } catch { }   # 别人的进程可能取不到 Path：跳过，不猜
+    }
+    return $found
+}
+
+function Get-EcChildPids {
+    <# 某个进程的直接子进程 PID 列表（只用于观察，不用于收尾）。 #>
+    param([Parameter(Mandatory)][int]$ProcessId)
+
+    try {
+        $filter = 'ParentProcessId={0}' -f $ProcessId
+        return @(Get-CimInstance -ClassName Win32_Process -Filter $filter -ErrorAction Stop |
+                 ForEach-Object { [int]$_.ProcessId })
+    } catch {
+        return @()
+    }
 }
 
 # ----------------------------------------------------------------------------
@@ -571,6 +606,7 @@ function Start-EcWindow {
         [int]$MaxLifeSeconds = 300,
         [string]$PidFile = '',
         [int]$Windows = 1,
+        [string[]]$ExtraArgs = @(),
         [int]$TimeoutMs = 15000
     )
 
@@ -583,6 +619,8 @@ function Start-EcWindow {
     if ($PidFile) { $arguments += @('--pid-file', $PidFile) }
     if ($TopMost) { $arguments += '--topmost' }
     if ($Windows -gt 1) { $arguments += @('--windows', [string]$Windows) }
+    # 模式自己的开关（例如 --block-print-ms：故意把 WM_PRINT 堵住，用来造"目标线程卡死"）
+    if ($ExtraArgs) { $arguments += @($ExtraArgs) }
 
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $helper
@@ -597,10 +635,15 @@ function Start-EcWindow {
     try { $proc = [Diagnostics.Process]::Start($psi) }
     catch { throw "起测试窗口失败：$helper —— $($_.Exception.Message)" }
 
+    $stallMs = 0
+    if ($ExtraArgs) {
+        $ix = [Array]::IndexOf($ExtraArgs, '--stall-ms')
+        if ($ix -ge 0 -and $ix + 1 -lt $ExtraArgs.Count) { $stallMs = [int]$ExtraArgs[$ix + 1] }
+    }
     $window = [pscustomobject]@{
         Proc = $proc; Pid = [int]$proc.Id; Hwnd = [IntPtr]::Zero; Class = $Class
         Title = $Title; Helper = $helper; Rect = ($Rect.Split(',') | ForEach-Object { [int]$_ })
-        Hwnds = @(); Classes = @($Class)
+        Hwnds = @(); Classes = @($Class); StallMs = $stallMs
     }
     [void]$script:EcOwnedWindows.Add($window)
     try {
@@ -692,6 +735,41 @@ function Get-EcHwndHex {
     param([Parameter(Mandatory)]$Hwnd)
     return ('0x{0:X8}' -f [int64]$Hwnd)
 }
+
+function Test-EcWindowResponsive {
+    <#
+        那条消息线程现在处不处理事情：给它发一条 WM_NULL 并限时等回话
+        （SMTO_ABORTIFHUNG = 对方卡住就立刻返回 FALSE）。
+        为什么不用 GetWindowText：标题在窗口结构里有一份缓存，线程卡死时也照样读得到，
+        用它当判据会得出"卡住的窗口很健康"的假答案（实测踩过）。
+    #>
+    param([Parameter(Mandatory)]$Hwnd, [int]$TimeoutMs = 200)
+    $res = [IntPtr]::Zero
+    # SMTO_ABORTIFHUNG = 0x0002
+    return [bool][EcHarnessWin]::SendMessageTimeoutW($Hwnd, 0, [IntPtr]::Zero, [IntPtr]::Zero,
+                                                    2, [uint32]$TimeoutMs, [ref]$res)
+}
+
+function Start-EcThreadStall {
+    <#
+        让本次那扇测试窗口的消息线程堵住 N 毫秒（对应 ecwindow.exe 的 --stall-ms）。
+        堵住期间，任何给它发消息的人都要等：枚举窗口时的 WM_GETTEXT、
+        以及 Windows 真去发 WM_PRINT 时的那一次 PrintWindow。用它造"目标应用卡住"的现场，
+        比按映像名找别人的挂死程序可靠得多，也绝不会牵连无关进程。
+        用 PostMessage（不等回话）：探针自己不能被这条阻塞拖住。
+    #>
+    param(
+        [Parameter(Mandatory)]$Window,
+        [int]$Ms = -1
+    )
+    $ok = [EcHarnessWin]::PostMessageW($Window.Hwnd, 0x407, [IntPtr]::Zero, [IntPtr]::Zero)
+    if (-not $ok) { throw "PostMessageW 没能把堵塞信号送进 PID $($Window.Pid)" }
+    $life = if ($Ms -ge 0) { $Ms } else { $Window.StallMs }
+    $script:EcStallUntil = (Get-Date).AddMilliseconds($life + 300)
+    return $life
+}
+
+
 
 function Stop-EcWindow {
     <# 收尾本次建立的一个窗口：只碰这个 Process 实例，并按 exe 路径核对，PID 被复用就不动。 #>

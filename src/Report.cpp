@@ -139,6 +139,9 @@ void WriteInputEcho(Json& j, const Options& opt) {
     // --yes 同理：它是"跳过窗口内容路径的确认"这个决定的最终结果，重复给出时最后一个生效，
     // 断言它不必真的去截一张图（也不必打扰人）。
     j.Key(L"yes").Value(opt.yes);
+    // 两条期限也回显：0 = 不设这项期限。断言"参数最终落到什么值"不必真的去等一个超时。
+    j.Key(L"timeoutMs").Value(static_cast<long long>(opt.timeoutMs));
+    j.Key(L"consentTimeoutMs").Value(static_cast<long long>(opt.consentTimeoutMs));
     if (opt.monitor.given) {
         if (opt.monitor.all) j.Key(L"monitor").Value(L"all");
         else if (opt.monitor.ordinal == 0) j.Key(L"monitor").Value(L"primary");
@@ -161,6 +164,7 @@ const wchar_t* GroupTitle(const std::wstring& group) {
     if (group == L"pick") return L"grp.pick";
     if (group == L"capture") return L"grp.capture";
     if (group == L"consent") return L"grp.consent";
+    if (group == L"timeout") return L"grp.timeout";
     if (group == L"output") return L"grp.output";
     return L"grp.behavior";
 }
@@ -188,8 +192,8 @@ std::wstring HelpText() {
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
-    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"consent", L"output",
-                               L"behavior"};
+    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"consent", L"timeout",
+                               L"output", L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);
@@ -221,7 +225,8 @@ std::wstring HelpText() {
     t += L"\r\n";
     t += Msg(L"help.examples") + L"\r\n";
     for (const wchar_t* key : {L"help.example1", L"help.example2", L"help.example3", L"help.example4",
-                               L"help.example5", L"help.example6", L"help.example7"}) {
+                               L"help.example5", L"help.example6", L"help.example7",
+                               L"help.example8"}) {
         t += L"  " + Msg(key) + L"\r\n";
     }
     return t;

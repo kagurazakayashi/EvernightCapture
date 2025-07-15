@@ -81,8 +81,8 @@ programmatically.
   next step differs: wait and retry versus enumerate the windows again.
 - Errors and notes carry optional location keys, present only when that step really got the value:
   `target` (which target - `0x…` handle for a window, device name for a screen), `backend` (which channel;
-  on a fully failed `auto` chain it lists the channels actually tried), `stage` (`consent` / `capture` /
-  `encode` / `write` / `stdout`), `hresult` (e.g. `0x80070005`), `win32` (raw `GetLastError`). These do not
+  on a fully failed `auto` chain it lists the channels actually tried), `stage` (`match` / `consent` /
+  `capture` / `encode` / `write` / `stdout`), `hresult` (e.g. `0x80070005`), `win32` (raw `GetLastError`). These do not
   follow `--lang`. That is how a refusal by the user (`capture.access_denied` + `stage=consent`) stays
   distinguishable from a technical access denial (`capture.failed` + `hresult=0x80070005`).
 - `images[].source` names the channel that really produced the frame, so under `--capture auto` it is the
@@ -98,9 +98,11 @@ programmatically.
   that fell back to the screen route reports `path=dwm.screen, scope=desktop`** - read these three before
   deciding what you may forward, show, upload or delete.
 - Exit codes: `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no match /
-  `5` several matches / `6` protected target, or the confirmation was refused (`capture.access_denied`) or
-  could not be shown (`capture.consent_unavailable`) / `7` capture failed /
-  `8` write failed / `9` internal error. `2`/`3`/`4`/`5` are normal control flow, not crashes.
+  `5` several matches / `6` protected target, or the confirmation was refused (`capture.access_denied`),
+  could not be shown (`capture.consent_unavailable`) or nobody answered it within `--consent-timeout-ms`
+  (`capture.consent_timeout`) / `7` capture failed, an exhausted `--timeout-ms` budget included
+  (`match.timeout` / `capture.timeout`) / `8` write failed, budget exhausted in the write/stdout stage
+  (`io.timeout`) included / `9` internal error. `2`/`3`/`4`/`5` are normal control flow, not crashes.
 - **`--all` and `--monitor all` allow partial success**: when some targets fail, the images already
   written still appear in `images` (`captured` can be greater than 0) while the exit code stays 7.
   Never throw away what you already got just because the code is non-zero.
@@ -154,6 +156,11 @@ request was phrased.
   `backend` (channel) and `value` (the actual path). **After a refusal the rest of that request stops** - no
   other backend, no retry; images already finished are kept. Never treat a refusal as a technical failure and
   retry it, and never answer the dialog for the user (no SendMessage, no UI automation, no scripted click).
+- Nobody answered the dialog within `--consent-timeout-ms` => `capture.consent_timeout` + exit 6, `stage=consent`:
+  an unanswered dialog is a **refusal**, never treated as consent, and it stops the rest of the request like any
+  other refusal. This wait is timed separately and does not consume the `--timeout-ms` budget; the ~1 s
+  dialog-close animation after "Yes" belongs to the human stage and is never skipped to meet a deadline.
+  (Omitted or `0` = the dialog waits forever.)
 - A consent refusal is reported as itself even when no output path was given - it no longer collapses into
   `cli.missing_output`, so adding `--out` is not the fix for "a human declined".
 - If the target moves or resizes after you were granted desktop consent, that capture is skipped with
@@ -167,6 +174,38 @@ request was phrased.
   pixels, so it follows the window rules above (`--yes` skips its dialog).
 - A plain MessageBox is mis-click protection for cooperative automation. It does not verify that a human
   clicked, and it is not a defence against a same-privilege process.
+
+## Deadlines: never block forever (`--timeout-ms`)
+
+The full contract (option ranges, worker isolation, honest limits) is in `references/cli-contract.md`; what a
+caller must do:
+
+- **Script / AI callers that must not hang pass `--timeout-ms`** (e.g. `5000`) plus `--yes` for window-only
+  captures. It is one total millisecond budget for the whole run's automatic stage - matching (including
+  `--title-regex`), `auto` backend retries, frame waits, encoding and writing share it; no step and no target
+  gets a fresh copy. Omitted or `0` = no overall budget, but each isolated (helper-process) call is still
+  bounded by a built-in 5000 ms cap, so `--capture printwindow` / `dwm` can no longer stall forever.
+- **When the budget is exhausted the affected image is NOT written**: you get `match.timeout` (`stage=match`),
+  `capture.timeout` (`stage=capture`, encoding included) or `io.timeout` (`stage=write`/`stdout`, exit 8);
+  the remaining targets are not started and already-written images are kept.
+- **Waiting for a human never eats the budget** - consent is timed by `--consent-timeout-ms` (omitted/`0` =
+  forever) and expiry is a refusal, `capture.consent_timeout` + exit 6. `--yes` still never skips the desktop
+  paths (bitblt / duplication / any whole screen / dwm's screen fallback): they always ask and can now also
+  expire into that code.
+- **Reacting**: `capture.timeout` with `backend=printwindow` or `dwm` means the target's UI thread is likely
+  stuck - retrying the same backend may just time out again; prefer `--capture wgc` or raise the budget.
+  `match.timeout` means the budget was spent before/while evaluating conditions (regex work, or fetching a
+  hung window's title) - raise `--timeout-ms` or simplify the regex. A catastrophic-backtracking pattern is
+  reported honestly as `cli.invalid_regex` + exit 1 (`stage=match`, backtracking complexity): raising the
+  budget does not help, rewrite it or use `--title-contains`.
+- Internally, `printwindow` / the DWM read-back and the regex/budgeted matching run in a hidden same-exe
+  helper the tool kills on its own deadline; your target window is never killed. There is no public
+  `--worker` entry point, it cannot skip consent, the helper never reads desktop pixels, and helper exit
+  codes are not part of the contract. Worker machinery failures surface as `capture.worker_failed` (exit 7, `hint`
+  carries the helper's last exit code).
+- **Limit, not a guarantee**: the budget bites at interruptible points and by killing the helper. Calls with
+  no cancellation point (the atomic file write, a blocked stdout pipe, a WinRT encoder ignoring the cancel
+  request) are checked before they start and timed after they finish - not preempted mid-call.
 
 ## Choosing a capture channel (`--capture`)
 
@@ -194,21 +233,28 @@ request was phrased.
 | `match.no_window` | 4 | Conditions too narrow, or the target is minimised (minimised windows cannot be captured); relax with `--title-contains` |
 | `match.ambiguous_window` | 5 | Disambiguate as described above |
 | `match.index_out_of_range` / `match.monitor_out_of_range` | 1 | `--index` / `--monitor` out of range; `hint` lists everything on this machine |
+| `match.timeout` | 7 | The `--timeout-ms` budget was spent before/while evaluating conditions (`stage=match`; regex work or a hung window's title fetch) - raise `--timeout-ms` or simplify the regex |
 | `cli.missing_output` | 1 | No output path on the stdout-shortcut path and something failed; pass `--out <path inside an existing directory>` |
 | `cli.invalid_format` | 1 | `--format` accepts only png / jpg / jpeg / bmp / tiff / gif (no webp, no ico, no `auto`) |
 | `cli.unknown_capture_method` / `cli.unknown_language` | 1 | Bad value, caught while parsing - it never degrades to the default |
+| `cli.invalid_regex` | 1 | `--title-regex` too complex for the engine (`stage=match`, message says backtracking complexity) - raising `--timeout-ms` does not help; rewrite the pattern or use `--title-contains` |
 | `cli.monitor_conflict` | 1 | `--monitor all` plus window match conditions; use a single monitor number to filter instead |
 | `capture.failed` | 7 | Target protected, gone, or unsupported by the OS; retry once with `--capture auto`, and if it fails again nothing is reachable |
+| `capture.worker_failed` | 7 | This tool's own hidden helper could not run (spawn blocked, pipe broke, message did not match the protocol, task invalid) - `cap.worker.*` wording, the helper's last exit code in `hint`; its exit codes are not part of the contract. Check the execution environment (policy, antivirus, permissions), not the target window |
+| `capture.timeout` | 7 | `--timeout-ms` budget exhausted during capture/encode (`stage=capture`); with `backend=printwindow` / `dwm` the target's UI thread is likely stuck - same-backend retry may time out again, prefer `--capture wgc` or raise the budget |
 | `capture.access_denied` | 6 | Someone answered "No" or closed the dialog (`stage=consent`, `value` names the path) - stop, do not retry, do not switch channel, never answer it for the user; or the target window itself is protected |
 | `capture.consent_unavailable` | 6 | The dialog could not be shown at all (service session, scheduled task, lock screen). Nobody refused - run it in an interactive session instead of asking a second time |
+| `capture.consent_timeout` | 6 | Nobody answered the dialog within `--consent-timeout-ms` - treated as a refusal, never as consent; stop like after any "No" (and note: this wait does not consume `--timeout-ms`) |
 | `capture.consent_stale` | 7 | The target moved or resized after desktop consent was granted, so nothing was sampled. Re-select the target and let the human confirm again |
 | `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
 | `io.file_exists` | 8 | `--no-overwrite` (or `=true`) was given and the target already exists; decided by the final rename, not by a pre-check |
 | `io.output_collision` | 8 | Two targets expand to the same output name; the whole batch is refused before any frame is taken, so nothing is written - put `%i` / `%h` into `--out` |
+| `io.timeout` | 8 | The budget ran out at the write/stdout stage (`stage=write` / `stdout`); the finished image is not written - keep enough budget for the encode+write tail |
 
 ## Resources
 
-- `references/cli-contract.md` - every option and value, the full JSON field tables (window image /
+- `references/cli-contract.md` - every option and value (including `--timeout-ms` /
+  `--consent-timeout-ms` and the hidden helper process behind them), the full JSON field tables (window image /
   screen image), the complete diagnostic-code list, the output-name placeholders
   (`%i` `%h` `%p` `%n` `%d` `%t`; `%n` is the window title for a window target and the device name such
   as `DISPLAY1` for a screen target), plus the shell-specific traps measured under PowerShell and Git
