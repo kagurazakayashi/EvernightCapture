@@ -17,6 +17,7 @@
 
 #include "CaptureDwm.h"
 #include "CapturePrintWindow.h"
+#include "ImageOps.h"
 #include "Lang.h"
 #include "WorkerProtocol.h"
 
@@ -574,6 +575,16 @@ bool FrameFromReply(const Reply& reply, const wchar_t* backend, CapturedFrame* o
     if (reply.width == 0 || reply.height == 0 || reply.pixels.empty()) {
         *err = BlockedToDiagnostic(BlockedStatus::kOk, reply.win32, S_OK, std::string(), backend,
                                    stages::kCapture);
+        return false;
+    }
+    // 辅助进程那头的消息格式已经限过一次单边与整帧字节数（WorkerProtocol.h），这里按**帧自己的
+    // 形状**再核一次：行距装不装得下一行像素、缓冲区够不够 stride*height。少这一道，
+    // 后面裁剪与编码都按调用方给的形状算偏移，帧一坏就是读越界。
+    const FrameShapeInfo intent{reply.width, reply.height, reply.stride,
+                                 static_cast<uint64_t>(reply.pixels.size())};
+    const FrameShape shape = CheckFrameShape(intent);
+    if (shape != FrameShape::kOk) {
+        FrameShapeError(shape, intent, backend, stages::kCapture, err);
         return false;
     }
     out->width = reply.width;

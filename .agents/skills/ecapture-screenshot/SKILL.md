@@ -78,7 +78,10 @@ programmatically.
 - Branch on `errors[].code`, never on `message` text (that follows `--lang`); code values are only ever
   added, never renamed. A capture failure now tells a frame timeout (`capture.frame_timeout`) and a window
   that disappeared (`capture.window_gone`) apart from a plain `capture.failed` - all still exit 7, but the
-  next step differs: wait and retry versus enumerate the windows again.
+  next step differs: wait and retry versus enumerate the windows again. A frame whose own memory layout does
+  not add up (zero size, a side over 16384 px, a row pitch that cannot hold one row, a buffer shorter than
+  pitch x height, more than 1 GiB in total) is `capture.frame_invalid` (7), decided before anything is
+  allocated; crop, row repack, the single-colour check, encoding and the GPU->CPU copy all run that check.
 - Errors and notes carry optional location keys, present only when that step really got the value:
   `target` (which target - `0x…` handle for a window, device name for a screen), `backend` (which channel;
   on a fully failed `auto` chain it lists the channels actually tried), `stage` (`match` / `consent` /
@@ -217,14 +220,21 @@ caller must do:
 | A whole screen | Only `wgc` / `duplication` / `bitblt`; `dwm` and `printwindow` are rejected while parsing with `capture.unsupported` + exit 1. Whole-screen `wgc` is a desktop path too: it always asks |
 
 `images[].path` / `images[].scope` tell you which of those two families actually produced the frame
-(`dwm.thumbnail` vs `dwm.screen` are the same channel on different sides of that line).
+(`dwm.thumbnail` vs `dwm.screen` are the same channel on different sides of that line). `dwm` enters its
+`dwm.screen` route only when the thumbnail step itself failed (PrintWindow returned FALSE, the bitmap could not
+be created); a frame that comes back a single colour is kept as a window-content image, so a solid-colour target
+never escalates into a desktop capture that would have to be authorized separately.
 
 - `printwindow` frequently returns an all-black image for hardware-accelerated content (players, games,
   GPU-composited windows); DRM-protected windows are black on most channels.
 - **Exit code 0 does not mean the pixels are right**: a black or single-colour frame can also return 0.
-  Judge the pixels - cover the target with a plain-coloured window and capture again to see whether you
-  got the target's content or the occluder, and at minimum check that `width` / `height` match the
-  target rectangle.
+  The tool says so when it applies: it compares every pixel of the delivered image against the top-left one
+  (all four BGRA bytes count, row padding does not) and emits `note.frame_uniform` with the colour as
+  `0xAARRGGBB`, while still delivering that image - a single colour is a quality hint, not a failure, since a
+  solid window or a plain wallpaper looks exactly like that. `--quiet` drops notes, so ask for them when this
+  matters. Judge the pixels yourself too - cover the target with a plain-coloured window and capture again to
+  see whether you got the target's content or the occluder, and at minimum check that `width` / `height` match
+  the target rectangle.
 
 ## What to do about the common codes
 
@@ -246,6 +256,7 @@ caller must do:
 | `capture.consent_unavailable` | 6 | The dialog could not be shown at all (service session, scheduled task, lock screen). Nobody refused - run it in an interactive session instead of asking a second time |
 | `capture.consent_timeout` | 6 | Nobody answered the dialog within `--consent-timeout-ms` - treated as a refusal, never as consent; stop like after any "No" (and note: this wait does not consume `--timeout-ms`) |
 | `capture.consent_stale` | 7 | The target moved or resized after desktop consent was granted, so nothing was sampled. Re-select the target and let the human confirm again |
+| `capture.frame_invalid` | 7 | The frame that came back does not describe its own memory correctly (zero size, a side over 16384 px, a row pitch that cannot hold one row, a buffer shorter than pitch x height, more than 1 GiB). Detected before allocating anything; a target-side problem on that channel - re-check the size, or `--capture wgc` |
 | `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
 | `io.file_exists` | 8 | `--no-overwrite` (or `=true`) was given and the target already exists; decided by the final rename, not by a pre-check |
 | `io.output_collision` | 8 | Two targets expand to the same output name; the whole batch is refused before any frame is taken, so nothing is written - put `%i` / `%h` into `--out` |

@@ -115,6 +115,7 @@ add_executable(ecapture-consent-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CaptureCommon.cpp
+  src/ImageOps.cpp
   src/CliOptions.cpp
   src/Lang.cpp
   src/ScreenMatch.cpp
@@ -149,6 +150,7 @@ add_executable(ecapture-worker-tests
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/CaptureCommon.cpp
+  src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
@@ -165,4 +167,35 @@ target_link_libraries(ecapture-worker-tests PRIVATE
 set_source_files_properties(resources/ecapture.rc PROPERTIES OBJECT_DEPENDS "${ECAPTURE_RC_INPUTS}")
 set_target_properties(ecapture-worker-tests PROPERTIES OUTPUT_NAME "ecapture-worker-tests")
 set_property(TARGET ecapture-worker-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 帧内存形状与单色判定的离线判据（由 tests\image.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这两件事的判据都要**手工摆出特定的像素排布**（竖条纹、棋盘、
+# 只在某个采样点之外变化、行末带填充、缓冲区短一个字节……），真机截图造不出这些形状，
+# 而"另在测试里抄一份算法当判据"正是这次要修的错 —— 所以直接测生产函数本体（ImageOps.cpp，
+# 连同它调用的 CaptureCommon.cpp 那套诊断）。这里不碰 D3D 取帧，链接项里一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-image-tests
+  tests/image_state.cpp
+  src/ImageOps.cpp
+  src/CaptureCommon.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  src/ScreenMatch.cpp
+  src/WindowMatch.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-image-tests PRIVATE resources src)
+target_compile_features(ecapture-image-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-image-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-image-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-image-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-image-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-image-tests PROPERTIES OUTPUT_NAME "ecapture-image-tests")
+set_property(TARGET ecapture-image-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

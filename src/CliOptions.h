@@ -155,6 +155,10 @@ inline constexpr const wchar_t* kJsonFlagDeprecated = L"note.json_flag_deprecate
 inline constexpr const wchar_t* kDryRun = L"note.dry_run";
 inline constexpr const wchar_t* kHelpIgnoredArguments = L"note.help_ignored_arguments";
 inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
+// 质量提示（不是错误，图片照常交付）：整帧逐像素比过之后确实只有一个颜色。
+// 单色本身不说明采集失败 —— 目标窗口可以本来就是一块纯色；它也可能是没合成出画面。
+// 所以这条只说事实、把两种可能都列在 hint 里，由调用方自己判断要不要再看一眼图。
+inline constexpr const wchar_t* kFrameUniform = L"note.frame_uniform";
 // 后续阶段
 inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
@@ -179,6 +183,10 @@ inline constexpr const wchar_t* kFrameTimeout = L"capture.frame_timeout";
 // 该查的是这台机器的执行环境（权限、杀软、策略），而不是"目标是不是受保护"。退出码仍是 7。
 inline constexpr const wchar_t* kWorkerFailed = L"capture.worker_failed";
 inline constexpr const wchar_t* kWindowGone = L"capture.window_gone";
+// 交回来的那帧像素自己说不通（宽高为 0 / 超过单边与整帧上限 / 行距装不下一行 / 缓冲区比
+// 行距×高还短）。它与 capture.failed 分开给码：调用方的下一步是换通道或报告实现缺陷，
+// 而不是"再试一次这个窗口"。退出码仍是 7。
+inline constexpr const wchar_t* kFrameInvalid = L"capture.frame_invalid";
 // 期限。三条各归一个阶段，因为调用方的下一步不同：
 //   match.timeout    —— 条件求值（含 --title-regex 的正则）没在预算内跑完，重来或加大预算
 //   capture.timeout  —— 取帧 / 编码没在预算内完成（含"辅助进程被中止"这种情况）

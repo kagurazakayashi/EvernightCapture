@@ -15,6 +15,12 @@
 #include "CliOptions.h"
 #include "Consent.h"
 
+// CopyTextureToFrame 的两个 D3D 参数类型。本头文件不 include d3d11.h（各通道本来就 include 了），
+// 前向声明必须写在**全局作用域**：SDK 里它们就在那儿，声明进 ecapture 里会得到另一个同名类型，
+// 通道传进来的真指针在这边就成了未定义类型。
+struct ID3D11Device;
+struct ID3D11Texture2D;
+
 namespace ecapture {
 
 // PrintWindow 的第 2 个 flag（Win8.1+）：要求连硬件加速 / DirectComposition 的内容
@@ -31,6 +37,18 @@ struct CapturedFrame {
     std::wstring path;    // 实际走的那条内部路径名（"dwm.thumbnail" / "dwm.screen" / ...）
                           // scope 由它算出来，所以图里写的来源与当初授权的是同一件事
 };
+
+// 帧的内存不变量与资源上限。这两条数字都是能说明白的，不是随手挑的：
+//   单边 kFrameMaxSide = 16384 —— D3D11 纹理边长的上限（Feature Level 11_0），也是 GDI 那边
+//     Dib::Create 与辅助进程管道协议（WorkerProtocol.h）一直沿用的同一条线。8K 显示是 7680，
+//     在这条线之内还有近一倍的余量，所以正常截图撞不到它；撞到的就不是"一张截图"了。
+//   整帧 kFrameMaxBytes = 1 GiB —— 上面那条的自然推论（16384 × 16384 × 4），任何一步要分配的
+//     像素缓冲都在这个数之内。检查全部用 64 位乘法在**分配之前**做完，超限直接报错，
+//     不靠"分配失败抛异常"当检查（那条路在内存真耗尽时是不可恢复的）。
+// 行距另外要求落在 [width*4, 2*width*4]：下界是"必须装得下一行像素"，上界是给 GPU 与 GDI
+// 的对齐填充留一行余量 —— 比行长两倍还宽的行距不可能是填充，只能是形状本身已经坏了。
+inline constexpr uint32_t kFrameMaxSide = 16384u;
+inline constexpr uint64_t kFrameMaxBytes = 1024ull * 1024ull * 1024ull;
 
 // 会卡住的那几步（PrintWindow / DWM 缩略图 / 条件求值里的正则回溯）失败在哪一步的原因码。
 // 辅助进程只报这个码 + 系统错误码，**不报文字**：文案由父进程按 --lang 现场取，
@@ -136,5 +154,19 @@ void PumpMessagesFor(uint32_t ms);
 // 该矩形是不是真的归这个窗口：临时窗口可能被别的置顶窗口压住，那样从屏幕拷回来的
 // 就是别人的画面，必须报错而不是交一张错图。取四个点问 WindowFromPoint。
 bool WindowIsOnTopAt(HWND hwnd, const RECT& rect);
+
+// ---------------------------------------------------------------------------
+// GPU 纹理 -> CPU 帧。两条会用到 D3D 的通道（wgc 的帧、duplication 的桌面帧）走同一段实现，
+// 于是"形状与上限在分配之前判完"和"Map 之后异常也要 Unmap"这两件事只写一遍。
+// ---------------------------------------------------------------------------
+
+// 建 staging 纹理 -> CopyResource -> Map -> 按行搬 width*4 字节。设备由调用方给
+//（各通道的设备创建策略不同，拷回 CPU 这一段没有区别）。
+// 像素按 BGRA8 解释；格式不是 B8G8R8A8_UNORM、单边或整帧超上限、行距装不下一行像素，
+// 都在这里按 capture.frame_invalid 报出来，不带着坏形状往下走。
+// CopyResource 返回 void，它自己失败只能由 GetDeviceRemovedReason 这条 **API 层面**的问法
+// 发现（设备没了 / 被移除就报 capture.failed 带真码），不靠画面颜色反证。
+bool CopyTextureToFrame(::ID3D11Device* device, ::ID3D11Texture2D* src, const wchar_t* channel,
+                        CapturedFrame* out, Diagnostic* err);
 
 }  // namespace ecapture

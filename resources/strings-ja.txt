@@ -128,6 +128,8 @@ note.dry_run	--dry-run：%1 個のウィンドウを選びました。画面取�
 note.output_extension_appended	出力名に拡張子がなかったため、選択した形式の拡張子を補いました
 note.output_extension_hint	実際に書き出した名前は %1
 note.capture_channel	auto：%1 が使用できないため %2 を使いました
+note.frame_uniform	画像全体が単一色です：ARGB %1
+note.frame_uniform_hint	これは品質の通知でエラーではありません。単色のウィンドウや無地壁紙はそもそもこの見た目です。フレームが合成されなかった可能性もあります（保護コンテンツ / リモートデスクトップ / 基本ディスプレイドライバ）。気になるなら wgc チャネルでその画像を確認してください
 
 # ---------------------------------------------------------------------------
 # ウィンドウ照合（src/WindowMatch.cpp）
@@ -170,6 +172,17 @@ cap.dib_size	ウィンドウサイズ分のビットマップを確保できま�
 cap.dib_size_hint	サイズ %1、ウィンドウが最小化中または終了しかけている可能性があります
 cap.create_compat_dc	CreateCompatibleDC に失敗しました
 cap.create_dib_section	CreateDIBSection に失敗しました
+cap.select_bitmap	SelectObject でビットマップを選択できませんでした
+cap.frame_invalid	取得したフレームのメモリ上の形状が不正です：%1
+cap.frame_invalid_hint	上限：片辺 %1 ピクセル、フレーム全体 %2 バイト、行間隔は行長の 1〜2 倍。実際 %3×%4、行間隔 %5、バッファ %6 バイト
+cap.frame_format	取得したフレームが BGRA8 形式ではありません（DXGI 形式 %1）
+cap.frame_format_hint	HDR／10 ビット表示では通常の BGRA フレームが得られません。システム設定で HDR を無効にしてください
+cap.gpu.staging	staging テクスチャの作成に失敗しました
+cap.gpu.context	D3D11 デバイス コンテキストの取得に失敗しました
+cap.gpu.copy_failed	フレームを CPU にコピーする最中、ディスプレイデバイスが使用できなくなりました
+cap.gpu.map	staging テクスチャのロックに失敗しました
+cap.crop_failed	ターゲット矩形によるフレームの切り出しに失敗しました
+cap.crop_failed_hint	%1,%2 からの %3×%4 はこのフレームの範囲に収まりません
 cap.offscreen	ウィンドウが画面の完全に外にあるためピクセルを取得できません
 cap.visible_only	このチャネルは画面上に見える部分だけをコピーできます
 cap.bitblt_failed	画面 DC からの BitBlt に失敗しました
@@ -193,15 +206,11 @@ cap.wgc.hint	取得対象が保護されているか閉じられたか、シス�
 cap.wgc.step.device	D3D11 デバイスの作成
 cap.wgc.step.wrap	Direct3D デバイスのラップ
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
-cap.wgc.step.staging	staging テクスチャの作成
-cap.wgc.step.map	staging テクスチャのロック
 cap.wgc.step.session	キャプチャセッションの作成
 cap.wgc.step.access	フレームサーフェスのアクセッサ取得
 cap.wgc.step.surface	フレームサーフェスの取得
 cap.wgc.step.texture	フレームサーフェスのテクスチャ変換
 cap.wgc.step.apartment	WinRT アパートメントの初期化
-cap.wgc.frame_zero	取得したフレームのサイズが 0 です
-cap.wgc.frame_zero_hint	ウィンドウが最小化中または直前に閉じられた可能性があります
 cap.wgc.size_zero	取得対象の現在のサイズが 0 のため取得できません
 cap.wgc.timeout	%1 ms 以内にフレームが届きませんでした
 cap.wgc.timeout_hint	ウィンドウに内容の更新がないか、DRM／セキュリティポリシーにより取得が拒まれています
@@ -227,16 +236,12 @@ cap.dup.hint_denied	E_ACCESSDENIED：コンテンツが保護されているか�
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：デバイスと出力の組み合わせが不正か、この出力は他のプロセスが複製済みです
 cap.dup.hint_timeout	タイムアウトまで新しいフレームがありません：デスクトップが完全に静止しているとフレームが送信されないため、対象ウィンドウを動かして再試行してください
 cap.dup.to_texture	デスクトップフレームをテクスチャへ変換できませんでした
-cap.dup.format	デスクトップフレームが BGRA8 形式ではありません
-cap.dup.format_hint	HDR／10 ビット表示では通常の BGRA フレームが得られません。システム設定で HDR を無効にしてください
-cap.dup.staging	staging テクスチャの作成に失敗しました
-cap.dup.map	デスクトップフレームのロックに失敗しました
 cap.dup.device	D3D11 デバイスの作成に失敗しました
 cap.dup.dxgi	デバイスが DXGI に対応していません
 cap.dup.duplicate	DuplicateOutput に失敗しました (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame に失敗しました (HRESULT %1)
 cap.dup.timeout	%1 ms 以内にデスクトップフレームを取得できませんでした
-cap.dup.flat	デスクトップ複製で取得した画面全体が一色です：LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat	デスクトップ複製フレームに present の記録が全くなく（LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3）、全体が単一色です
 cap.dup.flat_hint	このセッションのディスプレイドライバはデスクトップ複製へ内容を出力しないことがあります（リモートデスクトップ／基本ディスプレイドライバ／保護コンテンツがマスク）。wgc または bitblt にしてください
 cap.dup.not_in_frame	ウィンドウがこのモニタのデスクトップフレーム内にありません
 cap.dup.not_in_frame_hint	ウィンドウが他のモニタへ移動したか閉じられた可能性があります

@@ -13,7 +13,6 @@
 #include <utility>
 
 #include "CaptureCommon.h"
-#include "ImageOps.h"
 #include "Worker.h"
 
 namespace ecapture {
@@ -176,8 +175,9 @@ RECT OverlayRect(const ThumbHost& host, const RECT& full) {
                 full.top + (rc.bottom - rc.top)};
 }
 
-// 退路里"没盖住目标位置 / 没抢到 z 序"那条诊断：优先沿用主路径失败的那一条（它更具体），
-// 主路径只是因为画面是单色而失败时，就说"内容没被合成出来"。
+// 退路里"没盖住目标位置 / 没抢到 z 序"那条诊断：优先沿用主路径失败的那一条（它更具体，
+// 讲的是那次 PrintWindow 或那次建位图到底为什么没成）。单色画面不走这条路，所以这里
+// 说的"没合成出来"只可能来自真正的 API 失败。
 Diagnostic NotComposed(const Diagnostic& earlier) {
     if (!earlier.message.empty()) return earlier;
     Diagnostic d;
@@ -255,16 +255,20 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGa
     CapturedFrame frame;
     Diagnostic earlier;
     const bool mainOk = IsolatedDwmThumbnail(hwndValue, wait, dl, &frame, &earlier);
-    if (mainOk && !FrameIsFlat(frame)) {
+    if (mainOk) {
+        // 缩略图路径取的就是这个窗口自己的画面，成不成立看的是那次 PrintWindow 的返回值。
+        // **画面是不是单色不参与这个判断**：一扇本来就纯黑/纯色的窗口会被误当成"没合成出来"，
+        // 于是白白升级到读桌面像素那一条 —— 那是要另外问一次的隐私升级。
+        // 单色只作为质量提示交给调用方（note.frame_uniform，见 Capture.cpp）。
         *out = std::move(frame);
         return true;   // 窗口内容路径：屏幕上没有任何动静，也不需要桌面凭证
     }
-    if (!mainOk && (earlier.code == codes::kCaptureTimeout || earlier.code == codes::kConsentTimeout ||
-                    earlier.code == codes::kWindowGone || earlier.code == codes::kAccessDenied ||
-                    earlier.code == codes::kConsentUnavailable ||
-                    earlier.code == codes::kWorkerFailed)) {
-        // 期限已经用尽、本工具的辅助进程自己坏了、目标已经没了、或者授权那一关已经过了/被拒：
-        // 都不该再用"把宿主窗口盖到目标位置上拷一块屏幕"去掩盖。
+    if (earlier.code == codes::kCaptureTimeout || earlier.code == codes::kConsentTimeout ||
+        earlier.code == codes::kWindowGone || earlier.code == codes::kAccessDenied ||
+        earlier.code == codes::kConsentUnavailable || earlier.code == codes::kWorkerFailed ||
+        earlier.code == codes::kFrameInvalid) {
+        // 期限已经用尽、本工具的辅助进程自己坏了、目标已经没了、帧的形状说不通、
+        // 或者授权那一关已经过了/被拒：都不该再用"把宿主窗口盖到目标位置上拷一块屏幕"去掩盖。
         *err = std::move(earlier);
         return false;
     }

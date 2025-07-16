@@ -110,6 +110,28 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality, c
     const std::wstring label = FormatLabel(fmt);
     if (frame.width == 0 || frame.height == 0)
         return Err(err, codes::kCaptureFailed, Msg(L"enc.size_zero"), label, std::wstring());
+    // 形状与上限在这一道之前就核过：下面 PackTight 要按 stride*height 分配，SetPixelData 要把
+    // 字节数当成 UINT32 交给 WinRT，两处都依赖这些数字还说得通。判据是 CheckFrameShape，
+    // 不靠"分配失败抛异常"来发现坏形状。
+    const FrameShapeInfo info{frame.width, frame.height, frame.stride,
+                              static_cast<uint64_t>(frame.pixels.size())};
+    const FrameShape shape = CheckFrameShape(info);
+    auto failShape = [&](FrameShape bad) {
+        if (err) {
+            FrameShapeError(bad, info, nullptr, stages::kEncode, err);
+            err->option = L"--format";
+            err->value = label;
+        }
+        return false;
+    };
+    if (shape != FrameShape::kOk) return failShape(shape);
+    const uint64_t tightBytes = static_cast<uint64_t>(frame.width) * 4ull * frame.height;
+    if (tightBytes > 0xFFFFFFFFull) {
+        // BitmapEncoder.SetPixelData 的长度是 UINT32：紧凑像素超过 4 GiB 就交不出去。
+        // 上面那条整帧 1 GiB 的上限本来已经把它挡在外面，这条判据留着是因为转 UINT32 之前
+        // 必须有人判一次。
+        return failShape(FrameShape::kTooManyBytes);
+    }
     // 预算已经用尽就别开工：这一步一旦开始，能中断的只有那几个异步等待点
     if (dl.Spent()) {
         Diagnostic d = BudgetSpent(dl, codes::kCaptureTimeout, stages::kEncode, nullptr);
@@ -128,7 +150,12 @@ bool EncodeFrame(const CapturedFrame& frame, ImageFormat fmt, int jpegQuality, c
                        Msgf(L"enc.apartment", HresultText(aptHr)), HresultText(aptHr));
         }
 
-        auto tight = PackTight(frame);
+        std::vector<uint8_t> tight;
+        if (!PackTight(frame, &tight)) {
+            // 上面 CheckFrameShape 已经过了才会走到这里，那唯一的可能就是缓冲区自己对不上形状：
+            // 照 buffer_short 说，不说"形状没问题却失败了"这种读不懂的话
+            return failShape(FrameShape::kBufferShort);
+        }
         wss::InMemoryRandomAccessStream stream;
         const winrt::guid id = EncoderIdFor(fmt);
         wgi::BitmapEncoder encoder{nullptr};

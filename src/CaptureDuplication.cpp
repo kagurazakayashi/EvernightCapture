@@ -153,7 +153,9 @@ std::wstring DuplicationHint(HRESULT hr) {
     return std::wstring();
 }
 
-// 把 GPU 上的桌面帧拷进 CPU 可读的 staging 纹理，再按行搬进帧
+// 把 GPU 上的桌面帧拷进 CPU 可读的 staging 纹理，再按行搬进帧。
+// 拷贝那一段与 wgc 通道共用（CaptureCommon.h 的 CopyTextureToFrame）：形状、行距与上限都在
+// 分配之前判完，Map 之后抛异常也要 Unmap，像素格式不是 BGRA8 就在这里拦下。
 bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFrame* out,
                       Diagnostic* err) {
     // 桌面复制给的资源本身就是 D3D11 纹理，直接 QueryInterface 到 ID3D11Texture2D 即可
@@ -164,53 +166,11 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
                      codes::kCaptureFailed, 0, hr);
         return false;
     }
-    D3D11_TEXTURE2D_DESC src{};
-    desktop->GetDesc(&src);
-    if (src.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.format"), Msg(L"cap.dup.format_hint"));
-        return false;
-    }
-
-    D3D11_TEXTURE2D_DESC stagingDesc = src;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.MiscFlags = 0;
-    ComPtr<ID3D11Texture2D> staging;
-    const HRESULT stagingHr = device->CreateTexture2D(&stagingDesc, nullptr, &staging);
-    if (FAILED(stagingHr)) {
-        // 这里以前把错误码整个丢掉：只剩一句"建不出来"，无从判断是显存不够还是格式不支持
-        CaptureError(err, kChannel, Msg(L"cap.dup.staging"), Msgf(L"cap.hresult", HResultText(stagingHr)),
-                     codes::kCaptureFailed, 0, stagingHr);
-        return false;
-    }
-    ComPtr<ID3D11DeviceContext> context;
-    device->GetImmediateContext(&context);
-    // CopyResource 返回 void，失败只能靠设备状态与画面内容反证（见调用方的单色判定）
-    context->CopyResource(staging.Get(), desktop.Get());
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    hr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(hr)) {
-        CaptureError(err, kChannel, Msg(L"cap.dup.map"), Msgf(L"cap.hresult", HResultText(hr)),
-                     codes::kCaptureFailed, 0, hr);
-        return false;
-    }
-    out->width = src.Width;
-    out->height = src.Height;
-    out->stride = mapped.RowPitch;
-    out->pixels.resize(static_cast<size_t>(mapped.RowPitch) * src.Height);
-    const auto* from = static_cast<const uint8_t*>(mapped.pData);
-    auto* to = out->pixels.data();
-    for (uint32_t row = 0; row < src.Height; ++row) {
-        std::memcpy(to + static_cast<size_t>(row) * mapped.RowPitch,
-                    from + static_cast<size_t>(row) * mapped.RowPitch,
-                    static_cast<size_t>(src.Width) * 4u);
-    }
-    context->Unmap(staging.Get(), 0);
-    return true;
+    return CopyTextureToFrame(device, desktop.Get(), kChannel, out, err);
 }
 
-// 取该输出的整幅桌面帧：等一次真实 present、拷进 CPU、把单色帧判掉。
+// 取该输出的整幅桌面帧：等一次真实 present、拷进 CPU、把"这一帧根本没有画面"判掉。
+// 单色只在调用方那侧留一条质量提示（note.frame_uniform），不在这儿拒绝图片。
 bool GrabOutputFrame(ID3D11Device* device, const PickedOutput& picked, uint32_t timeoutMs,
                      CapturedFrame* desktop, Diagnostic* err) {
     ComPtr<IDXGIOutputDuplication> dup;
@@ -260,13 +220,20 @@ bool GrabOutputFrame(ID3D11Device* device, const PickedOutput& picked, uint32_t 
     }  // 这里 ReleaseFrame，之后才能安全地只用 CPU 副本
     if (!copied) return false;
 
-    // 整幅桌面帧单色 = 根本没拿到内容（虚拟显卡 / 远程桌面 / 内容被驱动屏蔽的典型表现）。
-    // 判整幅而不是判裁剪后的目标区域：目标本身可能就是一块纯黑内容。
-    if (FrameIsFlat(*desktop)) {
+    // 单色本身不是失败理由：桌面上那一刻真的可能就是一整幅同一个颜色。
+    // 判"根本没拿到画面"要两条**API 层面**的证据凑齐：这一帧既没有任何 present 记录
+    //（LastPresentTime 与 AccumulatedFrames 都是 0 —— 纹理还没被写过），整幅又只有一个颜色。
+    // 只要驱动真 present 过，这一帧就是当前画面，颜色单也照样交出去
+    //（调用方另外会收到一条 note.frame_uniform 质量提示，那是提示不是错误）。
+    const bool presented = info.LastPresentTime.QuadPart != 0 || info.AccumulatedFrames > 0;
+    FrameColor uniform{};
+    if (!presented && FrameIsUniform(*desktop, &uniform)) {
         CaptureError(err, kChannel,
                      Msgf(L"cap.dup.flat", info.LastPresentTime.QuadPart, info.AccumulatedFrames,
                           info.ProtectedContentMaskedOut ? 1 : 0),
                      Msg(L"cap.dup.flat_hint"));
+        desktop->pixels.clear();
+        desktop->width = desktop->height = desktop->stride = 0;
         return false;
     }
     desktop->source = kChannel;
@@ -288,8 +255,17 @@ bool CropDesktopToRect(CapturedFrame* desktop, const RECT& desktopCoordinates, c
                      Msg(L"cap.dup.not_in_frame_hint"));
         return false;
     }
-    CropFrame(desktop, static_cast<uint32_t>(cropX), static_cast<uint32_t>(cropY),
-              static_cast<uint32_t>(visibleW - cropX), static_cast<uint32_t>(visibleH - cropY));
+    // 裁剪失败就是形状/范围算不通，绝不"将就用整幅桌面帧"：那会把别人的画面当成目标交出去。
+    if (!CropFrame(desktop, static_cast<uint32_t>(cropX), static_cast<uint32_t>(cropY),
+                   static_cast<uint32_t>(visibleW - cropX),
+                   static_cast<uint32_t>(visibleH - cropY))) {
+        CaptureError(err, kChannel, Msg(L"cap.crop_failed"),
+                     Msgf(L"cap.crop_failed_hint", static_cast<uint64_t>(cropX),
+                          static_cast<uint64_t>(cropY), static_cast<uint64_t>(visibleW - cropX),
+                          static_cast<uint64_t>(visibleH - cropY)),
+                     codes::kFrameInvalid);
+        return false;
+    }
     return true;
 }
 

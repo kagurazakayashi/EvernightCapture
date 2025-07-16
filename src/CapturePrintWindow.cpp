@@ -45,14 +45,16 @@ RenderOutcome RenderPrintWindowContent(uint64_t hwndValue) {
         }
         dib.ToFrame(kChannel, &o.frame);
 
-        // 裁掉 DWM 那圈透明边框，让尺寸与其它通道一致
+        // 裁掉 DWM 那圈透明边框，让尺寸与其它通道一致。
+        // 裁不下来（边框矩形量不到、算出的范围越界）就把没裁的这一张交出去：它仍然是这个
+        // 窗口自己画出来的画面，只是多带一圈边框，比报错少一张图更合算。
         const RECT vis = WindowScreenRect(hwnd);
         const int dx = vis.left - full.left;
         const int dy = vis.top - full.top;
         if (dx >= 0 && dy >= 0) {
-            CropFrame(&o.frame, static_cast<uint32_t>(dx), static_cast<uint32_t>(dy),
-                      static_cast<uint32_t>(vis.right - vis.left),
-                      static_cast<uint32_t>(vis.bottom - vis.top));
+            (void)CropFrame(&o.frame, static_cast<uint32_t>(dx), static_cast<uint32_t>(dy),
+                            static_cast<uint32_t>(vis.right - vis.left),
+                            static_cast<uint32_t>(vis.bottom - vis.top));
         }
         o.frame.path = paths::kPrintWindow;
         return o;

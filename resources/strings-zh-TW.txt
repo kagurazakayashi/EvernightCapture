@@ -129,6 +129,8 @@ note.dry_run	--dry-run：已選出 %1 個視窗，未截圖也未寫檔案
 note.output_extension_appended	輸出名沒有副檔名，已按所選格式補上
 note.output_extension_hint	實際寫成 %1
 note.capture_channel	auto：%1 不可用，改用 %2
+note.frame_uniform	這張圖整幅只有一個顏色：ARGB %1
+note.frame_uniform_hint	這是品質提示，不是錯誤。純色視窗或單色桌布本來就是這個樣子；也可能是這一影格沒被合成出來（受保護內容 / 遠端桌面 / 虛擬顯示卡）。要確認就換 wgc 通道再看一眼那張圖
 
 # ---------------------------------------------------------------------------
 # 視窗匹配（src/WindowMatch.cpp）
@@ -171,6 +173,17 @@ cap.dib_size	視窗尺寸無法配置點陣圖
 cap.dib_size_hint	尺寸 %1，視窗可能已最小化或正在退出
 cap.create_compat_dc	CreateCompatibleDC 失敗
 cap.create_dib_section	CreateDIBSection 失敗
+cap.select_bitmap	SelectObject 選入點陣圖失敗
+cap.frame_invalid	取回的影格記憶體形狀不合法：%1
+cap.frame_invalid_hint	上限：單邊 %1 像素、整幅影格 %2 位元組，行距須落在行長到兩倍行長之間；實際 %3×%4，行距 %5，緩衝 %6 位元組
+cap.frame_format	取到的影格不是 BGRA8 格式（DXGI 格式編號 %1）
+cap.frame_format_hint	HDR / 10 位顯示模式下取不到普通 BGRA 影格，請在系統設定裡關掉 HDR
+cap.gpu.staging	建立 staging 紋理失敗
+cap.gpu.context	取得 D3D11 裝置內容失敗
+cap.gpu.copy_failed	把影格拷到 CPU 時顯示裝置已不可用
+cap.gpu.map	鎖定 staging 紋理失敗
+cap.crop_failed	依目標矩形裁剪這幅影格失敗
+cap.crop_failed_hint	從 %1,%2 起裁 %3×%4，與這幅影格的寬高對不上
 cap.offscreen	視窗完全在螢幕之外，取不到像素
 cap.visible_only	該通道只能拷螢幕上可見的部分
 cap.bitblt_failed	BitBlt 螢幕失敗
@@ -194,15 +207,11 @@ cap.wgc.hint	擷取目標可能受保護、已關閉，或系統不支援 Window
 cap.wgc.step.device	建立 D3D11 裝置
 cap.wgc.step.wrap	包裝 Direct3D 裝置
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
-cap.wgc.step.staging	建立 staging 紋理
-cap.wgc.step.map	鎖定 staging 紋理
 cap.wgc.step.session	建立擷取工作階段
 cap.wgc.step.access	取影格表面存取子
 cap.wgc.step.surface	取影格表面
 cap.wgc.step.texture	影格表面轉紋理
 cap.wgc.step.apartment	初始化 WinRT 套間
-cap.wgc.frame_zero	取到的影格尺寸為 0
-cap.wgc.frame_zero_hint	視窗可能已最小化或剛被關閉
 cap.wgc.size_zero	擷取目標目前尺寸為 0，無法擷取
 cap.wgc.timeout	逾時未收到影格（%1 ms）
 cap.wgc.timeout_hint	視窗可能沒有內容更新，或受 DRM/安全策略保護而拒絕被擷取
@@ -228,16 +237,12 @@ cap.dup.hint_denied	E_ACCESSDENIED：內容受保護，或目前處於安全桌�
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：裝置與輸出不匹配，或該輸出已被別的處理程序複製
 cap.dup.hint_timeout	逾時都沒有新影格：桌面完全靜止時可能不發影格，讓目標視窗動一下再試
 cap.dup.to_texture	桌面影格轉紋理失敗
-cap.dup.format	桌面影格不是 BGRA8 格式
-cap.dup.format_hint	HDR / 10 位顯示模式下取不到普通 BGRA 影格，請在系統設定裡關掉 HDR
-cap.dup.staging	建立 staging 紋理失敗
-cap.dup.map	鎖定桌面影格失敗
 cap.dup.device	建立 D3D11 裝置失敗
 cap.dup.dxgi	裝置不支援 DXGI
 cap.dup.duplicate	DuplicateOutput 失敗 (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame 失敗 (HRESULT %1)
 cap.dup.timeout	逾時未取到桌面影格（%1 ms）
-cap.dup.flat	桌面複製取到的整幅畫面是單色：LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat	桌面複製這一個影格沒有任何 present 記錄（LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3），且整幅只有一個顏色
 cap.dup.flat_hint	該工作階段的顯示卡驅動程式可能不向桌面複製輸出內容（遠端桌面 / 基本顯示驅動程式 / 受保護內容被屏蔽），改用 wgc 或 bitblt
 cap.dup.not_in_frame	視窗不在這塊顯示器的桌面影格內
 cap.dup.not_in_frame_hint	視窗可能剛被移到別的顯示器或已關閉

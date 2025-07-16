@@ -27,6 +27,7 @@
 #include "Deadline.h"
 #include "Encoder.h"
 #include "FileSave.h"
+#include "ImageOps.h"
 #include "Lang.h"
 #include "OutputPlan.h"
 #include "Report.h"
@@ -572,6 +573,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         bool fatal = false;
         bool ok = false;
         bool recorded = false;   // stdout 那条纹路里结果条目已提前入列，末尾不再重复入列
+        std::optional<Diagnostic> uniformNote;   // 单色质量提示：等这张图真交出去了再送
         std::vector<uint8_t> encoded;
         try {
             CapturedFrame frame;
@@ -596,6 +598,22 @@ CaptureOutcome RunCapture(const Options& opt) {
                 // 调用方要靠它判断自己拿到了什么，--quiet 也不许把它藏起来。
                 img.path = frame.path.empty() ? std::wstring(paths::kUnknown) : frame.path;
                 img.scope = ScopeName(ScopeOf(img.path));
+
+                // 质量提示，与"这次采集失败"是两件事：整帧逐像素比过之后确实只有一个颜色，
+                // 但**单色不等于没截到东西** —— 一扇纯色窗口、一块刚铺好的单色壁纸本来就是这样。
+                // 这里只把事实记下来（不改退出码、不丢图、也不升级授权），到这张图真的交出去时才送出。
+                // 判据放在这一层而不是各通道内部：哪条通道交回的单色帧都值得让人看见。
+                FrameColor uniform{};
+                if (FrameIsUniform(frame, &uniform)) {
+                    wchar_t argb[16];
+                    swprintf(argb, 16, L"0x%02X%02X%02X%02X", uniform.a, uniform.r, uniform.g,
+                             uniform.b);
+                    uniformNote = Diagnostic{codes::kFrameUniform,
+                                             Msgf(L"note.frame_uniform", std::wstring(argb)),
+                                             L"--capture", img.source,
+                                             Msg(L"note.frame_uniform_hint"), t.Tag(), img.source,
+                                             stages::kCapture};
+                }
             }
 
             const wchar_t* backend = img.source.empty() ? CaptureMethodName(opt.capture)
@@ -674,7 +692,12 @@ CaptureOutcome RunCapture(const Options& opt) {
             continue;
         }
 
-        if (recorded) continue;   // stdout 那条路已经入过列
+        if (recorded) {   // stdout 那条路已经入过列
+            if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
+            continue;
+        }
+        // 到这里这一张是真交出去了（文件已提交，或字节已达标准输出），质量提示这时才有意义
+        if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
         img.bytes = encoded.size();
         img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
         outcome.images.push_back(std::move(img));

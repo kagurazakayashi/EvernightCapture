@@ -247,7 +247,10 @@ Rules:
 3. `code` values are stable: `cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
    Among frame failures, "the frame never arrived" (`capture.frame_timeout`) and "the target window is gone"
    (`capture.window_gone`) each have their own code instead of being lumped in with the generic `capture.failed` —
-   the next step differs between them (wait and retry versus enumerate the windows again).
+   the next step differs between them (wait and retry versus enumerate the windows again). A frame whose own memory
+   layout does not add up (zero size, a side beyond 16384 px, a row pitch that cannot hold one row of pixels, or a
+   buffer shorter than pitch × height) is refused with `capture.frame_invalid` (exit code 7); crop, row repack and
+   encoding all re-check it, so a broken frame is never read past its buffer.
 4. Streams: by default everything goes to stdout and stderr stays empty; once the image occupies stdout (explicit
    `--out -`, or no output path at all) the whole JSON moves to stderr. The two streams never mix. Even the
    last-resort diagnostic for "building the result itself threw" always goes to stderr (at that moment there is no way
@@ -267,7 +270,8 @@ Rules:
    than `auto`; when the whole fallback chain fails, `backend` lists the channels that were actually tried. Window
    images and screen images both carry `source`. `images[].path` is finer than that: one channel can hold several
    routes, and the authorization is decided by the route, not by the label — `dwm.thumbnail` reads the window's own
-   pixels while `dwm.screen` (that channel's internal fallback) reads the screen.
+   pixels while `dwm.screen` (that channel's internal fallback) reads the screen. That fallback is entered when the
+   thumbnail route itself failed, never because the delivered picture came back a single colour.
 7. **Saving**: the whole batch's final absolute output names are computed before the first frame is taken (and
    before any consent dialog). Two targets resolving to the same name give `io.output_collision` (exit code 8)
    with nothing captured and nothing written — the tool never renames behind your back and never lets image 2
@@ -287,6 +291,10 @@ Rules:
    retryable by selecting the target again.
    The HRESULT and Win32 code the backend handed back are passed through as they are instead of being masked by
    `E_FAIL` or `E_NOINTERFACE`. A black frame is never asserted to be DRM — the wording only lists the possibilities.
+   A single-colour frame is never asserted to be a failed capture either: the image is delivered and
+   `note.frame_uniform` records the fact (which colour, which channel, which target). Only `duplication` refuses a
+   frame on such grounds, and only when the API itself says there was nothing to show — no present record at all
+   *and* the whole frame one colour.
 
 ## Exit codes
 
@@ -328,6 +336,10 @@ request is not attempted — no other backend, no second ask, while every image 
   to the default channel**; only `auto` may fall back, and a successful fallback emits `note.capture_channel`.
 - DRM / protected content is always black. Driver-level black bars (some players) are defeated by some channels and
   not by others — nothing is guaranteed.
+- A single-colour result is not treated as a failed capture. `dwm` used to read "the thumbnail came back flat" as
+  "nothing was composed" and fell back to sampling the screen at that rectangle — a desktop route that has to be
+  authorized separately. It now falls back only when that route actually failed; a flat image is delivered with the
+  quality hint `note.frame_uniform` instead.
 - Whole-screen capture only uses `wgc` / `duplication` / `bitblt`; `--monitor` with `dwm` or `printwindow` fails
   during parsing with `capture.unsupported` (exit code 1). In screen mode `auto` falls back wgc → duplication →
   bitblt.
@@ -487,8 +499,10 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
    candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `cli.stdout_multiple_targets` (1, several targets
    want to share one stdout), `capture.failed` (7), `capture.frame_timeout` (7, waiting for the frame ran out),
-   `capture.window_gone` (7, the target is already gone — enumerate again), `capture.access_denied` (6, somebody
-   answered "No"), `capture.consent_unavailable` (6, this session has no interactive desktop, so nobody could answer),
+   `capture.window_gone` (7, the target is already gone — enumerate again), `capture.frame_invalid` (7, the frame's own
+   memory layout does not add up — zero size, a side beyond 16384 px, or a row pitch / buffer that contradicts it),
+   `capture.access_denied` (6, somebody answered "No"), `capture.consent_unavailable` (6, this session has no
+   interactive desktop, so nobody could answer),
    `capture.consent_stale` (7, the target moved after consent — select it again and expect a fresh ask),
    `io.write_failed` (8, directory missing or the commit failed), `io.file_exists` (8, with `--no-overwrite`),
    `io.output_collision` (8, two targets expand to the same output name — nothing was captured).
@@ -502,9 +516,13 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    exit code is 7, the images already on disk are perfectly usable, and `images[].source` / `path` / `scope` name the
    channel, the route inside it, and whether that frame is the window's own pixels or desktop pixels.
 5. **Exit code 0 does not mean the picture is correct**: protected content and some player drivers hand you black
-   frames while reporting success. Verify pixels to be sure — for instance put a solid-colour window on top of the
-   target and capture again, then check whether you got the target's content or the cover; at minimum compare
-   `width`/`height` against the target window rectangle.
+   frames while reporting success. The tool now tells you when the whole image really is one colour — it compares
+   every pixel against the top-left one (all four BGRA bytes, row padding excluded) and emits
+   `note.frame_uniform` (with the colour as `0xAARRGGBB`) while still delivering the image. A single colour is a
+   quality hint, not a failure: a solid window or a plain wallpaper looks exactly like that, so nothing is refused
+   and no extra authorization is asked for it. Verify pixels to be sure — for instance put a solid-colour window on
+   top of the target and capture again, then check whether you got the target's content or the cover; at minimum
+   compare `width`/`height` against the target window rectangle.
 6. **Expect a dialog before the first frame**: with no `--yes`, every real capture blocks until somebody answers,
    plain window captures included. Add `--yes` when the target is one window and the route stays a window-content one
    (`wgc` / `printwindow` / `dwm.thumbnail`); for `bitblt`, `duplication`, `dwm`'s screen fallback or any whole screen
@@ -523,6 +541,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
+| `.\tests\image.ps1` | Frame checks: offline suite (135 checks) over hand-built pixel layouts (stripes, checkerboard, alpha, row padding, over-large / short buffers, out-of-range crops) plus on-device single-colour captures |
 | `.\tests\smoke.ps1` | On-device smoke: capture its own test window → validate PNG size and pixel content |
 | `.\tests\save.ps1` | On-device file saving and overwrite protection: every `--no-overwrite` boolean form against a real file, batch output-name planning + collision detection (`%p` / `%n` / `%d` / `%t` / `%%` / unknown `%x` / case / cleaning / truncation), atomic commit (locked target, target is a directory, missing directory, killed mid-run), concurrent `--no-overwrite` race |
 | `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows. The window-content channels run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` sample the desktop, so their image judgements need `-SimulateConsent` and are recorded as SKIP ("not verified") without it |

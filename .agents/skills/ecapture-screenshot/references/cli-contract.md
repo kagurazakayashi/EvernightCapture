@@ -19,7 +19,7 @@
 | `--index` | `-i` | 从 1 起 | 多匹配消歧，按可见性/叠放次序排序 |
 | `--newest` / `--oldest` | | 开关 | 取最后/最早创建的窗口 |
 | `--all` | `-a` | 开关 | 每个命中窗口各存一张；与 `--monitor all` 互斥 |
-| `--capture` | `-C` | `wgc`（默认）/`dwm`/`printwindow`/`bitblt`/`duplication`/`auto` | 取图通道。取值写错解析期报 `cli.unknown_capture_method`，不会退化成默认值。**要不要问人，不看这里写的通道名，看实际走的那条内部路径**（`images[].path`，全表见「截图授权」一节）：`dwm` 的缩略图路径只取窗口画面，它那条"把宿主窗口盖到目标位置上再拷屏幕"的退路 `dwm.screen` 取的是桌面像素。屏幕模式只支持 `wgc`/`duplication`/`bitblt`/`auto`，`dwm`/`printwindow` 报 `capture.unsupported`（整屏 `wgc` 也是桌面像素） |
+| `--capture` | `-C` | `wgc`（默认）/`dwm`/`printwindow`/`bitblt`/`duplication`/`auto` | 取图通道。取值写错解析期报 `cli.unknown_capture_method`，不会退化成默认值。**要不要问人，不看这里写的通道名，看实际走的那条内部路径**（`images[].path`，全表见「截图授权」一节）：`dwm` 的缩略图路径只取窗口画面，它那条"把宿主窗口盖到目标位置上再拷屏幕"的退路 `dwm.screen` 取的是桌面像素——这条退路只在缩略图那一步**真的失败**（PrintWindow 返回 FALSE、位图建不出来、宿主窗口量不出矩形）时才走，**不会因为画面正好是单色就走**（旧实现会，那等于把一扇本来就纯色的窗口升级到要另外授权的桌面取样）。屏幕模式只支持 `wgc`/`duplication`/`bitblt`/`auto`，`dwm`/`printwindow` 报 `capture.unsupported`（整屏 `wgc` 也是桌面像素） |
 | `--yes` | `-y` | 开关，可写 `=true/false` | **截图授权**：只免掉"只取所选窗口画面"那几条路径（`wgc` / `printwindow` / `dwm.thumbnail`）的确认框。裸写与 `=true/1/yes/y/on` = 开，`=false/0/no/n/off` = 关（它虽是正向开关，写 `=false` 却**有意义**：明确要问），重复给出时最后一个生效，最终结果由 `-v` 的 `input.yes` 回显；写成两头都不沾的取值（`--yes=maybe`）解析期就报 `cli.switch_takes_no_value`+1，不会当成"开了"。**其它一概不保证**：不保证目标真交出有效帧、不越过权限、不解除受保护内容、不吞掉任何错误，也不影响覆盖保护。凡是从屏幕上取像素的路径（`bitblt`、`duplication`、任何整屏、`dwm` 的屏幕退路）一定会弹框，这个开关跳不过 |
 | `--timeout-ms` | | 毫秒，0–86400000 | **自动阶段的总预算**：从选定目标起，匹配（含 `--title-regex` 求值）、`auto` 的后端重试、等帧、编码、写文件 / 写 stdout 共用这一份剩余时间，整批只发一次，没有哪一步或哪个目标能另领一份。省略或 `0` = 不设总预算，此时被隔离进辅助进程执行的那几步（见「期限与阻塞隔离」）仍有内置 5000 ms 上限兜底，`--capture printwindow` / `dwm` 不再能无限期卡住。预算耗尽时受影响的那张图**不写**：按阶段报 `match.timeout`（`stage=match`）/ `capture.timeout`（`stage=capture`，编码超时也算它）/ `io.timeout`（`stage=write`/`stdout`，退出码 8）；剩下的目标不再开始，已经写好的图留着。等人工确认**不计入**这条预算。只认十进制（`0x…` 拒收），重复给出最后一个生效，最终结果由 `-v` 的 `input.timeoutMs` 回显 |
 | `--consent-timeout-ms` | | 毫秒，0–86400000 | 确认框最多等人回答多久；省略或 `0` = 一直等。超时按**拒绝**处理而绝不当作同意：报 `capture.consent_timeout` + 退出码 6、`stage=consent`。这一段单独计时，**不消耗** `--timeout-ms` 的预算；点「是」之后那约 1 秒的关框动画缓冲属于人工阶段，不会为了赶预算被跳过。取值写法与回显同上（`input.consentTimeoutMs`） |
@@ -197,6 +197,7 @@
 （`capture.consent_stale` + `stage=capture`）与"技术性访问被拒"（`capture.failed` + `hresult=0x80070005`）能分开判；
 `capture.worker_failed` 说的是本工具自己的辅助进程没能跑起来，与前两者都不同；
 黑帧只报"没拿到内容"，不断言成 DRM，也不写成 `capture.access_denied`。
+**单色同样不等于采集失败**：整帧逐像素比过之后确实只有一个颜色时，图照常交付，只另发一条质量提示`note.frame_uniform`（`message` 里给那个颜色 `0xAARRGGBB`，带 `backend` / `target` / `stage=capture`，`--quiet` 会把它连同整段 notes 一起去掉）。只有 `duplication` 会因此拒绝一帧，而且要两条一起成立才判失败：这一帧**没有任何 present 记录**（`LastPresentTime` 与 `AccumulatedFrames` 都是 0）且整幅只有一个颜色——有 present 记录的单色就是屏幕上此刻的样子（单色壁纸、纯色窗口）。
 
 ### `--dry-run` 的候选窗口在哪
 
@@ -271,6 +272,9 @@
 `capture.timeout`（7，`--timeout-ms` 在取帧或编码阶段耗尽，`stage=capture`：`printwindow`/`dwm` 多半是目标
 UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 `capture.frame_timeout`（7，等帧超时：等一下可以重试）`capture.window_gone`（7，目标已经没了：要重新枚举窗口）
+`capture.frame_invalid`（7，交回来的那帧像素自己说不通：宽高为 0、单边超过 16384 像素、行距装不下一行像素
+（`< width*4`）或超过两倍行长、缓冲区比 `行距×高` 还短、整帧超过 1 GiB。裁剪 / 行重排 / 单色判定 / 编码之前都先核
+这一道，所以坏帧不会被告知"成功"，也不会被读越界。上限与实际数字写在 `hint` 里，`stage` 是出问题那一步）
 
 **`io.*`**
 `io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）`io.timeout`（8，`--timeout-ms` 在写文件 / 写 stdout 阶段耗尽，`stage=write`/`stdout`：已截好的那一张也不写）
@@ -280,8 +284,17 @@ UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 `note.extension_appended` `note.exe_path_looks_like_name`（`--exe` 传的像文件名不像完整路径）
 `note.format_extension_mismatch` `note.format_defaulted_png` `note.output_defaulted_stdout`
 `note.output_extension_appended` `note.quality_ignored` `note.all_without_placeholder`
-`note.flag_overrides_quiet` `note.pipe_default_format` `note.json_flag_deprecated`
+`note.flag_overrides_quiet` `note.pipe_default_format` `note.json_flag_deprecated` `note.frame_uniform`（这一张整幅只有一个颜色：质量提示，图片照常交付）
 `note.help_ignored_arguments`
+
+## 帧的形状与像素上限
+
+一帧 BGRA8 像素要同时满足：宽高都不为 0、单边不超过 **16384 像素**（D3D11 纹理边的上限，GDI 建位图与辅助进程
+的管道协议用的是同一条线）、行距落在 `width*4` 与 `2*width*4` 之间（下界是"装得下一行像素"，上界给 GPU 的
+对齐填充留一倍余量）、整帧缓冲不超过 **1 GiB**、缓冲区至少 `行距×高` 字节。任何一条不成立就报
+`capture.frame_invalid`（7），而且是在**分配之前**判出来的——不靠"分配失败抛异常"当检查。裁剪、行重排、单色判定、
+编码、GPU 拷回 CPU 与辅助进程交回的帧都过同一道检查。超出这条上限的截图（比如拼到 16384 像素以上的虚拟屏幕）
+会照实报错，不会截半张。本工具不缩放图像，所以没有"改小一点就能过"的选项。
 
 ## 输出名占位符
 

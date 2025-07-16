@@ -129,6 +129,8 @@ note.dry_run	--dry-run：已选出 %1 个窗口，未截图也未写文件
 note.output_extension_appended	输出名没有扩展名，已按所选格式补上
 note.output_extension_hint	实际写成 %1
 note.capture_channel	auto：%1 不可用，改用 %2
+note.frame_uniform	这张图整幅只有一个颜色：ARGB %1
+note.frame_uniform_hint	这是质量提示，不是错误。纯色窗口或单色壁纸本来就是这个样子；也可能是这一帧没被合成出来（受保护内容 / 远程桌面 / 虚拟显卡）。要确认就换 wgc 通道再看一眼那张图
 
 # ---------------------------------------------------------------------------
 # 窗口匹配（src/WindowMatch.cpp）
@@ -171,6 +173,17 @@ cap.dib_size	窗口尺寸无法分配位图
 cap.dib_size_hint	尺寸 %1，窗口可能已最小化或正在退出
 cap.create_compat_dc	CreateCompatibleDC 失败
 cap.create_dib_section	CreateDIBSection 失败
+cap.select_bitmap	SelectObject 选入位图失败
+cap.frame_invalid	取回的这一帧内存形状不合法：%1
+cap.frame_invalid_hint	上限：单边 %1 像素、整帧 %2 字节，行距须落在行长到两倍行长之间；实际 %3×%4，行距 %5，缓冲 %6 字节
+cap.frame_format	取到的帧不是 BGRA8 格式（DXGI 格式编号 %1）
+cap.frame_format_hint	HDR / 10 位显示模式下取不到普通 BGRA 帧，请在系统设置里关掉 HDR
+cap.gpu.staging	创建 staging 纹理失败
+cap.gpu.context	取 D3D11 设备上下文失败
+cap.gpu.copy_failed	把帧拷到 CPU 时显示设备已不可用
+cap.gpu.map	锁定 staging 纹理失败
+cap.crop_failed	按目标矩形裁剪这一帧失败
+cap.crop_failed_hint	从 %1,%2 起裁 %3×%4，与这帧的宽高对不上
 cap.offscreen	窗口完全在屏幕之外，取不到像素
 cap.visible_only	该通道只能拷屏幕上可见的部分
 cap.bitblt_failed	BitBlt 屏幕失败
@@ -194,15 +207,11 @@ cap.wgc.hint	采集目标可能受保护、已经关闭，或系统不支持 Win
 cap.wgc.step.device	创建 D3D11 设备
 cap.wgc.step.wrap	包装 Direct3D 设备
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
-cap.wgc.step.staging	创建 staging 纹理
-cap.wgc.step.map	锁定 staging 纹理
 cap.wgc.step.session	创建采集会话
 cap.wgc.step.access	取帧表面访问器
 cap.wgc.step.surface	取帧表面
 cap.wgc.step.texture	帧表面转纹理
 cap.wgc.step.apartment	初始化 WinRT 套间
-cap.wgc.frame_zero	取到的帧尺寸为 0
-cap.wgc.frame_zero_hint	窗口可能已最小化或刚被关闭
 cap.wgc.size_zero	采集目标当前尺寸为 0，无法采集
 cap.wgc.timeout	超时未收到帧（%1 ms）
 cap.wgc.timeout_hint	窗口可能没有内容更新，或受 DRM/安全策略保护而拒绝被采集
@@ -228,16 +237,12 @@ cap.dup.hint_denied	E_ACCESSDENIED：内容受保护，或当前处于安全桌�
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：设备与输出不匹配，或该输出已被别的进程复制
 cap.dup.hint_timeout	超时都没有新帧：桌面完全静止时可能不发帧，让目标窗口动一下再试
 cap.dup.to_texture	桌面帧转纹理失败
-cap.dup.format	桌面帧不是 BGRA8 格式
-cap.dup.format_hint	HDR / 10 位显示模式下取不到普通 BGRA 帧，请在系统设置里关掉 HDR
-cap.dup.staging	创建 staging 纹理失败
-cap.dup.map	锁定桌面帧失败
 cap.dup.device	创建 D3D11 设备失败
 cap.dup.dxgi	设备不支持 DXGI
 cap.dup.duplicate	DuplicateOutput 失败 (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame 失败 (HRESULT %1)
 cap.dup.timeout	超时未取到桌面帧（%1 ms）
-cap.dup.flat	桌面复制取到的整幅画面是单色：LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat	桌面复制这一帧没有任何 present 记录（LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3），且整幅只有一个颜色
 cap.dup.flat_hint	该会话的显卡驱动可能不向桌面复制输出内容（远程桌面 / 基本显示驱动 / 受保护内容被屏蔽），改用 wgc 或 bitblt
 cap.dup.not_in_frame	要取的画面不在这块显示器的桌面帧内
 cap.dup.not_in_frame_hint	目标可能刚被移到别的显示器，或窗口已经关闭

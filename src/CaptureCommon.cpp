@@ -1,17 +1,159 @@
 #include "CaptureCommon.h"
 
 #include <algorithm>
+#include <cstring>
 #include <exception>
 #include <string>
 
+#include <d3d11.h>
+#include <dxgiformat.h>
+#include <wrl/client.h>
+
 #include <dwmapi.h>
+
+#include "ImageOps.h"
+
+using Microsoft::WRL::ComPtr;
 
 namespace ecapture {
 namespace {
 
 typedef BOOL(WINAPI* SetProcessDpiAwarenessContextFn)(DPI_AWARENESS_CONTEXT);
 
+// Map 之后可能抛的那一步是 pixels 的扩容。抛出去时 staging 纹理还挂在 Map 状态，
+// 之后的取帧会连锁失败，所以 Unmap 交给析构函数，正常路径与异常路径走同一件事。
+class MappedStaging {
+public:
+    MappedStaging(ID3D11DeviceContext* context, ID3D11Texture2D* texture)
+        : context_(context), texture_(texture) {}
+    MappedStaging(const MappedStaging&) = delete;
+    MappedStaging& operator=(const MappedStaging&) = delete;
+    ~MappedStaging() {
+        if (mapped_) context_->Unmap(texture_, 0);
+    }
+
+    HRESULT Map() {
+        const HRESULT hr = context_->Map(texture_, 0, D3D11_MAP_READ, 0, &map_);
+        if (SUCCEEDED(hr)) mapped_ = true;
+        return hr;
+    }
+    const void* Data() const { return map_.pData; }
+    UINT RowPitch() const { return map_.RowPitch; }
+
+private:
+    ID3D11DeviceContext* context_ = nullptr;
+    ID3D11Texture2D* texture_ = nullptr;
+    D3D11_MAPPED_SUBRESOURCE map_{};
+    bool mapped_ = false;
+};
+
+// 形状检查的一条诊断：把 FrameShape 换成 capture.frame_invalid + 数字。
+// 这里在分配之前判，所以判的是"打算按这个形状分配"，不是已经存在的帧。
+bool RejectShape(const FrameShapeInfo& intent, const wchar_t* channel, Diagnostic* err) {
+    const FrameShape shape = CheckFrameShape(intent);
+    if (shape == FrameShape::kOk) return false;
+    FrameShapeError(shape, intent, channel, stages::kCapture, err);
+    return true;
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// GPU 纹理 -> CPU 帧
+// ---------------------------------------------------------------------------
+
+bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_t* channel,
+                        CapturedFrame* out, Diagnostic* err) {
+    if (!device || !src || !out) {
+        CaptureError(err, channel, Msg(L"cap.no_detail"), std::wstring());
+        return false;
+    }
+    out->pixels.clear();
+    out->width = out->height = out->stride = 0;
+
+    D3D11_TEXTURE2D_DESC desc{};
+    src->GetDesc(&desc);
+    // 这两条通道只按 BGRA8 解释像素。HDR / 10 位显示模式下帧格式不是它（旧实现里 duplication
+    // 就是靠这句话把"为什么截不到"说清楚的），继续按 4 字节一行搬会得到错色或错位。
+    if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
+        CaptureError(err, channel, Msgf(L"cap.frame_format", static_cast<uint64_t>(desc.Format)),
+                    Msg(L"cap.frame_format_hint"));
+        return false;
+    }
+    if (desc.Width == 0 || desc.Height == 0) {
+        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, desc.Width * 4u, 0ull}, channel,
+                           err);
+    }
+    if (desc.Width > kFrameMaxSide || desc.Height > kFrameMaxSide) {
+        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, desc.Width * 4u, 0ull}, channel,
+                           err);
+    }
+
+    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    stagingDesc.MiscFlags = 0;
+    ComPtr<ID3D11Texture2D> staging;
+    const HRESULT stagingHr = device->CreateTexture2D(&stagingDesc, nullptr, &staging);
+    if (FAILED(stagingHr)) {
+        CaptureError(err, channel, Msg(L"cap.gpu.staging"), Msgf(L"cap.hresult", HResultText(stagingHr)),
+                     codes::kCaptureFailed, 0, stagingHr);
+        return false;
+    }
+
+    ComPtr<ID3D11DeviceContext> context;
+    device->GetImmediateContext(&context);
+    if (!context) {
+        CaptureError(err, channel, Msg(L"cap.gpu.context"), std::wstring());
+        return false;
+    }
+    // CopyResource 返回 void，失败无从直接问；设备状态是唯一 **API 层面** 的问法。
+    context->CopyResource(staging.Get(), src);
+    const HRESULT removed = device->GetDeviceRemovedReason();
+    if (FAILED(removed)) {
+        CaptureError(err, channel, Msg(L"cap.gpu.copy_failed"), Msgf(L"cap.hresult", HResultText(removed)),
+                     codes::kCaptureFailed, 0, removed);
+        return false;
+    }
+
+    MappedStaging mapped(context.Get(), staging.Get());
+    const HRESULT mapHr = mapped.Map();
+    if (FAILED(mapHr)) {
+        CaptureError(err, channel, Msg(L"cap.gpu.map"), Msgf(L"cap.hresult", HResultText(mapHr)),
+                     codes::kCaptureFailed, 0, mapHr);
+        return false;
+    }
+    const uint64_t rowBytes = static_cast<uint64_t>(desc.Width) * 4ull;
+    // 行距由驱动给，先核对它装不装得下一行像素，再决定搬多少字节 —— 旧的写法是直接把
+    // RowPitch 当 stride 用，RowPitch 比行长小时就是读越界。
+    if (mapped.RowPitch() < rowBytes) {
+        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, mapped.RowPitch(), 0ull}, channel,
+                           err);
+    }
+    // 分配之前判完字节数：这大小是要 resize 的，判据不能用"分配失败"来发现
+    const uint64_t bytes = static_cast<uint64_t>(mapped.RowPitch()) * desc.Height;
+    if (bytes > kFrameMaxBytes) {
+        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, mapped.RowPitch(), bytes},
+                           channel, err);
+    }
+
+    out->width = desc.Width;
+    out->height = desc.Height;
+    out->stride = mapped.RowPitch();
+    out->pixels.assign(static_cast<size_t>(bytes), 0);
+    const auto* from = static_cast<const uint8_t*>(mapped.Data());
+    auto* to = out->pixels.data();
+    for (uint32_t row = 0; row < desc.Height; ++row) {
+        std::memcpy(to + static_cast<size_t>(row) * mapped.RowPitch(),
+                    from + static_cast<size_t>(row) * mapped.RowPitch(), static_cast<size_t>(rowBytes));
+    }
+    out->source = channel;
+    // 搬完再核一次形状（这次带真实缓冲区大小），不合格就是这里自己写坏了
+    return FrameShapeOk(*out, channel, stages::kCapture, err);
+}
+
+
 
 void EnsureDpiAware() {
     // 只做一次。用 GetProcAddress 而不是直接调用，是为了让二进制在 Win10 1703
@@ -87,7 +229,7 @@ void Dib::Destroy() {
 
 bool Dib::Create(uint32_t width, uint32_t height, Diagnostic* err, const wchar_t* channel) {
     Destroy();
-    if (width == 0 || height == 0 || width > 16384u || height > 16384u) {
+    if (width == 0 || height == 0 || width > kFrameMaxSide || height > kFrameMaxSide) {
         CaptureError(err, channel, Msg(L"cap.dib_size"),
                      Msgf(L"cap.dib_size_hint",
                           std::to_wstring(width) + L"x" + std::to_wstring(height)));
@@ -117,14 +259,24 @@ bool Dib::Create(uint32_t width, uint32_t height, Diagnostic* err, const wchar_t
         // 先取码再清理：DeleteDC 也会写最后一次错误码，晚一步就拿不到失败原因了
         const DWORD gle = LastError();
         DeleteDC(dc);
+        if (bitmap) DeleteObject(bitmap);   // 有极小可能给了位图却没给 bits，位图也得跟着清
         CaptureError(err, channel, Msg(L"cap.create_dib_section"), Win32ErrorText(gle),
+                     codes::kCaptureFailed, gle);
+        return false;
+    }
+    const HGDIOBJ saved = SelectObject(dc, bitmap);
+    if (!saved) {
+        const DWORD gle = LastError();
+        DeleteObject(bitmap);
+        DeleteDC(dc);
+        CaptureError(err, channel, Msg(L"cap.select_bitmap"), Win32ErrorText(gle),
                      codes::kCaptureFailed, gle);
         return false;
     }
     dc_ = dc;
     bitmap_ = bitmap;
     bits_ = bits;
-    saved_ = SelectObject(dc_, bitmap_);
+    saved_ = saved;
     width_ = width;
     height_ = height;
     return true;

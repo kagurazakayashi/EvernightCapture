@@ -93,46 +93,10 @@ void ResetFrame(CapturedFrame* out) {
     out->width = out->height = out->stride = 0;
 }
 
-// 把帧的 GPU 纹理复制到 CPU 可读的 staging 纹理
+// 把帧的 GPU 纹理复制到 CPU 可读的 staging 纹理，再按行搬进帧。这一段与桌面复制通道共用
+//（CaptureCommon.h 的 CopyTextureToFrame）：形状与上限在分配之前判完，Map 之后抛异常也要 Unmap。
 bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, CapturedFrame* out, Diagnostic* err) {
-    D3D11_TEXTURE2D_DESC desc{};
-    src->GetDesc(&desc);
-    if (desc.Width == 0 || desc.Height == 0) {
-        CaptureError(err, L"wgc", Msg(L"cap.wgc.frame_zero"), Msg(L"cap.wgc.frame_zero_hint"));
-        return false;
-    }
-
-    D3D11_TEXTURE2D_DESC stagingDesc = desc;
-    stagingDesc.Usage = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags = 0;
-    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-    stagingDesc.MiscFlags = 0;
-    ComPtr<ID3D11Texture2D> staging;
-    const HRESULT stagingHr = device->CreateTexture2D(&stagingDesc, nullptr, &staging);
-    if (FAILED(stagingHr)) return Fail(err, L"cap.wgc.step.staging", stagingHr);
-
-    ComPtr<ID3D11DeviceContext> context;
-    device->GetImmediateContext(&context);
-    context->CopyResource(staging.Get(), src);
-
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    const HRESULT mapHr = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(mapHr)) return Fail(err, L"cap.wgc.step.map", mapHr);
-
-    out->width = desc.Width;
-    out->height = desc.Height;
-    out->stride = mapped.RowPitch;
-    out->pixels.resize(static_cast<size_t>(mapped.RowPitch) * desc.Height);
-    const auto* source = static_cast<const uint8_t*>(mapped.pData);
-    auto* target = out->pixels.data();
-    for (uint32_t row = 0; row < desc.Height; ++row) {
-        memcpy(target + static_cast<size_t>(row) * mapped.RowPitch,
-               source + static_cast<size_t>(row) * mapped.RowPitch,
-               static_cast<size_t>(desc.Width) * 4u);
-    }
-    context->Unmap(staging.Get(), 0);
-    out->source = L"wgc";
-    return true;
+    return CopyTextureToFrame(device, src, L"wgc", out, err);
 }
 
 // 建帧池 -> 开会话 -> 取一帧 -> 拷进 CPU。窗口与屏幕只有"采集项从哪来"这一步不同。

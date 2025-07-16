@@ -231,6 +231,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 3. `code` 值稳定：`cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`，只增不改名。
    取帧失败里"帧超时"（`capture.frame_timeout`）与"窗口已经没了"（`capture.window_gone`）各有自己的码，
    不再和一般的 `capture.failed` 混在一起——两者的下一步动作不同（前者可以等一会儿重试，后者要重新枚举）。
+   帧自己的内存形状说不通（宽高为 0、单边超过 16384 像素、行距装不下一行像素、缓冲区比行距×高还短）时给
+   `capture.frame_invalid`（退出码 7）；裁剪、行重排与编码都先核这一道，坏帧不会被往下搬。
 4. 通道：默认全部写 stdout、stderr 保持空；一旦图片占用标准输出（显式 `--out -`，或根本没给输出路径），
    JSON 整体改走 stderr，两个通道永不混流。连渲染结果本身都出异常时的兜底诊断也一律走 stderr（那时
    无法确定图片是否已经占了 stdout）。**结果送不到约定那条流就是失败**：退出码变成 `8`，即使另一条流
@@ -243,7 +245,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 6. `images[].source` 与错误里的 `backend` 写的都是**真实那条通道**：`--capture auto` 回退成功时 `source`
    是链上那一条而不是 `auto`；回退链全失败时 `backend` 列出实际试过的几条。`images[].path` 比它更细：一个通道
    可能含好几条路径，授权按实际走的那条判而不按通道名判——`dwm.thumbnail` 取的是窗口自己的画面，
-   `dwm.screen`（同一通道的屏幕退路）取的是屏幕。
+   `dwm.screen`（同一通道的屏幕退路）取的是屏幕。那条退路只在缩略图这一步真的失败时才走，**不会因为
+   画面正好是单色就走** —— 纯色窗口照样是窗口的画面。
 7. **保存**：整批最终输出路径在取第一帧之前（也在任何确认框之前）一次算好。两个目标算出同一个名字时报
    `io.output_collision`（退出码 8），整批一张都不截、一个文件都不写 —— 既不替调用方改名，也不让第二张盖掉第一张。
    每张图先写目标目录下唯一的临时文件，写全并刷新之后才改名成目标名，所以写失败不会清空也不会删掉旧文件。
@@ -257,6 +260,9 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    （`capture.failed` 带 `hresult=0x80070005`），这样才分得开。确认之后目标挪了位置或变了大小给
    `capture.consent_stale`，`stage=capture`、退出码 `7`，重新选目标再截就会再问一次。
    黑帧不会被断言成 DRM——文案只列出几种可能。
+   单色帧也不会被断言成"没截到"：图照常交付，另外留一条 `note.frame_uniform`（把那个颜色、那条通道、
+   那个目标写清楚）。只有 `duplication` 还会因为单色拒绝一帧，而且必须两条一起成立——这一帧没有任何
+   present 记录，且整幅只有一个颜色。
 
 ## 退出码
 
@@ -420,7 +426,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候选）、
    `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多个目标要共用
    同一条 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等帧超时）、
-   `capture.window_gone`（7，目标已经没了，该重新枚举）、`capture.access_denied`（6，有人在确认框上答了"否"）、
+   `capture.window_gone`（7，目标已经没了，该重新枚举）、`capture.frame_invalid`（7，交回来的帧内存形状不合法）、
    `capture.consent_unavailable`（6，这个会话没有可交互的桌面，没人能同意）、
    `capture.consent_stale`（7，确认之后目标挪了位置，要重新选目标并再问一次）、
    `io.write_failed`（8，目录不存在或提交失败）、`io.file_exists`（8，配合 `--no-overwrite`）、
@@ -432,7 +438,10 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
    `2>&1` 会把 stderr 包装成错误记录，想同时拿图片和 JSON 就 `1>`/`2>` 分开重定向。
 4. **别把非 0 退出码当全盘失败**：部分成功时 `captured` 大于 0 而退出码是 7，已经落地的图照样可用；
    `images[].source` / `path` / `scope` 分别告诉你那张图出自哪条通道、走了哪条内部路径、像素是窗口自己的还是屏幕上的。
-5. **退出码 0 不等于画面是对的**：受保护内容、某些播放器驱动会在成功返回的同时给你黑帧。要判正确性就校验像素——
+5. **退出码 0 不等于画面是对的**：受保护内容、某些播放器驱动会在成功返回的同时给你黑帧。工具自己
+   会告诉你整幅是不是只有一个颜色——它把每个像素与左上角那个逐字节比过（BGRA 四个通道都算，行末
+   填充不算），确实单色就发 `note.frame_uniform`（颜色写成 `0xAARRGGBB`）而图片照常交付。单色只是
+   质量提示，不是失败：纯色窗口、单色壁纸本来就是这个样子。要判正确性还得校验像素——
    比如把一个纯色窗口盖住目标再截，看拿到的是目标内容还是遮挡物；至少比对 `width`/`height` 与目标窗口矩形。
 6. **默认会被弹框打断**：不给 `--yes` 时，任何真实截图（连只截一个窗口也算）都会阻塞到有人回答为止。目标是一个
    窗口、而且走的是窗口内容路径（`wgc` / `printwindow` / `dwm.thumbnail`）时才适合加 `--yes`；对 `bitblt`、
@@ -456,6 +465,8 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
 | `.\tests\build-path.ps1` | 构建路径判据：离线一层验临时批处理正文只能是 ASCII、VS 环境导入失败在跑 cmake 之前就报错；真机一层在含中文、空格、括号、百分号的目录里跑 Release / Debug / RelWithDebInfo 与 `-Clean`，再把 `%TEMP%` 换成中文目录构建一次（不截图；`-OfflineOnly` 只跑离线那层） |
 | `.\tests\smoke.ps1` | 真机冒烟：截自己建的测试窗口 → 校验 PNG 尺寸与像素内容 |
+| `.\tests\image.ps1` | 帧校验：离线层手工摆像素排布（竖条纹 / 棋盘 / alpha / 行末填充 / 超限与短缓冲区 / 
+  越界裁剪），真机层验单色窗口的质量提示与来路 |
 | `.\tests\save.ps1` | 真机文件保存与覆盖保护：每种 `--no-overwrite` 布尔写法对真实文件的效果、整批输出名规划与撞名检测（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小写 / 清洗 / 截断）、原子提交（目标被占用、目标名是目录、目录不存在、写到一半被硬杀）、并发禁止覆盖 |
 | `.\tests\channels.ps1` | 真机通道对比：六条通道 + 遮挡对照，目标与遮挡物都是自建的窗口。窗口内容那几条带 `--yes` 跑，一旦弹框就判失败；`bitblt` / `duplication` 取的是桌面像素，它们的画面判据要 `-SimulateConsent` 才跑，不给就如实记 SKIP（未验证） |
 | `.\tests\consent.ps1` | 截图授权分级：离线一层用注入的假应答器与假屏幕布局把 `ConsentGate` 整台状态机跑完（`build\ecapture-consent-tests.exe`，源码 `tests\consent_state.cpp`）；真机一层把所有确认框一律代答"否"，判哪些路径必须弹、拒绝之后报什么（`code` / `stage` / `target` / `value`）、有没有落地，以及 `images[].path` / `scope` / `rect` 对不对。绝不代人答"是" |

@@ -230,6 +230,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 3. `code` 值穩定：`cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`，只增不改名。
    取影格失敗裡「影格逾時」（`capture.frame_timeout`）與「視窗已經沒了」（`capture.window_gone`）各有自己的碼，
    不再和一般的 `capture.failed` 混在一起——兩者的下一步動作不同（前者可以等一會兒重試，後者要重新列舉）。
+   影格自己的記憶體形狀說不通（寬高為 0、單邊超過 16384 像素、行距裝不下一行像素、緩衝區比行距×高還短）時
+   給 `capture.frame_invalid`（退出碼 7）；裁剪、行重排與編碼都先核這一道的，壞影格不會被往下搬。
 4. 通道：預設全部寫 stdout、stderr 保持空；一旦圖片佔用標準輸出（顯式 `--out -`，或根本沒給輸出路徑），
    JSON 整體改走 stderr，兩個通道不會混流。連渲染結果本身都出異常時的兜底診斷也一律走 stderr（那時
    無法確定圖片是否已經佔了 stdout）。**結果送不到約定那條串流就是失敗**：退出碼變成 `8`，即使另一條串流
@@ -242,7 +244,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 6. `images[].source` 與錯誤裡的 `backend` 寫的都是**真實那條通道**：`--capture auto` 退回成功時 `source`
    是鏈上那一條而不是 `auto`；退回鏈全失敗時 `backend` 列出實際試過的幾條。視窗圖與螢幕圖都帶這個欄位。
    `images[].path` 比它更細：一條通道可能含好幾條路徑，授權是按實際走的那條判的，不是按通道名判——
-   `dwm.thumbnail` 取的是視窗自己的畫面，`dwm.screen`（同一條通道的螢幕退路）取的是螢幕。
+   `dwm.thumbnail` 取的是視窗自己的畫面，`dwm.screen`（同一條通道的螢幕退路）取的是螢幕。那條退路只在縮圖
+   這一步真的失敗時才走，**不會因為畫面剛好是單色就走** —— 純色視窗照樣是視窗的畫面。
 7. **儲存**：整批最終輸出路徑在取第一張影格之前（也在任何確認框之前）一次算好。兩個目標算出同一個名字時報
    `io.output_collision`（退出碼 8），整批一張都不截、一個檔案都不寫 —— 既不替呼叫端改名，也不讓第二張蓋掉第一張。
    每張圖先寫進目標目錄下唯一的暫存檔案，寫完並刷新之後才改名為目標名稱，所以寫入失敗不會清空也不會刪掉舊檔案。
@@ -256,6 +259,9 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    （`capture.failed` 帶 `hresult=0x80070005`），這樣才分得開。確認之後目標挪了位置或變了大小給
    `capture.consent_stale`，`stage=capture`、退出碼 `7`，重新選目標再截就會再問一次。後端回傳的 HRESULT / Win32
    錯誤碼會原樣帶出，不會被 `E_FAIL` 或 `E_NOINTERFACE` 頂掉真實的錯誤碼。黑影格不會被斷言成 DRM——文案只列出幾種可能。
+單色影格也不會被斷言成「沒截到」：圖照常交付，另外留一條 `note.frame_uniform`（把那個顏色、那條通道、
+那個目標寫清楚）。只有 `duplication` 還會因為單色拒絕一影格，而且必須兩條一起成立——這一個影格沒有任何
+present 記錄，且整幅只有一個顏色。
 
 ## 退出碼
 
@@ -420,7 +426,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候選）、
    `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多個目標要共用
    同一條 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等影格逾時）、
-   `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.access_denied`（6，有人在確認框上答了「否」）、
+   `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.frame_invalid`（7，交回來的影格記憶體形狀不合法）、
    `capture.consent_unavailable`（6，這個工作階段沒有可互動的桌面，沒人能夠同意）、
    `capture.consent_stale`（7，確認之後目標挪了位置，要重新選目標並再問一次）、
    `io.write_failed`（8，目錄不存在或提交失敗）、`io.file_exists`（8，搭配 `--no-overwrite`）、
@@ -432,7 +438,10 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    `2>&1` 會把 stderr 包裝成錯誤記錄，想同時拿圖片和 JSON 就用 `1>`/`2>` 分開重新導向。
 4. **別把非 0 退出碼當成全盤失敗**：部分成功時 `captured` 大於 0 而退出碼是 7，已經寫出的圖照樣可用；
    `images[].source` / `path` / `scope` 分別告訴你那張圖出自哪條通道、走了哪條內部路徑、像素是視窗自己的還是螢幕上的。
-5. **退出碼 0 不等於畫面是對的**：受保護內容、某些播放器的驅動會在成功回傳的同時給你黑影格。要判斷正確性就校驗像素——
+5. **退出碼 0 不等於畫面是對的**：受保護內容、某些播放器的驅動會在成功回傳的同時給你黑影格。工具
+   自己會告訴你整幅是不是只有一個顏色——它把每個像素與左上角那個逐位元組比過（BGRA 四個通道都算，
+   行末填充不算），確實單色就發 `note.frame_uniform`（顏色寫成 `0xAARRGGBB`）而圖片照常交付。單色
+   只是品質提示，不是失敗：純色視窗、單色桌布本來就是這個樣子。要判斷正確性還得校驗像素——
    例如把一個純色視窗蓋住目標再截，看拿到的是目標內容還是遮擋物；至少比對 `width`/`height` 與目標視窗矩形。
 6. **預設會被彈框打斷**：不給 `--yes` 時，任何真實截圖（連只截一個視窗也算）都會擋住處理程序直到有人回應。
    目標是一個視窗、而且走的是視窗內容路徑（`wgc` / `printwindow` / `dwm.thumbnail`）時才適合加 `--yes`；對
@@ -455,6 +464,8 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `.\tests\invoker.ps1` | 離線檢查共用的測試程序呼叫器：argv 引號、兩條流同時輸出、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄（不截圖） |
 | `.\tests\build-path.ps1` | 建置路徑判據：離線那層驗暫存批次檔正文只能是 ASCII、VS 環境匯入失敗要在跑 cmake 之前就報錯；真機那層在含中文、空白、括號、百分號的目錄裡跑 Release / Debug / RelWithDebInfo 與 `-Clean`，再把 `%TEMP%` 換成中文目錄建置一次（不截圖；`-OfflineOnly` 只跑離線那層） |
 | `.\tests\smoke.ps1` | 實機冒煙：截自己建立的測試視窗 → 校驗 PNG 尺寸與像素內容 |
+| `.\tests\image.ps1` | 影格校驗：離線層手工擺像素排布（直條紋 / 棋盤格 / alpha / 行末填充 / 超限與短緩衝 / 
+  越界裁剪），實機層驗單色視窗的品質提示與來路 |
 | `.\tests\save.ps1` | 實機檔案儲存與覆蓋保護：每種 `--no-overwrite` 布林寫法對真實檔案的效果、整批輸出名規劃與撞名偵測（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小寫 / 清洗 / 截斷）、原子提交（目標被佔用、目標名是目錄、目錄不存在、寫到一半被硬殺）、併發禁止覆蓋 |
 | `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗。視窗內容那幾條帶 `--yes` 跑，一旦彈框就判失敗；`bitblt` / `duplication` 取的是桌面像素，它們的畫面判據要加 `-SimulateConsent` 才跑，不加就如實記 SKIP（未驗證） |
 | `.\tests\consent.ps1` | 截圖授權分級：離線那層用注入的假應答器與假螢幕佈局把 `ConsentGate` 整台狀態機跑完（`build\ecapture-consent-tests.exe`，原始碼 `tests\consent_state.cpp`）；實機那層把所有確認框一律代答「否」，判哪些路徑必須彈、被拒之後報什麼（`code` / `stage` / `target` / `value`）、有沒有落地，以及 `images[].path` / `scope` / `rect` 對不對。絕不代人答「是」 |

@@ -129,6 +129,8 @@ note.dry_run	--dry-run: selected %1 window(s), nothing captured and no file writ
 note.output_extension_appended	The output name had no extension, so one was added for the chosen format
 note.output_extension_hint	actually written as %1
 note.capture_channel	auto: %1 was unavailable, used %2 instead
+note.frame_uniform	The whole image is a single colour: ARGB %1
+note.frame_uniform_hint	This is a quality hint, not an error. A solid-colour window or a plain wallpaper really does look like this; the frame may also have never been composed (protected content / remote desktop / basic display driver). Re-check that image with the wgc channel if it matters
 
 # ---------------------------------------------------------------------------
 # Window matching (src/WindowMatch.cpp)
@@ -171,6 +173,17 @@ cap.dib_size	Cannot allocate a bitmap for this window size
 cap.dib_size_hint	size %1; the window may be minimized or exiting
 cap.create_compat_dc	CreateCompatibleDC failed
 cap.create_dib_section	CreateDIBSection failed
+cap.select_bitmap	SelectObject failed to select the bitmap
+cap.frame_invalid	The captured frame is not a valid memory layout: %1
+cap.frame_invalid_hint	limits: %1 px per side, %2 bytes per frame, row pitch between one and two row lengths; got %3x%4, pitch %5, buffer %6 bytes
+cap.frame_format	The captured frame is not in BGRA8 format (DXGI format %1)
+cap.frame_format_hint	HDR / 10-bit display modes give no plain BGRA frame - turn HDR off in system settings
+cap.gpu.staging	Failed to create the staging texture
+cap.gpu.context	Failed to get the D3D11 device context
+cap.gpu.copy_failed	The display device was no longer usable while copying the frame to the CPU
+cap.gpu.map	Failed to map the staging texture
+cap.crop_failed	Cropping this frame to the target rectangle failed
+cap.crop_failed_hint	crop of %3x%4 at %1,%2 does not fit this frame
 cap.offscreen	The window is entirely off screen, no pixels to take
 cap.visible_only	This channel can only copy the visible part of the screen
 cap.bitblt_failed	BitBlt from the screen DC failed
@@ -194,15 +207,11 @@ cap.wgc.hint	The capture target may be protected or closed, or the system does n
 cap.wgc.step.device	create the D3D11 device
 cap.wgc.step.wrap	wrap the Direct3D device
 cap.wgc.step.item	GraphicsCaptureItem.CreateForWindow
-cap.wgc.step.staging	create the staging texture
-cap.wgc.step.map	map the staging texture
 cap.wgc.step.session	create the capture session
 cap.wgc.step.access	get the frame surface accessor
 cap.wgc.step.surface	get the frame surface
 cap.wgc.step.texture	convert the frame surface to a texture
 cap.wgc.step.apartment	initialize the WinRT apartment
-cap.wgc.frame_zero	The captured frame has size 0
-cap.wgc.frame_zero_hint	The window may be minimized or just closed
 cap.wgc.size_zero	The capture target currently has size 0 and cannot be captured
 cap.wgc.timeout	No frame received within %1 ms
 cap.wgc.timeout_hint	The window may have no content updates, or DRM/security policy refuses to let it be captured
@@ -228,16 +237,12 @@ cap.dup.hint_denied	E_ACCESSDENIED: the content is protected, or the secure desk
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL: device and output do not match, or this output is already duplicated by another process
 cap.dup.hint_timeout	No new frame before the timeout: a completely static desktop may stop presenting - make the target window redraw and try again
 cap.dup.to_texture	Failed to get the desktop frame as a texture
-cap.dup.format	The desktop frame is not in BGRA8 format
-cap.dup.format_hint	HDR / 10-bit display modes give no plain BGRA frame - turn HDR off in system settings
-cap.dup.staging	Failed to create the staging texture
-cap.dup.map	Failed to map the desktop frame
 cap.dup.device	Failed to create the D3D11 device
 cap.dup.dxgi	The device does not support DXGI
 cap.dup.duplicate	DuplicateOutput failed (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame failed (HRESULT %1)
 cap.dup.timeout	No desktop frame within %1 ms
-cap.dup.flat	The whole desktop-duplication frame is a single colour: LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3
+cap.dup.flat	The desktop-duplication frame carries no present record at all (LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3) and the whole frame is one colour
 cap.dup.flat_hint	The display driver in this session may not feed content to desktop duplication (remote desktop / basic display driver / protected content masked out); use wgc or bitblt
 cap.dup.not_in_frame	The window is not inside this monitor's desktop frame
 cap.dup.not_in_frame_hint	The window may have just moved to another monitor or closed
