@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.png" width="128" height="128" alt="EvernightCapture アイコン">
+![EvernightCapture アイコン](resources/icon.ico)
 
 # EvernightCapture
 

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.png" width="128" height="128" alt="EvernightCapture 圖示">
+![EvernightCapture 圖示](resources/icon.ico)
 
 # EvernightCapture
 
