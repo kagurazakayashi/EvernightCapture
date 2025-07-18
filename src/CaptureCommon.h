@@ -169,4 +169,13 @@ bool WindowIsOnTopAt(HWND hwnd, const RECT& rect);
 bool CopyTextureToFrame(::ID3D11Device* device, ::ID3D11Texture2D* src, const wchar_t* channel,
                         CapturedFrame* out, Diagnostic* err);
 
+// 只把纹理里 (x,y) 起 width×height 那一块拷进帧，纹理剩下的边缘一个字节都不读。
+// 用在"纹理比有效内容大"的那条路上：窗口缩小之后 WGC 交回的帧，其纹理仍是帧池当初那份较大
+// 的尺寸，而 frame.ContentSize 说的那块左上角才是有效像素 —— 整张复制等于把没定义的边缘
+// 当成画面交出去。这一条走 CopySubresourceRegion（带源矩形），形状与上限仍在分配之前判完。
+// x/width 与纹理边界对不上（相加绕回、越界、0 边、超单边上限）一律 capture.frame_invalid。
+bool CopyTextureRectToFrame(::ID3D11Device* device, ::ID3D11Texture2D* src, uint32_t x, uint32_t y,
+                            uint32_t width, uint32_t height, const wchar_t* channel,
+                            CapturedFrame* out, Diagnostic* err);
+
 }  // namespace ecapture

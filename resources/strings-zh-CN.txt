@@ -211,10 +211,16 @@ cap.wgc.step.session	创建采集会话
 cap.wgc.step.access	取帧表面访问器
 cap.wgc.step.surface	取帧表面
 cap.wgc.step.texture	帧表面转纹理
+cap.wgc.step.recreate	重建采集帧池
 cap.wgc.step.apartment	初始化 WinRT 套间
 cap.wgc.size_zero	采集目标当前尺寸为 0，无法采集
 cap.wgc.timeout	超时未收到帧（%1 ms）
 cap.wgc.timeout_hint	窗口可能没有内容更新，或受 DRM/安全策略保护而拒绝被采集
+cap.wgc.frame_invalid	这一帧的有效内容尺寸比它的纹理还大（内容 %1×%2，纹理 %3×%4），无法安全复制
+cap.wgc.frame_invalid_hint	照这组数字复制会读到纹理之外的内存，所以这一帧整张作废、不交不完整的图；请重新截图，反复出现请把这份尺寸报给工具维护者
+cap.wgc.frame_invalid_hint_generic	交回的这一帧对不上任何已知形状，已整张作废
+cap.wgc.resize_exhausted	窗口在截图期间持续变大，重建采集帧池若干次仍追不上它的尺寸
+cap.wgc.resize_exhausted_hint	请等窗口尺寸稳定后再截，或加大 --timeout-ms 给重建留出预算；本工具不会交一张比窗口小的图冒充完整
 
 cap.dwm.register_class	注册缩略图目标窗口类失败
 cap.dwm.create_host	创建缩略图目标窗口失败

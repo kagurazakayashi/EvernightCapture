@@ -211,10 +211,16 @@ cap.wgc.step.session	建立擷取工作階段
 cap.wgc.step.access	取影格表面存取子
 cap.wgc.step.surface	取影格表面
 cap.wgc.step.texture	影格表面轉紋理
+cap.wgc.step.recreate	重建擷取影格池
 cap.wgc.step.apartment	初始化 WinRT 套間
 cap.wgc.size_zero	擷取目標目前尺寸為 0，無法擷取
 cap.wgc.timeout	逾時未收到影格（%1 ms）
 cap.wgc.timeout_hint	視窗可能沒有內容更新，或受 DRM/安全策略保護而拒絕被擷取
+cap.wgc.frame_invalid	這幀的有效內容尺寸比它的紋理還大（內容 %1×%2，紋理 %3×%4），無法安全複製
+cap.wgc.frame_invalid_hint	照這組數字複製會讀到紋理之外的記憶體，所以整幀作廢、不交不完整的影格；請重新擷取，若反覆出現請把這份尺寸回報給工具維護者
+cap.wgc.frame_invalid_hint_generic	交回來的這幀對不上任何已知形狀，已整幀作廢
+cap.wgc.resize_exhausted	視窗在擷取期間持續變大，重建擷取影格池數次仍追不上它的尺寸
+cap.wgc.resize_exhausted_hint	請等視窗尺寸穩定後再擷取，或加大 --timeout-ms 給重建留下預算；本工具不會交一張比視窗小的影格冒充完整
 
 cap.dwm.register_class	註冊縮圖目標視窗類別失敗
 cap.dwm.create_host	建立縮圖目標視窗失敗

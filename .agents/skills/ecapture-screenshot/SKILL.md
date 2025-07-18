@@ -225,6 +225,13 @@ caller must do:
 be created); a frame that comes back a single colour is kept as a window-content image, so a solid-colour target
 never escalates into a desktop capture that would have to be authorized separately.
 
+`wgc` reports the window's **live** size: it reads each frame's own content rectangle rather than the size the
+capture item had when the frame pool was built. So `images[].width`/`height` match the window at the moment the
+frame was grabbed even if it was resized in between — a smaller window yields just the valid rectangle (never the
+undefined edge left in the larger surface texture), and a window that outgrew the pool is re-grabbed after the
+pool is recreated within the `--timeout-ms` budget. A frame is never delivered clipped yet reported as whole; if
+that ever happens it surfaces as `capture.frame_invalid` / `capture.frame_timeout`, not a wrong-sized success.
+
 - `printwindow` frequently returns an all-black image for hardware-accelerated content (players, games,
   GPU-composited windows); DRM-protected windows are black on most channels.
 - **Exit code 0 does not mean the pixels are right**: a black or single-colour frame can also return 0.

@@ -56,14 +56,16 @@ bool RejectShape(const FrameShapeInfo& intent, const wchar_t* channel, Diagnosti
     return true;
 }
 
-}  // namespace
-
-// ---------------------------------------------------------------------------
-// GPU 纹理 -> CPU 帧
-// ---------------------------------------------------------------------------
-
-bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_t* channel,
-                        CapturedFrame* out, Diagnostic* err) {
+// GPU 纹理上 (x,y) 起 width×height 那块矩形 -> CPU 帧。整幅复制是它的特例（fullBox=true 时
+// 走 CopyResource，形状与旧实现完全一致）。分成两条拷贝 API 是有意的：
+//   * CopyResource 要求源与目标同尺寸，只能整幅拷 —— 有效内容比纹理小的时候，它会把纹理
+//     里那块没定义的边缘一起搬进 staging，正是要避免的读法；
+//   * CopySubresourceRegion 带一个源矩形，只搬那块，且 staging 纹理按矩形本身那么大建，
+//     于是连"分配整幅再丢掉"这一步都省了。
+// fullBox 之外一律按源矩形判形状与上限，分配之前先算清楚。
+bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t x, uint32_t y,
+                           uint32_t width, uint32_t height, bool fullBox, const wchar_t* channel,
+                           CapturedFrame* out, Diagnostic* err) {
     if (!device || !src || !out) {
         CaptureError(err, channel, Msg(L"cap.no_detail"), std::wstring());
         return false;
@@ -80,16 +82,35 @@ bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_
                     Msg(L"cap.frame_format_hint"));
         return false;
     }
-    if (desc.Width == 0 || desc.Height == 0) {
-        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, desc.Width * 4u, 0ull}, channel,
-                           err);
-    }
-    if (desc.Width > kFrameMaxSide || desc.Height > kFrameMaxSide) {
-        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, desc.Width * 4u, 0ull}, channel,
-                           err);
+
+    // fullBox 那条沿用"整幅纹理就是画面"的旧语义；带源矩形那条由调用方给出它确认有效的区域。
+    uint32_t copyW = width;
+    uint32_t copyH = height;
+    if (fullBox) {
+        copyW = desc.Width;
+        copyH = desc.Height;
+        x = y = 0;
     }
 
-    D3D11_TEXTURE2D_DESC stagingDesc = desc;
+    // 相加与越界都在 64 位里判（x + width 在 32 位里绕回会伪装成"没越界"）：源矩形必须整个
+    // 落在纹理之内，否则就是拿没分配的内存当画面，读之前先拦下。
+    if (copyW == 0 || copyH == 0 ||
+        static_cast<uint64_t>(x) + copyW > desc.Width ||
+        static_cast<uint64_t>(y) + copyH > desc.Height) {
+        return RejectShape(FrameShapeInfo{copyW, copyH, copyW * 4u, 0ull}, channel, err);
+    }
+    if (copyW > kFrameMaxSide || copyH > kFrameMaxSide) {
+        return RejectShape(FrameShapeInfo{copyW, copyH, copyW * 4u, 0ull}, channel, err);
+    }
+
+    D3D11_TEXTURE2D_DESC stagingDesc{};
+    stagingDesc.Width = copyW;
+    stagingDesc.Height = copyH;
+    stagingDesc.MipLevels = 1;
+    stagingDesc.ArraySize = 1;
+    stagingDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    stagingDesc.SampleDesc.Count = 1;
+    stagingDesc.SampleDesc.Quality = 0;
     stagingDesc.Usage = D3D11_USAGE_STAGING;
     stagingDesc.BindFlags = 0;
     stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -108,8 +129,15 @@ bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_
         CaptureError(err, channel, Msg(L"cap.gpu.context"), std::wstring());
         return false;
     }
-    // CopyResource 返回 void，失败无从直接问；设备状态是唯一 **API 层面** 的问法。
-    context->CopyResource(staging.Get(), src);
+    // CopyResource / CopySubresourceRegion 都返回 void，它们自己失败只能由 GetDeviceRemovedReason
+    // 这条 **API 层面** 的问法发现（设备被移除 / 重置 / 挂住）。
+    if (fullBox) {
+        context->CopyResource(staging.Get(), src);
+    } else {
+        const D3D11_BOX box{static_cast<UINT>(x), static_cast<UINT>(y), 0u,
+                            static_cast<UINT>(x + copyW), static_cast<UINT>(y + copyH), 1u};
+        context->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, src, 0, &box);
+    }
     const HRESULT removed = device->GetDeviceRemovedReason();
     if (FAILED(removed)) {
         CaptureError(err, channel, Msg(L"cap.gpu.copy_failed"), Msgf(L"cap.hresult", HResultText(removed)),
@@ -124,27 +152,25 @@ bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_
                      codes::kCaptureFailed, 0, mapHr);
         return false;
     }
-    const uint64_t rowBytes = static_cast<uint64_t>(desc.Width) * 4ull;
+    const uint64_t rowBytes = static_cast<uint64_t>(copyW) * 4ull;
     // 行距由驱动给，先核对它装不装得下一行像素，再决定搬多少字节 —— 旧的写法是直接把
     // RowPitch 当 stride 用，RowPitch 比行长小时就是读越界。
     if (mapped.RowPitch() < rowBytes) {
-        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, mapped.RowPitch(), 0ull}, channel,
-                           err);
+        return RejectShape(FrameShapeInfo{copyW, copyH, mapped.RowPitch(), 0ull}, channel, err);
     }
     // 分配之前判完字节数：这大小是要 resize 的，判据不能用"分配失败"来发现
-    const uint64_t bytes = static_cast<uint64_t>(mapped.RowPitch()) * desc.Height;
+    const uint64_t bytes = static_cast<uint64_t>(mapped.RowPitch()) * copyH;
     if (bytes > kFrameMaxBytes) {
-        return RejectShape(FrameShapeInfo{desc.Width, desc.Height, mapped.RowPitch(), bytes},
-                           channel, err);
+        return RejectShape(FrameShapeInfo{copyW, copyH, mapped.RowPitch(), bytes}, channel, err);
     }
 
-    out->width = desc.Width;
-    out->height = desc.Height;
+    out->width = copyW;
+    out->height = copyH;
     out->stride = mapped.RowPitch();
     out->pixels.assign(static_cast<size_t>(bytes), 0);
     const auto* from = static_cast<const uint8_t*>(mapped.Data());
     auto* to = out->pixels.data();
-    for (uint32_t row = 0; row < desc.Height; ++row) {
+    for (uint32_t row = 0; row < copyH; ++row) {
         std::memcpy(to + static_cast<size_t>(row) * mapped.RowPitch(),
                     from + static_cast<size_t>(row) * mapped.RowPitch(), static_cast<size_t>(rowBytes));
     }
@@ -152,6 +178,25 @@ bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_
     // 搬完再核一次形状（这次带真实缓冲区大小），不合格就是这里自己写坏了
     return FrameShapeOk(*out, channel, stages::kCapture, err);
 }
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// GPU 纹理 -> CPU 帧
+// ---------------------------------------------------------------------------
+
+bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_t* channel,
+                        CapturedFrame* out, Diagnostic* err) {
+    return CopyTextureBoxToFrame(device, src, 0, 0, 0, 0, /*fullBox=*/true, channel, out, err);
+}
+
+bool CopyTextureRectToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t x, uint32_t y,
+                            uint32_t width, uint32_t height, const wchar_t* channel,
+                            CapturedFrame* out, Diagnostic* err) {
+    return CopyTextureBoxToFrame(device, src, x, y, width, height, /*fullBox=*/false, channel, out,
+                                 err);
+}
+
 
 
 

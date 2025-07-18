@@ -210,10 +210,16 @@ cap.wgc.step.session	キャプチャセッションの作成
 cap.wgc.step.access	フレームサーフェスのアクセッサ取得
 cap.wgc.step.surface	フレームサーフェスの取得
 cap.wgc.step.texture	フレームサーフェスのテクスチャ変換
+cap.wgc.step.recreate	取得フレームプールの再作成
 cap.wgc.step.apartment	WinRT アパートメントの初期化
 cap.wgc.size_zero	取得対象の現在のサイズが 0 のため取得できません
 cap.wgc.timeout	%1 ms 以内にフレームが届きませんでした
 cap.wgc.timeout_hint	ウィンドウに内容の更新がないか、DRM／セキュリティポリシーにより取得が拒まれています
+cap.wgc.frame_invalid	このフレームの有効内容はテクスチャより大きいため安全に複製できません（内容 %1×%2、テクスチャ %3×%4）
+cap.wgc.frame_invalid_hint	この数値で複製するとテクスチャの範囲外を読み取ります。不完全な画像を渡すのではなくフレーム全体を破棄します。再取得してください。繰り返し発生する場合はこのサイズをツールの管理者に報告してください
+cap.wgc.frame_invalid_hint_generic	返されたフレームは既知のいずれの形状にも一致せず、全体を破棄しました
+cap.wgc.resize_exhausted	取得中にウィンドウが拡大し続け、フレームプールを複数回再作成してもサイズに追いつけませんでした
+cap.wgc.resize_exhausted_hint	ウィンドウのサイズが安定してから再取得するか、--timeout-ms を大きくして再作成の余地を確保してください。本ツールはウィンドウより小さい画像を完全なものとして渡すことはしません
 
 cap.dwm.register_class	サムネイル対象ウィンドウクラスの登録に失敗しました
 cap.dwm.create_host	サムネイル対象ウィンドウの作成に失敗しました

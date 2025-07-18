@@ -168,6 +168,11 @@
 
 `file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`
 
+`width`/`height` 是**取到那一帧时**画面的实际尺寸，不是选窗口那一刻记下的尺寸。`wgc` 尤其如此：它读每帧自带的
+`ContentSize`，窗口在"选中"与"取帧"之间被缩小就只交有效那块（不会多出一圈没定义的边缘），被放大到超出采集帧池
+就在 `--timeout-ms` 预算内重建帧池再取一帧——总之绝不交一张被裁掉却按整窗宣称完整的图。追不上或形状自相矛盾时
+按 `capture.frame_timeout` / `capture.frame_invalid` 报告，而不是给一个尺寸不对的"成功"。
+
 ### 屏幕图（`--monitor` 且无窗口条件时换这一组字段）
 
 `file` `bytes` `width` `height` `format` `source`（同上）`path`（`screen.wgc` / `screen.bitblt` / `screen.duplication`，三条都是桌面）`scope`（`desktop`）`rect`（那次授权允许采样的屏幕区域，= 那块屏的矩形）`monitor`（编号）`device`（`\DISPLAY1` 之类）`primary`（布尔）`elapsedMs`

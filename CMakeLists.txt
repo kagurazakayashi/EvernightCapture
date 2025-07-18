@@ -43,6 +43,7 @@ add_executable(ecapture
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/D3dDevice.cpp
+  src/WgcGeometry.cpp
   src/CaptureWgc.cpp
   src/CaptureDwm.cpp
   src/CapturePrintWindow.cpp
@@ -198,4 +199,26 @@ target_link_libraries(ecapture-image-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-image-tests PROPERTIES OUTPUT_NAME "ecapture-image-tests")
 set_property(TARGET ecapture-image-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# WGC 动态尺寸与帧池生命周期的离线判据（由 tests\wgc.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据是"这一帧交回来的实际内容尺寸与纹理尺寸对不对得上、
+# 该复制哪块矩形、要不要重建帧池、还来不来得及重建" —— 全是纯算术，而真机上要凑出
+# ContentSize 大于 / 等于 / 小于纹理，以及"窗口恰好一直在变大把重建预算耗光"这几种形状，
+# 既不稳定也做不到阴性对照。所以把判据本体（src/WgcGeometry.cpp）单独编一个测试程序逐条注入。
+# 这里不碰 WinRT / D3D / 窗口，链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-wgc-tests
+  tests/wgc_state.cpp
+  src/WgcGeometry.cpp)
+
+target_include_directories(ecapture-wgc-tests PRIVATE src)
+target_compile_features(ecapture-wgc-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-wgc-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-wgc-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-wgc-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+set_target_properties(ecapture-wgc-tests PROPERTIES OUTPUT_NAME "ecapture-wgc-tests")
+set_property(TARGET ecapture-wgc-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

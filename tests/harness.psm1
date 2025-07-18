@@ -57,6 +57,7 @@ public static class EcHarnessWin {
   [DllImport("user32")] public static extern bool SendMessageTimeoutW(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr res);
   [DllImport("user32")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
   [DllImport("user32")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 '@
 }
@@ -728,6 +729,27 @@ function Get-EcWindowRect {
     $r = New-Object EcHarnessWin+RECT
     if (-not [EcHarnessWin]::GetWindowRect($Hwnd, [ref]$r)) { return $null }
     return [pscustomobject]@{ Left = $r.Left; Top = $r.Top; Right = $r.Right; Bottom = $r.Bottom }
+}
+
+function Set-EcWindowRect {
+    <#
+        把本次拥有的测试窗口改到新的物理像素矩形（'L,T,R,B'）：WS_POPUP 没有边框，
+        所以请求矩形就是它真正占的那块，也就是 WGC 采集项当下的尺寸。用来在真机上连续缩放
+        目标，核对交付出来的 PNG 尺寸确实跟着窗口走（不落后成旧的、也没多出一圈没定义的边缘）。
+        本进程已经 Set-EcDpiAware（per-monitor v2），这里的坐标/尺寸就是物理像素。
+    #>
+    param(
+        [Parameter(Mandatory)]$Window,
+        [Parameter(Mandatory)][string]$Rect
+    )
+    $p = $Rect.Split(',') | ForEach-Object { [int]$_ }
+    if ($p.Count -ne 4) { throw "Set-EcWindowRect 要 'L,T,R,B'：$Rect" }
+    $x = $p[0]; $y = $p[1]; $cx = $p[2] - $p[0]; $cy = $p[3] - $p[1]
+    # SWP_NOZORDER = 0x0004（不动 z 序），SWP_NOACTIVATE = 0x0010（不抢前台）
+    $ok = [EcHarnessWin]::SetWindowPos($Window.Hwnd, [IntPtr]::Zero, $x, $y, $cx, $cy, 0x14)
+    if (-not $ok) { throw "SetWindowPos 失败：hwnd=$(Get-EcHwndHex $Window.Hwnd) rect=$Rect" }
+    $Window.Rect = $p
+    return Get-EcWindowRect -Hwnd $Window.Hwnd
 }
 
 function Get-EcHwndHex {

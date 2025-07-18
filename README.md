@@ -330,6 +330,11 @@ request is not attempted — no other backend, no second ask, while every image 
 
 - Want "the window's own content", even if something is on top of it: keep the default `wgc`. Want "what the screen
   looks like right now", occluder included: use `bitblt` or `duplication`.
+- `wgc` tracks the window's live size: it reads each frame's own content size rather than only the size the capture
+  item had when the frame pool was built. If the window is resized smaller between selecting it and grabbing the
+  frame, only the valid rectangle is copied (never the undefined edge left in the larger texture); if it grows beyond
+  the frame pool, the pool is recreated and the frame re-grabbed within the `--timeout-ms` budget. A frame is never
+  delivered clipped yet reported as the whole window, and `images[].width`/`height` equal the size at that moment.
 - Whether a capture has to ask a person is decided by the route it really takes, not by the value you typed — see
   the next section.
 - A bad `--capture` value fails during parsing with `cli.unknown_capture_method` (exit code 1) and **never degrades

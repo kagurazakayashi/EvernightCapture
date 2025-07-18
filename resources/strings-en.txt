@@ -211,10 +211,16 @@ cap.wgc.step.session	create the capture session
 cap.wgc.step.access	get the frame surface accessor
 cap.wgc.step.surface	get the frame surface
 cap.wgc.step.texture	convert the frame surface to a texture
+cap.wgc.step.recreate	recreate the capture frame pool
 cap.wgc.step.apartment	initialize the WinRT apartment
 cap.wgc.size_zero	The capture target currently has size 0 and cannot be captured
 cap.wgc.timeout	No frame received within %1 ms
 cap.wgc.timeout_hint	The window may have no content updates, or DRM/security policy refuses to let it be captured
+cap.wgc.frame_invalid	This frame's valid content is larger than its texture (content %1x%2, texture %3x%4) and cannot be copied safely
+cap.wgc.frame_invalid_hint	Copying at these numbers would read past the texture, so the whole frame is dropped rather than delivering a partial image; capture again, and if it keeps happening report these sizes to the tool's maintainer
+cap.wgc.frame_invalid_hint_generic	The frame that came back matches no known shape and was dropped whole
+cap.wgc.resize_exhausted	The window kept growing during capture and the frame pool could not catch up after several recreations
+cap.wgc.resize_exhausted_hint	Wait until the window stops resizing, or raise --timeout-ms to give the pool room to be recreated; this tool never hands back an image smaller than the window and calls it complete
 
 cap.dwm.register_class	Failed to register the thumbnail target window class
 cap.dwm.create_host	Failed to create the thumbnail target window
