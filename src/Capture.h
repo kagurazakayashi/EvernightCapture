@@ -28,6 +28,15 @@ struct CapturedImage {
     // 可能含其它窗口。由 path 算出来，所以它与实际授权的那次判断同源，不会各说一套。
     std::wstring scope;
     RECT rect{};               // 授权与实际取样的那块屏幕矩形（量不出来时整个键不输出）
+    // 会读桌面像素的那几条通道（duplication、拷屏幕的 bitblt）另外报告"实际截到的那一块"：
+    // rect 是请求的目标矩形，capturedRect 是真正截到的那块，两者不同就是 clipped —— 调用方
+    // 由此能判"这张图不是完整目标"，而不是拿一张比窗口小的图当成整个窗口。
+    // reportsCrop 为假表示这条通道截的就是整个目标（窗口内容路径），没有丢区域这回事。
+    bool reportsCrop = false;
+    RECT requestedRect{};
+    RECT capturedRect{};
+    bool clipped = false;
+    uint32_t rotation = 0;     // reportsCrop 为真时有效：交付前对桌面帧顺时针转的度数
     std::wstring hwndHex;
     uint32_t pid = 0;
     std::wstring title;

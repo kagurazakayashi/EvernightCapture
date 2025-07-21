@@ -124,6 +124,58 @@ bool CropFrame(CapturedFrame* frame, uint32_t x, uint32_t y, uint32_t width, uin
     return true;
 }
 
+bool RotateCropFrame(const CapturedFrame& frame, const RECT& srcRect, uint32_t angle,
+                     CapturedFrame* out) {
+    if (!out) return false;
+    if (InspectFrameShape(frame) != FrameShape::kOk) return false;
+    if (angle != 0u && angle != 90u && angle != 180u && angle != 270u) return false;
+
+    const int64_t left = srcRect.left;
+    const int64_t top = srcRect.top;
+    const int64_t sw = static_cast<int64_t>(srcRect.right) - left;
+    const int64_t sh = static_cast<int64_t>(srcRect.bottom) - top;
+    if (left < 0 || top < 0 || sw <= 0 || sh <= 0) return false;
+    if (srcRect.right > static_cast<int64_t>(frame.width) ||
+        srcRect.bottom > static_cast<int64_t>(frame.height)) {
+        return false;
+    }
+
+    const bool swapSides = angle == 90u || angle == 270u;
+    const uint64_t outWidth = swapSides ? static_cast<uint64_t>(sh) : static_cast<uint64_t>(sw);
+    const uint64_t outHeight = swapSides ? static_cast<uint64_t>(sw) : static_cast<uint64_t>(sh);
+    if (outWidth > kFrameMaxSide || outHeight > kFrameMaxSide) return false;
+    const uint64_t rowBytes = RowBytesOf(outWidth);
+    if (rowBytes * outHeight > kFrameMaxBytes) return false;
+
+    std::vector<uint8_t> rotated(static_cast<size_t>(rowBytes * outHeight));
+    const uint8_t* srcBase = frame.pixels.data();
+    for (uint64_t y = 0; y < outHeight; ++y) {
+        uint8_t* dstRow = rotated.data() + static_cast<size_t>(y) * rowBytes;
+        for (uint64_t x = 0; x < outWidth; ++x) {
+            // 目标像素 (x,y) 来自那块矩形里的哪一个源像素。四种角度都写成"矩形内坐标"的
+            // 形式，再叠加矩形左上角 —— 越界的可能性已经被上面的 srcRect 检查挡掉了。
+            uint64_t cx = x;
+            uint64_t cy = y;
+            switch (angle) {
+                case 90u:   cx = y;  cy = static_cast<uint64_t>(sh) - 1u - x; break;
+                case 180u:  cx = static_cast<uint64_t>(sw) - 1u - x;
+                            cy = static_cast<uint64_t>(sh) - 1u - y; break;
+                case 270u:  cx = static_cast<uint64_t>(sw) - 1u - y;
+                            cy = x; break;
+                default: break;   // 0 度：不转
+            }
+            const uint8_t* src = srcBase + (static_cast<uint64_t>(top) + cy) * frame.stride +
+                                 (static_cast<uint64_t>(left) + cx) * 4ull;
+            std::memcpy(dstRow + static_cast<size_t>(x) * 4u, src, 4u);
+        }
+    }
+    out->pixels.swap(rotated);
+    out->width = static_cast<uint32_t>(outWidth);
+    out->height = static_cast<uint32_t>(outHeight);
+    out->stride = static_cast<uint32_t>(rowBytes);
+    return true;
+}
+
 bool PackTight(const CapturedFrame& frame, std::vector<uint8_t>* out) {
     if (!out) return false;
     if (InspectFrameShape(frame) != FrameShape::kOk) return false;

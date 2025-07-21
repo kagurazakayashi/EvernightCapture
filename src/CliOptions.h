@@ -159,6 +159,10 @@ inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
 // 单色本身不说明采集失败 —— 目标窗口可以本来就是一块纯色；它也可能是没合成出画面。
 // 所以这条只说事实、把两种可能都列在 hint 里，由调用方自己判断要不要再看一眼图。
 inline constexpr const wchar_t* kFrameUniform = L"note.frame_uniform";
+// 质量提示（不是错误，图片照常交付）：目标矩形没有被完整截到 —— 从整幅桌面帧里只能裁出与
+// 那块输出重叠的部分（窗口跨屏、一部分在屏幕外）。图里是可见的那一块，尺寸比目标小。
+// 只报事实与两边矩形，不断言"为什么没截全"，也不拿它升级授权。
+inline constexpr const wchar_t* kCaptureClipped = L"note.capture_clipped";
 // 后续阶段
 inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
@@ -171,6 +175,10 @@ inline constexpr const wchar_t* kConsentUnavailable = L"capture.consent_unavaila
 // 确认之后目标又挪了位置或变了大小：要取的矩形已经不在人批准的那一片里，于是不取。
 // 这不是拒绝（那是 capture.access_denied），而是一次可以重来的截图失败：重新枚举、再问一次。
 inline constexpr const wchar_t* kConsentStale = L"capture.consent_stale";
+// 显示器这一侧变了，而不是窗口挪了位置：目标屏在确认之后被拔掉 / 禁用，或者分辨率、旋转
+// 变了（桌面复制只能取当前拓扑里那块输出的画面）。与 capture.failed 分开给码：调用方的下一步
+// 是重新枚举屏幕并重新确认，而不是换一条通道再来 —— 换通道截到的会是另一块屏。退出码仍是 7。
+inline constexpr const wchar_t* kMonitorChanged = L"capture.monitor_changed";
 inline constexpr const wchar_t* kUnsupported = L"capture.unsupported";
 inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavailable";
 inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";

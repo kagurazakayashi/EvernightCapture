@@ -100,11 +100,28 @@ programmatically.
   disagree), and `rect` is the screen area that route was authorized to sample. **A `--capture dwm --yes` run
   that fell back to the screen route reports `path=dwm.screen, scope=desktop`** - read these three before
   deciding what you may forward, show, upload or delete.
+- **The screen-reading routes also report *where* in the desktop they got the pixels**: `duplication` (and the
+  `bitblt` / `dwm` screen routes) add `requestedRect` (the area this route set out to capture) and `capturedRect`
+  (the area it really captured), both in virtual-screen coordinates so they line up with `rect`; `clipped` appears
+  only when they differ, together with a `note.capture_clipped` saying how much was lost on each side, and
+  `rotation` appears only when the desktop frame had to be turned 90/180/270 degrees clockwise to match the
+  orientation that monitor displays in. **A window straddling two monitors is captured on the one output it
+  overlaps most, so the image is not the whole window - check `clipped` before treating it as one.** Window-content
+  routes (`wgc`, `printwindow`, `dwm.thumbnail`) capture the target whole, so they emit none of these keys: absence
+  means "nothing was left out", not "unknown". These are location judgements too, so `--quiet` does not hide them.
+- `--monitor` numbers are **the position within this run's monitor enumeration**, starting at 1. They are not the ids
+  Windows Settings shows, and unplugging a display or changing a resolution reshuffles them - never cache a number
+  as a screen's identity across runs. Use `images[].device` (`\\.\DISPLAY1` shape) to recognize the same monitor
+  later. Before capturing a screen target the tool re-checks that monitor by name: if it left the desktop nothing is
+  captured (`capture.monitor_changed`), and if its rectangle changed, the new rectangle is what a person is asked to
+  approve - an earlier confirmation is never reused for a resized or relocated monitor.
 - Exit codes: `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no match /
   `5` several matches / `6` protected target, or the confirmation was refused (`capture.access_denied`),
   could not be shown (`capture.consent_unavailable`) or nobody answered it within `--consent-timeout-ms`
   (`capture.consent_timeout`) / `7` capture failed, an exhausted `--timeout-ms` budget included
-  (`match.timeout` / `capture.timeout`) / `8` write failed, budget exhausted in the write/stdout stage
+  (`match.timeout` / `capture.timeout`) and the target monitor leaving the desktop or changing after the
+  confirmation (`capture.monitor_changed` - re-enumerate and re-confirm, never switch channel or screen and hope) /
+  `8` write failed, budget exhausted in the write/stdout stage
   (`io.timeout`) included / `9` internal error. `2`/`3`/`4`/`5` are normal control flow, not crashes.
 - **`--all` and `--monitor all` allow partial success**: when some targets fail, the images already
   written still appear in `images` (`captured` can be greater than 0) while the exit code stays 7.
@@ -242,6 +259,12 @@ that ever happens it surfaces as `capture.frame_invalid` / `capture.frame_timeou
   matters. Judge the pixels yourself too - cover the target with a plain-coloured window and capture again to
   see whether you got the target's content or the occluder, and at minimum check that `width` / `height` match
   the target rectangle.
+- **A delivered image can be smaller than the target without being a failure.** `duplication` takes one monitor's
+  composed output, so a window straddling two screens (or hanging off the edge) is only captured where it overlaps
+  that output; the tool reports `capturedRect` != `requestedRect`, sets `clipped` and emits `note.capture_clipped`
+  with the number of pixels lost on each side. The same reporting applies when `bitblt` clips to the virtual screen.
+  Treat `clipped` as "this is not the whole target" - do not assume a full window, and never read
+  `note.capture_clipped` (or `note.frame_uniform`) as an error or as a reason to escalate authorization.
 
 ## What to do about the common codes
 
@@ -264,6 +287,7 @@ that ever happens it surfaces as `capture.frame_invalid` / `capture.frame_timeou
 | `capture.consent_timeout` | 6 | Nobody answered the dialog within `--consent-timeout-ms` - treated as a refusal, never as consent; stop like after any "No" (and note: this wait does not consume `--timeout-ms`) |
 | `capture.consent_stale` | 7 | The target moved or resized after desktop consent was granted, so nothing was sampled. Re-select the target and let the human confirm again |
 | `capture.frame_invalid` | 7 | The frame that came back does not describe its own memory correctly (zero size, a side over 16384 px, a row pitch that cannot hold one row, a buffer shorter than pitch x height, more than 1 GiB). Detected before allocating anything; a target-side problem on that channel - re-check the size, or `--capture wgc` |
+| `capture.monitor_changed` | 7 | That monitor left this machine's desktop during the request, or its picture (resolution / rotation / position) changed after the confirmation - so nothing was sampled and **no other monitor was substituted**. Re-enumerate the monitors (`--monitor` numbers are per-run) and confirm again |
 | `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
 | `io.file_exists` | 8 | `--no-overwrite` (or `=true`) was given and the target already exists; decided by the final rename, not by a pre-check |
 | `io.output_collision` | 8 | Two targets expand to the same output name; the whole batch is refused before any frame is taken, so nothing is written - put `%i` / `%h` into `--out` |

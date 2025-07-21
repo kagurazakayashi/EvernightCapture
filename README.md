@@ -94,7 +94,7 @@ Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all 
        ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
 
 Capture target (without --monitor only the window conditions below are used)
-  --monitor, -m [<n|primary|all>] Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
+  --monitor, -m [<n|primary|all>] Monitor number, 1-based (the order of this enumeration - not guaranteed to equal the id shown in Windows display settings; use the device name in the result to track a screen); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
 
 Window match conditions (repeat one option for OR, combine different options with AND)
   --hwnd <handle>                 Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x
@@ -113,7 +113,7 @@ When several windows match (mutually exclusive)
   --all, -a                       Save one image per matched window
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
-  --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+  --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 
 Capture authorization (a real capture asks first; --yes skips window-content paths)
   --yes, -y                       Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
@@ -216,6 +216,17 @@ tell the two kinds apart by checking whether `monitor` exists. Both kinds carry 
 screen is `screen.wgc` / `screen.bitblt` / `screen.duplication` with `scope` `desktop`, while `--monitor <n>`
 together with window conditions still produces window images with `scope` `window`.
 
+The channels that read the screen and cut the target out of a whole desktop frame (`duplication`, and `bitblt` /
+`dwm`'s screen route) additionally report *where* in the desktop they actually got those pixels:
+`requestedRect` is the area this channel set out to capture, `capturedRect` is the area it really captured — both in
+virtual-screen coordinates, so they line up with `rect` and with what the confirmation dialog listed. `clipped`
+appears only when the two are not the same (a window straddling two monitors, or one hanging off the edge): the
+image is delivered as-is, it is just not the whole target, and a `note.capture_clipped` entry says how much was
+lost on each side. `rotation` appears only when the desktop frame had to be turned (90 / 180 / 270 degrees
+clockwise) to match the orientation the monitor is actually displaying in; an absent `rotation` means no turn was
+applied. Window-content channels (`wgc`, `printwindow`, `dwm.thumbnail`) capture the target whole by construction,
+so they emit none of these keys — an absent key means "nothing was left out", not "unknown".
+
 An error (`--hwnd` given a garbage value):
 
 ```json
@@ -243,14 +254,20 @@ Rules:
    where a frame came from are the one thing never dropped by `--quiet`: every image carries `path` (the internal
    route that really ran — `wgc`, `printwindow`, `dwm.thumbnail`, `dwm.screen`, `bitblt.screen`,
    `duplication.frame`, `screen.wgc`, …), `scope` (`window` or `desktop`, derived from `path`) and `rect` (the area
-   of the screen that route was authorized to sample; omitted only when it cannot be measured).
+   of the screen that route was authorized to sample; omitted only when it cannot be measured). The screen-reading
+   channels also keep `requestedRect` / `capturedRect` / `clipped` / `rotation` (see above) — those are location
+   judgements too, so `--quiet` does not hide them either.
 3. `code` values are stable: `cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
    Among frame failures, "the frame never arrived" (`capture.frame_timeout`) and "the target window is gone"
    (`capture.window_gone`) each have their own code instead of being lumped in with the generic `capture.failed` —
    the next step differs between them (wait and retry versus enumerate the windows again). A frame whose own memory
    layout does not add up (zero size, a side beyond 16384 px, a row pitch that cannot hold one row of pixels, or a
    buffer shorter than pitch × height) is refused with `capture.frame_invalid` (exit code 7); crop, row repack and
-   encoding all re-check it, so a broken frame is never read past its buffer.
+   encoding all re-check it, so a broken frame is never read past its buffer. "That monitor is no longer part of the
+   desktop / its picture changed after the confirmation" is `capture.monitor_changed` (exit code 7): the next step is
+   to enumerate the monitors again and re-confirm, not to switch channel and hope — another monitor would be a
+   picture nobody approved. `note.capture_clipped` is a quality note like `note.frame_uniform`: the image is
+   delivered and the exit code is unchanged.
 4. Streams: by default everything goes to stdout and stderr stays empty; once the image occupies stdout (explicit
    `--out -`, or no output path at all) the whole JSON moves to stderr. The two streams never mix. Even the
    last-resort diagnostic for "building the result itself threw" always goes to stderr (at that moment there is no way
@@ -348,6 +365,25 @@ request is not attempted — no other backend, no second ask, while every image 
 - Whole-screen capture only uses `wgc` / `duplication` / `bitblt`; `--monitor` with `dwm` or `printwindow` fails
   during parsing with `capture.unsupported` (exit code 1). In screen mode `auto` falls back wgc → duplication →
   bitblt.
+- `duplication` is monitor-aware in three ways, all of them reported rather than assumed:
+  - **Rotation.** The desktop frame a driver hands back is not necessarily in the orientation the monitor is
+    displaying in. The route compares what the output claims (`DesktopCoordinates`) with the texture it actually got,
+    then turns the crop 0 / 90 / 180 / 270 degrees clockwise so the delivered image is always in the same coordinate
+    space as the rectangles the confirmation dialog listed — never a double swap. What was applied shows up as
+    `images[].rotation`. A texture that matches neither shape is refused with `capture.frame_invalid` instead of being
+    cropped anyway.
+  - **Which graphics adapter.** All adapters and outputs are enumerated first and the target is located in that
+    table; the D3D11 device is then created **on the adapter that owns the output**, which is what `DuplicateOutput`
+    requires. A screen driven by a second GPU is therefore reachable, and the old "default adapter first" blind spot
+    is gone. There is no WARP fallback on this route: a software device owns no physical output, so it would hand
+    back an empty frame while still reporting the right size.
+  - **Only one output per target.** A window that straddles two monitors (or hangs off the edge) is captured where it
+    overlaps the output with the largest overlap; the rest is *not* in the image. That shows up as
+    `capturedRect` != `requestedRect`, `clipped` and `note.capture_clipped` rather than silently looking like the
+    whole window. Stitching one window across adapters is not implemented.
+- If the target monitor leaves the desktop or changes shape after the confirmation, the capture stops with
+  `capture.monitor_changed` (exit code 7) — the tool never substitutes another monitor, and the authorization stays
+  bound to the one a person looked at.
 
 ## Screenshot authorization and `--yes`
 
@@ -404,8 +440,14 @@ images follow the window rows above.
   intends to bypass it. What it does guarantee is that a caller following these rules gets asked at least once.
 
 `--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
-`--monitor all` one image per monitor. Numbers follow the `EnumDisplayMonitors` order and start at 1; out of range
-gives `match.monitor_out_of_range` (exit code 1) with every local monitor listed in `hint`. `--monitor <n>` together
+`--monitor all` one image per monitor. The number is **the position in this run's `EnumDisplayMonitors` enumeration**,
+starting at 1 — it is not the id Windows writes in Settings, and unplugging a monitor or changing a resolution can
+reshuffle it, so do not store a number to identify a screen across runs. Use `images[].device` (the
+`\\.\DISPLAY1`-shaped name) when you need to recognize the same monitor again. Out of range gives
+`match.monitor_out_of_range` (exit code 1) with every local monitor listed in `hint`. Before a screen target is
+captured, the tool re-checks that monitor by name: if it left the desktop the capture stops with
+`capture.monitor_changed`, and if its rectangle or position changed, the new rectangle is what a person is asked to
+approve — an old confirmation is never reused for a resized or relocated monitor. `--monitor <n>` together
 with window conditions means "filter windows by monitor" (a window overlapping that monitor matches, and a window
 spanning monitors matches on both), still producing window images, so the window rows of the table above apply.
 `--monitor all` is mutually exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1),
@@ -547,6 +589,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
 | `.\tests\image.ps1` | Frame checks: offline suite (135 checks) over hand-built pixel layouts (stripes, checkerboard, alpha, row padding, over-large / short buffers, out-of-range crops) plus on-device single-colour captures |
+| `.\tests\dup.ps1` | Desktop Duplication multi-monitor checks: offline layer (`build\ecapture-dup-tests.exe`, from `tests\dup_state.cpp`) injects the four rotations against the production geometry judges — pixel judgements are taken against the test's own naive "rotate the whole frame first, then crop" — plus negative coordinates, cropped/clipped rectangles, a fake two-adapter output table (target on the second adapter, no outputs, detached) and the "that monitor changed after the confirmation" cases; on-device layer checks the dialog must appear (`--yes` cannot skip a desktop route), `requestedRect` / `capturedRect` / `clipped` / `rotation` against real images, a four-corner orientation probe per monitor, and that every monitor is reachable. Displays are never re-arranged or re-oriented: rotated-panel and hot-unplug judgements are recorded as SKIP ("not verified") when the machine does not offer that situation |
 | `.\tests\smoke.ps1` | On-device smoke: capture its own test window → validate PNG size and pixel content |
 | `.\tests\save.ps1` | On-device file saving and overwrite protection: every `--no-overwrite` boolean form against a real file, batch output-name planning + collision detection (`%p` / `%n` / `%d` / `%t` / `%%` / unknown `%x` / case / cleaning / truncation), atomic commit (locked target, target is a directory, missing directory, killed mid-run), concurrent `--no-overwrite` race |
 | `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows. The window-content channels run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` sample the desktop, so their image judgements need `-SimulateConsent` and are recorded as SKIP ("not verified") without it |

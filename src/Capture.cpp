@@ -548,6 +548,26 @@ CaptureOutcome RunCapture(const Options& opt) {
         // 量一遍当下的矩形再交给判定器：确认框上写的区域与实际要取样的区域必须是同一块。
         // 目标在确认之后挪走或变大，凭证的 Covers 就会拒绝，这一次不截。
         if (!t.isScreen) t.area = WindowFullRect(reinterpret_cast<HWND>(t.window.hwnd));
+        // 屏幕目标另外要按**设备名**重新核对一次（编号只是枚举位置，热插拔之后同一个编号可能
+        // 指到另一块屏上）：那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给
+        // 判定器 —— 屏幕拓扑一变，已给出的桌面授权自动作废，人会看到重新列出的具体范围，
+        // 旧授权不会被用在新显示器上。
+        if (t.isScreen) {
+            ScreenInfo fresh{};
+            const ScreenCheck check = CompareScreen(t.screen, EnumScreens(), &fresh);
+            if (check == ScreenCheck::kGone) {
+                Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
+                             L"--monitor", t.screen.deviceName,
+                             Msg(L"cap.monitor_changed_hint"), t.Tag()};
+                d.stage = stages::kCapture;
+                outcome.errors.push_back(std::move(d));
+                continue;   // 这一张不取帧，也不替它挑另一块屏
+            }
+            if (check == ScreenCheck::kMoved) {
+                t.screen = fresh;
+                t.area = fresh.bounds;
+            }
+        }
         gate.SetTargetArea(t.Tag(), t.area);
 
         CapturedImage img;
@@ -574,6 +594,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         bool ok = false;
         bool recorded = false;   // stdout 那条纹路里结果条目已提前入列，末尾不再重复入列
         std::optional<Diagnostic> uniformNote;   // 单色质量提示：等这张图真交出去了再送
+        std::optional<Diagnostic> clippedNote;   // 区域丢失提示：同上，没交出去就不提示
         std::vector<uint8_t> encoded;
         try {
             CapturedFrame frame;
@@ -598,6 +619,29 @@ CaptureOutcome RunCapture(const Options& opt) {
                 // 调用方要靠它判断自己拿到了什么，--quiet 也不许把它藏起来。
                 img.path = frame.path.empty() ? std::wstring(paths::kUnknown) : frame.path;
                 img.scope = ScopeName(ScopeOf(img.path));
+                // 从整幅桌面帧里裁出目标的通道（duplication / 拷屏幕的 bitblt）会报告实际截到的
+                // 那块矩形：请求的矩形没被完整截到时，图照常交付但要说清楚，绝不能默认"这就是
+                // 整个窗口"。窗口内容路径不报，等于"没有丢区域"。
+                img.reportsCrop = frame.reportsCrop;
+                img.requestedRect = frame.requestedRect;
+                img.capturedRect = frame.capturedRect;
+                img.clipped = frame.clipped;
+                img.rotation = frame.rotation;
+                if (frame.reportsCrop && frame.clipped) {
+                    const RECT& want = frame.requestedRect;
+                    const RECT& got = frame.capturedRect;
+                    clippedNote = Diagnostic{
+                        codes::kCaptureClipped,
+                        Msgf(L"note.capture_clipped",
+                             static_cast<uint64_t>(want.right - want.left),
+                             static_cast<uint64_t>(want.bottom - want.top),
+                             static_cast<uint64_t>(got.right - got.left),
+                             static_cast<uint64_t>(got.bottom - got.top)),
+                        L"--capture", img.source,
+                        Msgf(L"note.capture_clipped_hint", want.left - got.left,
+                             want.top - got.top, got.right - want.right, got.bottom - want.bottom),
+                        t.Tag(), img.source, stages::kCapture};
+                }
 
                 // 质量提示，与"这次采集失败"是两件事：整帧逐像素比过之后确实只有一个颜色，
                 // 但**单色不等于没截到东西** —— 一扇纯色窗口、一块刚铺好的单色壁纸本来就是这样。
@@ -693,10 +737,12 @@ CaptureOutcome RunCapture(const Options& opt) {
         }
 
         if (recorded) {   // stdout 那条路已经入过列
+            if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
             if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
             continue;
         }
         // 到这里这一张是真交出去了（文件已提交，或字节已达标准输出），质量提示这时才有意义
+        if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
         if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
         img.bytes = encoded.size();
         img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);

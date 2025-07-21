@@ -36,6 +36,16 @@ struct CapturedFrame {
     std::wstring source;  // 产出这帧的通道名，如 "wgc"
     std::wstring path;    // 实际走的那条内部路径名（"dwm.thumbnail" / "dwm.screen" / ...）
                           // scope 由它算出来，所以图里写的来源与当初授权的是同一件事
+
+    // 以下只有"从整幅桌面帧里裁出一块"的那些通道（duplication、以及拷屏幕的 bitblt）会填：
+    // 那几条截到的可能只是目标的一部分（窗口跨屏、部分在屏幕外），调用方必须能看见这件事，
+    // 而不是拿到一张比目标小的图还以为截到了完整窗口。窗口内容路径（wgc / dwm 缩略图 /
+    // printwindow）拍的就是整个目标，reportsCrop 留 false = "没有丢区域"这层意思。
+    bool reportsCrop = false;
+    RECT requestedRect{};  // reportsCrop 为真时有效：这条通道本来要截的那一块（虚拟屏幕坐标）
+    RECT capturedRect{};   // reportsCrop 为真时有效：实际截到的那一块，同样虚拟屏幕坐标
+    bool clipped = false;  // requestedRect 是否没有被完整截到
+    uint32_t rotation = 0; // reportsCrop 为真时有效：交付前对桌面帧顺时针转的度数（0/90/180/270）
 };
 
 // 帧的内存不变量与资源上限。这两条数字都是能说明白的，不是随手挑的：

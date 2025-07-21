@@ -412,6 +412,14 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, const wchar_t* pat
     }
     dib.ToFrame(channel, out);
     out->path = path ? path : paths::kUnknown;
+    // 这一条取的是屏幕上那块矩形，超出虚拟屏幕的部分是被丢掉而不是画出来的：把"本来要截哪一块、
+    // 实际截到哪一块"一起交回，调用方才不会把一张比目标小的图当成完整目标（窗口内容路径不填这几项）。
+    out->reportsCrop = true;
+    out->requestedRect = rect;
+    out->capturedRect = clip;
+    out->clipped = clip.left != left || clip.top != top || clip.right != left + width ||
+                   clip.bottom != top + height;
+    out->rotation = 0;   // GDI 拷的就是屏幕上此刻的朝向，没有再转一次
     return true;
 }
 

@@ -73,6 +73,16 @@ bool FrameIsUniform(const CapturedFrame& frame, FrameColor* out);
 // 就地裁剪；帧形状不合格、范围越界或算出的偏移会溢出时不改动并返回 false
 bool CropFrame(CapturedFrame* frame, uint32_t x, uint32_t y, uint32_t width, uint32_t height);
 
+// 读出 srcRect（左上含、右下不含，坐标是这张帧自己的像素坐标）那一块，顺时针转 angle 度之后
+// 作为新的一帧交给 *out（*out 原来持有的内存会被换掉；失败时 *out 保持不动）。
+// angle 只接受 0 / 90 / 180 / 270，其余值不写 *out 并返回 false —— 不猜该按哪种处理。
+// 这一条与"先把整幅帧旋转到用户看到的朝向、再按桌面坐标裁剪"逐像素等价，但只搬目标那么大的一份：
+// 90/270 时 srcRect 本来就是交换过宽高的那一块，转回来正好等于交付尺寸，不会二次交换。
+// 输出行距恒等于 width*4（源帧的行距填充不参与，也不复制到结果里）。
+// 源帧形状不合法、srcRect 越界、相加绕回、结果超过单边与整帧上限都返回 false。
+bool RotateCropFrame(const CapturedFrame& frame, const RECT& srcRect, uint32_t angle,
+                     CapturedFrame* out);
+
 // 行距补齐（stride > width*4）重排成紧凑行，编码接口只接受紧凑行。
 // 形状不合格时不写 *out 并返回 false。
 bool PackTight(const CapturedFrame& frame, std::vector<uint8_t>* out);

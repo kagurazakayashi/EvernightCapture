@@ -84,7 +84,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
       ECAPTURE.EXE --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
 
 截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
-  --monitor, -m [<n|primary|all>] 截圖目標螢幕的編號，從 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+  --monitor, -m [<n|primary|all>] 截圖目標螢幕的編號，從 1 開始（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 
 視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
   --hwnd <handle>                 視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x
@@ -103,7 +103,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --all, -a                       每個匹配視窗各存一張
 
 取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
-  --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+  --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
 
 截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
   --yes, -y                       跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
@@ -201,6 +201,15 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 兩種圖都帶 `path` / `scope` / `rect`：整張螢幕那種是 `screen.wgc` / `screen.bitblt` / `screen.duplication`，
 `scope` 是 `desktop`；而 `--monitor` 配視窗條件出的仍是視窗圖，`scope` 是 `window`。
 
+會讀螢幕、並且把目標從整幅桌面影格裡裁出來的通道（`duplication`，以及 `bitblt` / `dwm` 的螢幕路徑）還會回報
+那些像素實際上是從桌面哪裡拿到的：`requestedRect` 是這條通道原本打算截取的區域、`capturedRect` 是它實際截取到的
+區域——兩者都是虛擬螢幕座標，所以與 `rect` 以及確認框上列出的內容對得起來。`clipped` 只在兩者不一致時
+（視窗跨了兩張螢幕、或懸在邊緣之外）才出現：圖片照常交付，只是它不是整個目標，`note.capture_clipped` 那一條
+會說明每一邊少了多少。`rotation` 只在桌面影格必須轉一下（順時針 90 / 180 / 270 度）才配合顯示器實際顯示的
+方位時才出現；沒有 `rotation` 就表示沒有做過旋轉。只取視窗自己畫面的通道（`wgc`、`printwindow`、
+`dwm.thumbnail`）天生就是完整地截目標，所以這幾個鍵一個都不會出現——鍵不存在的意思是「沒有少到任何東西」，
+不是「不知道」。
+
 出錯（`--hwnd` 寫了非法值）：
 
 ```json
@@ -226,12 +235,17 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 2. 診斷項裡為空的欄位整個鍵省略，不會輸出 `null` 佔位。描述這一影格來路的三個欄位是唯一的例外，`--quiet`
    也抑制不掉：每張圖都帶 `path`（實際走的那條內部路徑——`wgc`、`printwindow`、`dwm.thumbnail`、
    `dwm.screen`、`bitblt.screen`、`duplication.frame`、`screen.wgc` 等）、`scope`（由 `path` 判出的
-   `window` 或 `desktop`）與 `rect`（那條路徑被授權取樣的螢幕區域；量得不出來時才省略）。
+   `window` 或 `desktop`）與 `rect`（那條路徑被授權取樣的螢幕區域；量得不出來時才省略）。會讀螢幕的通道也保留
+   `requestedRect` / `capturedRect` / `clipped` / `rotation`（見上文）——那些同樣是定位判據，所以 `--quiet`
+   也不會把它們藏起來。
 3. `code` 值穩定：`cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`，只增不改名。
    取影格失敗裡「影格逾時」（`capture.frame_timeout`）與「視窗已經沒了」（`capture.window_gone`）各有自己的碼，
    不再和一般的 `capture.failed` 混在一起——兩者的下一步動作不同（前者可以等一會兒重試，後者要重新列舉）。
    影格自己的記憶體形狀說不通（寬高為 0、單邊超過 16384 像素、行距裝不下一行像素、緩衝區比行距×高還短）時
    給 `capture.frame_invalid`（退出碼 7）；裁剪、行重排與編碼都先核這一道的，壞影格不會被往下搬。
+   「那張螢幕已經不在桌面上／它的畫面在確認之後變了」就是 `capture.monitor_changed`（退出碼 7）：下一步是重新
+   列舉螢幕並重新確認，不是換一條通道碰碰運氣——換一張螢幕等於交出一張沒人批准過的圖。`note.capture_clipped`
+   是一條品質提示，和 `note.frame_uniform` 一樣：圖片照常交付，退出碼不變。
 4. 通道：預設全部寫 stdout、stderr 保持空；一旦圖片佔用標準輸出（顯式 `--out -`，或根本沒給輸出路徑），
    JSON 整體改走 stderr，兩個通道不會混流。連渲染結果本身都出異常時的兜底診斷也一律走 stderr（那時
    無法確定圖片是否已經佔了 stdout）。**結果送不到約定那條串流就是失敗**：退出碼變成 `8`，即使另一條串流
@@ -302,6 +316,20 @@ present 記錄，且整幅只有一個顏色。
 - DRM / 受保護內容一律是黑畫面；驅動造成的黑框（部分播放器）有的通道能過、有的不能，不保證。
 - 整張螢幕截圖只走 `wgc` / `duplication` / `bitblt`；`--monitor` 配 `dwm` 或 `printwindow` 在解析期報
   `capture.unsupported`（退出碼 1）。`auto` 在螢幕模式下按 wgc → duplication → bitblt 退回。
+- `duplication` 在螢幕這塊上是三重感知的，而且全部照實回報而不是假設：
+  - **旋轉。**驅動交回來的桌面影格不一定處於該顯示器實際顯示的方位。這條路徑會比對該輸出自己宣稱的矩形
+    （`DesktopCoordinates`）與實際拿到的紋理，再把裁剪順時針轉 0 / 90 / 180 / 270 度，所以交付的圖片永遠和
+    確認框列出的那些矩形在同一個座標空間——絕不會轉兩次。實際做了多少旋轉會顯示在 `images[].rotation` 裡。
+    跟兩種形狀都對不上的紋理會被以 `capture.frame_invalid` 拒絕，而不是照裁不誤。
+  - **哪張顯示卡。**先列舉全部配接器與輸出、在那張表裡定位目標，然後**在擁有該輸出的那個配接器上**建立
+    D3D11 裝置——這是 `DuplicateOutput` 的要求。由第二張 GPU 驅動的螢幕因此也截得到，舊實作「預設配接器優先」
+    的盲點沒有了。這條路徑沒有 WARP 退路：軟體裝置不擁有任何實體輸出，那樣做只會交回一張內容為空的影格、
+    尺寸卻報得對。
+  - **一個目標只取一塊輸出。**跨了兩張螢幕（或懸出邊緣）的視窗，只在與它重疊最多的那塊輸出上、於重疊處截取；
+    剩下的部分*不會*在圖裡。這會表現為 `capturedRect` != `requestedRect`、`clipped` 與 `note.capture_clipped`，
+    而不會靜默地看起來像整個視窗。把一個視窗跨配接器拼成一張圖這件事沒有實作。
+- 目標螢幕在確認之後離開了桌面或變了形狀，截圖以 `capture.monitor_changed`（退出碼 7）停止——工具絕不會拿
+  另一張螢幕頂替，授權也始終綁在那個人親眼看過的那張上。
 
 ## 截圖授權與 --yes
 
@@ -346,7 +374,12 @@ present 記錄，且整幅只有一個顏色。
   也擋不住同一個權限等級裡存心要繞過的處理程序。它能保證的是：照這套規矩跑的呼叫端，一定會被問上這一次。
 
 `--monitor`（省略取值）與 `--monitor primary` 是主螢幕，`--monitor 2` 是第 2 張螢幕，`--monitor all` 每張螢幕一張。
-編號按 `EnumDisplayMonitors` 的順序、從 1 起；越界報 `match.monitor_out_of_range`（退出碼 1），`hint` 裡列出本機全部螢幕。
+編號是**本次執行 `EnumDisplayMonitors` 列舉中的位置**，從 1 起——它不是「顯示設定」裡 Windows 寫的那個識別號，
+而且拔掉一張螢幕或改一次解析度都可能把它重新排過，所以不要把編號存下來當作跨執行的螢幕識別。要再次認出同一張
+螢幕時，用 `images[].device`（`\\.\DISPLAY1` 那種形狀的裝置名）。越界報 `match.monitor_out_of_range`（退出碼 1），
+`hint` 裡列出本機全部螢幕。螢幕目標在截圖之前，工具會按名稱重新核對那張螢幕：它如果已經離開桌面，截圖以
+`capture.monitor_changed` 停止；它的矩形或位置如果變了，要人批准的是那個新矩形——一份舊確認絕不會被拿去用在
+一張變過大小或搬過位置的螢幕上。
 `--monitor <n>` 與視窗條件同時給出＝按螢幕過濾視窗（視窗矩形與該螢幕有重疊即命中，跨螢幕視窗在兩張螢幕上都算），
 出的仍是視窗圖，所以按上面視窗那兩行的規矩授權。`--monitor all` 與任何視窗**匹配**條件互斥
 （報 `cli.monitor_conflict`，退出碼 1），但 `--all` / `--index` 這類消歧選項不算匹配條件，可以和它搭配。
@@ -470,6 +503,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `.\tests\smoke.ps1` | 實機冒煙：截自己建立的測試視窗 → 校驗 PNG 尺寸與像素內容 |
 | `.\tests\image.ps1` | 影格校驗：離線層手工擺像素排布（直條紋 / 棋盤格 / alpha / 行末填充 / 超限與短緩衝 / 
   越界裁剪），實機層驗單色視窗的品質提示與來路 |
+| `.\tests\dup.ps1` | Desktop Duplication 多螢幕判據：離線那層（`build\ecapture-dup-tests.exe`，原始碼 `tests\dup_state.cpp`）把四種旋轉注入正式碼的幾何判據——像素判據拿測試自己那份樸素的「先把整幅影格轉好、再裁剪」來對照——另加負座標、裁出的／被截斷的矩形、一份假的雙配接器輸出表（目標在第二張配接器上、沒有任何輸出、目標已拔除），以及「那張螢幕在確認之後變了」那些案例；實機那層判確認框必須彈出（`--yes` 跳不過桌面路徑）、`requestedRect` / `capturedRect` / `clipped` / `rotation` 對真實圖片的正確性、每張螢幕做一個四角方位探針，以及每張螢幕都截得到。測試絕不重新排列或重新旋轉顯示器：機台給不出那種場景時，旋轉面板與熱拔除的判據一律記 SKIP（未驗證） |
 | `.\tests\save.ps1` | 實機檔案儲存與覆蓋保護：每種 `--no-overwrite` 布林寫法對真實檔案的效果、整批輸出名規劃與撞名偵測（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小寫 / 清洗 / 截斷）、原子提交（目標被佔用、目標名是目錄、目錄不存在、寫到一半被硬殺）、併發禁止覆蓋 |
 | `.\tests\channels.ps1` | 實機通道對比：六條通道 + 遮擋對照，目標與遮擋物都是自建的視窗。視窗內容那幾條帶 `--yes` 跑，一旦彈框就判失敗；`bitblt` / `duplication` 取的是桌面像素，它們的畫面判據要加 `-SimulateConsent` 才跑，不加就如實記 SKIP（未驗證） |
 | `.\tests\consent.ps1` | 截圖授權分級：離線那層用注入的假應答器與假螢幕佈局把 `ConsentGate` 整台狀態機跑完（`build\ecapture-consent-tests.exe`，原始碼 `tests\consent_state.cpp`）；實機那層把所有確認框一律代答「否」，判哪些路徑必須彈、被拒之後報什麼（`code` / `stage` / `target` / `value`）、有沒有落地，以及 `images[].path` / `scope` / `rect` 對不對。絕不代人答「是」 |

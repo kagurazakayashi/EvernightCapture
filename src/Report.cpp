@@ -67,6 +67,16 @@ void DiagnosticArray(Json& j, const std::vector<Diagnostic>& items) {
     j.End();
 }
 
+// 一个屏幕矩形：负坐标照写（副屏可以在主屏左边/上边），零宽高整个键省略由调用方判。
+void WriteRect(Json& j, const wchar_t* key, const RECT& r) {
+    j.Key(key).Obj()
+        .Key(L"x").Value(static_cast<long long>(r.left))
+        .Key(L"y").Value(static_cast<long long>(r.top))
+        .Key(L"width").Value(static_cast<long long>(r.right - r.left))
+        .Key(L"height").Value(static_cast<long long>(r.bottom - r.top))
+        .End();
+}
+
 // ---------------------------------------------------------------------------
 // images：每条 = 一次成功捕获。空字段省略。
 // ---------------------------------------------------------------------------
@@ -85,12 +95,17 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         OptString(j, L"path", img.path);
         OptString(j, L"scope", img.scope);
         if (img.rect.right > img.rect.left && img.rect.bottom > img.rect.top) {
-            j.Key(L"rect").Obj()
-                .Key(L"x").Value(static_cast<long long>(img.rect.left))
-                .Key(L"y").Value(static_cast<long long>(img.rect.top))
-                .Key(L"width").Value(static_cast<long long>(img.rect.right - img.rect.left))
-                .Key(L"height").Value(static_cast<long long>(img.rect.bottom - img.rect.top))
-                .End();
+            WriteRect(j, L"rect", img.rect);
+        }
+        // 从整幅桌面帧里裁出目标的通道（duplication、拷屏幕的 bitblt）另外报告定位过程：
+        // requestedRect 是本来要截的那一块、capturedRect 是实际截到的那一块、clipped 是两者
+        // 不等价、rotation 是交付前把桌面帧顺时针转了多少度。窗口内容路径不写这几个键 ——
+        // 它们截的就是整个目标，没有"丢区域"这回事，写一堆 false/0 反而让调用方以为有第二套判断。
+        if (img.reportsCrop) {
+            WriteRect(j, L"requestedRect", img.requestedRect);
+            WriteRect(j, L"capturedRect", img.capturedRect);
+            if (img.clipped) j.Key(L"clipped").Value(true);
+            if (img.rotation != 0) j.Key(L"rotation").Value(static_cast<long long>(img.rotation));
         }
         if (img.screen) {
             // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现

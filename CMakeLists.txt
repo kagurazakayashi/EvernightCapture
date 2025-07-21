@@ -44,6 +44,7 @@ add_executable(ecapture
   src/ImageOps.cpp
   src/D3dDevice.cpp
   src/WgcGeometry.cpp
+  src/DupGeometry.cpp
   src/CaptureWgc.cpp
   src/CaptureDwm.cpp
   src/CapturePrintWindow.cpp
@@ -221,4 +222,40 @@ target_compile_options(ecapture-wgc-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__
 target_compile_definitions(ecapture-wgc-tests PRIVATE UNICODE _UNICODE NOMINMAX)
 set_target_properties(ecapture-wgc-tests PROPERTIES OUTPUT_NAME "ecapture-wgc-tests")
 set_property(TARGET ecapture-wgc-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# Desktop Duplication 的旋转、裁剪与适配器定位的离线判据（由 tests\dup.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这三件事在真机上要么造不出稳定现场（把用户的显示方向改掉、
+# 拔显示器、必须两块显卡），要么根本没有阴性对照（旋转过的屏幕上"尺寸对但画面横躺"的图
+# 看起来就是一次成功）。判据本体是纯算术：
+#   * src/DupGeometry.cpp —— 桌面坐标 -> 纹理坐标 -> 交付图像坐标的换算、旋转与尺寸的对照、
+#     adapter/output 的定位（假枚举器逐条注入）。
+#   * src/ImageOps.cpp 的 RotateCropFrame —— 四角不同颜色的合成帧逐点核对。
+#   * src/ScreenMatch.cpp 的 CompareScreen —— 负坐标、跨屏、部分离屏、编号变化、尺寸变化、热拔出。
+# 这里不碰 DXGI / D3D / 窗口，链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-dup-tests
+  tests/dup_state.cpp
+  src/DupGeometry.cpp
+  src/ImageOps.cpp
+  src/CaptureCommon.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/ScreenMatch.cpp
+  src/WindowMatch.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-dup-tests PRIVATE resources src)
+target_compile_features(ecapture-dup-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-dup-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-dup-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-dup-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-dup-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-dup-tests PROPERTIES OUTPUT_NAME "ecapture-dup-tests")
+set_property(TARGET ecapture-dup-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

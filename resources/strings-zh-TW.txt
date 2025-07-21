@@ -53,8 +53,8 @@ opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
 opt.newest	取最後建立的視窗
 opt.oldest	取最早建立的視窗
 opt.all	每個匹配視窗各存一張
-opt.monitor	截圖目標螢幕的編號，從 1 開始（按顯示設定裡的順序）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
-opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+opt.monitor	截圖目標螢幕的編號，從 1 開始（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
 opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 opt.timeout-ms	自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
 opt.consent-timeout-ms	確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
@@ -235,23 +235,39 @@ cap.dwm.not_composed_hint	螢幕上另有更高層的置頂視窗；改用 wgc �
 cap.pw.failed	PrintWindow 失敗
 cap.pw.failed_hint	該視窗可能不接受 WM_PRINT（DirectComposition / 遊戲視窗），或已關閉。%1
 
-cap.dup.adapter	取顯示卡配接器失敗
+cap.dup.factory	建立 DXGI 工廠失敗（HRESULT %1）
+cap.dup.no_outputs	這台機器上沒有可列舉的顯示輸出
+cap.dup.no_outputs_hint	列舉全部顯示卡配接器之後一個輸出都沒拿到（遠端工作階段 / 基本顯示驅動程式）。本機列舉結果：%1
 cap.dup.no_output	視窗不在任何顯示器範圍內
-cap.dup.no_output_hint	該通道取的是顯示器合成分，視窗必須至少有一部分在螢幕上
+cap.dup.no_output_hint	該通道取的是某一塊顯示器的合成分，視窗必須至少有一部分在螢幕上。本機列舉結果：%1
+cap.dup.no_output_for_screen	螢幕 %1 找不到對應的 DXGI 輸出
 cap.dup.hint_unsupported	DXGI_ERROR_UNSUPPORTED：遠端桌面 / 部分虛擬機器與基本顯示驅動程式不支援桌面複製
 cap.dup.hint_denied	E_ACCESSDENIED：內容受保護，或目前處於安全桌面（UAC）
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：裝置與輸出不匹配，或該輸出已被別的處理程序複製
 cap.dup.hint_timeout	逾時都沒有新影格：桌面完全靜止時可能不發影格，讓目標視窗動一下再試
+cap.dup.hint_lost	該輸出已從桌面消失或複製通道已失效（顯示器被拔除 / 驅動程式重設 / 複製被別的處理程序搶佔）。本工具不會靜默換到別的螢幕：請重新列舉螢幕與 --monitor 編號後再來一次
 cap.dup.to_texture	桌面影格轉紋理失敗
-cap.dup.device	建立 D3D11 裝置失敗
-cap.dup.dxgi	裝置不支援 DXGI
+cap.dup.adapter_device	在第 %1 塊顯示卡配接器上建立 D3D11 裝置失敗（HRESULT %2）
+cap.dup.adapter_device_hint	目標螢幕 %1 掛在這塊配接器上，DuplicateOutput 要求裝置與它同源，所以不會改用軟體裝置（WARP 不擁有實體輸出，拿到的只會是一張空影格）
+cap.dup.output_lost	剛定位到的輸出（配接器 %1 / 輸出 %2）在取影格前已經不在了
+cap.dup.output_lost_hint	顯示器正在被拔除或拓撲正在改變：重新列舉之後再截，本工具不會改用別的螢幕
 cap.dup.duplicate	DuplicateOutput 失敗 (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame 失敗 (HRESULT %1)
 cap.dup.timeout	逾時未取到桌面影格（%1 ms）
 cap.dup.flat	桌面複製這一個影格沒有任何 present 記錄（LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3），且整幅只有一個顏色
 cap.dup.flat_hint	該工作階段的顯示卡驅動程式可能不向桌面複製輸出內容（遠端桌面 / 基本顯示驅動程式 / 受保護內容被屏蔽），改用 wgc 或 bitblt
-cap.dup.not_in_frame	視窗不在這塊顯示器的桌面影格內
-cap.dup.not_in_frame_hint	視窗可能剛被移到別的顯示器或已關閉
+cap.dup.not_in_frame	要取的畫面不在這塊顯示器的桌面影格內
+cap.dup.not_in_frame_hint	目標可能剛被移到別的顯示器，或視窗已經關閉
+cap.dup.frame_shape	這一個影格的尺寸與該顯示器宣稱的桌面尺寸對不上（原因碼 %1）
+cap.dup.frame_shape_hint	桌面矩形 %1x%2，交回的紋理 %3x%4，驅動報回的旋轉值 %5（1=0度 2=90度 3=180度 4=270度）。尺寸既不是同向也不像交換過寬高的那一份，不能拿它去裁剪
+cap.dup.crop_outside	依旋轉算出的讀取矩形落在這張桌面影格之外（原因碼 %1）
+cap.dup.crop_outside_hint	要讀 %1,%2 到 %3,%4，而這張影格是 %5x%6；顯示器的旋轉狀態可能剛變
+cap.dup.screen_changed	這塊螢幕的畫面在確認之後變了，交不出與它等大的整張螢幕圖
+cap.dup.screen_changed_hint	請求 %1x%2，實際只能取到 %3x%4，而該輸出現在是 %5x%6。解析度、旋轉或螢幕位置在確認之後被改過：重新選螢幕並再確認一次，本工具不會改用別的螢幕
+cap.monitor_changed	那塊螢幕在本次請求中已經不在這台機器的桌面裡
+cap.monitor_changed_hint	顯示器被拔除或停用了。請重新列舉（--monitor 的編號是本次列舉的順序）後再來一次
+note.capture_clipped	目標沒有被完整截到：要截 %1x%2，只截到 %3x%4
+note.capture_clipped_hint	丟掉的部分：左 %1 上 %2 右 %3 下 %4 像素。這條通道取的是某一塊顯示器的合成分，跨螢幕或部分在螢幕外的目標只能截到與該螢幕重疊的那一片
 
 # ---------------------------------------------------------------------------
 # 編碼（src/Encoder.cpp）
@@ -279,8 +295,7 @@ cap.unsupported_for_screen	%1 通道擷取的是視窗自己的畫面，整張�
 cap.unsupported_for_screen_hint	整張螢幕請用 wgc / duplication / bitblt，或 auto
 cap.screen_rect_broken	這張螢幕的矩形為空，取不到像素
 cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
-cap.dup.no_adapter_outputs	顯示卡上沒有可列舉的顯示輸出
-cap.dup.no_output_for_screen_hint	這張螢幕找不到對應的 DXGI 輸出（遠端工作階段與虛擬顯示卡上常見），改用 wgc 或 bitblt
+cap.dup.no_output_for_screen_hint	這張螢幕找不到對應的 DXGI 輸出（遠端工作階段與虛擬顯示卡上常見，也可能是那塊螢幕由另一塊配接器驅動而本次列舉碰不到它），改用 wgc 或 bitblt
 note.dry_run_monitor	--dry-run：已選出 %1 張螢幕，未截圖也未寫檔案
 
 # ---------------------------------------------------------------------------

@@ -52,8 +52,8 @@ opt.index	n 番目のウィンドウを選ぶ。1 始まり、表示可否と Z 
 opt.newest	最後に作成されたウィンドウを選ぶ
 opt.oldest	最初に作成されたウィンドウを選ぶ
 opt.all	一致した各ウィンドウから 1 枚ずつ保存
-opt.monitor	対象モニタの番号 1 始まり（ディスプレイ設定の順序）；primary = 主モニタ、all = モニタごとに 1 枚。ウィンドウ条件なしでは画面全体を、指定するとそのモニタに重なるウィンドウだけを撮ります。値は省略可（= primary）で後続引数を飲み込まないため --monitor out.png はそのまま出力先です。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できません。モニタによるウィンドウ絞り込みは従来どおりウィンドウ画像です
-opt.capture	wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
+opt.monitor	対象モニタの番号 1 始まり（今回の列挙順で、ディスプレイ設定に表示される ID とは限りません。モニタを特定するには結果の device を見てください）；primary = 主モニタ、all = モニタごとに 1 枚。ウィンドウ条件なしでは画面全体を、指定するとそのモニタに重なるウィンドウだけを撮ります。値は省略可（= primary）で後続引数を飲み込まないため --monitor out.png はそのまま出力先です。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できません。モニタによるウィンドウ絞り込みは従来どおりウィンドウ画像です
+opt.capture	wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し。モニタの回転に合わせて向きを補正し、対象と最も重なる 1 台の出力だけを取ります。切り足りないときは capturedRect/clipped が付きます) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
 opt.yes	ウィンドウ自身の画像だけを使う経路の確認を省略します。有効な画像を保証せず、権限・保護コンテンツ・エラー・上書き保護にも影響しません。画面からサンプルする経路（bitblt、duplication、画面全体のあらゆる経路、dwm の画面フォールバック）は必ずダイアログを出します。--yes=false は明示的に確認を
 opt.timeout-ms	自動処理区間の総予算（ミリ秒）。対象の選択に成功した時点から、条件評価・バックエンド再試行・フレーム取得・エンコード・ファイル書き込みが同じ残り時間を共有し、どの段階も予算を新しく受け取り直すことはありません。指定なしまたは 0 = 総予算なし。その場合も隔離実行は組み込み上限（5000 ミリ秒）で抑えます。承諾ダイアログを待つ時間はここには含めません（--consent-timeout-ms を参照）。予算を使い切った時点でその画像は書き出されず、段階に応じ match.timeout / capture.timeout / io.timeout を返します
 opt.consent-timeout-ms	承諾ダイアログが応答を待つ最長時間（ミリ秒）。指定なしまたは 0 = 応答があるまで待ち続けます。期限切れは「拒否」として扱い、「既定で同意」には決してしません（capture.consent_timeout）。この待機は別計算で、--timeout-ms の予算を消費しません。はい を押した後のおよそ 1 秒の閉じるアニメーション待ちもこの段階に含め、期限に間に合わせるために省略することはありません
@@ -234,23 +234,39 @@ cap.dwm.not_composed_hint	画面により上位の最前面ウィンドウがあ
 cap.pw.failed	PrintWindow に失敗しました
 cap.pw.failed_hint	このウィンドウは WM_PRINT を受け付けないか（DirectComposition／ゲームウィンドウ）、既に閉じられています。%1
 
-cap.dup.adapter	ディスプレイアダプタの取得に失敗しました
+cap.dup.factory	DXGI ファクトリの作成に失敗しました（HRESULT %1）
+cap.dup.no_outputs	このマシンには列挙できるディスプレイ出力がありません
+cap.dup.no_outputs_hint	すべての GPU アダプタを走査しても出力が 1 つも取れません（リモートセッション／基本ディスプレイドライバ）。このマシンの列挙結果：%1
 cap.dup.no_output	ウィンドウがどのモニタの範囲にもありません
-cap.dup.no_output_hint	このチャネルはモニタの合成出力を取得するため、ウィンドウの一部が画面にある必要があります
+cap.dup.no_output_hint	このチャネルは 1 台のモニタの合成出力を取得するため、ウィンドウの一部が画面にある必要があります。このマシンの列挙結果：%1
+cap.dup.no_output_for_screen	モニタ %1 に対応する DXGI 出力がありません
 cap.dup.hint_unsupported	DXGI_ERROR_UNSUPPORTED：リモートデスクトップ／一部の仮想マシンと基本ディスプレイドライバはデスクトップ複製に対応していません
 cap.dup.hint_denied	E_ACCESSDENIED：コンテンツが保護されているか、セキュリティデスクトップ（UAC）に切り替わっています
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL：デバイスと出力の組み合わせが不正か、この出力は他のプロセスが複製済みです
 cap.dup.hint_timeout	タイムアウトまで新しいフレームがありません：デスクトップが完全に静止しているとフレームが送信されないため、対象ウィンドウを動かして再試行してください
+cap.dup.hint_lost	この出力はデスクトップから外れるか複製チャネルが無効になりました（モニタの切断／ドライバのリセット／他のプロセスによる複製の奪取）。このツールは別のモニタにこっそり切り替えることはありません：モニタと --monitor の番号を読み直してから再実行してください
 cap.dup.to_texture	デスクトップフレームをテクスチャへ変換できませんでした
-cap.dup.device	D3D11 デバイスの作成に失敗しました
-cap.dup.dxgi	デバイスが DXGI に対応していません
+cap.dup.adapter_device	%1 番目の GPU アダプタで D3D11 デバイスを作成できませんでした（HRESULT %2）
+cap.dup.adapter_device_hint	対象モニタ %1 はそのアダプタに接続されており、DuplicateOutput は同じアダプタのデバイスを要求するため、ソフトウェアデバイスには置き換えません（WARP は物理出力を持たず、空のフレームしか返りません）
+cap.dup.output_lost	たった今特定した出力（アダプタ %1 / 出力 %2）がフレーム取得の前になくなりました
+cap.dup.output_lost_hint	モニタが抜かれつつあるかトポロジーが変中です：読み直してから再試行してください。他のモニタに置き換えることはしません
 cap.dup.duplicate	DuplicateOutput に失敗しました (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame に失敗しました (HRESULT %1)
 cap.dup.timeout	%1 ms 以内にデスクトップフレームを取得できませんでした
 cap.dup.flat	デスクトップ複製フレームに present の記録が全くなく（LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3）、全体が単一色です
 cap.dup.flat_hint	このセッションのディスプレイドライバはデスクトップ複製へ内容を出力しないことがあります（リモートデスクトップ／基本ディスプレイドライバ／保護コンテンツがマスク）。wgc または bitblt にしてください
-cap.dup.not_in_frame	ウィンドウがこのモニタのデスクトップフレーム内にありません
-cap.dup.not_in_frame_hint	ウィンドウが他のモニタへ移動したか閉じられた可能性があります
+cap.dup.not_in_frame	取得したい画像はこのモニタのデスクトップフレーム内にありません
+cap.dup.not_in_frame_hint	対象が他のモニタへ移動したか閉じられた可能性があります
+cap.dup.frame_shape	このフレームのサイズがそのモニタの主張するデスクトップサイズと一致しません（理由コード %1）
+cap.dup.frame_shape_hint	デスクトップ矩形 %1x%2、返されたテクスチャ %3x%4、ドライバが報告した回転値 %5（1=0度 2=90度 3=180度 4=270度）。同じ向きにも幅高を入れ替えた形にも対応しないため、切り出しに使えません
+cap.dup.crop_outside	回転から計算した読み取り矩形がデスクトップフレームの外に出ています（理由コード %1）
+cap.dup.crop_outside_hint	%1,%2 から %3,%4 まで読もうとしましたが、このフレームは %5x%6 です。モニタの回転がたった今変わった可能性があります
+cap.dup.screen_changed	このモニタの映像は確認の後に変わったため、画面全体のサイズで画像を渡せません
+cap.dup.screen_changed_hint	要求 %1x%2、実際に取れるのは %3x%4、その出力は現在 %5x%6 です。確認後に解像度・回転・配置が変わりました：モニタを選び直して再確認してください。他のモニタに置き換えることはしません
+cap.monitor_changed	対象モニタはこのリクエスト中にデスクトップから外れました
+cap.monitor_changed_hint	モニタが抜かれるか無効になりました。読み直してから再試行してください（--monitor の番号はその回の列挙順です）
+note.capture_clipped	対象を切り取れませんでした：要求 %1x%2、取得 %3x%4
+note.capture_clipped_hint	欠けた分：左 %1 上 %2 右 %3 下 %4 ピクセル。このチャネルは 1 台のモニタの合成出力を取るため、複数画面またぎや画面外の対象はそのモニタに重なる部分しか撮れません
 
 # ---------------------------------------------------------------------------
 # エンコード（src/Encoder.cpp）
@@ -278,8 +294,7 @@ cap.unsupported_for_screen	%1 チャネルはウィンドウ自身の面を取�
 cap.unsupported_for_screen_hint	モニタ全体は wgc / duplication / bitblt、または auto を使ってください
 cap.screen_rect_broken	このモニタの矩形が空のためピクセルを取得できません
 cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
-cap.dup.no_adapter_outputs	GPU に列挙できるディスプレイ出力がありません
-cap.dup.no_output_for_screen_hint	このモニタに対応する DXGI 出力が見つかりません（リモートセッションや仮想 GPU でよくある現象です）。wgc か bitblt を使ってください
+cap.dup.no_output_for_screen_hint	このモニタに対応する DXGI 出力が見つかりません（リモートセッションや仮想 GPU でよくある現象です。その画面が別アダプタに付いていて今回の列挙に載らない場合もあります）。wgc か bitblt を使ってください
 note.dry_run_monitor	--dry-run：%1 台のモニタを選びました。画面取得もファイル書き出しもしていません
 
 # ---------------------------------------------------------------------------

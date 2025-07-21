@@ -53,8 +53,8 @@ opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
 opt.newest	Take the most recently created window
 opt.oldest	Take the oldest created window
 opt.all	Save one image per matched window
-opt.monitor	Monitor number, 1-based (the order shown by Windows display settings); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
-opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+opt.monitor	Monitor number, 1-based (the order of this enumeration - not guaranteed to equal the id shown in Windows display settings; use the device name in the result to track a screen); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
+opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 opt.yes	Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 opt.timeout-ms	Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
 opt.consent-timeout-ms	How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
@@ -235,23 +235,39 @@ cap.dwm.not_composed_hint	A higher topmost window covers that spot on screen; us
 cap.pw.failed	PrintWindow failed
 cap.pw.failed_hint	The window may not accept WM_PRINT (DirectComposition / game window), or it has closed. %1
 
-cap.dup.adapter	Failed to get the display adapter
+cap.dup.factory	Failed to create the DXGI factory (HRESULT %1)
+cap.dup.no_outputs	No display output could be enumerated on this machine
+cap.dup.no_outputs_hint	Not one output was found across all graphics adapters (remote session / basic display driver). What this machine enumerates: %1
 cap.dup.no_output	The window is not inside any monitor
-cap.dup.no_output_hint	This channel takes the composed output of a monitor, so at least part of the window must be on screen
+cap.dup.no_output_hint	This channel takes the composed output of one monitor, so at least part of the window must be on screen. What this machine enumerates: %1
+cap.dup.no_output_for_screen	Monitor %1 has no matching DXGI output
 cap.dup.hint_unsupported	DXGI_ERROR_UNSUPPORTED: remote desktop / some virtual machines and basic display drivers do not support desktop duplication
 cap.dup.hint_denied	E_ACCESSDENIED: the content is protected, or the secure desktop (UAC) is current
 cap.dup.hint_invalid_call	DXGI_ERROR_INVALID_CALL: device and output do not match, or this output is already duplicated by another process
 cap.dup.hint_timeout	No new frame before the timeout: a completely static desktop may stop presenting - make the target window redraw and try again
+cap.dup.hint_lost	This output disappeared or the duplication channel went stale (monitor unplugged / driver reset / another process grabbed the duplication). This tool never silently switches to a different screen: re-enumerate the monitors and the --monitor numbers, then try again
 cap.dup.to_texture	Failed to get the desktop frame as a texture
-cap.dup.device	Failed to create the D3D11 device
-cap.dup.dxgi	The device does not support DXGI
+cap.dup.adapter_device	Failed to create the D3D11 device on graphics adapter %1 (HRESULT %2)
+cap.dup.adapter_device_hint	The target monitor %1 hangs off that adapter and DuplicateOutput requires a device from the same one, so a software device is not used instead (WARP owns no physical output and would only ever hand back an empty frame)
+cap.dup.output_lost	The output that was just located (adapter %1 / output %2) was gone before the frame was taken
+cap.dup.output_lost_hint	The monitor is being unplugged or the topology is changing: enumerate again and retry - this tool does not move the request to another screen
 cap.dup.duplicate	DuplicateOutput failed (HRESULT %1)
 cap.dup.acquire	AcquireNextFrame failed (HRESULT %1)
 cap.dup.timeout	No desktop frame within %1 ms
 cap.dup.flat	The desktop-duplication frame carries no present record at all (LastPresentTime=%1 AccumulatedFrames=%2 ProtectedContentMaskedOut=%3) and the whole frame is one colour
 cap.dup.flat_hint	The display driver in this session may not feed content to desktop duplication (remote desktop / basic display driver / protected content masked out); use wgc or bitblt
-cap.dup.not_in_frame	The window is not inside this monitor's desktop frame
-cap.dup.not_in_frame_hint	The window may have just moved to another monitor or closed
+cap.dup.not_in_frame	The area to take is not inside this monitor's desktop frame
+cap.dup.not_in_frame_hint	The target may have just moved to another monitor or closed
+cap.dup.frame_shape	This frame's size does not match the desktop size that monitor claims (reason code %1)
+cap.dup.frame_shape_hint	Desktop rect %1x%2, returned texture %3x%4, rotation reported by the driver %5 (1=0deg 2=90deg 3=180deg 4=270deg). The size is neither the same orientation nor the swapped one, so it cannot be cropped
+cap.dup.crop_outside	The read rectangle computed for this rotation falls outside the desktop frame (reason code %1)
+cap.dup.crop_outside_hint	Wanted %1,%2 to %3,%4 but the frame is %5x%6; the monitor's rotation may have just changed
+cap.dup.screen_changed	This monitor's picture changed after the confirmation, so a full-size screen image cannot be delivered
+cap.dup.screen_changed_hint	Requested %1x%2, only %3x%4 could be taken, and that output is now %5x%6. Resolution, rotation or monitor position changed after the confirmation: pick the monitor again and confirm once more - this tool does not move the request to another screen
+cap.monitor_changed	That monitor left this machine's desktop during this request
+cap.monitor_changed_hint	The monitor was unplugged or disabled. Enumerate again (--monitor numbers are the order of this enumeration) and retry
+note.capture_clipped	The target was not captured whole: asked for %1x%2, got %3x%4
+note.capture_clipped_hint	Missing on each side: left %1, top %2, right %3, bottom %4 pixels. This channel takes the composed output of one monitor, so a target that straddles screens or hangs off the edge can only be taken where it overlaps that monitor
 
 # ---------------------------------------------------------------------------
 # Encoding (src/Encoder.cpp)
@@ -279,8 +295,7 @@ cap.unsupported_for_screen	The %1 channel captures a window's own surface, which
 cap.unsupported_for_screen_hint	For a whole screen use wgc / duplication / bitblt, or auto
 cap.screen_rect_broken	This monitor's rectangle is empty, so there are no pixels to take
 cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
-cap.dup.no_adapter_outputs	The graphics adapter exposes no display output
-cap.dup.no_output_for_screen_hint	This monitor has no matching DXGI output (common in remote sessions and virtual GPUs); use wgc or bitblt
+cap.dup.no_output_for_screen_hint	This monitor has no matching DXGI output (common in remote sessions and on virtual GPUs, and it happens when that screen hangs off an adapter this enumeration cannot reach); use wgc or bitblt
 note.dry_run_monitor	--dry-run: %1 monitor(s) selected, nothing captured and no file written
 
 # ---------------------------------------------------------------------------

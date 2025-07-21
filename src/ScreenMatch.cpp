@@ -92,4 +92,20 @@ std::vector<RECT> SelectedScreenRects(const Options& opt, std::vector<Diagnostic
     return rects;
 }
 
+ScreenCheck CompareScreen(const ScreenInfo& wanted, const std::vector<ScreenInfo>& current,
+                          ScreenInfo* fresh) {
+    // 只按设备名认。名字相同而矩形或编号不同 = 同一块屏改了样子；名字不见了 = 那块屏没了。
+    for (const ScreenInfo& s : current) {
+        if (s.deviceName != wanted.deviceName) continue;
+        if (fresh) *fresh = s;
+        if (s.bounds.left == wanted.bounds.left && s.bounds.top == wanted.bounds.top &&
+            s.bounds.right == wanted.bounds.right && s.bounds.bottom == wanted.bounds.bottom &&
+            s.ordinal == wanted.ordinal && s.primary == wanted.primary) {
+            return ScreenCheck::kSame;
+        }
+        return ScreenCheck::kMoved;
+    }
+    return ScreenCheck::kGone;
+}
+
 }  // namespace ecapture
