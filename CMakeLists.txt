@@ -30,6 +30,7 @@ add_executable(ecapture
   src/Json.cpp
   src/Report.cpp
   src/WindowMatch.cpp
+  src/WindowIdentity.cpp
   src/ScreenMatch.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
@@ -225,7 +226,40 @@ set_property(TARGET ecapture-wgc-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
-# Desktop Duplication 的旋转、裁剪与适配器定位的离线判据（由 tests\dup.ps1 编译并运行）。
+# 目标身份复核的离线判据（由 tests\identity.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的是"同一个 HWND 值现在属于另一个对象"这种现场 ——
+# 句柄与 PID 何时被系统复用完全不由测试决定，在同一次运行里既造不出来也没法安排阴性对照
+#（要造就得杀掉别人的进程，而仓库规矩是不碰用户真实应用）。所以把判据本体
+# (src/WindowIdentity.cpp) 单独编一个测试程序，注入**假查询层**逐条判：
+# IsWindow 为假、PID 变了、PID 没变但进程创建时间变了（PID 复用）、类名变了、
+# 标题变了而条件仍成立 / 不再成立、以及每一道判据"问不出来"。
+# 这里不碰取帧、不碰窗口，链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-identity-tests
+  tests/identity_state.cpp
+  src/WindowIdentity.cpp
+  src/WindowMatch.cpp
+  src/ScreenMatch.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-identity-tests PRIVATE resources src)
+target_compile_features(ecapture-identity-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-identity-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-identity-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-identity-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-identity-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-identity-tests PROPERTIES OUTPUT_NAME "ecapture-identity-tests")
+set_property(TARGET ecapture-identity-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 #
 # 为什么单独一个可执行文件：这三件事在真机上要么造不出稳定现场（把用户的显示方向改掉、
 # 拔显示器、必须两块显卡），要么根本没有阴性对照（旋转过的屏幕上"尺寸对但画面横躺"的图

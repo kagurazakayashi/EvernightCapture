@@ -25,6 +25,11 @@ namespace ecapture {
 struct WindowInfo {
     uint64_t hwnd = 0;
     uint32_t pid = 0;
+    // 归属进程的创建时间（100 纳秒 ticks，FILETIME 原值）。0 = 枚举当时读不到。
+    // 它是"同一个 PID 还是不是同一个进程"的唯一可靠判据：PID 会被系统复用，
+    // 而身份复核（WindowIdentity.h）不能靠"当场再问一次"来补 —— 那等于自己跟自己对答案，
+    // 所以这个值必须在**枚举那一刻**就记进这一条候选里（辅助进程枚举时也一样）。
+    uint64_t processStartTicks = 0;
     std::wstring title;
     std::wstring className;
     std::wstring imageName;   // 映像文件名，取不到时为空

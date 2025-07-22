@@ -42,11 +42,14 @@ enum class ImageFormat {
 };
 
 enum class MultiMatch {
-    kAsk,     // 默认：匹配到多个窗口时报错，要求用户消歧
-    kIndex,   // --index N，取第 N 个（1 起）
-    kNewest,  // --newest
-    kOldest,  // --oldest
-    kAll,     // --all，每个窗口各存一张
+    kAsk,        // 默认：匹配到多个窗口时报错，要求用户消歧
+    kIndex,      // --index N，取第 N 个（1 起）
+    // 命中列表里的**当前 Z 序**首尾那一个。名字刻意说"叠放次序"而不是"新旧"：
+    // EnumWindows 给的就是从最顶到底的 z 序，工具既没有窗口创建时间戳、也不去看进程创建时间
+    // （旧名字 --newest/--oldest 是兼容别名，它们选的同样是 Z 序首尾）。
+    kTopmost,    // --topmost-match（别名 --newest）
+    kBottommost, // --bottommost-match（别名 --oldest）
+    kAll,        // --all，每个窗口各存一张
 };
 
 // 取图方式。--capture 选择，默认 wgc；互不替代，能力差别见帮助文本。
@@ -152,6 +155,9 @@ inline constexpr const wchar_t* kAllWithoutPlaceholder = L"note.all_without_plac
 inline constexpr const wchar_t* kFlagOverridesQuiet = L"note.flag_overrides_quiet";
 inline constexpr const wchar_t* kPipeDefaultFormat = L"note.pipe_default_format";
 inline constexpr const wchar_t* kJsonFlagDeprecated = L"note.json_flag_deprecated";
+// 用了已被语义更准确的名字取代的旧选项（--newest / --oldest 见 --topmost-match）。
+// 行为没变，只是名字说的不是一回事：按 Z 序首尾挑窗口，跟创建时间无关。
+inline constexpr const wchar_t* kDeprecatedOption = L"note.deprecated_option";
 inline constexpr const wchar_t* kDryRun = L"note.dry_run";
 inline constexpr const wchar_t* kHelpIgnoredArguments = L"note.help_ignored_arguments";
 inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
@@ -186,6 +192,16 @@ inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";
 // 退出码仍是 7（截图失败），但这两类调用方的下一步动作不同（前者可重试、后者要重新枚举），
 // 所以各给一个稳定的新码；capture.failed 保留给其它取帧失败。
 inline constexpr const wchar_t* kFrameTimeout = L"capture.frame_timeout";
+// 身份复核（WindowIdentity.h）那三条：选定目标之后、真正取帧之前，那个 HWND 已经不是当初
+// 挑中的那一扇窗口了。与 capture.window_gone 分开的理由是"发现得有多早"：window_gone 是
+// 通道在取帧途中发现目标尺寸为 0 / 矩形量不出来，这三条是**一次像素都没读**之前就判掉的。
+// 三条的下一步也不同：gone 要重新枚举窗口；changed 说明句柄已被另一个对象占用，
+// 用户当初批准的是旧对象、许可不转移，同样要重新枚举并重新确认；unverifiable 说明有一道
+// 判据问不出来（进程信息读不到、条件求值没能重新跑完），该查的是执行环境，不是再试一次。
+// 退出码都是 7（截图失败）。
+inline constexpr const wchar_t* kTargetGone = L"capture.target_gone";
+inline constexpr const wchar_t* kTargetChanged = L"capture.target_changed";
+inline constexpr const wchar_t* kTargetUnverifiable = L"capture.target_unverifiable";
 // 本工具自己的辅助进程出了问题（起不来、管道断了、消息不合本协议、任务不合法），
 // 而不是目标窗口拒绝对话。它和 capture.failed 分开给码：调用方看到这条就知道
 // 该查的是这台机器的执行环境（权限、杀软、策略），而不是"目标是不是受保护"。退出码仍是 7。
@@ -290,7 +306,9 @@ inline constexpr const wchar_t* kVersion = ECAPTURE_TEXT(ECAPTURE_VERSION_STRING
 inline constexpr const wchar_t* kStage = L"capture-channels";
 
 const wchar_t* FormatName(ImageFormat format);  // "png" / "jpeg" / ...
-const wchar_t* MultiKey(MultiMatch m);          // "ask" / "index" / "newest" / "oldest" / "all"
+const wchar_t* MultiKey(MultiMatch m);  // "ask" / "index" / "topmost" / "bottommost" / "all"
+                                        // -v 的 input.policy 回显的是**策略**，不是用户写的那个名字：
+                                        // 新旧别名指向同一条策略，追溯时看这里。
 
 // 取图方式的机器名（--capture 的取值）。能力差别写在 --capture 的选项说明里。
 const wchar_t* CaptureMethodName(CaptureMethod m);

@@ -228,8 +228,8 @@ RenderOutcome RenderDwmThumbnailContent(uint64_t hwndValue, uint32_t waitMs) {
 }
 
 bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGate& gate,
-                               const std::wstring& targetKey, const Deadline& dl,
-                               CapturedFrame* out, Diagnostic* err) {
+                               const std::wstring& targetKey, const WindowTarget& win,
+                               const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
     const HWND src = reinterpret_cast<HWND>(hwndValue);
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
@@ -293,6 +293,14 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGa
     const RECT over = OverlayRect(host, full);
     std::optional<DesktopPermit> permit;
     if (!gate.AuthorizeDesktop(paths::kDwmScreen, targetKey, over, &permit, err)) return false;
+    // 人点头之后、把宿主窗口摆上屏幕之前，再核一次身份，而且用的是 kFull 那一档：
+    // 上面那次 PrintWindow 失败到这里的确认框之间可能停了几秒，而屏幕上那块区域此刻属于谁
+    // 完全取决于目标还在不在 —— 用户批准的是当初那一扇窗口，许可不会转移给一个后来的新对象。
+    // 这一条路读的是桌面像素，所以"当初那条选择条件还算不算成立"也要一起重问一次。
+    if (!win.Recheck(IdentityScope::kFull, err)) {
+        if (err) err->backend = kChannel;
+        return false;
+    }
 
     host.MoveOver(full);
     PumpMessagesFor(dl.ClampWait(want));

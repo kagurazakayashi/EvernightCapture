@@ -50,8 +50,10 @@ opt.title-contains	Window title contains this substring
 opt.title-regex	Window title regular-expression match (ECMAScript), validated while parsing
 opt.class	Window class name, case-insensitive, e.g. Notepad / CabinetWClass
 opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
-opt.newest	Take the most recently created window
-opt.oldest	Take the oldest created window
+opt.topmost-match	Take the topmost matched window in the current z-order
+opt.bottommost-match	Take the bottommost matched window in the current z-order
+opt.newest	Deprecated alias of --topmost-match: it picks by z-order, not by creation time
+opt.oldest	Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
 opt.all	Save one image per matched window
 opt.monitor	Monitor number, 1-based (the order of this enumeration - not guaranteed to equal the id shown in Windows display settings; use the device name in the result to track a screen); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
@@ -124,6 +126,7 @@ note.quality_ignored	--quality only applies to jpeg and is ignored for the curre
 note.all_without_placeholder	With --all and no placeholder in the output name, an ordinal is appended to the file name, which may not be what you want
 note.all_without_placeholder_hint	e.g. shot_%i_%h.png
 note.json_flag_deprecated	Output is always JSON, so --json is now a switch with no side effect
+note.deprecated_option	%1 picks by the current z-order, not by creation time (Windows exposes no window creation timestamp). Behaviour is unchanged; the accurate name is %2
 note.flag_overrides_quiet	--verbose and --quiet together are handled as --verbose
 note.dry_run	--dry-run: selected %1 window(s), nothing captured and no file written
 note.output_extension_appended	The output name had no extension, so one was added for the chosen format
@@ -141,7 +144,7 @@ match.iconic_hint	%1 window(s) match the conditions but are minimized and cannot
 match.index_out_of_range	--index is beyond the number of matched windows
 match.index_hint	%1 candidate(s) total: %2
 match.ambiguous	Several windows matched, disambiguation required
-match.ambiguous_hint	Use --index/--newest/--oldest/--all or add conditions. Candidates (z-order): %1
+match.ambiguous_hint	Use --index/--topmost-match/--bottommost-match/--all or add conditions. Candidates (z-order): %1
 match.untitled	(no title)
 
 # ---------------------------------------------------------------------------
@@ -169,6 +172,12 @@ cap.rect_empty	Window rectangle is empty
 cap.rect_empty_draw	Window rectangle is empty, cannot paint
 cap.rect_empty_screen	The window's rectangle on screen is empty
 cap.window_gone	The window may be minimized or already closed
+cap.target_gone	The selected window was destroyed before the frame was taken
+cap.target_gone_hint	No pixel was read this time; images already written stay. Enumerate the windows again and retry (a hard-coded --hwnd hits this most often)
+cap.target_changed	The selected window is no longer the same object before the frame was taken: %1
+cap.target_changed_hint	What you approved was that window. Permission does not transfer to a new object that later reused the same handle or PID, and this tool will not relax the conditions and grab a look-alike instead. Select the target again and retry
+cap.target_unverifiable	Cannot confirm this handle still refers to the window that was selected: %1
+cap.target_unverifiable_hint	One of the things the identity re-check had to ask got no answer (re-running the selection conditions could not be isolated or the deadline was spent, or this window's or process's information is unreadable). No answer is not treated as a pass, so this image is not taken. Enumerate the windows again and retry, raising --timeout-ms if needed
 cap.dib_size	Cannot allocate a bitmap for this window size
 cap.dib_size_hint	size %1; the window may be minimized or exiting
 cap.create_compat_dc	CreateCompatibleDC failed

@@ -50,8 +50,10 @@ opt.title-contains	視窗標題包含子字串
 opt.title-regex	視窗標題正則匹配，ECMAScript 語法，解析期即校驗
 opt.class	視窗類名，忽略大小寫，如 Notepad / CabinetWClass
 opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
-opt.newest	取最後建立的視窗
-opt.oldest	取最早建立的視窗
+opt.topmost-match	取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
+opt.bottommost-match	取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
+opt.newest	--topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
+opt.oldest	--bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
 opt.all	每個匹配視窗各存一張
 opt.monitor	截圖目標螢幕的編號，從 1 開始（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
@@ -124,6 +126,7 @@ note.quality_ignored	--quality 只對 jpeg 有效，目前格式下會被忽略
 note.all_without_placeholder	--all 且輸出名沒有佔位符時，會在檔案名後自動追加序號，可能不符合預期
 note.all_without_placeholder_hint	例如 shot_%i_%h.png
 note.json_flag_deprecated	輸出恆為 JSON，--json 已成為無副作用的相容開關
+note.deprecated_option	%1 選的是當下 Z 序的位置，不是建立時間（視窗建立時間沒有公開 API 可取）。行為沒變，語意準確的寫法是 %2
 note.flag_overrides_quiet	--verbose 與 --quiet 同時給出時按 --verbose 處理
 note.dry_run	--dry-run：已選出 %1 個視窗，未截圖也未寫檔案
 note.output_extension_appended	輸出名沒有副檔名，已按所選格式補上
@@ -141,7 +144,7 @@ match.iconic_hint	有 %1 個視窗命中條件但處於最小化，無法擷取�
 match.index_out_of_range	--index 超出匹配視窗數量
 match.index_hint	共 %1 個候選：%2
 match.ambiguous	匹配到多個視窗，需要消歧
-match.ambiguous_hint	用 --index/--newest/--oldest/--all 或補充條件。候選（按 Z 序）：%1
+match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或補充條件。候選（按 Z 序）：%1
 match.untitled	(無標題)
 
 # ---------------------------------------------------------------------------
@@ -169,6 +172,12 @@ cap.rect_empty	視窗矩形為空
 cap.rect_empty_draw	視窗矩形為空，無法繪製
 cap.rect_empty_screen	視窗在螢幕上的矩形為空
 cap.window_gone	視窗可能被最小化或已關閉
+cap.target_gone	選定的視窗在取影格之前已經被銷毀
+cap.target_gone_hint	這一次一個像素都沒讀，之前寫完的圖留著。請重新列舉視窗再截一次（--hwnd 那種寫死的句柄最容易碰上這件事）
+cap.target_changed	選定的視窗在取影格之前已經不是同一個物件：%1
+cap.target_changed_hint	你批准的是當初那一扇視窗，許可不會轉移給後來占用同一個句柄或同一個處理程序識別碼的新物件，本工具也不會放寬條件去找一扇看起來一樣的替代視窗。重新選定目標再截一次
+cap.target_unverifiable	無法確認這個句柄現在還是不是當初選中的那一扇視窗：%1
+cap.target_unverifiable_hint	複核要看的那幾件事裡有一件沒給出答案（重跑條件求值時輔助程序沒起來或期限已到，或這個視窗、這個處理程序的資訊讀不到）。沒給出答案就不當它成立，這一張不截。請重新列舉視窗再截一次，必要時加大 --timeout-ms
 cap.dib_size	視窗尺寸無法配置點陣圖
 cap.dib_size_hint	尺寸 %1，視窗可能已最小化或正在退出
 cap.create_compat_dc	CreateCompatibleDC 失敗

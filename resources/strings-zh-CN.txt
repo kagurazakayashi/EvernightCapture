@@ -51,8 +51,10 @@ opt.title-contains	窗口标题包含子串
 opt.title-regex	窗口标题正则匹配，ECMAScript 语法，解析期即校验
 opt.class	窗口类名，忽略大小写，如 Notepad / CabinetWClass
 opt.index	取第 n 个窗口，从 1 开始，按可见性/叠放次序排序
-opt.newest	取最后创建的窗口
-opt.oldest	取最早创建的窗口
+opt.topmost-match	取 Z 序最靠前的命中窗口（此刻盖在最上面的那一个；与创建时间无关）
+opt.bottommost-match	取 Z 序最靠后的命中窗口（此刻被压在最下面的那一个；与创建时间无关）
+opt.newest	--topmost-match 的旧名字。它选的一直是当下的 Z 序位置而不是创建时间（窗口创建时间没有公开 API 可取），保留只为兼容
+opt.oldest	--bottommost-match 的旧名字。它选的一直是当下的 Z 序位置而不是创建时间，保留只为兼容
 opt.all	每个匹配窗口各存一张
 opt.capture	wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁，会按显示器的旋转校正方向；只取与该目标重叠最多的一块屏，没截全时结果里带 capturedRect/clipped) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)。只取窗口自己的画面：wgc / printwindow / dwm 缩略图；会从屏幕上取样：bitblt / duplication 与 dwm 的屏幕退路
 opt.yes	跳过"只取所选窗口画面"那条路径的确认框。不保证目标一定有画面，也不忽略权限、受保护内容、错误或覆盖保护；任何会从屏幕上取样的路径（bitblt、duplication、整屏任何通道、dwm 的屏幕退路）一定会弹框，这个开关跳不过。写 --yes=false 表示明确要问
@@ -124,6 +126,7 @@ note.quality_ignored	--quality 只对 jpeg 生效，当前格式下会被忽略
 note.all_without_placeholder	--all 且输出名没有占位符时，会在文件名后自动追加序号，可能不符合预期
 note.all_without_placeholder_hint	例如 shot_%i_%h.png
 note.json_flag_deprecated	输出恒为 JSON，--json 已成为无副作用的兼容开关
+note.deprecated_option	%1 选的是当下的 Z 序位置，不是创建时间（窗口创建时间没有公开 API 可取）。行为没变，语义准确的写法是 %2
 note.flag_overrides_quiet	--verbose 与 --quiet 同时给出时按 --verbose 处理
 note.dry_run	--dry-run：已选出 %1 个窗口，未截图也未写文件
 note.output_extension_appended	输出名没有扩展名，已按所选格式补上
@@ -141,7 +144,7 @@ match.iconic_hint	有 %1 个窗口命中条件但处于最小化，无法采集�
 match.index_out_of_range	--index 超出匹配窗口数量
 match.index_hint	共 %1 个候选：%2
 match.ambiguous	匹配到多个窗口，需要消歧
-match.ambiguous_hint	用 --index/--newest/--oldest/--all 或补充条件。候选（按 Z 序）：%1
+match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或补充条件。候选（按 Z 序）：%1
 match.untitled	(无标题)
 
 # ---------------------------------------------------------------------------
@@ -169,6 +172,12 @@ cap.rect_empty	窗口矩形为空
 cap.rect_empty_draw	窗口矩形为空，无法绘制
 cap.rect_empty_screen	窗口在屏幕上的矩形为空
 cap.window_gone	窗口可能被最小化或已关闭
+cap.target_gone	选定的窗口在取帧之前已经被销毁
+cap.target_gone_hint	这一次一个像素都没读，之前写完的图留着。请重新枚举窗口再截一次（--hwnd 那种写死的句柄最容易撞上这件事）
+cap.target_changed	选定的窗口在取帧之前已经不是同一个对象：%1
+cap.target_changed_hint	用户批准的是当初那一扇窗口，许可不会转移给后来占用同一个句柄或同一个 PID 的新对象，本工具也不会放宽条件去找一扇"看起来一样"的替代窗口。重新选目标再截一次
+cap.target_unverifiable	无法确认这个句柄现在还是不是当初选中的那一扇窗口：%1
+cap.target_unverifiable_hint	复核要看的那几件事里有一件没给出答案（重跑条件求值时辅助进程没起来或期限已到，或这个窗口、这个进程的信息读不到）。没给出答案就不当它成立，这一张不截。请重新枚举窗口再截一次，必要时加大 --timeout-ms
 cap.dib_size	窗口尺寸无法分配位图
 cap.dib_size_hint	尺寸 %1，窗口可能已最小化或正在退出
 cap.create_compat_dc	CreateCompatibleDC 失败

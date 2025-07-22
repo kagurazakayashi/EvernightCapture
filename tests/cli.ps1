@@ -197,6 +197,49 @@ $cases = @(
        Errors = @('cli.duplicate_output') }
     @{ Name = '选择策略互斥'; A = @('--index','2','--newest','out.png'); Exit = 1
        Errors = @('cli.conflicting_options') }
+    # ---------- 选择策略的名字：Z 序，不是创建顺序 ----------
+    # --newest / --oldest 选的一直是当下 Z 序的首尾，而名字说的是创建先后。改成语义准确的
+    # --topmost-match / --bottommost-match，旧名保留为兼容别名（行为相同 + 一条 note）。
+    # 这里全部 --dry-run：选到哪一扇由 tests\identity.ps1 在真机上判，这一节只判解析与契约。
+    @{ Name = '--topmost-match 被接受且 policy 写规范名'
+       A = ($ANCHOR + @('-v','--topmost-match','out.png')); Exit = 0
+       Check = { param($o) $o.input.policy -eq 'topmost' } }
+    @{ Name = '--bottommost-match 被接受且 policy 写规范名'
+       A = ($ANCHOR + @('-v','--bottommost-match','out.png')); Exit = 0
+       Check = { param($o) $o.input.policy -eq 'bottommost' } }
+    @{ Name = '--newest 是 --topmost-match 的别名（policy 写规范名）'
+       A = ($ANCHOR + @('-v','--newest','out.png')); Exit = 0
+       Check = { param($o) $o.input.policy -eq 'topmost' } }
+    @{ Name = '--oldest 是 --bottommost-match 的别名（policy 写规范名）'
+       A = ($ANCHOR + @('-v','--oldest','out.png')); Exit = 0
+       Check = { param($o) $o.input.policy -eq 'bottommost' } }
+    @{ Name = '用旧别名时留一条 note.deprecated_option'; A = ($ANCHOR + @('--newest','out.png'))
+       Exit = 0; Notes = @('note.deprecated_option')
+       Check = { param($o) $o.notes[0].option -eq '--newest' -and $o.notes[0].value -eq '--topmost-match' } }
+    @{ Name = '同一策略的新旧别名并用不算互斥'; A = ($ANCHOR + @('--newest','--topmost-match','out.png'))
+       Exit = 0; Notes = @('note.deprecated_option') }
+    @{ Name = '别名并用时废弃提示只有一条'; A = ($ANCHOR + @('--newest','--topmost-match','out.png'))
+       Exit = 0
+       Check = { param($o) @(@($o.notes) | Where-Object { $_.code -eq 'note.deprecated_option' }).Count -eq 1 } }
+    @{ Name = '两个旧别名并用仍是两条策略冲突'; A = @('--newest','--oldest','--pid','1','out.png')
+       Exit = 1; Errors = @('cli.conflicting_options') }
+    @{ Name = '别名与另一条策略并用时冲突报错列用户写的名字'
+       A = @('--oldest','--index','2','--pid','1','out.png'); Exit = 1
+       Errors = @('cli.conflicting_options')
+       Check = { param($o) $o.errors[0].value -match '--oldest' -and $o.errors[0].value -match '--index' } }
+    @{ Name = '不用旧别名时不发废弃提示'; A = ($ANCHOR + @('--topmost-match','out.png')); Exit = 0
+       Check = { param($o) -not ((@($o.notes) | ForEach-Object code) -contains 'note.deprecated_option') } }
+    @{ Name = '帮助里两个规范名字都在，且说明按 Z 序'
+       A = @('--help'); Exit = 3; Text = $true
+       Has = @('--topmost-match', '--bottommost-match', 'Z 序') }
+    @{ Name = '帮助里旧别名标明是旧名字'; A = @('--help'); Exit = 3; Text = $true
+       Has = @('--newest', '--oldest', '旧名字') }
+    @{ Name = '歧义提示推荐规范名而不是旧别名'
+       A = @('--class','Shell_TrayWnd','--title-contains','X-不存在的标题','out.png')
+       Exit = @(1,4,5); Json = $true }
+    @{ Name = '新身份码在四种语言下都有文案（不出现 ?key）'
+       A = ($ANCHOR + @('-v','--topmost-match','out.png')); Exit = 0
+       Check = { param($o) $o.input.policy -eq 'topmost' } }
     @{ Name = '未知选项带纠正 hint'; A = @('--titel','x','out.png'); Exit = 1
        Check = { param($o) (@($o.errors | ForEach-Object code) -contains 'cli.unknown_option') -and
                             (@($o.errors | Where-Object { $_.code -eq 'cli.unknown_option' }).hint) -eq '--title' } }

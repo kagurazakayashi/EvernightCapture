@@ -119,6 +119,9 @@ namespace EcTestHelper
             uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu,
             IntPtr instance, IntPtr param);
 
+        [DllImport("user32", CharSet = CharSet.Unicode)]
+        public static extern bool SetWindowTextW(IntPtr hWnd, string text);
+
         [DllImport("user32")]
         public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
@@ -190,6 +193,9 @@ namespace EcTestHelper
         public int BlockPrintMs;        // >0：WM_PRINT / WM_PRINTCLIENT 到了就堵在这条消息里
         public bool NoRedirect;         // WS_EX_NOREDIRECTIONBITMAP：没有 DWM 缓存面，取图只能走 WM_PRINT
         public int StallMs;             // >0：收到 WM_USER+7 之后把这条消息线程堵住这么久
+        public int DestroyAfterMs;      // >0：N 毫秒之后把第一扇窗口 DestroyWindow 掉，进程照旧活着
+        public int RenameAfterMs;       // >0：N 毫秒之后把标题换成 --title2 给的那个
+        public string Title2;           // 配合 --rename-after-ms：换成这个标题
         public int PayloadStart = -1;     // "--" 之后的第一条：args 模式把它之后全当数据
         public string PidFile;            // 把自己的 PID 写进这个文件：给 cmd 脚本精确收尾用
     }
@@ -212,6 +218,8 @@ namespace EcTestHelper
         private const uint WM_PRINT = 0x0317u;
         private const uint WM_PRINTCLIENT = 0x0318u;
         private const uint WM_USER_STALL = 0x0407u;   // WM_USER+7：测试专用"现在把线程堵住"信号
+        private const uint WM_USER_DESTROY = 0x0408u; // WM_USER+8：到点了，把第一扇窗口销毁掉
+        private const uint WM_USER_RENAME = 0x0409u;  // WM_USER+9：到点了，把标题换成 --title2
         private const int WHITE_BRUSH = 0;
         private const uint SYNCHRONIZE = 0x00100000u;
         private const uint INFINITE = 0xFFFFFFFFu;
@@ -223,6 +231,7 @@ namespace EcTestHelper
         private static readonly List<IntPtr> g_windows = new List<IntPtr>();   // --windows N 时不止一扇
         private static int g_openWindows;                                       // 关到最后一扇才退出消息循环
         private static int g_blockedPrints;   // 被 --block-print-ms 堵过几次（排障时打印用）
+        private static bool g_keepAliveAfterDestroy;   // --destroy-after-ms：关完窗口进程还要留着
         private static readonly List<string> g_classes = new List<string>();    // 本次注册过的类名，收尾逐个注销
         private static Native.WndProcDelegate g_wndProc;      // 必须长期持有，否则委托被 GC 后回调会崩
         private static Options g_opt = new Options();
@@ -299,6 +308,17 @@ namespace EcTestHelper
                         o.BlockPrintMs = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture);
                         if (o.BlockPrintMs < 0 || o.BlockPrintMs > 120000) { throw new ArgumentException("--block-print-ms wants 0..120000"); }
                         break;
+                    // 下面三条是"目标身份复核"那批判据要的现场：窗口在自己活着的时候被销毁、
+                    // 标题在选中之后的某个时刻变了。时间到了自己动手，测试不需要去杀任何进程。
+                    case "--destroy-after-ms":
+                        o.DestroyAfterMs = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture);
+                        if (o.DestroyAfterMs < 0 || o.DestroyAfterMs > 600000) { throw new ArgumentException("--destroy-after-ms wants 0..600000"); }
+                        break;
+                    case "--rename-after-ms":
+                        o.RenameAfterMs = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture);
+                        if (o.RenameAfterMs < 0 || o.RenameAfterMs > 600000) { throw new ArgumentException("--rename-after-ms wants 0..600000"); }
+                        break;
+                    case "--title2": o.Title2 = Need(args, ref i, key); break;
                     case "--rect":
                         value = Need(args, ref i, key);
                         string[] parts = value.Split(',');
@@ -396,6 +416,11 @@ namespace EcTestHelper
 
             if (opt.WatchPid > 0) { StartWatchdog(opt.WatchPid); }
             if (opt.MaxLifeSeconds > 0) { StartLifeLimit(opt.MaxLifeSeconds); }
+            // 到点自己销毁 / 自己改标题。销毁那一扇之后进程照旧活着 ——
+            // "窗口没了"与"进程退了"是两件事，身份复核要能各自被单独判。
+            g_keepAliveAfterDestroy = opt.DestroyAfterMs > 0;
+            if (opt.DestroyAfterMs > 0) { StartDelayedMessage(WM_USER_DESTROY, opt.DestroyAfterMs); }
+            if (opt.RenameAfterMs > 0) { StartDelayedMessage(WM_USER_RENAME, opt.RenameAfterMs); }
 
             // 同步绘制已经在建窗口时就地做过，这里不再补一次：多扇窗口时那一句只画得到第一扇。
             Native.MSG msg;
@@ -423,6 +448,20 @@ namespace EcTestHelper
                 finally { Native.EndPaint(hWnd, ref ps); }
                 return IntPtr.Zero;
             }
+            if (message == WM_USER_RENAME)
+            {
+                // 选中之后的标题刷新：身份复核判的是"当初那条标题条件还成立吗"，
+                // 所以这里既能造"换了标题但条件仍成立"，也能造"条件不再成立"。
+                if (g_opt.Title2 != null) { Native.SetWindowTextW(hWnd, g_opt.Title2); }
+                return IntPtr.Zero;
+            }
+            if (message == WM_USER_DESTROY)
+            {
+                // 目标在本次请求被销毁的现场：只关第一扇，进程照旧活着 ——
+                // 于是"窗口没了"这件事与"进程退了、PID 被回收"是两件事，各自能被单独判。
+                Native.DestroyWindow(hWnd);
+                return IntPtr.Zero;
+            }
             if (message == WM_USER_STALL)
             {
                 // "目标应用的这条消息线程不处理任何事"的现场：坐在 WM_USER+7 里不返回。
@@ -448,8 +487,13 @@ namespace EcTestHelper
             if (message == WM_CLOSE) { Native.DestroyWindow(hWnd); return IntPtr.Zero; }
             if (message == WM_DESTROY)
             {
-                // 多扇窗口时要关到最后一扇才退消息循环，否则看门狗关第一扇就把剩下的留在原地
-                if (Interlocked.Decrement(ref g_openWindows) <= 0) { Native.PostQuitMessage(0); }
+                // 多扇窗口时要关到最后一扇才退消息循环，否则看门狗关第一扇就把剩下的留在原地。
+                // --destroy-after-ms 是故意只关一扇、进程要留着当"目标已销毁而 PID 还在"的现场，
+                // 所以那种情况下最后一扇关了也不 PostQuitMessage（收尾靠看门狗与 --max-life）。
+                if (Interlocked.Decrement(ref g_openWindows) <= 0 && !g_keepAliveAfterDestroy)
+                {
+                    Native.PostQuitMessage(0);
+                }
                 return IntPtr.Zero;
             }
             return Native.DefWindowProcW(hWnd, message, wParam, lParam);
@@ -528,6 +572,20 @@ namespace EcTestHelper
             int b = (index * 97 + 32) % 256;
             if (r > 190 && g < 70 && b < 70) { g = 96; }    // 别撞上遮挡物的红色判据
             return System.Drawing.Color.FromArgb(r, g, b);
+        }
+
+        // 到点把一条消息发给第一扇窗口（销毁 / 改标题）。必须走 PostMessage 到 UI 线程：
+        // DestroyWindow 只能由创建它的那条线程调，而这条延时线程是后台线程。
+        // 窗口那时已经不归本进程管（或被别的判据关掉）时 PostMessage 只是失败，不做任何补救。
+        private static void StartDelayedMessage(uint message, int milliseconds)
+        {
+            Thread thread = new Thread(delegate()
+            {
+                Thread.Sleep(milliseconds);
+                Native.PostMessageW(g_hwnd, message, IntPtr.Zero, IntPtr.Zero);
+            });
+            thread.IsBackground = true;
+            thread.Start();
         }
 
         private static void StartWatchdog(int parentPid)

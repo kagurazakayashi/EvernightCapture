@@ -32,6 +32,7 @@
 #include "OutputPlan.h"
 #include "Report.h"
 #include "ScreenMatch.h"
+#include "WindowIdentity.h"
 #include "WindowMatch.h"
 #include "Worker.h"
 
@@ -55,6 +56,10 @@ std::wstring HwndHexOf(uint64_t hwnd) {
 struct Target {
     bool isScreen = false;
     WindowInfo window;
+    // 选定那一刻的身份快照 + 复核要用的查询层。窗口目标在每一次真正读像素之前都要照它复核
+    //（WindowIdentity.h）；屏幕目标没有窗口身份，那边靠 ScreenMatch.h 的 CompareScreen 重新
+    // 核对那块屏，win 在这里留空、也永远不会被用到（CaptureScreenOneChannel 不收这个参数）。
+    WindowTarget win;
     ScreenInfo screen;
     RECT area{};  // 授权与 JSON 都用它：窗口 = 整窗外框矩形，屏幕 = 该屏矩形
 
@@ -149,15 +154,29 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
     }
 }
 
-// 单个通道的取帧入口。进任何一条通道之前先过授权判定：
-//   窗口内容路径 —— --yes 免问，否则整批问一次；
-//   桌面路径 —— 永远问人，并换来那张凭证，没有它就调不动那条通道的取像素函数。
+// 单个通道的取帧入口。做两件事才放行，顺序不能反：
+//   1. 身份复核（kCheap 那一档）—— 这个句柄现在还是不是当初选中的那一扇窗口。
+//   2. 授权判定 —— 窗口内容路径：--yes 免问，否则整批问一次；
+//      桌面路径：永远问人，并换来那张凭证，没有它就调不动那条通道的取像素函数。
+//
+// 身份复核在这里做**两次**，理由各不相同：
+//   * 授权之前那一次：目标已经没了或已经换人，就不该再拿"要不要截它"去打扰人 ——
+//     人看到的确认清单是选目标那一刻算出来的，那份清单已经不成立了。
+//   * 授权之后、取帧之前那一次：确认框可能在屏幕上停了几秒，而点"是"之后还有约 1 秒
+//     关闭动画（那一段睡在 DialogConsentPrompt 里）。这段时间足够目标被销毁、
+//     而它的 HWND 被另一扇窗口拿走。用户批准的是旧对象，许可不转移给新对象。
+// 两次都是 kCheap：这一档那四问全都不往目标线程发消息（答案在 user32 / kernel32 自己那份
+// 结构里），所以 auto 回退链把它乘四遍也不花钱、更不会在这里卡住。
+// "当初那条选择条件现在还成立吗"（标题、按屏过滤那类易变属性）是 kFull，由 RunCapture
+// 在每个目标开工之前问一次 —— 那一问要重跑条件求值，按回退链的次数乘上去就是平白多几倍枚举。
 //
 // timeoutMs 是"这一步自己愿意等多久"（等帧、泵消息），dl 是"这一次运行还剩多少预算"。
 // 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
 bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
-                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, const Deadline& dl,
-                       CapturedFrame* out, Diagnostic* err) {
+                       const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
+                       const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
+    if (!win.Recheck(IdentityScope::kCheap, err)) return false;
+
     const wchar_t* path = WindowPathOf(method);
     AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, area, err);
     if (!auth.ok) {
@@ -165,14 +184,19 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
         if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
         return false;
     }
+    // 授权之后再过一次身份：上面那次判定与人点头之间隔着的这段时间不能当它不存在。
+    if (!win.Recheck(IdentityScope::kCheap, err)) return false;
+
     const uint32_t wait = dl.ClampWait(timeoutMs);
+    const uint64_t hwnd = win.id.hwnd;
 
     switch (method) {
         case CaptureMethod::kWgc:
             return CaptureWindowWgc(hwnd, wait, out, err);
         case CaptureMethod::kDwmThumbnail:
-            // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去
-            return CaptureWindowDwmThumbnail(hwnd, wait, gate, targetKey, dl, out, err);
+            // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去；
+            // 身份也一并交给它 —— 那条退路读的是桌面像素，升级之前要按 kFull 再复核一次。
+            return CaptureWindowDwmThumbnail(hwnd, wait, gate, targetKey, win, dl, out, err);
         case CaptureMethod::kPrintWindow:
             // 这条一律走辅助进程：PrintWindow 同步等目标窗口的线程，本进程里没有中断点
             return CaptureWindowPrintWindow(hwnd, dl, out, err);
@@ -265,6 +289,14 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, 
             if (err) *err = std::move(attemptErr);
             return false;   // 授权这一关的结果不换后端重跑：拒绝就是拒绝，位置变了就重新确认
         }
+        if (attemptErr.code == codes::kTargetGone ||
+            attemptErr.code == codes::kTargetChanged ||
+            attemptErr.code == codes::kTargetUnverifiable) {
+            if (err) *err = std::move(attemptErr);
+            // 身份这一关的结果同样不换后端重跑：换一条通道也读不到一个已经不存在的目标，
+            // 而"再试一次"在这里意味着用另一条通道去截一个没被人批准过的新对象。
+            return false;
+        }
         if (fatal && *fatal) {
             if (err) *err = std::move(attemptErr);
             return false;   // 致命错误：换后端不会有区别
@@ -286,14 +318,16 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, 
 
 // --capture 分派。auto 对窗口按 wgc -> dwm -> printwindow -> bitblt，对屏幕按
 // wgc -> duplication -> bitblt。显式指定的通道绝不回退：用户要哪个就要哪个。
+// 交给这里的不是裸句柄，而是选定那一刻的快照与查询层（WindowTarget）—— 每一次尝试之前
+// 都要照它复核一遍，所以通道手里没有"跳过复核直接取像素"的那条路可走。
 bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
-                       uint64_t hwnd, CaptureMethod method, uint32_t timeoutMs, const Deadline& dl,
-                       CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
-                       bool* fatal) {
+                       const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
+                       const Deadline& dl, CapturedFrame* out, Diagnostic* err,
+                       std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
-                               return CaptureOneChannel(gate, targetKey, area, hwnd, method,
+                               return CaptureOneChannel(gate, targetKey, area, win, method,
                                                         timeoutMs, dl, out, err);
                            },
                            err, fatal);
@@ -302,7 +336,7 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const R
                                               CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureOneChannel(gate, targetKey, area, hwnd, m, timeoutMs, dl,
+                             return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl,
                                                       frame, e);
                          });
 }
@@ -361,18 +395,30 @@ void TagTarget(Diagnostic* d, const Target& t, const wchar_t* stage) {
 // ---------------------------------------------------------------------------
 namespace {
 
-std::vector<WindowInfo> PickWindows(const Options& opt, const Deadline& dl,
-                                    std::vector<Diagnostic>* errors) {
+// 一次窗口目标选择的结果，连同"当初是怎么选的"。
+// 那一份来路必须一起交出去：身份复核里"kFull 那一问"的答案是**拿同一份条件重新求值一次**，
+// 看这个句柄还在不在命中列表里（WindowIdentity.h）。只把选中的窗口交出去就没法重问。
+struct WindowSelection {
+    std::vector<WindowInfo> picked;
+    MatchRequest request;      // 当初那份条件 + 按屏过滤的矩形
+    bool isolate = false;      // 当初那一步是不是整半交给辅助进程
+};
+
+WindowSelection PickWindows(const Options& opt, const Deadline& dl,
+                            std::vector<Diagnostic>* errors) {
+    WindowSelection sel;
     std::vector<RECT> onScreens;
     if (opt.monitor.given) {
         onScreens = SelectedScreenRects(opt, errors);
-        if (!errors->empty()) return {};
+        if (!errors->empty()) return sel;
     }
-    const bool isolate = !opt.match.titleRegexes.empty() || dl.Enabled();
+    sel.request.match = opt.match;
+    sel.request.onScreens = onScreens;
+    sel.isolate = !opt.match.titleRegexes.empty() || dl.Enabled();
 
     std::vector<WindowInfo> hits;
     std::vector<WindowInfo> iconic;
-    if (isolate) {
+    if (sel.isolate) {
         Diagnostic err;
         if (!IsolatedMatch(opt.match, onScreens, dl, &hits, &iconic, &err)) {
             // 期限到了 / 辅助进程没起来 / 消息不合：都照实报，不悄悄退回本进程再跑一遍 ——
@@ -383,22 +429,54 @@ std::vector<WindowInfo> PickWindows(const Options& opt, const Deadline& dl,
                 err.code = codes::kCaptureFailed;
                 errors->push_back(std::move(err));
             }
-            return {};
+            return sel;
         }
     } else {
-        MatchRequest req;
-        req.match = opt.match;
-        req.onScreens = onScreens;
-        const MatchOutcome m = EnumerateMatches(req);
+        const MatchOutcome m = EnumerateMatches(sel.request);
         if (m.status != BlockedStatus::kOk) {
             errors->push_back(
                 BlockedToDiagnostic(m.status, 0, S_OK, m.detail, L"match", stages::kMatch));
-            return {};
+            return sel;
         }
         hits = std::move(m.hits);
         iconic = std::move(m.iconic);
     }
-    return SelectFromHits(opt, hits, iconic, MonitorLabelOf(opt), errors);
+    sel.picked = SelectFromHits(opt, hits, iconic, MonitorLabelOf(opt), errors);
+    return sel;
+}
+
+// kFull 那一问的查询层：拿当初那份条件**重新求值一次**，看这个句柄还在不在命中列表里。
+//
+// 为什么用"重跑条件"而不是"逐字比标题"：应用刷新标题是正常现象（播放进度、文档修改标记、
+// 标签页标题），逐字比较会把每一次正常刷新都判成"换了目标"；而条件不再成立，才说明当初把它
+// 挑出来的那条理由已经不属于它了。同理，--monitor 那种"按屏过滤"也在这一问里 —— 窗口挪到
+// 别的屏上，就是不再满足当初那个条件。
+//
+// 为什么这一问不进 kCheap：它要枚举一遍全部顶层窗口，还可能给每个窗口取一次标题 ——
+// 那是整条链里最贵、也最可能被挂住的窗口拖住的一步。所以它只在每个目标开工之前跑一次
+//（外加 dwm 要升级到桌面像素之前那一次），并且**沿用第一次求值那同一条 isolate 判据**：
+// 用了 --title-regex 或设了预算就照旧进辅助进程、到点能结束，绝不因为要复核就在父进程里
+// 新造一个没有中断点的等待（Worker.h）。
+WindowQueryLayer MakeTargetQuery(const MatchRequest& request, bool isolate, const Deadline& dl) {
+    WindowQueryLayer q = SystemWindowQueryLayer();
+    q.selectionStillMatches = [request, isolate, dl](uint64_t hwnd, bool* matched) -> bool {
+        std::vector<WindowInfo> hits;
+        std::vector<WindowInfo> iconic;
+        if (isolate) {
+            Diagnostic err;
+            if (!IsolatedMatch(request.match, request.onScreens, dl, &hits, &iconic, &err)) {
+                return false;   // 问不出来：期限到了 / 辅助进程坏了，调用方按无法验证处理
+            }
+        } else {
+            const MatchOutcome m = EnumerateMatches(request);
+            if (m.status != BlockedStatus::kOk) return false;
+            hits = m.hits;
+        }
+        *matched = std::any_of(hits.begin(), hits.end(),
+                               [&](const WindowInfo& w) { return w.hwnd == hwnd; });
+        return true;
+    };
+    return q;
 }
 
 }  // namespace
@@ -423,9 +501,20 @@ CaptureOutcome RunCapture(const Options& opt) {
             targets.push_back(std::move(t));
         }
     } else {
-        for (const auto& w : PickWindows(opt, dl, &outcome.errors)) {
+        const WindowSelection sel = PickWindows(opt, dl, &outcome.errors);
+        // 查询层对本次全部目标共用一份：它带着"当初那份条件"与同一份预算，
+        // 复核时拿它重新求值一次（MakeTargetQuery 上面写了为什么这么做）。
+        WindowQueryLayer query;
+        if (outcome.errors.empty()) {
+            query = MakeTargetQuery(sel.request, sel.isolate, dl);
+        }
+        for (const auto& w : sel.picked) {
             Target t;
             t.window = w;
+            // 选定那一刻就把身份记下来。之后每一次真正取帧之前都要照这份快照复核一遍，
+            // 因为"这还是那一扇窗口吗"必须拿**当时**的值来比 —— 事后补问等于自己跟自己对答案。
+            t.win.id = MakeWindowIdentity(w, opt.match, opt.monitor.given);
+            t.win.query = query;
             // 窗口目标用整窗外框当授权范围：桌面路径实际会从屏幕上读走的就是这一块
             // （DWM 那条退路摆的覆盖窗口也按它对齐），比可见边框矩形更宽一点而不是更窄。
             t.area = WindowFullRect(reinterpret_cast<HWND>(w.hwnd));
@@ -548,6 +637,17 @@ CaptureOutcome RunCapture(const Options& opt) {
         // 量一遍当下的矩形再交给判定器：确认框上写的区域与实际要取样的区域必须是同一块。
         // 目标在确认之后挪走或变大，凭证的 Covers 就会拒绝，这一次不截。
         if (!t.isScreen) t.area = WindowFullRect(reinterpret_cast<HWND>(t.window.hwnd));
+        // 每个目标开工之前一次 kFull 复核：连"当初那条选择条件现在还成立吗"一起问
+        //（标题、按屏过滤那类易变属性）。这一档要重跑条件求值，所以一个目标一次，
+        // 不在每条通道的每一次尝试之前重复；那几处用的是 kCheap（CaptureOneChannel）。
+        // 屏幕目标没有窗口身份，它那一侧的核对是下面的 CompareScreen。
+        if (!t.isScreen) {
+            Diagnostic idErr;
+            if (!t.win.Recheck(IdentityScope::kFull, &idErr)) {
+                outcome.errors.push_back(std::move(idErr));
+                continue;   // 这一张一个像素都不读，也不替它另找一个"看起来一样"的目标
+            }
+        }
         // 屏幕目标另外要按**设备名**重新核对一次（编号只是枚举位置，热插拔之后同一个编号可能
         // 指到另一块屏上）：那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给
         // 判定器 —— 屏幕拓扑一变，已给出的桌面授权自动作废，人会看到重新列出的具体范围，
@@ -605,10 +705,10 @@ CaptureOutcome RunCapture(const Options& opt) {
                                                                       opt.capture, kFrameTimeoutMs,
                                                                       dl, &frame, &targetErr,
                                                                       &outcome.notes, &fatal)
-                                            : CaptureWithMethod(gate, t.Tag(), t.area,
-                                                                t.window.hwnd, opt.capture,
-                                                                kFrameTimeoutMs, dl, &frame,
-                                                                &targetErr, &outcome.notes, &fatal);
+                                            : CaptureWithMethod(gate, t.Tag(), t.area, t.win,
+                                                                opt.capture, kFrameTimeoutMs, dl,
+                                                                &frame, &targetErr, &outcome.notes,
+                                                                &fatal);
                              },
                              &targetErr, &fatal);
             if (ok) {

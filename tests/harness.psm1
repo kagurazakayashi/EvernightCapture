@@ -793,6 +793,12 @@ function Start-EcThreadStall {
 
 
 
+function Test-EcWindowAlive {
+    <# 只问"这个句柄现在还是一个窗口吗"：这是身份判据里最基础的一条，测试自己去看屏幕。 #>
+    param([Parameter(Mandatory)]$Hwnd)
+    return [bool][EcHarnessWin]::IsWindow($Hwnd)
+}
+
 function Stop-EcWindow {
     <# 收尾本次建立的一个窗口：只碰这个 Process 实例，并按 exe 路径核对，PID 被复用就不动。 #>
     param([Parameter(Mandatory)]$Window)

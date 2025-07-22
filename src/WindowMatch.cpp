@@ -28,18 +28,28 @@ std::wstring FileNameOf(const std::wstring& path) {
     return pos == std::wstring::npos ? path : path.substr(pos + 1);
 }
 
-std::wstring ImagePathOf(HWND hwnd) {
+// 一次 OpenProcess 问两件事：映像路径与进程创建时间。分成两次开句柄没有意义，
+// 而"当场再问一次创建时间"更不行 —— 身份复核要比的是**枚举那一刻**的值
+//（见 WindowIdentity.h：中间那次销毁重建会被记成基线，复核就成了自己跟自己对答案）。
+// 读不到的一律留空 / 0：那是"这一条判据没做出来"，不是"它相同"。
+void ProcessFactsOf(HWND hwnd, std::wstring* path, uint64_t* startTicks) {
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0) return std::wstring();
+    if (pid == 0) return;
     HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!proc) return std::wstring();
+    if (!proc) return;
     wchar_t buffer[8192];
     DWORD size = static_cast<DWORD>(std::size(buffer));
-    std::wstring result;
-    if (QueryFullProcessImageNameW(proc, 0, buffer, &size)) result.assign(buffer, size);
+    if (QueryFullProcessImageNameW(proc, 0, buffer, &size)) path->assign(buffer, size);
+    FILETIME creation{}, exit{}, kernel{}, user{};
+    if (GetProcessTimes(proc, &creation, &exit, &kernel, &user)) {
+        ULARGE_INTEGER ticks{};
+        ticks.LowPart = creation.dwLowDateTime;
+        ticks.HighPart = creation.dwHighDateTime;
+        // QuadPart 为 0 是"没拿到"的写法，不能当成一个真值传给复核去比。
+        if (ticks.QuadPart != 0) *startTicks = ticks.QuadPart;
+    }
     CloseHandle(proc);
-    return result;
 }
 
 // 异常 what() 是窄字符，只留可打印 ASCII：这段细节要穿过管道交给父进程。
@@ -171,7 +181,8 @@ BOOL CALLBACK CollectCallback(HWND hwnd, LPARAM lParam) {
     const int clsLen = GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
     if (clsLen > 0) w.className.assign(cls, static_cast<size_t>(clsLen));
 
-    w.imagePath = ImagePathOf(hwnd);
+    w.imagePath.clear();
+    ProcessFactsOf(hwnd, &w.imagePath, &w.processStartTicks);
     if (!w.imagePath.empty()) w.imageName = FileNameOf(w.imagePath);
 
     RECT rect{};
@@ -312,10 +323,10 @@ std::vector<WindowInfo> SelectFromHits(const Options& opt, const std::vector<Win
     switch (opt.multi) {
         case MultiMatch::kAll:
             return hits;
-        case MultiMatch::kNewest:
-            return {hits.front()};              // Z 序最前，近似"最后激活/创建"
-        case MultiMatch::kOldest:
-            return {hits.back()};
+        case MultiMatch::kTopmost:
+            return {hits.front()};   // 当前 Z 序最前的那一个（不是"最后创建"）
+        case MultiMatch::kBottommost:
+            return {hits.back()};    // 当前 Z 序最后的那一个
         case MultiMatch::kIndex: {
             const size_t n = static_cast<size_t>(opt.index);
             if (n > hits.size()) {

@@ -192,7 +192,12 @@ constexpr OptionSpec kOptions[] = {
     {L"title-regex", L"R", true, L"match", L"<regex>", nullptr, L"opt.title-regex"},
     {L"class", L"c", true, L"match", L"<class-name>", nullptr, L"opt.class"},
     // ---- 匹配到多个窗口时的选择策略（互斥）----
+    // 这一组选的都是**当下的 Z 序**位置，与创建时间无关（窗口创建时间没有公开 API 可取）。
+    // --newest / --oldest 是旧名字：它们说的是叠放次序、写的却是"新旧"，所以各有一个说清楚
+    // 语义的新名字，旧写法继续有效并留一条 note.deprecated_option。
     {L"index", L"i", true, L"pick", L"<n>", nullptr, L"opt.index"},
+    {L"topmost-match", L"", false, L"pick", L"", nullptr, L"opt.topmost-match"},
+    {L"bottommost-match", L"", false, L"pick", L"", nullptr, L"opt.bottommost-match"},
     {L"newest", L"", false, L"pick", L"", nullptr, L"opt.newest"},
     {L"oldest", L"", false, L"pick", L"", nullptr, L"opt.oldest"},
     {L"all", L"a", false, L"pick", L"", nullptr, L"opt.all"},
@@ -293,8 +298,8 @@ const wchar_t* MultiKey(MultiMatch m) {
     switch (m) {
         case MultiMatch::kAsk: return L"ask";
         case MultiMatch::kIndex: return L"index";
-        case MultiMatch::kNewest: return L"newest";
-        case MultiMatch::kOldest: return L"oldest";
+        case MultiMatch::kTopmost: return L"topmost";
+        case MultiMatch::kBottommost: return L"bottommost";
         case MultiMatch::kAll: return L"all";
     }
     return L"?";
@@ -406,8 +411,16 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     bool formatExplicit = false;
     bool qualityExplicit = false;
     bool outExplicit = false;
-    std::vector<std::wstring> pickFlags;   // --index/--newest/--oldest/--all，互斥
+    // 用过的选择策略写法：按**策略**去重，而不是按用户敲的那个名字 ——
+    // --newest 与 --topmost-match 是同一条策略的两种写法，同时给出不是冲突。
+    struct PickUsage {
+        MultiMatch strategy;
+        std::wstring display;   // 用户实际写的那一个（互斥报错时要能对上他打了什么）
+    };
+    std::vector<PickUsage> picks;
     MultiMatch multiFlag = MultiMatch::kAsk;
+    bool newestAliasUsed = false;   // --newest / --oldest：旧名字，各留一条废弃 note
+    bool oldestAliasUsed = false;
 
     // 单个选项 -> 数据结构。取值型选项的 value 是用户给的原文；开关的 value 是布尔写法的规范化结果：
     // 裸开关 = 空串，--flag=true/1/yes/y/on = "1"，=false/0/no/n/off = "0"（普通开关写 =false 时压根不到这里）。
@@ -506,6 +519,12 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
 
         // ---- 多窗口选择策略 ----
+        // 记进 picks 的是"用户实际写的那个名字"，而互斥判定按**策略**去重：
+        // --newest 与 --topmost-match 说的是同一件事，同时给出不算两个互斥策略。
+        auto Pick = [&](MultiMatch strategy, const std::wstring& display) {
+            multiFlag = strategy;
+            picks.push_back(PickUsage{strategy, display});
+        };
         if (name == L"index") {
             uint64_t n = 0;
             if (!ParseNumber(value, &n) || n == 0 || n > 0xFFFF) {
@@ -513,13 +532,14 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 return;
             }
             opt.index = static_cast<int>(n);
-            multiFlag = MultiMatch::kIndex;
-            pickFlags.push_back(L"--index");
+            Pick(MultiMatch::kIndex, L"--index");
             return;
         }
-        if (name == L"newest") { multiFlag = MultiMatch::kNewest; pickFlags.push_back(L"--newest"); return; }
-        if (name == L"oldest") { multiFlag = MultiMatch::kOldest; pickFlags.push_back(L"--oldest"); return; }
-        if (name == L"all")    { multiFlag = MultiMatch::kAll;    pickFlags.push_back(L"--all"); return; }
+        if (name == L"topmost-match") { Pick(MultiMatch::kTopmost, L"--topmost-match"); return; }
+        if (name == L"bottommost-match") { Pick(MultiMatch::kBottommost, L"--bottommost-match"); return; }
+        if (name == L"newest") { newestAliasUsed = true; Pick(MultiMatch::kTopmost, L"--newest"); return; }
+        if (name == L"oldest") { oldestAliasUsed = true; Pick(MultiMatch::kBottommost, L"--oldest"); return; }
+        if (name == L"all") { Pick(MultiMatch::kAll, L"--all"); return; }
 
         // ---- 取图方式 ----
         if (name == L"capture") {
@@ -749,14 +769,20 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         Err(codes::kDuplicateOutput, Msg(L"cli.output_duplicate_positional"), L"--out", positional[0]);
 
     // ---- 选择策略互斥检查 ----
-    std::vector<std::wstring> distinctPick = pickFlags;
-    std::sort(distinctPick.begin(), distinctPick.end());
-    distinctPick.erase(std::unique(distinctPick.begin(), distinctPick.end()), distinctPick.end());
+    // 按策略去重（同一条策略的新旧两种写法算一条），每个策略报出来的是用户实际写的那个名字。
+    std::vector<PickUsage> distinctPick;
+    for (const PickUsage& p : picks) {
+        const bool seen = std::any_of(distinctPick.begin(), distinctPick.end(),
+                                      [&](const PickUsage& q) { return q.strategy == p.strategy; });
+        if (!seen) distinctPick.push_back(p);
+    }
+    std::sort(distinctPick.begin(), distinctPick.end(),
+              [](const PickUsage& a, const PickUsage& b) { return a.display < b.display; });
     if (distinctPick.size() > 1) {
         std::wstring joined;
         for (size_t k = 0; k < distinctPick.size(); ++k) {
             if (k) joined += L", ";
-            joined += distinctPick[k];
+            joined += distinctPick[k].display;
         }
         Err(codes::kConflictingOptions, Msg(L"cli.conflicting_options"), L"", joined,
             Msg(L"cli.conflicting_hint"));
@@ -834,6 +860,16 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                  opt.output, Msg(L"note.all_without_placeholder_hint"));
         if (opt.json)
             Note(codes::kJsonFlagDeprecated, Msg(L"note.json_flag_deprecated"), L"--json");
+        // 旧的选择策略名字照旧有效，但要说清楚它选的是当下的 Z 序、不是创建时间，
+        // 并且给出语义准确的那个写法。note 只在真的用了旧名字时才发，且各发一条。
+        if (newestAliasUsed)
+            Note(codes::kDeprecatedOption,
+                 Msgf(L"note.deprecated_option", L"--newest", L"--topmost-match"), L"--newest",
+                 L"--topmost-match");
+        if (oldestAliasUsed)
+            Note(codes::kDeprecatedOption,
+                 Msgf(L"note.deprecated_option", L"--oldest", L"--bottommost-match"), L"--oldest",
+                 L"--bottommost-match");
         if (opt.verbose && opt.quiet)
             Note(codes::kFlagOverridesQuiet, Msg(L"note.flag_overrides_quiet"), L"--verbose");
     }

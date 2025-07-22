@@ -7,6 +7,7 @@
 #include "CaptureCommon.h"
 #include "Consent.h"
 #include "Deadline.h"
+#include "WindowIdentity.h"
 
 namespace ecapture {
 
@@ -19,9 +20,13 @@ namespace ecapture {
 //     窗口的线程，而那次等待没有中断点，只有把调用放进可结束的进程，期限才管用。
 //   * 退路：宿主窗口盖到目标位置上、从屏幕上把那块矩形拷回来（dwm.screen）—— 读的是桌面像素，
 //     所以留在父进程里，走之前必须回 gate 重新要一次桌面凭证，--yes 免不掉它。
+//
+// win 是选定目标那一刻的快照 + 复核要用的查询层。升级到屏幕退路之前必须照它做一次 kFull 复核：
+// 这一次升级中间隔着"回 gate 重新问一次人"，而人点头批准的是当初那一扇窗口 —— 问完到把宿主
+// 窗口摆上屏幕之间目标如果被销毁重建，读回来的就是没人批准过的画面。
 bool CaptureWindowDwmThumbnail(uint64_t hwnd, uint32_t timeoutMs, ConsentGate& gate,
-                               const std::wstring& targetKey, const Deadline& dl,
-                               CapturedFrame* out, Diagnostic* err);
+                               const std::wstring& targetKey, const WindowTarget& win,
+                               const Deadline& dl, CapturedFrame* out, Diagnostic* err);
 
 // 主路径那一段：建屏幕外宿主窗口 + 注册缩略图 + 泵 waitMs 毫秒 + PrintWindow 读回。
 // 一个桌面像素都不读（宿主窗口在 -32000，屏幕上看不见），所以能被辅助进程直接调用。

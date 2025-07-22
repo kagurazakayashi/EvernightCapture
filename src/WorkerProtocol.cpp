@@ -75,6 +75,9 @@ bool TakeI32(const uint8_t** p, size_t* left, int32_t* out) {
 void PutWindowInfo(std::vector<uint8_t>* b, const WindowInfo& w) {
     PutU64(b, w.hwnd);
     PutU32(b, w.pid);
+    // 枚举那一刻的进程创建时间：父进程拿它做身份复核的基线，所以它必须与 hwnd/pid 同源，
+    // 不能让父进程事后自己再问一次（见 WindowIdentity.h）。
+    PutU64(b, w.processStartTicks);
     PutI32(b, w.x);
     PutI32(b, w.y);
     PutI32(b, w.width);
@@ -92,6 +95,7 @@ bool TakeWindowInfo(const uint8_t** p, size_t* left, WindowInfo* out) {
     uint8_t iconic = 0;
     if (!TakeU64(p, left, &w.hwnd)) return false;
     if (!TakeU32(p, left, &w.pid)) return false;
+    if (!TakeU64(p, left, &w.processStartTicks)) return false;
     if (!TakeI32(p, left, &w.x) || !TakeI32(p, left, &w.y)) return false;
     if (!TakeI32(p, left, &w.width) || !TakeI32(p, left, &w.height)) return false;
     if (!TakeI32(p, left, &w.zOrder)) return false;

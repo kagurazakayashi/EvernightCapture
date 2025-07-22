@@ -29,6 +29,11 @@ previously implemented `magnification` channel was removed (reasons in AGENTS.md
 - **Screenshot authorization**: any capture that really grabs a frame asks in a modal dialog first, reliable
   window paths included; `--yes` skips that ask **only** for paths whose frame is bound to the selected window
   itself — anything sampling desktop pixels always needs a person and no switch can skip it
+- **Target identity that is re-checked**: the handle, owning process, that process's creation time, window class and the
+  original selection conditions are recorded when a target is picked, then verified again before every capture attempt and
+  once more right after the consent answer. A destroyed window, a handle reused by another process, or one that no longer
+  satisfies the condition it was selected by gives `capture.target_gone` / `capture.target_changed` /
+  `capture.target_unverifiable` instead of a picture nobody approved
 - **Deadlines that hold**: `--timeout-ms` is one budget for the whole automatic stage (matching, backend retries,
   frame waits, encoding, writing) and `--consent-timeout-ms` times the human dialog separately; calls that wait on
   another process (`PrintWindow`, the DWM read-back, regex evaluation) run in a helper process the tool can stop,
@@ -108,8 +113,10 @@ Window match conditions (repeat one option for OR, combine different options wit
 
 When several windows match (mutually exclusive)
   --index, -i <n>                 Take the n-th window, 1-based, ordered by visibility and z-order
-  --newest                        Take the most recently created window
-  --oldest                        Take the oldest created window
+  --topmost-match                 Take the topmost matched window in the current z-order
+  --bottommost-match              Take the bottommost matched window in the current z-order
+  --newest                        Deprecated alias of --topmost-match: it picks by z-order, not by creation time
+  --oldest                        Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
   --all, -a                       Save one image per matched window
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
@@ -172,6 +179,11 @@ ECAPTURE.EXE --process notepad.exe --title-contains Report D:\shots\r.png
   only mentioned separately in the `hint`.
 - When several windows match and no disambiguation option was given, the tool refuses to pick one: it reports
   `match.ambiguous_window` (exit code 5) and lists every candidate in `hint`, ordered by z-order.
+- The candidate list is ordered by the **current z-order**, topmost first, and `--topmost-match` / `--bottommost-match` take its first /
+  last entry. The older `--newest` / `--oldest` names stay as aliases with exactly the same behaviour — what they have always
+  selected is a z-order position, never a creation time, because Windows exposes no API for a window's creation time (and a
+  process start time is not one). Writing an alias only adds a `note.deprecated_option`; giving both spellings of one strategy
+  (`--newest --topmost-match`) is still that one strategy, not a conflict.
 
 ## Output format
 
@@ -453,6 +465,27 @@ spanning monitors matches on both), still producing window images, so the window
 `--monitor all` is mutually exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1),
 but disambiguation options such as `--all` and `--index` do not count as matching conditions and may accompany it.
 
+## Target identity and handle reuse
+
+The window that was picked may no longer be that window by the time pixels are actually read. Between matching and capturing sit the output-name planning, the consent dialog (somebody may take a few seconds, and there is a ~1 s close animation after the answer) and up to four channels in an `auto` fallback. In that span the target can be destroyed, some other window can take over its HWND value, and its PID can be recycled by a different process — and a 64-bit integer cannot tell "still the same window" apart from "a new object that looks like it".
+
+So the identity is recorded at the moment of selection: the handle, the owning PID, that process's **creation time** (that is what separates "this PID was recycled" from "still the same process"), the window class, and the conditions that made this window a target. It is then re-checked in two grades:
+
+- **Before every attempt on every channel** (and once more after the authorization, right before a pixel is read): is the handle still a window, does it still belong to that process, is that PID's process creation time unchanged, is the class the same. All four answers come from user32 / kernel32's own data structures and send no message to the target's thread, so they can be asked this often and cannot be stalled by a hung window here.
+- **Once per target before it starts**, plus before anything that would switch to reading desktop pixels (the `dwm` screen fallback): **re-run the original conditions** and check this handle is still among the matches. Volatile properties such as the title are judged that way — an application refreshing its own title (playback position, a modified-document mark, a tab caption) is still the same target, while a window that no longer satisfies the `--title` condition it was picked by is not. That question enumerates windows, so it is not multiplied by the fallback chain; a `--title-regex` has no interruptible point, so this re-run keeps exactly the same isolation rule as the first evaluation (into the helper process whenever a deadline applies).
+
+Failing the check reads no pixels at all and returns one of three stable codes:
+
+| Code | Exit | Meaning | Next step |
+| --- | --- | --- | --- |
+| `capture.target_gone` | 7 | the handle was destroyed during this request | enumerate the windows again |
+| `capture.target_changed` | 7 | that handle value now belongs to another object (or no longer satisfies the conditions) | select the target again — **the permission you gave is not transferred to a new object** |
+| `capture.target_unverifiable` | 7 | one of the questions could not be answered (process information unreadable, the condition re-evaluation did not finish) | check the execution environment (rights, policy, antivirus), or raise `--timeout-ms` |
+
+A changed identity never becomes a licence to "relax the conditions and grab a look-alike" — same rule as `--yes`: consent is bound to the object that was listed for the human.
+
+**How far that goes:** this re-check narrows the race window, it does not claim to close it. Checking and capturing are not one atomic operation, an `HWND` is not a waitable object, and there is no public API that pins a window into existence. A change in the instant between the check and the frame is still possible — it just no longer has a whole planning-plus-consent span of time to happen in.
+
 ## Deadlines and calls that block (`--timeout-ms` / `--consent-timeout-ms`)
 
 `--timeout-ms <ms>` is a **total** budget for the automatic part of the run, measured on a monotonic clock from
@@ -595,6 +628,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows. The window-content channels run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` sample the desktop, so their image judgements need `-SimulateConsent` and are recorded as SKIP ("not verified") without it |
 | `.\tests\consent.ps1` | Consent tiers: an offline layer runs the whole `ConsentGate` state machine against an injected fake prompt (`build\ecapture-consent-tests.exe`, from `tests\consent_state.cpp`), and the on-device layer answers every dialog "No" to check which paths must ask, what a refusal reports (`code` / `stage` / `target` / `value`), that nothing lands on disk, and that `images[].path` / `scope` / `rect` are right. Never answers "Yes" on a human's behalf |
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
+| `.\tests\identity.ps1` | Target identity and z-order selection. Offline layer (`build\ecapture-identity-tests.exe`, injected fake query layer): handle reused by another process, same PID but a different process, class changed, the selection condition no longer holding, every question that cannot be answered, and which questions each grade asks in what order. On-device layer (self-made windows only): healthy targets are never blocked, `capture.target_gone` when the target is destroyed mid-batch, `capture.target_changed` when a renamed window no longer satisfies the `--title` condition, a refreshed title that still satisfies it captures normally, and `--topmost-match` / `--bottommost-match` are judged against the current z-order (the window created first but living in the topmost band wins — exactly what a "most recently created" reading gets wrong). Handle and PID recycling cannot be staged on purpose without killing somebody's process, and the consent-dialog span needs `-SimulateConsent`; both are recorded as unverified, never faked |
 | `.\tests\screen.ps1` | On-device whole-screen test: three screen channels (all desktop routes, so every one of them must ask) + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing; without it the judgements that need an answer are recorded as SKIP |
 | `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8 (only its own windows are captured, the desktop-route case again needs `-SimulateConsent`) |
 | `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel (a person clicks the dialogs) → whole-screen step → open the screenshot folder → end just that PID |

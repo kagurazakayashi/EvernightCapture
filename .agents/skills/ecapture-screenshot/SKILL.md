@@ -38,8 +38,10 @@ programmatically.
 2. Several matches (exit 5): read the candidate list from `errors[0].hint`
    (`0x… title [image.exe] | 0x… …`), then narrow with `--class` / `--process` / `--title`
    (note `--title*` is **case-sensitive**, `--class` / `--process` / `--exe` are not), or pick one with
-   `--index 1` / `--newest` / `--oldest`, or take them all with `--all` (put `%i` in the output name,
-   otherwise `note.all_without_placeholder` fires and `_N` is appended).
+   `--index 1` / `--topmost-match` / `--bottommost-match`, or take them all with `--all` (put `%i` in the output name,
+   otherwise `note.all_without_placeholder` fires and `_N` is appended). Those pick a **z-order position in the current
+   stacking order** - `--newest` / `--oldest` are the older names for topmost / bottommost and behave identically
+   (Windows exposes no window creation timestamp), and using one adds a `note.deprecated_option`.
 3. Drop `--dry-run` and point the output at the real path. **For a window capture also pass `--yes`** so the
    tool does not stop on a confirmation dialog you cannot answer from a script (`--yes` only ever skips the
    dialog for paths that read the selected window itself - see "When you must ask a human first").
@@ -286,6 +288,9 @@ that ever happens it surfaces as `capture.frame_invalid` / `capture.frame_timeou
 | `capture.consent_unavailable` | 6 | The dialog could not be shown at all (service session, scheduled task, lock screen). Nobody refused - run it in an interactive session instead of asking a second time |
 | `capture.consent_timeout` | 6 | Nobody answered the dialog within `--consent-timeout-ms` - treated as a refusal, never as consent; stop like after any "No" (and note: this wait does not consume `--timeout-ms`) |
 | `capture.consent_stale` | 7 | The target moved or resized after desktop consent was granted, so nothing was sampled. Re-select the target and let the human confirm again |
+| `capture.target_gone` | 7 | The selected window was destroyed before any pixel was read (`stage=capture`, no `backend`). Enumerate the windows again - re-trying another channel cannot reach a window that is gone |
+| `capture.target_changed` | 7 | That handle value now belongs to another object (different owning process, recycled PID, different window class) or no longer satisfies the condition it was selected by (its title changed, it moved off the `--monitor` screen). The ASCII reason is inside `message`. **Re-select the target**: consent given to the old object is not transferred, and this tool will not grab a look-alike instead - switching channel or relaxing the conditions are both wrong moves |
+| `capture.target_unverifiable` | 7 | One identity question could not be answered (process information unreadable, the condition re-evaluation did not finish), and no answer is never counted as a pass. Check the execution environment or raise `--timeout-ms`, then enumerate and select again |
 | `capture.frame_invalid` | 7 | The frame that came back does not describe its own memory correctly (zero size, a side over 16384 px, a row pitch that cannot hold one row, a buffer shorter than pitch x height, more than 1 GiB). Detected before allocating anything; a target-side problem on that channel - re-check the size, or `--capture wgc` |
 | `capture.monitor_changed` | 7 | That monitor left this machine's desktop during the request, or its picture (resolution / rotation / position) changed after the confirmation - so nothing was sampled and **no other monitor was substituted**. Re-enumerate the monitors (`--monitor` numbers are per-run) and confirm again |
 | `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
