@@ -87,11 +87,11 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
       ECAPTURE.EXE --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
 
 截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
-  --monitor, -m [<n|primary|all>] 截圖目標螢幕的編號，從 1 開始（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+  --monitor, -m [<n|primary|all>] 截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 
 視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
-  --hwnd <handle>                 視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x
-  --pid <pid>                     處理程序 ID，十進位且大於 0
+  --hwnd <handle>                 視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
+  --pid <pid>                     處理程序 ID，只認十進位且大於 0
   --process, -p <image-name>      映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
   --exe <full-path>               映像完整路徑，忽略大小寫
   --title, -t <exact-title>       視窗標題精確匹配
@@ -100,7 +100,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --class, -c <class-name>        視窗類名，忽略大小寫，如 Notepad / CabinetWClass
 
 匹配到多個視窗時（互斥）
-  --index, -i <n>                 取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
+  --index, -i <n>                 取第 n 個視窗，從 1 開始（十進位），按可見性/疊放次序排序
   --topmost-match                 取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
   --bottommost-match              取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
   --newest                        --topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
@@ -120,19 +120,19 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
 輸出
   --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
   --format, -f <name>             強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
-  --quality <1-100>               JPEG 品質，預設 100
+  --quality <1-100>               JPEG 品質，十進位 1..100，預設 100
   --no-overwrite                  目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 
 其他
   --dry-run, -d                   只解析並列出候選視窗，不截圖不寫檔案
   --json, -j                      已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
   --verbose, -v                   JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
-  --quiet, -q                     省略 notes；errors 無論如何都會返回
+  --quiet, -q                     省略 notes；errors 無論如何都會返回；與 --verbose 同時給出時按 --verbose 處理
   --lang, -l <language>           文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
   --help, -h                      輸出文字說明（本段）
   --version                       輸出版本與階段
 
-寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析
+寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析。數字取值只認十進位（--hwnd 另可按 0x 寫十六進位）
 輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
       --help / --version 以及不給條件時是文字
 退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
@@ -150,6 +150,31 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
 ```
 <!-- END ECAPTURE-HELP -->
+
+## 引數寫法
+
+每個數字選項只認它對外承諾過的那一種寫法，解析器不再自己猜進位。
+
+- `--pid`、`--index`、`--monitor <n>`、`--quality` 與兩條期限**只認十進位**（`[0-9]+`）：不要正負號、
+  不要空白、不要小數點、不要指數記法（`1e3`）、不要底線分隔、不要 `0x` 前綴，也不接受非 ASCII
+  數字；區間在同一次解析裡判完（`--pid` 1..4294967295，`--index` 與 `--monitor` 1..65535，
+  `--quality` 1..100，期限 0..86400000）。不合就是 `cli.invalid_number` + 退出碼 1——取值不會被強制
+  轉換、回繞，也不會按另一種進位重讀（`--pid 1e3` 不會悄悄變成 483，`--hwnd -1` 不會變成 `UINT64_MAX`）。
+- `--hwnd` 保留文件裡的三種寫法：純數字按十進位、`0x`/`0X` 前綴按十六進位、裸寫含 `a-f` 按十六進位
+  （Spy++ 那種形式，所以 `--hwnd 1e3` 就是 `0x1e3`）。正負號、空白、超過 64 位與句柄 `0` 一律拒絕。
+  底線只在十六進位寫法裡合法，而且必須夾在兩位十六進位數字之間：`0x001A_0B4C` 可以，`0x_1A`、
+  `1A__0B4C`、`1A0B4C_`、`12_34` 都不行。
+- `--monitor` 的取值可以省略，所以「下一個引數算不算它的取值」用的就是上面這套語法：`--monitor out.png`
+  仍是「主螢幕 + 輸出到 out.png」，而 `--monitor 1e3` 是一個寫壞了的螢幕編號，會報錯而不會被改當成輸出檔名。
+- 緊跟在「要吃值的選項」後面的那一條就是它的取值，哪怕它長得像另一個選項：`--title --lang ja` 找的是標題
+  `--lang`。要以 `-` 開頭寫取值請用 `--title=-x`，或者用 `--` 結束選項解析（`--` 之後的引數一律按位置
+  引數處理，`--` 本身丟棄）。
+- 重複給同一個選項：匹配條件類是 OR（`--title A --title B`），取值類以最後一個為準（`--timeout-ms 9000
+  --timeout-ms 300` 是 300），`--lang` 也一樣——`auto`（或省略取值）是**明確回到系統顯示語言**，不是保留
+  上一條。取值非法的 `--lang` 報 `cli.unknown_language`，並按已經定下來的那種語言寫這條報錯。
+- `--verbose` 與 `--quiet` 同時給出時按 `--verbose` 處理：notes 照常交付，並另發一條
+  `note.flag_overrides_quiet` 說明原因。`errors`、以及 `images[].source` / `path` / `scope` 這些來路
+  欄位任何時候都不被 `--quiet` 隱藏。
 
 ## 匹配語義
 
@@ -231,7 +256,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
       "message": "--hwnd 需要有效的句柄值（十進位，或帶 0x 前綴的十六進位）",
       "option": "--hwnd",
       "value": "zzz",
-      "hint": "純數字按十進位解析；十六進位請寫成 0x……，或含 a-f 時自動按十六進位"
+      "hint": "純數字按十進位解析；十六進位寫成 0x……，含 a-f 時按十六進位。不要寫正負號與空白；底線只能夾在兩位十六進位數字之間（0x_1A、1A__2B 都不收）"
     }
   ]
 }

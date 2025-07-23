@@ -12,7 +12,7 @@ help.usage1	用法: ECAPTURE.EXE [条件...] <输出路径>        不给任何�
 help.usage2	      ECAPTURE.EXE [条件...] --out <路径>      路径写 - 表示把图片字节输出到标准输出
 help.usage3	      ECAPTURE.EXE [条件...]                   不给输出路径 => 图片按 png 写标准输出
 help.usage4	      ECAPTURE.EXE --monitor [n] <路径>       给了 --monitor 且没有窗口条件 => 那块屏幕整幅截图
-help.syntax	写法: --opt=value / -opt / /opt 都接受；取值本身以 - 开头时写成 --title=-x，或用 -- 结束选项解析
+help.syntax	写法: --opt=value / -opt / /opt 都接受；取值本身以 - 开头时写成 --title=-x，或用 -- 结束选项解析。数字取值只认十进制（--hwnd 另可按 0x 写十六进制）
 help.output1	输出: 成功与错误都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
 help.output2	      --help / --version 以及不给条件时是文本
 help.exit1	退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
@@ -41,16 +41,16 @@ grp.behavior	其它
 # ---------------------------------------------------------------------------
 # 选项说明（kOptions 目录，按选项名取 key）
 # ---------------------------------------------------------------------------
-opt.monitor	截图目标屏的编号，从 1 开始（本次枚举的顺序，不保证等于「显示设置」里写的标识号；要认屏请看结果里的 device）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整块屏幕拍的是桌面像素，一定要先弹框问人，--yes 也跳不过；按屏过滤窗口出的仍是窗口图
-opt.hwnd	窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x
-opt.pid	进程 ID，十进制且大于 0
+opt.monitor	截图目标屏的编号，从 1 开始、只认十进制（本次枚举的顺序，不保证等于「显示设置」里写的标识号；要认屏请看结果里的 device）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整块屏幕拍的是桌面像素，一定要先弹框问人，--yes 也跳不过；按屏过滤窗口出的仍是窗口图
+opt.hwnd	窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x。不接受正负号与空白，下划线只能夹在两位十六进制数字之间
+opt.pid	进程 ID，只认十进制且大于 0
 opt.process	映像文件名（不含路径），忽略大小写；无扩展名时按 .exe 处理
 opt.exe	映像完整路径，忽略大小写
 opt.title	窗口标题精确匹配
 opt.title-contains	窗口标题包含子串
 opt.title-regex	窗口标题正则匹配，ECMAScript 语法，解析期即校验
 opt.class	窗口类名，忽略大小写，如 Notepad / CabinetWClass
-opt.index	取第 n 个窗口，从 1 开始，按可见性/叠放次序排序
+opt.index	取第 n 个窗口，从 1 开始（十进制），按可见性/叠放次序排序
 opt.topmost-match	取 Z 序最靠前的命中窗口（此刻盖在最上面的那一个；与创建时间无关）
 opt.bottommost-match	取 Z 序最靠后的命中窗口（此刻被压在最下面的那一个；与创建时间无关）
 opt.newest	--topmost-match 的旧名字。它选的一直是当下的 Z 序位置而不是创建时间（窗口创建时间没有公开 API 可取），保留只为兼容
@@ -62,12 +62,12 @@ opt.timeout-ms	自动处理阶段的总预算（毫秒）：从选定目标开�
 opt.consent-timeout-ms	确认框最多等多久（毫秒）。不给或写 0 = 一直等人回答。到点按"拒绝"处理，绝不按"默认同意"处理，报 capture.consent_timeout。这段等待单独计时，不占 --timeout-ms 那份自动预算；点"是"之后那约 1 秒的关闭动画缓冲也算在这一级，不会为了赶期限而省掉
 opt.out	输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -。整批输出名在取帧之前一次算好，两个目标算出同一个名字时整批报错，不会静默覆盖。标准输出一次只能交付一张图，命中多个目标时整批报参数错误、一张都不截
 opt.format	强制编码格式；不给则由输出文件扩展名判定，扩展名也判不出时用 png
-opt.quality	JPEG 质量，默认 100
+opt.quality	JPEG 质量，十进制 1..100，默认 100
 opt.no-overwrite	目标已存在时不覆盖，报错退出（不给取值就是禁止覆盖）；写 --no-overwrite=false（0 / no / n / off）取消这条禁令，=true / 1 / yes / y / on 与不给取值同义。重复给出时最后一个生效
 opt.dry-run	只解析并列出候选窗口，不截图不写文件
 opt.json	已废弃的兼容开关，无副作用：成功与错误本来就输出 JSON
 opt.verbose	JSON 中追加 input 段（规范化后的全部输入），并保留 notes
-opt.quiet	省略 notes；errors 无论如何都会返回
+opt.quiet	省略 notes；errors 无论如何都会返回；与 --verbose 同时给出时按 --verbose 处理
 opt.lang	文案语言。auto(默认，跟随系统显示语言) / zh-CN / zh-TW / en / ja；系统语言不受支持时用 en
 opt.help	输出文本帮助（本段）
 opt.version	输出版本与阶段
@@ -76,7 +76,7 @@ opt.version	输出版本与阶段
 # 解析期诊断（src/CliOptions.cpp）
 # ---------------------------------------------------------------------------
 cli.hwnd_value	--hwnd 需要有效的句柄值（十进制，或带 0x 前缀的十六进制）
-cli.hwnd_hint	纯数字按十进制解析；十六进制请写成 0x……，或含 a-f 时自动按十六进制
+cli.hwnd_hint	纯数字按十进制解析；十六进制写成 0x……，含 a-f 时按十六进制。不要写正负号与空白；下划线只能夹在两位十六进制数字之间（0x_1A、1A__2B 都不收）
 cli.pid_value	--pid 需要有效的进程 ID（十进制，> 0）
 cli.process_empty	--process 不能为空
 cli.process_path	--process 只接受映像文件名（例如 notepad.exe），完整路径请用 --exe
@@ -89,14 +89,15 @@ cli.regex_hint	ECMAScript 语法；量词前要有可重复项，字符类里的
 cli.regex_too_complex	正则的回溯复杂度超过本机正则库的上限，这次匹配没有跑完
 cli.regex_too_complex_hint	语法本身没问题。改成子串匹配 --title-contains，或把模式里能确定下来的部分前移、去掉嵌套量词（例如 (a+)+ 换成 a+）。库的上限挡下来时加大 --timeout-ms 不会有帮助：%1
 cli.regex_late	正则在该阶段重新编译失败
-cli.index_value	--index 是从 1 开始的序号
+cli.index_value	--index 是从 1 开始的十进制序号
 cli.unknown_capture_method	--capture 取值不在允许列表内
 cli.unknown_language	--lang 取值不在支持列表内
 cli.duplicate_output	重复的 --out，输出路径只能有一个
 cli.output_duplicate_positional	输出路径重复：--out 与位置参数只能给一个
 cli.format_value	--format 取值不在允许列表内
-cli.quality_value	--quality 需要在 1..100 之间
+cli.quality_value	--quality 需要 1..100 之间的十进制数
 cli.timeout_value	毫秒数不合法：要写十进制，0 到 %1（0 = 不设这项期限）
+cli.decimal_hint	只接受十进制数字：不要写正负号、空白、小数点、指数（1e3）、下划线分隔或 0x 前缀
 cli.switch_no_value	该开关不接受取值，直接写选项名即可
 cli.switch_no_value_hint	%1（开）或 %1=false（关）
 cli.unknown_option	未知选项
@@ -293,8 +294,8 @@ enc.apartment	本线程无法初始化 WinRT 套间（%1）
 # ---------------------------------------------------------------------------
 # 屏幕目标（--monitor，src/ScreenMatch.cpp 与各通道的 CaptureScreenXxx）
 # ---------------------------------------------------------------------------
-cli.monitor_value	--monitor 需要 1 以上的屏幕编号，或 primary / all
-cli.monitor_value_hint	例如 --monitor 1（第一块屏）/ --monitor primary（主屏）/ --monitor all（每块屏各一张）
+cli.monitor_value	--monitor 需要 1 以上的十进制屏幕编号，或 primary / all
+cli.monitor_value_hint	例如 --monitor 1（第一块屏）/ --monitor primary（主屏）/ --monitor all（每块屏各一张）。编号只认十进制数字，不认负号、0x 或 1e3 这种写法
 cli.monitor_conflict	--monitor all 是"每块屏各截一张"，只能用在没有窗口条件的整屏截图上
 cli.monitor_conflict_hint	按屏幕过滤窗口时请给单个编号，例如 --monitor 2
 match.monitor_out_of_range	--monitor 的屏幕编号不存在

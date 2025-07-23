@@ -321,6 +321,8 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         j.Key(L"errors");
         DiagnosticArray(j, errors);
     }
+    // --quiet 只影响 notes：opt.quiet 是解析层定过优先级的最终值（-v 与 -q 同时给出时
+    // 已经是 false），所以这里不再判一次"verbose 要不要赢"——两处各判迟早不一致。
     if (!notes.empty() && !opt.quiet) {
         j.Key(L"notes");
         DiagnosticArray(j, notes);

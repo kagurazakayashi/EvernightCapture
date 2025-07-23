@@ -15,7 +15,10 @@
 // }
 //
 // 规则：captured 与 images 恒在（空时是 []）；errors 只要非空就一定输出（--quiet 也不抑制），
-// notes 仅非空且未 --quiet 时出现，input 仅 --verbose 出现。所以调用方先看 errors 再读 images。退出码始终有效：0 成功 / 1 参数错 / 2 未给条件 /
+// notes 仅非空且未 --quiet 时出现，input 仅 --verbose 出现。所以调用方先看 errors 再读 images。
+// 这里读到的 opt.quiet 已经是解析层定过的最终值：--verbose 与 --quiet 同时给出时按 --verbose
+// 处理（quiet 归 false 并留一条 note.flag_overrides_quiet），所以"notes 为什么还在"永远有据可查。
+// 退出码始终有效：0 成功 / 1 参数错 / 2 未给条件 /
 // 3 --help / 4 无匹配 / 5 多匹配 / 6 受保护 / 7 截图失败 / 8 写文件失败 / 9 内部异常。
 // 通道：默认全部写 stdout；一旦 -o -（图片占用标准输出）JSON 改走 stderr。
 // 连渲染结果本身都异常时的兜底诊断也一律走 stderr —— 那时无法确定图片是否已经占了 stdout

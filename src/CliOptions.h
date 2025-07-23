@@ -20,8 +20,10 @@ namespace ecapture {
 //     => 进程名是 notepad.exe 且 标题含"报告" 的窗口。
 // ---------------------------------------------------------------------------
 struct MatchOptions {
-    std::vector<uint64_t> hwnds;            // --hwnd            10 进制或 0x 前缀 16 进制
-    std::vector<uint32_t> pids;             // --pid             10 进制
+    // --hwnd：文档承诺过的三种写法都有效（纯数字按十进制、0x 前缀按十六进制、含 a-f 的裸写法
+    //        按十六进制），但不接受正负号与溢出；下划线只在十六进制写法里夹在两位数字之间时合法
+    std::vector<uint64_t> hwnds;
+    std::vector<uint32_t> pids;             // --pid             只认十进制，1..0xFFFFFFFF
     std::vector<std::wstring> processes;    // --process         仅映像名，忽略大小写
     std::vector<std::wstring> exePaths;     // --exe             完整路径，忽略大小写
     std::vector<std::wstring> titles;       // --title           标题精确匹配
@@ -73,7 +75,7 @@ enum class CaptureMethod {
 struct MonitorSelector {
     bool given = false;
     bool all = false;   // --monitor all
-    int ordinal = 0;    // 1 起；0 = 未指定，用主屏
+    int ordinal = 0;    // 1 起，只认十进制；0 = 未指定或 primary，用主屏
 };
 
 struct Options {
@@ -84,11 +86,11 @@ struct Options {
     bool outputImplicitStdout = false;  // 未给输出路径 => 按 "--out -" 处理，PNG 写标准输出
     ImageFormat format = ImageFormat::kPng;
     bool formatExplicit = false;      // 是否显式指定过 --format
-    int jpegQuality = 100;            // --quality
+    int jpegQuality = 100;            // --quality，只认十进制 1..100
     bool overwrite = true;            // --no-overwrite 置 false（=true 与裸开关同义，=false 取消）
 
     MultiMatch multi = MultiMatch::kAsk;
-    int index = 1;                    // multi == kIndex 时有效
+    int index = 1;                    // multi == kIndex 时有效；只认十进制 1..0xFFFF
 
     CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
     bool captureExplicit = false;                  // 是否显式指定过 --capture
@@ -103,8 +105,11 @@ struct Options {
     bool dryRun = false;              // --dry-run：只解析并打印候选信息（本阶段的默认行为）
     bool yes = false;                 // --yes：免掉"只取所选窗口画面"那条路径的确认，桌面像素路径无效
     bool json = false;                // --json
-    bool verbose = false;             // -v / --verbose（本阶段默认开启详细回显，便于验证）
-    bool quiet = false;               // -q / --quiet
+    bool verbose = false;             // -v / --verbose：追加 input 段并保留 notes
+    // -q / --quiet：省略 notes。它与 --verbose 同时给出时按 --verbose 处理，所以这里
+    // 落下来的已经是"生效后的 quiet"（冲突时解析层会把它归 false 并留一条提示）；
+    // errors 与 images[].source / path / scope 从来不受这条影响。
+    bool quiet = false;
 
     bool showHelp = false;            // --help，或"一个条件都没给"
     std::wstring helpReason;          // 非空 => 因为缺少条件而显示帮助

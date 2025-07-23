@@ -356,9 +356,11 @@ $cases += @{ Name = '不给 --yes 时默认要问人'
 $cases += @{ Name = '-y 短形式同样生效'
    A = ($ANCHOR + @('-v', '-y', 'out.png')); Exit = 0
    Check = { param($o) $o.input.yes -eq $true } }
+# -yq 里既认 -y，也认这一簇里的 -q 与本轮 -v 撞车（撞了按 --verbose 处理，见下面那一节）
 $cases += @{ Name = '-yq 这类开关簇里也认 -y'
    A = ($ANCHOR + @('-v', '-yq', 'out.png')); Exit = 0
-   Check = { param($o) ($o.input.yes -eq $true -and $null -eq $o.notes) } }
+   Check = { param($o) ($o.input.yes -eq $true -and
+                        ((Codes $o.notes) -join ',') -match 'note.flag_overrides_quiet') } }
 $cases += @{ Name = '--yes 后面再写 =false 以最后为准'
    A = ($ANCHOR + @('-v', '--yes', '--yes=false', 'out.png')); Exit = 0
    Check = { param($o) $o.input.yes -eq $false } }
@@ -428,6 +430,234 @@ $cases += @{ Name = '帮助写明预算是"共用这一份剩余时间"而不是
    A = @('--help'); Exit = 3; Text = $true; Has = @('共用这一份剩余时间') }
 $cases += @{ Name = '帮助写明确认到点按拒绝、动画缓冲不省'
    A = @('--help'); Exit = 3; Text = $true; Has = @('绝不按"默认同意"', '关闭动画') }
+
+# ---------------------------------------------------------------------------
+# 数值写法：每个数字选项只认它对外承诺过的那一种写法
+#   * 十进制类（--pid / --index / --monitor 的编号 / --quality / 两条期限）只认 [0-9]+：
+#     正负号、空白、小数点、指数（1e3）、下划线、0x 前缀、非 ASCII 数字一律拒收，
+#     区间在同一次解析里判完。旧实现会自己猜进制，于是 --pid 1e3 读成 483、
+#     --quality 1e 读成 30、--hwnd -1 读成 UINT64_MAX（非法值被强转成合法值）。
+#   * --hwnd 保留文档里的三种写法（纯数字=十进制 / 0x 前缀=十六进制 / 含 a-f=十六进制），
+#     但正负号与溢出照旧拒绝；下划线只在十六进制写法里合法，且必须夹在两位数字之间。
+#   * --monitor 的取值可省略，所以"要不要吃下一个参数"与实际解析必须是同一套规则：
+#     写坏了的数字要报错，不能悄悄变成输出文件名。
+# 判据一律写进 Check：用例表里的 Errors / Notes 两个键在 hashtable 上取不到
+# （$c.PSObject.Properties.Name 不列 hashtable 的键），只有 Check 这条真的会执行。
+# ---------------------------------------------------------------------------
+
+# 判 "auto 明确回到系统显示语言" 要一个不受本机语言影响的参照：先问一次不给 --lang 的
+# 本机构建产物，拿到本机默认语言标签，再挑一个与它不同的语言当"前一条 --lang"。
+$DEFAULT_LANG = ((Invoke-Ec -NoLang ($ANCHOR + @('-v', 'out.png'))).Stdout |
+                 ConvertFrom-Json).input.lang
+$OTHER_LANG = @('ja', 'en', 'zh-TW', 'zh-CN') | Where-Object { $_ -ne $DEFAULT_LANG } |
+              Select-Object -First 1
+
+# 所有十进制选项共用的非法写法（'' 与 ' ' 是空值：不能顺手当成 0）
+$BAD_NUMBERS = @('', ' ', ' 1', '1 ', '1 2', '-1', '+1', '0x10', '0X10', '1e3', '1E3', '1_0',
+                 '1.5', '1,5', '١٢', '１２', 'abc', '1a', 'a1', '0xFFFFFFFFFFFFFFFF')
+
+# --pid / --index / --quality / 两条期限：写成 --opt <值> 与 --opt=<值> 都要拒
+# （Check 里引用了循环变量的一律 GetNewClosure：用例是先攒齐、后一轮统一跑的，
+#   不封套的话判据拿到的是循环最后一次的那个值）
+foreach ($opt in @('--pid', '--index', '--quality', '--timeout-ms', '--consent-timeout-ms')) {
+    foreach ($bad in $BAD_NUMBERS) {
+        $cases += @{ Name = ('{0} 写法 {1} 被拒（分开给值）' -f $opt, ($(if ($bad) { $bad } else { '(空)' })))
+           A = @('--class', 'Shell_TrayWnd', '--dry-run', $opt, $bad, 'out.png'); Exit = 1
+           Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' -and
+                                $o.errors[0].option -eq $opt }.GetNewClosure() }
+        $cases += @{ Name = ('{0} 写法 {1} 被拒（内联给值）' -f $opt, ($(if ($bad) { $bad } else { '(空)' })))
+           A = @('--class', 'Shell_TrayWnd', '--dry-run', ($opt + '=' + $bad), 'out.png'); Exit = 1
+           Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' } }
+    }
+}
+# --monitor 的编号走内联写法（分开给值那一趟在下面"吃不吃下一个参数"那组里判）
+foreach ($bad in $BAD_NUMBERS) {
+    if (-not $bad) { continue }   # --monitor= 的空取值是"省略取值 = 主屏"，另有一条用例判它
+    $cases += @{ Name = ('--monitor 写法 {0} 被拒，且不会当成输出文件名' -f $bad)
+       A = @(('--monitor=' + $bad), '--dry-run', 'out.png'); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' -and
+                            $o.errors[0].option -eq '--monitor' } }
+}
+# 各选项自己的区间边界：合法端点要落进 -v 的回显，越界端点要在解析期就拦下。
+# 参照窗口用一个必然不存在的类名（命中数为 0），这样 --index 的最大值也不会被匹配阶段
+# 判成越界，判据只剩"解析有没有放行 + 回显到的数字对不对"。
+foreach ($b in @(
+    @{ A = @('--pid', '1');                             Field = 'pid';              Want = '1' },
+    @{ A = @('--pid', '4294967295');                    Field = 'pid';              Want = '4294967295' },
+    @{ A = @('--index', '1');                           Field = 'index';            Want = '1' },
+    @{ A = @('--index', '65535');                       Field = 'index';            Want = '65535' },
+    @{ A = @('--monitor', '1');                         Field = 'monitor';          Want = '1' },
+    @{ A = @('--timeout-ms', '0');                      Field = 'timeoutMs';        Want = '0' },
+    @{ A = @('--timeout-ms', '86400000');               Field = 'timeoutMs';        Want = '86400000' },
+    @{ A = @('--consent-timeout-ms', '86400000');       Field = 'consentTimeoutMs'; Want = '86400000' }
+)) {
+    $cases += @{ Name = ('数值边界放行：{0}' -f ($b.A -join ' '))
+       A = (@('--class', 'NoSuchWindowXyz', '--dry-run', '-v') + $b.A + @('out.png')); Exit = 4
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'match.no_window' -and
+                            ([string]$o.input.($b.Field) -eq $b.Want) }.GetNewClosure() }
+}
+foreach ($b in @(@('--pid', '0'), @('--pid', '4294967296'), @('--pid', '18446744073709551616'),
+                 @('--index', '0'), @('--index', '65536'), @('--quality', '0'), @('--quality', '101'),
+                 @('--monitor', '0'), @('--monitor', '65536'),
+                 @('--timeout-ms', '86400001'), @('--consent-timeout-ms', '86400001'))) {
+    $cases += @{ Name = ('数值越界拦下：{0}' -f ($b -join ' '))
+       A = (@('--class', 'Shell_TrayWnd') + $b + @('out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' } }
+}
+# 质量的两个合法端点要能真的用出去（期限的 0 是"明确不设"，上面那条已经判过）
+foreach ($q in @('1', '100')) {
+    $cases += @{ Name = ('quality 端点 {0} 接受' -f $q)
+       A = (@('--class', 'Shell_TrayWnd', '--dry-run', '--quality') + @($q, 'out.jpg')); Exit = 0
+       Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') } }
+}
+# 编号的上界本身不是解析期的事：65535 进得了解析，交给匹配阶段判越界
+$cases += @{ Name = '屏幕编号 65535 由解析放行、由匹配阶段判越界'
+   A = @('--monitor', '65535', '--dry-run', '-v', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'match.monitor_out_of_range' -and
+                        $o.input.monitor -eq 65535 } }
+$cases += @{ Name = '--monitor= 的空取值就是省略取值（主屏）'
+   A = @('--monitor=', '--dry-run', '-v', 'out.png'); Exit = 0
+   Check = { param($o) $o.input.monitor -eq 'primary' } }
+
+# ---- --hwnd：三种文档写法都要能用，符号 / 溢出 / 下划线位置要拦 ----
+foreach ($h in @(
+    @{ V = '1706828';              Hex = '0x001A0B4C' },   # 纯数字 = 十进制
+    @{ V = '0x001A0B4C';           Hex = '0x001A0B4C' },   # 0x 前缀 = 十六进制
+    @{ V = '0X1a0b4c';             Hex = '0x001A0B4C' },   # 0X 与前缀后的小写都认
+    @{ V = '001A0B4C';             Hex = '0x001A0B4C' },   # Spy++ 那种裸写
+    @{ V = '0x001A_0B4C';          Hex = '0x001A0B4C' },   # 下划线夹在两位数字之间
+    @{ V = '001A_0B4C';            Hex = '0x001A0B4C' },
+    @{ V = '1e3';                  Hex = '0x000001E3' },   # 含 a-f => 十六进制（文档写明的兼容写法）
+    @{ V = '0xFFFFFFFFFFFFFFFF';   Hex = '0xFFFFFFFFFFFFFFFF' },   # 64 位上界本身
+    @{ V = '0x10';                 Hex = '0x00000010' }
+)) {
+    $cases += @{ Name = ('HWND 写法 {0} 解析成 {1}' -f $h.V, $h.Hex)
+       A = @('-v', '--hwnd', $h.V, '--dry-run', 'out.png'); Exit = 4
+       Check = { param($o) @($o.input.hwnd).Count -eq 1 -and
+                            $o.input.hwnd[0].hex -eq $h.Hex }.GetNewClosure() }
+}
+foreach ($bad in @('', ' ', ' 1', '1 ', '1 2', '-1', '+1', '-0x10', '0x', '0x_', 'zzz', '1.2', '0x1.2',
+                   '0x1,2', '_1A0B4C', '1A0B4C_', '1A__0B4C', '0x_1A0B4C', '12_34', '1_0',
+                   '0x1FFFFFFFFFFFFFFFF', '18446744073709551616', '０', '1A 0B4C', '0x0', '0')) {
+    $cases += @{ Name = ('HWND 写法 {0} 被拒' -f ($(if ($bad) { $bad } else { '(空)' })))
+       A = @('--hwnd', $bad, 'out.png'); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' -and
+                            $o.errors[0].option -eq '--hwnd' -and $o.errors[0].hint } }
+}
+
+# ---- --monitor 分开给值：要不要吃下一个参数，判据必须与实际解析同源 ----
+foreach ($bad in @('1e3', '-1', '+1', '1_0', '١٢', '１２', '0x2', '999999999999999999999999', ' 1',
+                   '1.5', '65536')) {
+    $cases += @{ Name = ('--monitor 后面是写坏的数字 {0}：报错而不是变成输出文件名' -f $bad)
+       A = @('--monitor', $bad, '--dry-run', 'out.png'); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' -and
+                            $o.errors[0].option -eq '--monitor' } }
+}
+# 真正不像取值的参数照旧留给输出路径（这条是 --monitor 取值可省略的立身之本）
+foreach ($path in @('out.png', '2.png', 'v2', 'D:\a\b.png', 'out')) {
+    $cases += @{ Name = ('--monitor 不吃 {0}（那是输出路径）' -f $path)
+       A = @('--monitor', '--dry-run', '-v', $path); Exit = 0
+       Check = { param($o) $o.input.monitor -eq 'primary' -and
+                            $o.input.output -like ('*' + $path) }.GetNewClosure() }
+}
+$cases += @{ Name = '--monitor 后面紧跟 -v：那是开关，编号仍是主屏'
+   A = @('--monitor', '-v', '--dry-run', 'out.png'); Exit = 0
+   Check = { param($o) $o.input.monitor -eq 'primary' -and
+                        $o.input.output -like '*out.png' } }
+$cases += @{ Name = '--monitor 后面是 -o：取值留给后面的路径'
+   A = @('--monitor', '-o', 'out.png', '--dry-run', '-v'); Exit = 0
+   Check = { param($o) $o.input.monitor -eq 'primary' -and
+                        $o.input.output -like '*out.png' } }
+
+# ---------------------------------------------------------------------------
+# --lang 的预扫描与正式解析共用一套 token 消费规则
+#   旧实现另写了一份"以 - 开头就算选项"的扫描，于是 --title 吃掉的那个 --lang
+#   被它当成语言开关，而正式解析根本没把它当选项（-v 回显的 lang 与真实决定不一致）。
+#   重复给出：最后一个有效的指定生效；auto 是"明确回到系统显示语言"，不是"保持上一条"。
+# ---------------------------------------------------------------------------
+$cases += @{ Name = '后面那条 --lang 覆盖前面那条'
+   A = (@('--lang', 'ja', '--lang', 'zh-TW', '-v') + $ANCHOR + @('out.png')); Exit = 0
+   Check = { param($o) $o.input.lang -eq 'zh-TW' } }
+$cases += @{ Name = ('--lang {0} 之后再来一条 auto：明确回到系统显示语言' -f $OTHER_LANG)
+   A = (@('--lang', $OTHER_LANG, '--lang', 'auto', '-v') + $ANCHOR + @('out.png')); Exit = 0
+   Check = { param($o) $o.input.lang -eq $DEFAULT_LANG -and $o.input.lang -ne $OTHER_LANG } }
+$cases += @{ Name = ('auto 之后再来一条 --lang {0}：仍然以后写的为准' -f $OTHER_LANG)
+   A = (@('--lang', 'auto', '--lang', $OTHER_LANG, '-v') + $ANCHOR + @('out.png')); Exit = 0
+   Check = { param($o) $o.input.lang -eq $OTHER_LANG } }
+$cases += @{ Name = '省略取值的 --lang 与 --lang auto 同义（回到系统显示语言）'
+   A = (@('--lang', $OTHER_LANG, '--lang=', '-v') + $ANCHOR + @('out.png')); Exit = 0
+   Check = { param($o) $o.input.lang -eq $DEFAULT_LANG } }
+$cases += @{ Name = '内联与分开两种写法的 --lang 一样参与覆盖'
+   A = (@('--lang=ja', '-l', 'en', '-v') + $ANCHOR + @('out.png')); Exit = 0
+   Check = { param($o) $o.input.lang -eq 'en' } }
+$cases += @{ Name = '--lang 写两次同样以最后为准（非法那条只报错不改语言）'
+   A = (@('--lang', 'ja', '--lang', 'klingon', '-v') + $ANCHOR + @('out.png')); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unknown_language' -and
+                        $o.input.lang -eq 'ja' } }
+# 被前一个选项吃掉的 token 不再是"选项"：旧的第二份扫描器会把它们当成语言开关
+$cases += @{ Name = '被 --title 吃掉的 --lang 不算语言开关'
+   A = (@('--lang', 'en', '--title', '--lang', 'ja', '-v', 'out.png')); Exit = 1
+   Check = { param($o) $o.input.lang -eq 'en' -and (@($o.input.title) -join ',') -eq '--lang' } }
+$cases += @{ Name = '被 --title 吃掉的 -l 不算语言开关'
+   A = (@('--lang', 'en', '--title', '-l', 'ja', '-v', 'out.png')); Exit = 1
+   Check = { param($o) $o.input.lang -eq 'en' -and (@($o.input.title) -join ',') -eq '-l' } }
+$cases += @{ Name = '被 --title-contains 吃掉的 --lang 既不改语言也不报错'
+   A = (@('--lang', 'en', '--title-contains', '--lang', '-v') + $ANCHOR + @('out.png')); Exit = 4
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'match.no_window' -and
+                        $o.input.lang -eq 'en' -and
+                        (@($o.input.titleContains) -join ',') -eq '--lang' } }
+$cases += @{ Name = '取值里含 --lang 字样时不被切成开关'
+   A = (@('--lang', 'en', '--title', 'my--lang-file', '-v') + $ANCHOR + @('out.png')); Exit = 4
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'match.no_window' -and
+                        $o.input.lang -eq 'en' -and
+                        (@($o.input.title) -join ',') -eq 'my--lang-file' } }
+$cases += @{ Name = '-- 之后的 --lang 不改语言（旧的第二份扫描器会把它当开关）'
+   A = @('--lang', 'en', '--class', 'NoSuchWindowXyz', '-v', 'out.png', '--', '--lang', 'ja')
+   Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unexpected_positional' -and
+                        $o.input.lang -eq 'en' } }
+$cases += @{ Name = '-- 之后的 -v 不再是开关'
+   A = @('--lang', 'en', '--class', 'NoSuchWindowXyz', 'out.png', '--', '-v'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unexpected_positional' -and
+                        -not $o.PSObject.Properties.Name.Contains('input') } }
+$cases += @{ Name = '--lang 缺取值按缺少取值报错'
+   A = @('--class', 'Shell_TrayWnd', '--dry-run', 'out.png', '--lang'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.missing_value' } }
+$cases += @{ Name = '非法语言仍然按已经定下的语言报告'
+   A = @('--lang', 'ja', '--lang', 'klingon', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unknown_language' -and
+                        $o.errors[0].message -match '言語' } }
+
+# ---------------------------------------------------------------------------
+# -v 与 -q 同时给出：按 --verbose 处理（文案里承诺的就是这一条），notes 仍然交付，
+# 并且恰好回显一条冲突提示；errors 与 images 的归属字段任何时候都不被隐藏。
+# ---------------------------------------------------------------------------
+foreach ($form in @(@('-v', '-q'), @('-q', '-v'), @('-vq'), @('-qv'), @('--verbose', '--quiet'),
+                   @('--quiet', '--verbose'), @('-v', '-q', '-q', '-v'))) {
+    $cases += @{ Name = ('-v 与 -q 同用（{0}）：notes 保留且冲突提示恰好一条' -f ($form -join ' '))
+       A = (@('--class', 'Shell_TrayWnd', '--dry-run') + $form + @('out.png')); Exit = 0
+       Check = { param($o) (@($o.notes | Where-Object { $_.code -eq 'note.flag_overrides_quiet' })).Count -eq 1 -and
+                            ((Codes $o.notes) -join ',') -match 'note.dry_run' -and
+                            $o.input.lang -eq 'zh-CN' } }
+}
+$cases += @{ Name = '只给 -q 时 notes 消失、input 也没有'
+   A = @('--class', 'Shell_TrayWnd', '--dry-run', '-q', 'out.png'); Exit = 0
+   Check = { param($o) (-not $o.PSObject.Properties.Name.Contains('notes')) -and
+                        -not $o.PSObject.Properties.Name.Contains('input') } }
+$cases += @{ Name = '-q 不隐藏 errors，也不补一条冲突提示'
+   A = @('-q', '--pid', '1e3', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' -and
+                        -not $o.PSObject.Properties.Name.Contains('notes') } }
+$cases += @{ Name = '-v -q 一起给失败命令时 errors 与 notes 都在'
+   A = @('-v', '-q', '--pid', '1e3', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_number' -and
+                        ((Codes $o.notes) -join ',') -eq 'note.flag_overrides_quiet' } }
+$cases += @{ Name = '帮助里写了 -v 与 -q 同时给出按 -v 处理'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('与 --verbose 同时给出时按 --verbose 处理') }
+$cases += @{ Name = '帮助里写了数字取值只认十进制'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('数字取值只认十进制') }
+
+
 
 
 $results = @()
@@ -539,7 +769,16 @@ $PROBE = @(
     @{ Name = '整屏不支持的通道'; A = @('--monitor', 'primary', '--capture', 'dwm', 'out.png'); Exit = 1 },
     @{ Name = 'all 与窗口条件冲突'; A = @('--monitor', 'all', '--class', 'Shell_TrayWnd', 'out.png'); Exit = 1 },
     @{ Name = '期限取值非法'; A = @('--class', 'Shell_TrayWnd', '--timeout-ms', 'abc', 'out.png'); Exit = 1 },
-    @{ Name = '正则失控（匹配阶段的诊断）'; A = @('--title-regex', '(a+)+$', '--dry-run', 'out.png'); Exit = 1 }
+    @{ Name = '正则条件走到匹配阶段（合法的表达式不是参数错）'; A = @('--title-regex', '(a+)+$', '--dry-run', 'out.png'); Exit = 4 },
+    # 数值与语言这一节的写法：换语言只能换文字，被拒的写法与退出码必须四种语言完全一致
+    @{ Name = 'pid 写成指数记法'; A = @('--pid', '1e3', 'out.png'); Exit = 1 },
+    @{ Name = 'quality 写成十六进制'; A = @('--quality', '0x20', 'out.png'); Exit = 1 },
+    @{ Name = 'hwnd 带负号'; A = @('--hwnd', '-1', 'out.png'); Exit = 1 },
+    @{ Name = 'hwnd 下划线位置错'; A = @('--hwnd', '0x_1A0B4C', 'out.png'); Exit = 1 },
+    @{ Name = 'hwnd 溢出'; A = @('--hwnd', '0x1FFFFFFFFFFFFFFFF', 'out.png'); Exit = 1 },
+    @{ Name = 'monitor 编号写成写坏的数字'; A = @('--monitor', '1e3', 'out.png'); Exit = 1 },
+    @{ Name = 'index 写成非 ASCII 数字'; A = @('--class', 'Shell_TrayWnd', '--index', '１', 'out.png'); Exit = 1 },
+    @{ Name = '语言取值非法'; A = @('--lang', 'klingon', '--pid', '1', 'out.png'); Exit = 1 }
 )
 $bad = 0
 

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cwctype>
+#include <functional>
 #include <iterator>
+#include <limits>
 #include <regex>
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -61,32 +63,110 @@ size_t EditDistance(const std::wstring& a, const std::wstring& b, size_t limit) 
     return prev[b.size()];
 }
 
-// 数值解析：允许十进制，允许 0x/0X 前缀的十六进制；带字母的按十六进制解释。
-bool ParseNumber(const std::wstring& raw, uint64_t* out) {
-    const std::wstring text = Trim(raw);
-    if (text.empty()) return false;
-    int base = 10;
-    std::wstring body = text;
-    if (StartsWith(body, L"0x") || StartsWith(body, L"0X")) {
-        base = 16;
-        body = body.substr(2);
-    } else if (std::any_of(body.begin(), body.end(),
-                           [](wchar_t c) { return std::iswxdigit(c) && std::iswalpha(c); })) {
-        base = 16;  // 形如 001A0B4C，按 Spy++ 风格十六进制处理
-    }
-    if (body.empty()) return false;
-    // 允许下划线分隔的可读写法：0x001A_0B4C
-    std::wstring cleaned;
-    cleaned.reserve(body.size());
-    for (wchar_t c : body) if (c != L'_') cleaned.push_back(c);
+// ---------------------------------------------------------------------------
+// 数值解析
+// ---------------------------------------------------------------------------
+//
+// 旧实现只有一个 ParseNumber，它会自己猜进制：串里只要出现 a-f 就按十六进制解释，于是
+// --pid 1e3 变成 483、--quality 1e 变成 30；而它最后交给 wcstoull，那个函数认正负号，
+// 于是 --hwnd -1 得到 UINT64_MAX —— 非法值被强转成了合法值。现在按"每个选项对外承诺过什么"
+// 分成两套，两套都不再猜：
+//
+//   * 十进制类（--pid / --index / --monitor 的编号 / --quality / --timeout-ms /
+//     --consent-timeout-ms）只认 [0-9]+：不要正负号、不要空白、不要小数点、不要指数写法
+//     （1e3）、不要下划线分隔、不要 0x 前缀，也不接受任何非 ASCII 数字。区间在同一次调用里
+//     判完，调用点没机会"忘了判上界"。
+//   * 句柄（--hwnd）保留文档里那三种写法，但正负号与溢出照样拒绝（见 ParseHandleValue）。
 
-    wchar_t* end = nullptr;
-    errno = 0;
-    const unsigned long long value = std::wcstoull(cleaned.c_str(), &end, base);
-    if (errno == ERANGE || end == cleaned.c_str()) return false;
-    while (end && *end && std::iswspace(*end)) ++end;
-    if (end && *end) return false;
-    *out = value;
+constexpr bool IsAsciiDigit(wchar_t c) { return c >= L'0' && c <= L'9'; }
+
+constexpr bool IsAsciiHexDigit(wchar_t c) {
+    return IsAsciiDigit(c) || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
+}
+
+constexpr bool IsAsciiHexLetter(wchar_t c) {
+    return (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
+}
+
+constexpr int HexDigitValue(wchar_t c) {
+    if (IsAsciiDigit(c)) return static_cast<int>(c - L'0');
+    return static_cast<int>((c >= L'A' && c <= L'F') ? (c - L'A' + 10) : (c - L'a' + 10));
+}
+
+// 累进一位并当场判溢出。不用 wcstoull：它认正负号、按 locale 认数字、越界时要么回绕要么只
+// 设 errno（而 errno 在别人调过任何函数之后就不再是那条信息了）。
+bool AccumulateDigit(wchar_t c, uint32_t base, uint64_t* acc) {
+    const int d = base == 10 ? static_cast<int>(c - L'0') : HexDigitValue(c);
+    if (d < 0 || static_cast<uint64_t>(d) >= base) return false;
+    constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
+    if (*acc > (kMax - static_cast<uint64_t>(d)) / base) return false;
+    *acc = *acc * base + static_cast<uint64_t>(d);
+    return true;
+}
+
+// 严格的十进制字面量：非空、全 ASCII 数字、装得进 64 位。空白与正负号在这里就已经非法，
+// 所以"1 2"、" 1"、"+1"、"-1"、"1e3"、"1_000"、"1.5"、全角数字统统不收。
+// 它同时也是 --monitor "下一个参数算不算取值"的判据之一，因此这份语法只写这一处。
+bool DecimalLiteral(const std::wstring& raw, uint64_t* out) {
+    if (raw.empty()) return false;
+    uint64_t acc = 0;
+    for (wchar_t c : raw) {
+        if (!IsAsciiDigit(c)) return false;
+        if (!AccumulateDigit(c, 10, &acc)) return false;
+    }
+    if (out) *out = acc;
+    return true;
+}
+
+// 语法与区间一次判完（上下界都由调用点写明，0 是不是合法取值因此永远是显式决定）。
+bool ParseDecimal(const std::wstring& raw, uint64_t minInclusive, uint64_t maxInclusive,
+                  uint64_t* out) {
+    uint64_t v = 0;
+    if (!DecimalLiteral(raw, &v)) return false;
+    if (v < minInclusive || v > maxInclusive) return false;
+    *out = v;
+    return true;
+}
+
+// --hwnd 的三种写法，逐个定清楚（旧实现靠 wcstoull 猜，正负号与溢出都漏了）：
+//   1. 纯 ASCII 数字            => 十进制
+//   2. 0x / 0X 前缀             => 十六进制，前缀之后至少有一位十六进制数字
+//   3. 裸写而且含 a-f           => 十六进制（Spy++ 那种 001A0B4C，文档一直这么承诺）
+// 一律拒绝：正负号、任何空白、小数点、非 ASCII 数字、超过 64 位（溢出就是溢出，不回绕）。
+// 下划线只在十六进制那两种写法里合法，且必须夹在两位十六进制数字之间：不打头、不收尾、
+// 不连写，也不紧跟在 0x 之后（所以 0x_1A 与 1A__2B 都算写错了）。
+bool ParseHandleValue(const std::wstring& raw, uint64_t* out) {
+    if (raw.empty()) return false;
+    size_t body0 = 0;
+    if (raw.size() >= 2 && raw[0] == L'0' && (raw[1] == L'x' || raw[1] == L'X')) body0 = 2;
+    const std::wstring body = raw.substr(body0);
+    if (body.empty()) return false;  // 光写了个 "0x"
+    // 数字部分每个字符都得是十六进制数字或下划线：正负号、空白、小数点、非 ASCII 数字
+    // 以及 g-z 这些字母统统在这里拒掉。
+    for (wchar_t c : body) {
+        if (c == L'_' || IsAsciiHexDigit(c)) continue;
+        return false;
+    }
+    // 进制按写法定，不猜：有 0x 前缀、或者裸写里含 a-f，才是十六进制；纯数字是十进制。
+    const bool hexadecimal = body0 != 0 || std::any_of(body.begin(), body.end(), IsAsciiHexLetter);
+    const uint32_t base = hexadecimal ? 16u : 10u;
+    if (!hexadecimal) {
+        // 十进制写法里没有定义过下划线，所以算写错而不是算可读性。
+        for (wchar_t c : body) {
+            if (!IsAsciiDigit(c)) return false;
+        }
+    } else if (body.find(L'_') != std::wstring::npos) {
+        if (!IsAsciiHexDigit(body.front()) || !IsAsciiHexDigit(body.back())) return false;
+        for (size_t k = 1; k < body.size(); ++k) {
+            if (!IsAsciiHexDigit(body[k]) && !IsAsciiHexDigit(body[k - 1])) return false;
+        }
+    }
+    uint64_t acc = 0;
+    for (wchar_t c : body) {
+        if (c == L'_') continue;
+        if (!AccumulateDigit(c, base, &acc)) return false;
+    }
+    *out = acc;
     return true;
 }
 
@@ -97,12 +177,39 @@ bool ParseBool(const std::wstring& raw, bool* out) {
     return false;
 }
 
-// 取值可省略的选项要靠这个判断"下一个参数是不是我的取值"，否则会把输出路径吃掉。
-bool LooksLikeMonitorValue(const std::wstring& raw) {
+// ---------------------------------------------------------------------------
+// --monitor 的取值语法（取值可省略，所以"要不要吃掉下一个参数"必须与实际解析同源）
+// ---------------------------------------------------------------------------
+
+bool MonitorKeyword(const std::wstring& raw) {
     const std::wstring v = ToLower(Trim(raw));
-    if (v.empty()) return false;
-    if (v == L"primary" || v == L"all") return true;
-    return std::all_of(v.begin(), v.end(), [](wchar_t c) { return std::iswdigit(c) != 0; });
+    return v == L"all" || v == L"primary";
+}
+
+// "有人想写个数字，只是写坏了"。这一条故意比 DecimalLiteral 宽：宽到能把 1e3 / -1 / 1.5 /
+// 全角数字这些写法一并吃掉，交给 Apply 报 cli.invalid_number，而不是让它们悄悄变成输出路径
+// 上的文件名（旧实现只判"全是数字"才吃，于是 --monitor 1e3 被读成"没给取值 + 输出叫 1e3"）。
+// 判据是"每个字符都还像数字、而且至少有一位数字"：十六进制的 a-f 与 x、指数写法用的 e、
+// 小数点、千分位逗号、下划线分隔、正负号都算；一旦冒出 p / v 或路径分隔符这类字符就不像数字
+// 了。所以 out.png、2.png、v2、D:\a 照旧是输出路径（--monitor 取值可省略那条约定没动）。
+bool LooksLikeNumberAttempt(const std::wstring& raw) {
+    const std::wstring v = Trim(raw);
+    bool hasDigit = false;
+    for (wchar_t c : v) {
+        if (c == L'\\' || c == L'/' || c == L':') return false;
+        const bool digit = IsAsciiDigit(c) || std::iswdigit(c) != 0;
+        hasDigit = hasDigit || digit;
+        const bool numberish = digit || IsAsciiHexLetter(c) || c == L'x' || c == L'X' ||
+                               c == L'+' || c == L'-' || c == L'_' || c == L'.' || c == L',';
+        if (!numberish) return false;
+    }
+    return hasDigit;
+}
+
+// 取值可省略的选项要靠这个判断"下一个参数是不是我的取值"，否则会把输出路径吃掉。
+// 判据 = 关键字 + 合十进制语法的编号 + 写坏了的数字，三者都属于"这条选项的取值位"。
+bool LooksLikeMonitorValue(const std::wstring& raw) {
+    return MonitorKeyword(raw) || DecimalLiteral(raw, nullptr) || LooksLikeNumberAttempt(raw);
 }
 
 bool LooksLikeOptionalValue(const std::wstring& name, const std::wstring& raw) {
@@ -110,37 +217,8 @@ bool LooksLikeOptionalValue(const std::wstring& name, const std::wstring& raw) {
     return false;
 }
 
-// --lang 必须早于其余选项定下来：解析期的错误文案本身就要用调用方指定的语言。
-// 这里只找 --lang / -l / /lang 三种写法，取值非法不在这里报错——正式解析会按
-// 当前已生效的语言报 cli.unknown_language。
-void SelectLanguageFromCommandLine(int argc, wchar_t* const* argv) {
-    SetLanguage(DetectSystemLanguage());
-    for (int i = 1; i < argc; ++i) {
-        const std::wstring arg = argv[i];
-        std::wstring body;
-        if (StartsWith(arg, L"--")) body = arg.substr(2);
-        else if (!arg.empty() && (arg[0] == L'-' || arg[0] == L'/')) body = arg.substr(1);
-        else continue;
-
-        std::wstring name = body;
-        std::optional<std::wstring> inlineValue;
-        const size_t eq = body.find(L'=');
-        if (eq != std::wstring::npos) {
-            name = body.substr(0, eq);
-            inlineValue = body.substr(eq + 1);
-        }
-        const bool isLong = EqualsInsensitive(name, L"lang");
-        const bool isShort = !isLong && name.size() == 1 && name[0] == L'l';
-        if (!isLong && !isShort) continue;
-
-        std::wstring value = inlineValue ? *inlineValue
-                                         : (i + 1 < argc ? std::wstring(argv[i + 1]) : std::wstring());
-        value = Trim(value);
-        // 不 break：写了多个 --lang 时以最后一个为准（正式解析也是后者覆盖前者）
-        if (value.empty() || EqualsInsensitive(value, L"auto")) continue;  // 沿用系统语言
-        if (const auto lang = LanguageFromTag(value)) SetLanguage(*lang);
-    }
-}
+// --lang 的预扫描与 argv 扫描器写在选项目录之后（它们要按 kOptions 判断"这个选项吃不吃值"），
+// 见本文件里 ScanArgv / SelectLanguageFromCommandLine 那一段。
 
 // ---------------------------------------------------------------------------
 // 选项目录（CLI 契约的唯一来源：解析、--help 的 JSON 与文本都由它生成）
@@ -152,6 +230,11 @@ constexpr const wchar_t* kFormatValues[] = {
 // --timeout-ms / --consent-timeout-ms 的上限：24 小时。再大的数字基本上是把期限当成装饰，
 // 而那正是这条参数要解决的问题，所以宁可不接受。
 constexpr uint64_t kMaxTimeoutMs = 86400000ull;
+// --index 与 --monitor 的编号上限。一个条件命中六万多个窗口、或者机器上有六万多块屏，
+// 都是不可能的；超过这个数的编号一定是敲错了，照实在解析期拒掉，不留到匹配阶段去凑越界。
+constexpr uint64_t kMaxOrdinal = 0xFFFFull;
+// 进程 ID 的上限就是 Windows 给 PID 留的那 32 位（0 不是合法 PID）。
+constexpr uint64_t kMaxPid = 0xFFFFFFFFull;
 constexpr const wchar_t* kCaptureValues[] = {
     L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
 
@@ -278,6 +361,164 @@ std::optional<ImageFormat> ParseFormat(const std::wstring& raw) {
     if (v == L"tif" || v == L"tiff") return ImageFormat::kTiff;
     if (v == L"gif") return ImageFormat::kGif;
     return std::nullopt;
+}
+
+// ---------------------------------------------------------------------------
+// argv 扫描器：token 消费规则只有一份
+// ---------------------------------------------------------------------------
+//
+// 语言必须在任何一条诊断产生之前就定下来（解析期的报错文案本身要用调用方指定的语言），
+// 所以在这段完整解析之前还得先扫一遍 argv 找 --lang。问题是"再扫一遍"很容易写成第二份
+// 规则漂移的解析器 —— 旧实现正是这样：它按"以 - 或 / 开头"认选项，于是
+// `--title --lang ja` 里被 --title 吃掉的那个 "--lang" 被它当成了语言开关，
+// 而正式解析根本没把它当选项。现在两趟走同一个 ScanArgv，消费规则不可能分叉。
+struct ScannedOption {
+    const OptionSpec* spec = nullptr;
+    std::wstring value;         // 实际取值：inline 写法，或吃掉的下一个参数；省略时为空
+    bool hasValue = false;      // 用户是否写出过取值（--flag= 这种空取值也算写过）
+    bool missingValue = false;  // 该选项要吃值，但 argv 已经到头了
+};
+
+struct ScannedItem {
+    enum class Kind { kOption, kPositional, kUnknownOption };
+    Kind kind = Kind::kPositional;
+    ScannedOption option;    // kOption
+    std::wstring name;       // kUnknownOption：去掉前导 - 与 =取值 的那个名字（给"你是不是想输入"用）
+    std::wstring token;      // kPositional / kUnknownOption：原始那一条参数
+};
+
+// 逐条吐出 argv 里的条目。规矩与正式解析一直相同的那一套：
+//   * 裸 -- 之后的所有参数都是位置参数（-- 本身丢掉，不进位置参数）
+//   * 吃值的选项把下一个参数消费掉，哪怕它长得像另一个选项（--title --lang 就是标题为 "--lang"）
+//   * 取值可省略的选项（--monitor）只在下一个参数合它那套取值语法时才吃它
+//   * -vq 这种布尔开关簇展开成多条 kOption
+// sink 会被调用任意次；返回值只是"扫完了"。
+void ScanArgv(int argc, wchar_t* const* argv,
+              const std::function<void(const ScannedItem&)>& sink) {
+    auto positional = [&](std::wstring tok) {
+        ScannedItem it;
+        it.kind = ScannedItem::Kind::kPositional;
+        it.token = std::move(tok);
+        sink(it);
+    };
+    bool stopParsing = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring arg = argv[i];
+        if (stopParsing || arg.empty()) { positional(arg); continue; }
+        if (arg == L"--") { stopParsing = true; continue; }
+
+        std::wstring body;
+        bool longForm = false;
+        if (StartsWith(arg, L"--")) { body = arg.substr(2); longForm = true; }
+        else if (arg[0] == L'-' || arg[0] == L'/') { body = arg.substr(1); }
+        else { positional(arg); continue; }
+        if (body.empty()) { positional(arg); continue; }
+
+        std::optional<std::wstring> inlineValue;
+        std::wstring name = body;
+        if (const size_t eq = body.find(L'='); eq != std::wstring::npos) {
+            name = body.substr(0, eq);
+            inlineValue = body.substr(eq + 1);
+        }
+
+        const OptionSpec* spec = FindOption(name);
+        if (!spec && !longForm) spec = FindShortOption(name);
+
+        auto emitOption = [&](const OptionSpec& s, std::wstring value, bool hasValue,
+                              bool missingValue = false) {
+            ScannedItem it;
+            it.kind = ScannedItem::Kind::kOption;
+            it.option = ScannedOption{&s, std::move(value), hasValue, missingValue};
+            sink(it);
+        };
+
+        // -abc 形式的布尔开关组合
+        if (!spec && !longForm && !inlineValue && name.size() > 1) {
+            std::vector<const OptionSpec*> cluster;
+            bool allBool = true;
+            for (wchar_t ch : name) {
+                const std::wstring one(1, ch);
+                const OptionSpec* s = FindShortOption(one);
+                if (!s || s->takesValue) { allBool = false; break; }
+                cluster.push_back(s);
+            }
+            if (allBool && !cluster.empty()) {
+                for (const OptionSpec* s : cluster) emitOption(*s, L"", false);
+                continue;
+            }
+        }
+
+        if (!spec) {
+            // 像路径（含 \ 或 /）就当位置参数，其余按误写的选项处理
+            if (!longForm && HasPathSeparator(arg)) { positional(arg); continue; }
+            ScannedItem it;
+            it.kind = ScannedItem::Kind::kUnknownOption;
+            it.name = name;
+            it.token = arg;
+            sink(it);
+            continue;
+        }
+
+        if (!spec->takesValue) {
+            emitOption(*spec, inlineValue ? *inlineValue : std::wstring(), inlineValue.has_value());
+            continue;
+        }
+        if (inlineValue) {
+            emitOption(*spec, *inlineValue, true);
+            continue;
+        }
+        if (spec->optionalValue) {
+            // 取值可省略：只在下一个参数明显就是本选项的取值时才吃掉它，否则当开关用
+            // （--monitor = 主屏），剩下的照常按位置参数处理。判据与实际解析同源。
+            std::wstring next;
+            if (i + 1 < argc) next = Trim(argv[i + 1]);
+            if (LooksLikeOptionalValue(std::wstring(spec->name), next)) {
+                emitOption(*spec, argv[++i], true);
+            } else {
+                emitOption(*spec, L"", false);
+            }
+            continue;
+        }
+        if (i + 1 < argc) {
+            emitOption(*spec, argv[++i], true);
+            continue;
+        }
+        emitOption(*spec, L"", false, true);
+    }
+}
+
+// --lang 取值的语义，预扫描与正式解析共用一份：
+//   kReset —— 没写取值、或写了 auto：明确回到系统显示语言（不是"保持上一次的语言"）
+//   kSet   —— 认得的标签，*out 已填
+//   kInvalid —— 不认。正式解析要按当前已生效的语言报 cli.unknown_language；预扫描按"这次没指定"跳过
+enum class LangToken { kReset, kSet, kInvalid };
+
+LangToken ResolveLangToken(const std::wstring& raw, Language systemLang, Language* out) {
+    const std::wstring v = Trim(raw);
+    if (v.empty() || EqualsInsensitive(v, L"auto")) {
+        *out = systemLang;
+        return LangToken::kReset;
+    }
+    if (const auto lang = LanguageFromTag(v)) {
+        *out = *lang;
+        return LangToken::kSet;
+    }
+    return LangToken::kInvalid;
+}
+
+// 把本次命令里的 --lang 全部过一遍，定下最终语言。重复给出以最后一个**有效**的指定为准
+// （--lang ja --lang auto 回到系统语言，--lang ja --lang bogus 停在 ja 并在正式解析报错）。
+void SelectLanguageFromCommandLine(int argc, wchar_t* const* argv) {
+    const Language systemLang = DetectSystemLanguage();
+    Language resolved = systemLang;
+    ScanArgv(argc, argv, [&](const ScannedItem& it) {
+        if (it.kind != ScannedItem::Kind::kOption || !it.option.spec) return;
+        if (!EqualsInsensitive(it.option.spec->name, L"lang")) return;
+        Language next = resolved;
+        const LangToken token = ResolveLangToken(it.option.value, systemLang, &next);
+        if (token != LangToken::kInvalid) resolved = next;
+    });
+    SetLanguage(resolved);
 }
 
 }  // namespace
@@ -430,15 +671,19 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
 
         // ---- 截图目标 ----
         if (name == L"monitor") {
-            const std::wstring v = ToLower(Trim(value));
             opt.monitor.given = true;
             opt.monitor.all = false;
             opt.monitor.ordinal = 0;
-            if (v.empty()) return;                                    // 省略取值 = 主屏
-            if (v == L"all") { opt.monitor.all = true; return; }
-            if (v == L"primary") return;
+            if (value.empty()) return;                                    // 省略取值 = 主屏
+            if (MonitorKeyword(value)) {
+                if (ToLower(Trim(value)) == L"all") opt.monitor.all = true;
+                return;                                               // primary => ordinal 0
+            }
+            // 编号只认严格十进制，且从 1 起。ScanArgv 里"要不要吃下一个参数"用的就是
+            // 这套语法（见 LooksLikeMonitorValue），所以像 1e3 这种写坏了的数字会走到这里
+            // 报错，而不会被悄悄当成输出文件名。
             uint64_t n = 0;
-            if (!ParseNumber(v, &n) || n == 0 || n > 0xFFFF) {
+            if (!ParseDecimal(value, 1, kMaxOrdinal, &n)) {
                 Err(codes::kInvalidNumber, Msg(L"cli.monitor_value"), L"--monitor", value,
                     Msg(L"cli.monitor_value_hint"));
                 opt.monitor.given = false;
@@ -451,7 +696,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // ---- 匹配条件 ----
         if (name == L"hwnd") {
             uint64_t hwnd = 0;
-            if (!ParseNumber(value, &hwnd) || hwnd == 0) {
+            if (!ParseHandleValue(value, &hwnd) || hwnd == 0) {
                 Err(codes::kInvalidNumber, Msg(L"cli.hwnd_value"), L"--hwnd", value,
                     Msg(L"cli.hwnd_hint"));
                 return;
@@ -461,8 +706,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
         if (name == L"pid") {
             uint64_t pid = 0;
-            if (!ParseNumber(value, &pid) || pid == 0 || pid > 0xFFFFFFFFull) {
-                Err(codes::kInvalidNumber, Msg(L"cli.pid_value"), L"--pid", value);
+            if (!ParseDecimal(value, 1, kMaxPid, &pid)) {
+                Err(codes::kInvalidNumber, Msg(L"cli.pid_value"), L"--pid", value,
+                    Msg(L"cli.decimal_hint"));
                 return;
             }
             PushUnique(&opt.match.pids, static_cast<uint32_t>(pid), L"--pid", &warnings);
@@ -527,8 +773,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         };
         if (name == L"index") {
             uint64_t n = 0;
-            if (!ParseNumber(value, &n) || n == 0 || n > 0xFFFF) {
-                Err(codes::kInvalidNumber, Msg(L"cli.index_value"), L"--index", value);
+            if (!ParseDecimal(value, 1, kMaxOrdinal, &n)) {
+                Err(codes::kInvalidNumber, Msg(L"cli.index_value"), L"--index", value,
+                    Msg(L"cli.decimal_hint"));
                 return;
             }
             opt.index = static_cast<int>(n);
@@ -570,18 +817,13 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
 
         // ---- 期限 ----
         // 只认十进制毫秒数：0x 前缀、下划线这种"句柄写法"放到时长上只会让人算错。
-        // 0 有含义（= 不设这项期限），所以不能顺手把空值当 0。
+        // 0 有含义（= 不设这项期限），所以它下界是 0；空值仍然不算 0。
         if (name == L"timeout-ms" || name == L"consent-timeout-ms") {
             const bool consentOnly = name == L"consent-timeout-ms";
-            const std::wstring v = Trim(value);
             uint64_t ms = 0;
-            const bool digits = !v.empty() && v.size() <= 8 &&
-                                std::all_of(v.begin(), v.end(),
-                                            [](wchar_t c) { return std::iswdigit(c) != 0; });
-            if (digits) ms = std::wcstoull(v.c_str(), nullptr, 10);
-            if (!digits || ms > kMaxTimeoutMs) {
+            if (!ParseDecimal(value, 0, kMaxTimeoutMs, &ms)) {
                 Err(codes::kInvalidNumber, Msgf(L"cli.timeout_value", kMaxTimeoutMs),
-                    L"--" + name, value);
+                    L"--" + name, value, Msg(L"cli.decimal_hint"));
                 return;
             }
             if (consentOnly) opt.consentTimeoutMs = ms;
@@ -615,8 +857,9 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
         if (name == L"quality") {
             uint64_t q = 0;
-            if (!ParseNumber(value, &q) || q < 1 || q > 100) {
-                Err(codes::kInvalidNumber, Msg(L"cli.quality_value"), L"--quality", value);
+            if (!ParseDecimal(value, 1, 100, &q)) {
+                Err(codes::kInvalidNumber, Msg(L"cli.quality_value"), L"--quality", value,
+                    Msg(L"cli.decimal_hint"));
                 return;
             }
             opt.jpegQuality = static_cast<int>(q);
@@ -629,20 +872,20 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
 
         // ---- 行为 ----
         if (name == L"lang") {
-            const std::wstring v = Trim(value);
-            if (!EqualsInsensitive(v, L"auto")) {
-                const auto lang = LanguageFromTag(v);
-                if (!lang) {
-                    std::wstring list;
-                    for (const wchar_t* const* p = kLangValues; *p; ++p) {
-                        if (p != kLangValues) list += L", ";
-                        list += *p;
-                    }
-                    Err(codes::kUnknownLanguage, Msg(L"cli.unknown_language"), L"--lang", value, list);
-                    return;
+            // 取值语义与预扫描共用 ResolveLangToken：auto 是"明确回到系统显示语言"，
+            // 不是"保持上一条 --lang"；认得的标签覆盖前一条；认不了的整条作废并报码。
+            Language resolved = Language::kEn;
+            const LangToken token = ResolveLangToken(value, DetectSystemLanguage(), &resolved);
+            if (token == LangToken::kInvalid) {
+                std::wstring list;
+                for (const wchar_t* const* p = kLangValues; *p; ++p) {
+                    if (p != kLangValues) list += L", ";
+                    list += *p;
                 }
-                SetLanguage(*lang);
+                Err(codes::kUnknownLanguage, Msg(L"cli.unknown_language"), L"--lang", value, list);
+                return;
             }
+            SetLanguage(resolved);
             return;
         }
         if (name == L"dry-run") { opt.dryRun = true; return; }
@@ -658,102 +901,50 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         Err(codes::kInvalidValue, Msg(L"cli.unhandled_option"), L"--" + name, value);
     };
 
-    auto RequireValue = [&](const OptionSpec& spec, int& i, const std::optional<std::wstring>& inlineValue,
-                            int argcTotal, wchar_t* const* argvTotal) -> std::optional<std::wstring> {
-        if (inlineValue) return inlineValue;
-        if (i + 1 >= argcTotal) {
-            Err(codes::kMissingValue, Msg(L"cli.missing_value"), L"--" + std::wstring(spec.name), L"");
-            return std::nullopt;
-        }
-        ++i;
-        return std::wstring(argvTotal[i]);
-    };
-
-    bool stopParsing = false;
-    for (int i = 1; i < argc; ++i) {
-        const std::wstring arg = argv[i];
-
-        if (stopParsing || arg.empty()) { positional.push_back(arg); continue; }
-        if (arg == L"--") { stopParsing = true; continue; }
-
-        std::wstring body;
-        bool longForm = false;
-        if (StartsWith(arg, L"--")) { body = arg.substr(2); longForm = true; }
-        else if (arg[0] == L'-' || arg[0] == L'/') { body = arg.substr(1); }
-        else { positional.push_back(arg); continue; }
-        if (body.empty()) { positional.push_back(arg); continue; }
-
-        // 拆 name=value
-        std::optional<std::wstring> inlineValue;
-        const size_t eq = body.find(L'=');
-        std::wstring name = body;
-        if (eq != std::wstring::npos) {
-            name = body.substr(0, eq);
-            inlineValue = body.substr(eq + 1);
+    // token 怎么消费由 ScanArgv 一处决定（与开头的语言预扫描同一个扫描器）；这里只管
+    // "扫出来的条目落到数据结构里是什么"。
+    ScanArgv(argc, argv, [&](const ScannedItem& it) {
+        switch (it.kind) {
+            case ScannedItem::Kind::kPositional:
+                positional.push_back(it.token);
+                return;
+            case ScannedItem::Kind::kUnknownOption: {
+                std::wstring hint;
+                if (const auto candidate = ClosestOption(it.name)) hint = *candidate;
+                Err(codes::kUnknownOption, Msg(L"cli.unknown_option"), it.token, L"", hint);
+                return;
+            }
+            case ScannedItem::Kind::kOption: break;
         }
 
-        const OptionSpec* spec = FindOption(name);
-        if (!spec && !longForm) spec = FindShortOption(name);
-
-        // -abc 形式的布尔开关组合
-        if (!spec && !longForm && !inlineValue && name.size() > 1) {
-            std::vector<const OptionSpec*> cluster;
-            bool allBool = true;
-            for (wchar_t ch : name) {
-                const std::wstring one(1, ch);
-                const OptionSpec* s = FindShortOption(one);
-                if (!s || s->takesValue) { allBool = false; break; }
-                cluster.push_back(s);
+        const ScannedOption& scanned = it.option;
+        if (scanned.spec->takesValue) {
+            if (scanned.missingValue) {
+                Err(codes::kMissingValue, Msg(L"cli.missing_value"),
+                    L"--" + std::wstring(scanned.spec->name), L"");
+                return;
             }
-            if (allBool && !cluster.empty()) {
-                for (const OptionSpec* s : cluster) Apply(*s, L"");
-                continue;
-            }
+            Apply(*scanned.spec, scanned.value);
+            return;
         }
 
-        if (!spec) {
-            if (!longForm && HasPathSeparator(arg)) {
-                positional.push_back(arg);   // 像路径（含 \ 或 /）就当位置参数，其余按误写的选项处理
-                continue;
+        // 开关一般不吃取值；只有 =true / =false 这种写法把规范化结果（"1" / "0"）交给 Apply。
+        std::wstring boolArg;
+        if (scanned.hasValue) {
+            bool b = false;
+            const std::wstring flag = L"--" + std::wstring(scanned.spec->name);
+            if (!ParseBool(scanned.value, &b)) {
+                Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flag, scanned.value,
+                    Msgf(L"cli.switch_no_value_hint", flag));
+                return;
             }
-            std::wstring hint;
-            if (const auto candidate = ClosestOption(name)) hint = *candidate;
-            Err(codes::kUnknownOption, Msg(L"cli.unknown_option"), arg, L"", hint);
-            continue;
+            // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令。
+            // --yes 这类带 valueAlways 的正向开关也要认 =false（=false 就是"不许跳过确认"）。
+            if (!b && !scanned.spec->inverted && !scanned.spec->valueAlways) return;
+            boolArg = b ? L"1" : L"0";
         }
-
-        if (spec->takesValue) {
-            if (spec->optionalValue && !inlineValue) {
-                // 取值可省略：只在下一个参数明显就是本选项的取值时才吃掉它，
-                // 否则当开关用（--monitor = 主屏），剩下的照常按位置参数处理。
-                std::wstring next;
-                if (i + 1 < argc) next = Trim(argv[i + 1]);
-                if (LooksLikeOptionalValue(std::wstring(spec->name), next)) {
-                    Apply(*spec, argv[++i]);
-                } else {
-                    Apply(*spec, L"");
-                }
-            } else if (auto value = RequireValue(*spec, i, inlineValue, argc, argv); value) {
-                Apply(*spec, *value);
-            }
-        } else {
-            std::wstring boolArg;   // 开关一般不吃取值；只有 =true / =false 这种写法填 "1" / "0"
-            if (inlineValue) {
-                bool b = false;
-                const std::wstring flag = L"--" + std::wstring(spec->name);
-                if (!ParseBool(*inlineValue, &b)) {
-                    Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flag, *inlineValue,
-                        Msgf(L"cli.switch_no_value_hint", flag));
-                    continue;
-                }
-                // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令。
-                // --yes 这类带 valueAlways 的正向开关也要认 =false（=false 就是"不许跳过确认"）。
-                if (!b && !spec->inverted && !spec->valueAlways) continue;
-                boolArg = b ? L"1" : L"0";
-            }
-            Apply(*spec, boolArg);
-        }
-    }
+        Apply(*scanned.spec, boolArg);
+    });
 
     // ---- 位置参数：第一个是输出路径，多出来的视为误写 ----
     if (!positional.empty() && !outExplicit) opt.output = positional[0];
@@ -870,8 +1061,15 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             Note(codes::kDeprecatedOption,
                  Msgf(L"note.deprecated_option", L"--oldest", L"--bottommost-match"), L"--oldest",
                  L"--bottommost-match");
-        if (opt.verbose && opt.quiet)
+        // -v 与 -q 同时给出时按 --verbose 处理（文案里承诺过的就是这一条）。这里直接把
+        // quiet 归掉，而不是在渲染那一层再判一次"verbose 时不抑制"：两处各判一套优先级，
+        // 迟早会有一处漏掉 —— 而漏掉的症状是"这条冲突提示自己被 --quiet 抑制了"，
+        // 也就是调用方看到 notes 还在、却不知道为什么不在了。
+        // errors 与 images[].source / path / scope 从来不进这条链路：它们任何时候都不被隐藏。
+        if (opt.verbose && opt.quiet) {
             Note(codes::kFlagOverridesQuiet, Msg(L"note.flag_overrides_quiet"), L"--verbose");
+            opt.quiet = false;
+        }
     }
 
     result.ok = result.errors.empty();

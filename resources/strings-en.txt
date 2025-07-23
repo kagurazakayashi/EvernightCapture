@@ -12,7 +12,7 @@ help.usage1	Usage: ECAPTURE.EXE [conditions...] <output-path>     With no condit
 help.usage2	       ECAPTURE.EXE [conditions...] --out <path>      "-" means image bytes go to stdout
 help.usage3	       ECAPTURE.EXE [conditions...]                    No output path => png bytes to stdout
 help.usage4	       ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
-help.syntax	Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --
+help.syntax	Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --. Numbers are decimal only (--hwnd also takes 0x hexadecimal)
 help.output1	Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
 help.output2	       --help / --version and the no-conditions case are plain text
 help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
@@ -41,33 +41,33 @@ grp.behavior	Miscellaneous
 # ---------------------------------------------------------------------------
 # Option descriptions (kOptions, keyed by option name)
 # ---------------------------------------------------------------------------
-opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x
-opt.pid	Process id, decimal and greater than 0
+opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
+opt.pid	Process id, decimal only and greater than 0
 opt.process	Image file name (no path), case-insensitive; without an extension .exe is assumed
 opt.exe	Full image path, case-insensitive
 opt.title	Window title, exact match
 opt.title-contains	Window title contains this substring
 opt.title-regex	Window title regular-expression match (ECMAScript), validated while parsing
 opt.class	Window class name, case-insensitive, e.g. Notepad / CabinetWClass
-opt.index	Take the n-th window, 1-based, ordered by visibility and z-order
+opt.index	Take the n-th window, 1-based decimal, ordered by visibility and z-order
 opt.topmost-match	Take the topmost matched window in the current z-order
 opt.bottommost-match	Take the bottommost matched window in the current z-order
 opt.newest	Deprecated alias of --topmost-match: it picks by z-order, not by creation time
 opt.oldest	Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
 opt.all	Save one image per matched window
-opt.monitor	Monitor number, 1-based (the order of this enumeration - not guaranteed to equal the id shown in Windows display settings; use the device name in the result to track a screen); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
+opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 opt.yes	Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 opt.timeout-ms	Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
 opt.consent-timeout-ms	How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
 opt.out	Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
 opt.format	Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
-opt.quality	JPEG quality, default 100
+opt.quality	JPEG quality, decimal 1-100, default 100
 opt.no-overwrite	Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 opt.dry-run	Parse and list candidate windows only - no capture, no file written
 opt.json	Deprecated compatibility switch, no effect: success and errors are already JSON
 opt.verbose	Add the input section to the JSON (all input, normalized) and keep notes
-opt.quiet	Drop notes; errors are always returned whatever this says
+opt.quiet	Drop notes; errors are always returned whatever this says. --verbose wins when both are given
 opt.lang	Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
 opt.help	Print this text help
 opt.version	Print version and stage
@@ -76,7 +76,7 @@ opt.version	Print version and stage
 # Parse-time diagnostics (src/CliOptions.cpp)
 # ---------------------------------------------------------------------------
 cli.hwnd_value	--hwnd needs a valid handle value (decimal, or hexadecimal with a 0x prefix)
-cli.hwnd_hint	Plain digits parse as decimal; write hexadecimal as 0x..., or it is taken as hexadecimal when it contains a-f
+cli.hwnd_hint	Plain digits parse as decimal; write hexadecimal as 0x..., or it is taken as hexadecimal when it contains a-f. No sign and no whitespace; an underscore may only sit between two hexadecimal digits (0x_1A and 1A__2B are both rejected)
 cli.pid_value	--pid needs a valid process id (decimal, greater than 0)
 cli.process_empty	--process must not be empty
 cli.process_path	--process takes an image file name only (e.g. notepad.exe); use --exe for a full path
@@ -89,14 +89,15 @@ cli.regex_hint	ECMAScript syntax; a quantifier needs something to repeat, and [ 
 cli.regex_too_complex	The regex exceeded this machine's backtracking complexity limit, so the match did not finish
 cli.regex_too_complex_hint	The pattern itself is valid. Use --title-contains for substring matching, or pin down the deterministic part and drop nested quantifiers ((a+)+ becomes a+). When the library enforces its own limit, raising --timeout-ms does not help: %1
 cli.regex_late	The regular expression failed to compile again at this stage
-cli.index_value	--index is a 1-based ordinal
+cli.index_value	--index is a 1-based decimal ordinal
 cli.unknown_capture_method	--capture value is not in the allowed list
 cli.unknown_language	--lang value is not a supported language
 cli.duplicate_output	Duplicate --out: there can be only one output path
 cli.output_duplicate_positional	Duplicate output path: give either --out or the positional argument, not both
 cli.format_value	--format value is not in the allowed list
-cli.quality_value	--quality must be between 1 and 100
+cli.quality_value	--quality must be a decimal number between 1 and 100
 cli.timeout_value	Invalid number of milliseconds: write decimal, 0 to %1 (0 = no limit for this)
+cli.decimal_hint	Decimal digits only: no sign, no whitespace, no dot, no exponent (1e3), no digit separators, no 0x prefix
 cli.switch_no_value	This switch takes no value; just write the option name
 cli.switch_no_value_hint	%1 (on) or %1=false (off)
 cli.unknown_option	Unknown option
@@ -293,8 +294,8 @@ enc.apartment	This thread could not initialize a WinRT apartment (%1)
 # ---------------------------------------------------------------------------
 # Screen target (--monitor, src/ScreenMatch.cpp and the CaptureScreenXxx channels)
 # ---------------------------------------------------------------------------
-cli.monitor_value	--monitor needs a monitor number starting at 1, or primary / all
-cli.monitor_value_hint	e.g. --monitor 1 (first monitor) / --monitor primary (main one) / --monitor all (one image per monitor)
+cli.monitor_value	--monitor needs a decimal monitor number starting at 1, or primary / all
+cli.monitor_value_hint	e.g. --monitor 1 (first monitor) / --monitor primary (main one) / --monitor all (one image per monitor). Numbers are decimal digits only: no sign, no 0x, no 1e3
 cli.monitor_conflict	--monitor all means "one image per monitor" and only works for a whole-screen capture with no window conditions
 cli.monitor_conflict_hint	To filter windows by monitor give a single number, e.g. --monitor 2
 match.monitor_out_of_range	No monitor has that --monitor number

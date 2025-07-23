@@ -64,6 +64,35 @@ programmatically.
    final rename refuse an existing target (`io.file_exists` + exit 8); `--no-overwrite=false` / `0` / `no` /
    `n` / `off` cancels the prohibition. Repeated occurrences: the last one wins.
 
+## Writing option values
+
+- **Numbers are decimal.** `--pid` (1..4294967295), `--index` (1..65535), `--monitor <n>` (1..65535),
+  `--quality` (1..100) and both timeouts (0..86400000) accept `[0-9]+` only, and the range is checked while
+  parsing. A sign, whitespace, a dot, a thousands comma, an exponent (`1e3`), digit-separator underscores, a
+  `0x` prefix or non-ASCII digits is `cli.invalid_number` + exit 1. Nothing is cast, wrapped or re-read in
+  another base: `--pid 1e3` is not 483, `--quality 1e` is not 30, `--hwnd -1` is not `UINT64_MAX`. Timeout
+  `0` is a real value ("no budget for this"); whitespace is not `0`.
+- **`--hwnd` is the one option that takes hexadecimal**, in the three spellings it documents: plain digits are
+  decimal, `0x` / `0X` prefix is hexadecimal, and a bare spelling containing `a-f` is hexadecimal (the Spy++
+  form, so `--hwnd 1e3` means `0x1e3`). Sign, whitespace, overflow past 64 bits and handle `0` are still
+  rejected. An underscore is allowed only in the hexadecimal forms and only between two hexadecimal digits
+  (`0x001A_0B4C` fine; `0x_1A`, `1A__0B4C`, `1A0B4C_`, `12_34` not). When in doubt, always write the `0x`
+  prefix.
+- **`--monitor` decides whether it swallows the next argument with the same grammar it parses with**: a
+  malformed number there is an error, never a file name, while `out.png`, `2.png`, `v2`, `D:\a\b.png` stay
+  output paths (`--monitor out.png` = primary monitor, written to out.png).
+- **Whatever follows an option that takes a value is that value**, even if it looks like another option:
+  `--title --lang ja` searches for the title `--lang` - and that also means the swallowed `--lang` never
+  becomes the message language. Write `--title=-x` for a value starting with `-`, or `--` to stop option
+  parsing (everything after it is positional, and `--` itself is dropped, so `-- --lang ja` changes nothing).
+- **Repeating an option**: match conditions OR (`--title A --title B`), value options take the last
+  occurrence (`--timeout-ms 9000 --timeout-ms 300` is 300), `--lang` too - where `auto` (or an omitted value)
+  resets to the system display language instead of keeping the previous choice. Boolean short options may be
+  clustered (`-vq`, `-yq`), but a cluster containing a short option that takes a value (`-vl`, `-qi`) is
+  `cli.unknown_option`.
+- **`--verbose` and `--quiet` together are handled as `--verbose`**: notes are still delivered plus one
+  `note.flag_overrides_quiet`. `errors`, and `images[].source` / `path` / `scope`, are never hidden.
+
 ## Reading the output
 
 - Check `errors` before `images`; `captured` always equals the number of `images` entries.

@@ -99,11 +99,11 @@ Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all 
        ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
 
 Capture target (without --monitor only the window conditions below are used)
-  --monitor, -m [<n|primary|all>] Monitor number, 1-based (the order of this enumeration - not guaranteed to equal the id shown in Windows display settings; use the device name in the result to track a screen); primary = main monitor, all = one image per monitor. With no window conditions it captures that whole screen; with window conditions only windows overlapping it are matched. The value may be omitted (= primary), and then nothing after it is eaten, so --monitor out.png still works. A whole screen is desktop pixels and always asks; --yes cannot skip that
+  --monitor, -m [<n|primary|all>] Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images
 
 Window match conditions (repeat one option for OR, combine different options with AND)
-  --hwnd <handle>                 Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x
-  --pid <pid>                     Process id, decimal and greater than 0
+  --hwnd <handle>                 Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
+  --pid <pid>                     Process id, decimal only and greater than 0
   --process, -p <image-name>      Image file name (no path), case-insensitive; without an extension .exe is assumed
   --exe <full-path>               Full image path, case-insensitive
   --title, -t <exact-title>       Window title, exact match
@@ -112,7 +112,7 @@ Window match conditions (repeat one option for OR, combine different options wit
   --class, -c <class-name>        Window class name, case-insensitive, e.g. Notepad / CabinetWClass
 
 When several windows match (mutually exclusive)
-  --index, -i <n>                 Take the n-th window, 1-based, ordered by visibility and z-order
+  --index, -i <n>                 Take the n-th window, 1-based decimal, ordered by visibility and z-order
   --topmost-match                 Take the topmost matched window in the current z-order
   --bottommost-match              Take the bottommost matched window in the current z-order
   --newest                        Deprecated alias of --topmost-match: it picks by z-order, not by creation time
@@ -132,19 +132,19 @@ Deadlines (a total budget for the automatic stage; waiting for consent is timed 
 Output
   --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
   --format, -f <name>             Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
-  --quality <1-100>               JPEG quality, default 100
+  --quality <1-100>               JPEG quality, decimal 1-100, default 100
   --no-overwrite                  Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
 Miscellaneous
   --dry-run, -d                   Parse and list candidate windows only - no capture, no file written
   --json, -j                      Deprecated compatibility switch, no effect: success and errors are already JSON
   --verbose, -v                   Add the input section to the JSON (all input, normalized) and keep notes
-  --quiet, -q                     Drop notes; errors are always returned whatever this says
+  --quiet, -q                     Drop notes; errors are always returned whatever this says. --verbose wins when both are given
   --lang, -l <language>           Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
   --help, -h                      Print this text help
   --version                       Print version and stage
 
-Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --
+Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --. Numbers are decimal only (--hwnd also takes 0x hexadecimal)
 Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
        --help / --version and the no-conditions case are plain text
 Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
@@ -162,6 +162,36 @@ Examples:
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
 ```
 <!-- END ECAPTURE-HELP -->
+
+## Argument syntax
+
+Each numeric option takes only the spelling it documents; the parser no longer guesses a base.
+
+- `--pid`, `--index`, `--monitor <n>`, `--quality` and the two timeout options take **decimal digits
+  only** (`[0-9]+`): no sign, no whitespace, no dot, no exponent (`1e3`), no digit separators, no `0x`,
+  no non-ASCII digits. The range is checked in the same call (`--pid` 1..4294967295, `--index` and
+  `--monitor` 1..65535, `--quality` 1..100, timeouts 0..86400000). Anything else is
+  `cli.invalid_number` + exit code 1 - a value is never cast, wrapped or re-read in another base, so
+  `--pid 1e3` cannot silently become 483 and `--hwnd -1` cannot become `UINT64_MAX`.
+- `--hwnd` keeps its three documented spellings: plain digits are decimal, a `0x` / `0X` prefix is
+  hexadecimal, and a bare spelling containing `a-f` is hexadecimal (the Spy++ form, so `--hwnd 1e3`
+  is `0x1e3` by design). Sign, whitespace, overflow past 64 bits and handle `0` are rejected. An
+  underscore is legal only inside the hexadecimal spellings and only between two hexadecimal digits:
+  `0x001A_0B4C` yes, `0x_1A`, `1A__0B4C`, `1A0B4C_` and `12_34` no.
+- The value of `--monitor` may be omitted, so "is the next argument mine" uses exactly the grammar
+  above: `--monitor out.png` still means "primary monitor, write out.png", while `--monitor 1e3` is a
+  malformed monitor number and is reported instead of quietly becoming an output file name.
+- The token right after an option that takes a value is that value, even when it looks like another
+  option: `--title --lang ja` looks for the title `--lang`. For a value that starts with `-`, write
+  `--title=-x`, or use `--` to stop option parsing (everything after it is positional; the `--`
+  itself is dropped).
+- Repeating an option: match conditions OR (`--title A --title B`), value options take the last one
+  (`--timeout-ms 9000 --timeout-ms 300` is 300), and `--lang` behaves the same way - `auto` (or an
+  omitted value) resets to the system display language rather than keeping the previous choice. An
+  invalid `--lang` reports `cli.unknown_language`, written in the language already settled on.
+- `--verbose` and `--quiet` together are handled as `--verbose`: notes are still delivered, plus one
+  `note.flag_overrides_quiet` saying why. `errors`, and the provenance fields `images[].source` /
+  `path` / `scope`, are never hidden by `--quiet`.
 
 ## Matching semantics
 
@@ -248,10 +278,10 @@ An error (`--hwnd` given a garbage value):
   "errors": [
     {
       "code": "cli.invalid_number",
-      "message": "--hwnd needs a valid handle (decimal, or hexadecimal with a 0x prefix)",
+      "message": "--hwnd needs a valid handle value (decimal, or hexadecimal with a 0x prefix)",
       "option": "--hwnd",
       "value": "zzz",
-      "hint": "plain digits parse as decimal; write hexadecimal as 0x..., or it is taken as hexadecimal when it contains a-f"
+      "hint": "Plain digits parse as decimal; write hexadecimal as 0x..., or it is taken as hexadecimal when it contains a-f. No sign and no whitespace; an underscore may only sit between two hexadecimal digits (0x_1A and 1A__2B are both rejected)"
     }
   ]
 }

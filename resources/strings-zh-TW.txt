@@ -12,7 +12,7 @@ help.usage1	用法: ECAPTURE.EXE [條件...] <輸出路徑>        不給任何�
 help.usage2	      ECAPTURE.EXE [條件...] --out <路徑>      路徑寫 - 表示把圖片位元組輸出到標準輸出
 help.usage3	      ECAPTURE.EXE [條件...]                   不給輸出路徑 => 圖片按 png 寫標準輸出
 help.usage4	      ECAPTURE.EXE --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
-help.syntax	寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析
+help.syntax	寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析。數字取值只認十進位（--hwnd 另可按 0x 寫十六進位）
 help.output1	輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
 help.output2	      --help / --version 以及不給條件時是文字
 help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
@@ -41,33 +41,33 @@ grp.behavior	其他
 # ---------------------------------------------------------------------------
 # 選項說明（kOptions 目錄，依選項名取 key）
 # ---------------------------------------------------------------------------
-opt.hwnd	視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x
-opt.pid	處理程序 ID，十進位且大於 0
+opt.hwnd	視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
+opt.pid	處理程序 ID，只認十進位且大於 0
 opt.process	映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
 opt.exe	映像完整路徑，忽略大小寫
 opt.title	視窗標題精確匹配
 opt.title-contains	視窗標題包含子字串
 opt.title-regex	視窗標題正則匹配，ECMAScript 語法，解析期即校驗
 opt.class	視窗類名，忽略大小寫，如 Notepad / CabinetWClass
-opt.index	取第 n 個視窗，從 1 開始，按可見性/疊放次序排序
+opt.index	取第 n 個視窗，從 1 開始（十進位），按可見性/疊放次序排序
 opt.topmost-match	取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
 opt.bottommost-match	取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
 opt.newest	--topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
 opt.oldest	--bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
 opt.all	每個匹配視窗各存一張
-opt.monitor	截圖目標螢幕的編號，從 1 開始（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+opt.monitor	截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
 opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 opt.timeout-ms	自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
 opt.consent-timeout-ms	確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
 opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
-opt.quality	JPEG 品質，預設 100
+opt.quality	JPEG 品質，十進位 1..100，預設 100
 opt.no-overwrite	目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 opt.dry-run	只解析並列出候選視窗，不截圖不寫檔案
 opt.json	已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
 opt.verbose	JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
-opt.quiet	省略 notes；errors 無論如何都會返回
+opt.quiet	省略 notes；errors 無論如何都會返回；與 --verbose 同時給出時按 --verbose 處理
 opt.lang	文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
 opt.help	輸出文字說明（本段）
 opt.version	輸出版本與階段
@@ -76,7 +76,7 @@ opt.version	輸出版本與階段
 # 解析期診斷（src/CliOptions.cpp）
 # ---------------------------------------------------------------------------
 cli.hwnd_value	--hwnd 需要有效的句柄值（十進位，或帶 0x 前綴的十六進位）
-cli.hwnd_hint	純數字按十進位解析；十六進位請寫成 0x……，或含 a-f 時自動按十六進位
+cli.hwnd_hint	純數字按十進位解析；十六進位寫成 0x……，含 a-f 時按十六進位。不要寫正負號與空白；底線只能夾在兩位十六進位數字之間（0x_1A、1A__2B 都不收）
 cli.pid_value	--pid 需要有效的處理程序 ID（十進位，> 0）
 cli.process_empty	--process 不能為空
 cli.process_path	--process 只接受映像檔案名（例如 notepad.exe），完整路徑請用 --exe
@@ -89,14 +89,15 @@ cli.regex_hint	ECMAScript 語法；量詞前要有可重複項，字元類別裡
 cli.regex_too_complex	正則的回溯複雜度超過本機正則庫的上限，這次匹配沒有跑完
 cli.regex_too_complex_hint	語法本身沒問題。改分子串比對 --title-contains，或把模式裡能確定的部分前移、拿掉巢狀量詞（例如 (a+)+ 換成 a+）。庫的上限擋下來時加大 --timeout-ms 不會有幫助：%1
 cli.regex_late	正則運算式在該階段重新編譯失敗
-cli.index_value	--index 是從 1 開始的序號
+cli.index_value	--index 是從 1 開始的十進位序號
 cli.unknown_capture_method	--capture 取值不在允許清單內
 cli.unknown_language	--lang 取值不在支援清單內
 cli.duplicate_output	重複的 --out，輸出路徑只能有一個
 cli.output_duplicate_positional	輸出路徑重複：--out 與位置參數只能給一個
 cli.format_value	--format 取值不在允許清單內
-cli.quality_value	--quality 需要在 1..100 之間
+cli.quality_value	--quality 需要在 1..100 之間的十進位數
 cli.timeout_value	毫秒數不合法：要寫十進位，0 到 %1（0 = 不設這項期限）
+cli.decimal_hint	只接受十進位數字：不要寫正負號、空白、小數點、指數（1e3）、底線分隔或 0x 前綴
 cli.switch_no_value	該開關不接受取值，直接寫選項名即可
 cli.switch_no_value_hint	%1（開）或 %1=false（關）
 cli.unknown_option	未知選項
@@ -293,8 +294,8 @@ enc.apartment	執行緒無法初始化 WinRT 套間（%1）
 # ---------------------------------------------------------------------------
 # 螢幕目標（--monitor，src/ScreenMatch.cpp 與各通道的 CaptureScreenXxx）
 # ---------------------------------------------------------------------------
-cli.monitor_value	--monitor 需要 1 以上的螢幕編號，或 primary / all
-cli.monitor_value_hint	例如 --monitor 1（第一張螢幕）/ --monitor primary（主螢幕）/ --monitor all（每張螢幕各一張）
+cli.monitor_value	--monitor 需要 1 以上的十進位螢幕編號，或 primary / all
+cli.monitor_value_hint	例如 --monitor 1（第一張螢幕）/ --monitor primary（主螢幕）/ --monitor all（每張螢幕各一張）。編號只認十進位數字，不認負號、0x 或 1e3 這種寫法
 cli.monitor_conflict	--monitor all 是「每張螢幕各截一張」，只能用在沒有視窗條件的整張螢幕截圖上
 cli.monitor_conflict_hint	按螢幕過濾視窗時請給單一編號，例如 --monitor 2
 match.monitor_out_of_range	--monitor 的螢幕編號不存在
