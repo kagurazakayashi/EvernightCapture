@@ -138,6 +138,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
 退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
         6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
 当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在
+运行环境: 64 位 Windows，声明的最低内部版本 18362（Windows 10 版本 1903），只在内部版本 19045 上实测过；本机版本提供不了的路线在取帧、弹框之前就报 env.os_too_old / env.channel_unsupported（前者换通道也没用），--verbose 的 input.osBuild 与 input.captureChain 回显这一次能走哪几条
 
 示例:
   ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -316,7 +317,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 `0` 成功 / `1` 参数错 / `2` 未给条件 / `3` `--help` / `4` 无匹配窗口 / `5` 匹配多个窗口 /
 `6` 目标受保护、在确认框上被答"否"、在 `--consent-timeout-ms` 内没人回答、或框根本弹不出来 /
-`7` 截图失败，含 `--timeout-ms` 预算用尽 / `8` 写文件失败，含在写文件或标准输出阶段预算用尽 / `9` 内部异常。
+`7` 截图失败，含 `--timeout-ms` 预算用尽，**也含这一台机器的 Windows 版本给不出所要求的东西**
+（`env.os_too_old` / `env.channel_unsupported`，见[系统支持](#系统支持)） / `8` 写文件失败，含在写文件或标准输出阶段预算用尽 / `9` 内部异常。
 新增语义只会追加编号。
 `8` 也覆盖"结果 JSON 送不到约定那条流"（写 stdout / stderr 失败），那种情况下另一条流上补发的文字不算交付。
 
@@ -327,16 +329,62 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 访问被拒不是继续回退的理由，被人拒绝也不是：一旦有人答"否"（或这个会话根本弹不出框），本次请求剩下的目标
 一律不再尝试——不换后端、不重试、不再问第二遍，之前已经完成的图全部留着。
 
+## 系统支持
+
+三个不同的数字不能混成一句"支持 Windows X 以上"：
+
+| 层次 | 取值 | 这个数是从哪来的 |
+| --- | --- | --- |
+| 各条路线的 API 历史下限 | 任何一张图 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | 微软为这条路线**实际调用**的那个接口所写的下限。编码器（WinRT `BitmapEncoder`）六条通道、五种格式共用；`wgc` 走的是 `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor`，那是 Windows 10 版本 1903 才有的互操作接口——`Windows.Graphics.Capture` 这个命名空间本身确实是 1803 出现的，但本工具没有"让用户在系统选择器里点一下"那条退路 |
+| 本工具声明的下限 | 64 位 Windows 10 版本 1903（内部版本 18362）或更新 | 上面那几道里最高的那一条，因为默认通道要真能截到窗口需要它；不是"某条路线碰到的最老的那个 API" |
+| 已实测的版本 | Windows 10 版本 22H2（内部版本 19045），x64 | `tests\` 下所有真机判据都只跑在这一台机器上 |
+
+10240 到 18361 之间的那些版本能装载这个 exe，也能截图（工具是按每条路线各自的下限筛通道，而不是整体拒开），
+但那既不在声明支持之列、也从来没有实测过，请按"预期可用、未验证"对待。
+
+这里没有任何一句话声称支持 Windows 7 或 8 —— **这个二进制在那上面根本装载不了**。它静态导入
+`api-ms-win-core-winrt-error-l1-1-1`（`RoOriginateLanguageException`，微软那份文档写的最低客户端就是
+Windows 8.1），另有 `api-ms-win-core-winrt-l1-1-0` 与 `api-ms-win-core-job-l2-1-0`（Windows 8），
+而 API Set 这套机制在 Windows 7 上根本不存在；这三个契约都不在 UCRT 可再分发的那一份名单里，补不到旧系统上。
+`.\tests\compat.ps1` 会拿发布版二进制核对这些名字，所以"装载下限"是关于这个文件的事实，不是推测。
+Windows 8.1 **能**装载也能启动 —— 在那上面起作用的正是下面那道能力检查：`Windows.Graphics.Imaging.BitmapEncoder`
+在 Windows 10 之前不存在，一张图都编不出来。所以"某个 `BitBlt` 或 `DwmRegisterThumbnail` 调用在 Windows 7 上
+存在"证明不了这个程序能在那上面跑；PE 头里那个 `subsystem version 6.00` 也一样，那是 MSVC 链接器默认值，
+不是支持声明。
+
+### 调用时的能力检查
+
+在枚举窗口、规划输出名、弹确认框、读任何一个像素**之前**，工具会拿从 `ntdll!RtlGetVersion` 读到的内部版本
+（绝不用 `GetVersionEx`——那个函数按应用清单与版本伪装答复）与上面那几道下限比对，并给出：
+
+| 码 | 什么时候 | 退出码 | 换通道有没有用 |
+| --- | --- | --- | --- |
+| `env.os_too_old` | 版本低于 10240：所有格式共用那唯一一套编码器不在 | 7 | **没有。** 这不是通道的问题，也不是目标的问题——这台机器上做不出任何一张图 |
+| `env.channel_unsupported` | 显式指定的那条通道的下限高于本机版本 | 7 | **有**——换 `--capture` 取值或改用 `auto`。重试同一个目标没有意义，而工具不会自己把你指定的那条换成别的 |
+| `note.channel_unavailable` | `auto` 链里某一条的下限高于本机版本，它已从链中去掉 | 不变 | 图仍可能由别的那几条截到，`images[].source` 写的是实际出图的那条 |
+| `note.os_unverifiable` | 内部版本压根没问出来 | 不变 | 这一次没有按版本筛过任何一条——问不出来既不等于不支持，也不等于支持 |
+
+`--verbose` 会回显 `input.osBuild` 与 `input.captureChain`（针对本次这类目标，这台机器实际给得出哪几条通道），
+所以调用方（含 AI）不必先截图就能把能力问出来。`--dry-run` 不取帧，因此不因环境判据报错。
+
+设备层面的能力刻意不去预测：驱动不喂桌面复制帧、这台机器拒绝 Windows.Graphics.Capture、会话里没有可交互
+桌面、N 版缺媒体组件——这些都不在版本号里，也都不由本工具提前猜；那一步会交回它自己的 `capture.*` 码与
+真实 HRESULT。
+
 ## 取图方式
 
-| 取值 | 通道 | 能截被遮挡窗口 | 硬件加速内容 | 平台下限 |
+| 取值 | 通道 | 能截被遮挡窗口 | 硬件加速内容 | API 历史下限 |
 | --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | 能（DWM 缓存） | 正常 | Win10 1803+ |
-| `dwm` | DwmRegisterThumbnail | 能 | 多数正常，受保护窗口黑 | Win7+ |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 能（窗口自绘） | 常常全黑 | Win8.1+ |
-| `bitblt` | BitBlt 屏幕 DC | 不能，只拷可见像素 | 部分黑 | 全版本 |
-| `duplication` | DXGI 桌面复制整屏帧后按矩形裁 | 不能，只拷可见像素 | 正常 | Win8+，远程桌面/虚拟显卡常拿不到内容 |
-| `auto` | 按 wgc → dwm → printwindow → bitblt 回退 | 尽量 | 尽量 | — |
+| `wgc` | Windows.Graphics.Capture | 能（DWM 缓存） | 正常 | Win10 1903（18362）——是 `CreateForWindow` / `CreateForMonitor` 那条互操作接口，不是 1803 那个命名空间 |
+| `dwm` | DwmRegisterThumbnail | 能 | 多数正常，受保护窗口黑 | Win8.1（9600）——注册缩略图更早，但读回靠 `PrintWindow(PW_RENDERFULLCONTENT)` |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 能（窗口自绘） | 常常全黑 | Win8.1（9600），指那个 flag |
+| `bitblt` | BitBlt 屏幕 DC | 不能，只拷可见像素 | 部分黑 | 本身没有版本门槛 |
+| `duplication` | DXGI 桌面复制整屏帧后按矩形裁 | 不能，只拷可见像素 | 正常 | Win8（9200），远程桌面/虚拟显卡常拿不到内容 |
+| `auto` | 按 wgc → dwm → printwindow → bitblt 回退 | 尽量 | 尽量 | 这条链减去本机版本挡掉的那几条 |
+
+那一列是**各条路线的 API 历史下限**，逐条对到微软为该路线实际调用的那个接口所写的文档。它们既不是这个程序
+声明能跑的版本，也不是实测过的版本：声明下限（Win10 1903，x64）、六条通道共用的那道编码器下限、真正实测过的
+版本（Win10 22H2 / 19045），以及运行时会把模糊失败换成哪一条清楚的报告，都见[系统支持](#系统支持)。
 
 - 想要"那个窗口自己的画面"（哪怕被别的东西盖住）用默认的 `wgc`；想要"屏幕上此刻的样子"（连遮挡物一起）用
   `bitblt` 或 `duplication`。
@@ -523,6 +571,12 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
    `capture.consent_stale`（7，确认之后目标挪了位置，要重新选目标并再问一次）、
    `io.write_failed`（8，目录不存在或提交失败）、`io.file_exists`（8，配合 `--no-overwrite`）、
    `io.output_collision`（8，两个目标算出同一个输出名，整批没截图也没写文件）。
+   其中有两条说的不是这个目标、而是**这一台机器**，重试同一个窗口对它们没有任何意义：`env.os_too_old`
+   （7，本机 Windows 内部版本低于所有格式共用的那唯一一套编码器所在的下限——换 `--capture` 也不会变好）与
+   `env.channel_unsupported`（7，你显式指定的那条通道要更新的版本——换一条通道或改用 `auto` 才有意义，而工具
+   不会自己把你指定的那条顶替掉）。`note.channel_unavailable` 说的是 `auto` 链里被去掉的那一条，而剩下的几条
+   仍然可能截成交功。先问一句"这台机器给得出哪几条通道"不必截图：`--verbose` 的 `input.osBuild` 与
+   `input.captureChain` 就是它。那几道下限、声明范围与实测范围见[系统支持](#系统支持)。
    每条错误还带 `target` / `backend` / `stage` / `hresult` / `win32`（见上一节），拿到多少写多少，
    不必从 `message` 里抠。
 3. **读流要分情况**：给 `--out <文件>` 时 JSON 在 stdout、stderr 是空的，直接解析就行；用 `--out -` 或没给输出路径时
@@ -551,7 +605,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 135 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法）+ 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\cli.ps1` | 495 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法）+ 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
 | `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒（含隐式 stdout 不被折叠成"缺少输出路径"）、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8（只截自建的窗口） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
 | `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
@@ -560,6 +614,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | `.\tests\image.ps1` | 帧校验：离线层手工摆像素排布（竖条纹 / 棋盘 / alpha / 行末填充 / 超限与短缓冲区 / 
   越界裁剪），真机层验单色窗口的质量提示与来路 |
 | `.\tests\dup.ps1` | Desktop Duplication 多屏适配检查：离线层（`build\ecapture-dup-tests.exe`，源码 `tests\dup_state.cpp`）向生产几何判据注入四种旋转——像素判据对照测试自己那份"先旋转整幅帧、再裁剪"的朴素实现——外加负坐标、裁剪后/被裁掉的矩形、一张伪造的双适配器输出表（目标在第二块适配器上、没有输出、适配器被拔掉）以及"那台显示器在确认之后变了"的情形；真机层判确认框必须弹（`--yes` 免不掉桌面路径）、在真实图片上核对 `requestedRect` / `capturedRect` / `clipped` / `rotation`、在每块屏上做四角方位探针，并验证每一块屏都可达。绝不重新排列或旋转显示器：旋转面板与热拔插的判据在机器提供不了该情形时如实记 SKIP（未验证） |
+| `.\tests\compat.ps1` | 系统支持检查。离线层（`build\ecapture-compat-tests.exe`，源码 `tests\compat_state.cpp`）把假版本注入生产能力判据本体：每道下限两侧各判一次、显式指定的通道被挡下时绝不换成别的、auto 链少的是哪一条、以及版本问不出来时一条都不筛。真机层（不截任何图）：探测到的内部版本与 WMI 独立问来的那份相同（说明探测没被版本伪装）、回显的通道链与该版本自相一致、`--dry-run` 不因环境判据报错、四语帮助都带上下限与 `env.*` 那两条码，以及发布版二进制确实导入了 Windows 8 才有的 winrt / job 那批 API Set 契约（装载下限的说法就靠它）。凡是需要另一台 Windows 版本的判据一律记未验证，不拿文档推导冒充实测 |
 | `.\tests\save.ps1` | 真机文件保存与覆盖保护：每种 `--no-overwrite` 布尔写法对真实文件的效果、整批输出名规划与撞名检测（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小写 / 清洗 / 截断）、原子提交（目标被占用、目标名是目录、目录不存在、写到一半被硬杀）、并发禁止覆盖 |
 | `.\tests\channels.ps1` | 真机通道对比：六条通道 + 遮挡对照，目标与遮挡物都是自建的窗口。窗口内容那几条带 `--yes` 跑，一旦弹框就判失败；`bitblt` / `duplication` 取的是桌面像素，它们的画面判据要 `-SimulateConsent` 才跑，不给就如实记 SKIP（未验证） |
 | `.\tests\consent.ps1` | 截图授权分级：离线一层用注入的假应答器与假屏幕布局把 `ConsentGate` 整台状态机跑完（`build\ecapture-consent-tests.exe`，源码 `tests\consent_state.cpp`）；真机一层把所有确认框一律代答"否"，判哪些路径必须弹、拒绝之后报什么（`code` / `stage` / `target` / `value`）、有没有落地，以及 `images[].path` / `scope` / `rect` 对不对。绝不代人答"是" |

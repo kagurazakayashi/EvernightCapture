@@ -18,6 +18,7 @@ help.output2	       --help / --version and the no-conditions case are plain text
 help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
 help.exit2	        6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
 help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
+help.system	Runtime: 64-bit Windows, declared floor build 18362 (Windows 10 version 1903), tested only on build 19045; a route this machine's version cannot offer is reported before any frame or dialog as env.os_too_old / env.channel_unsupported (the first does not improve with another channel). --verbose echoes input.osBuild and input.captureChain
 
 help.examples	Examples:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -334,3 +335,16 @@ consent.deadline_line	Please answer within %1 milliseconds; if nobody answers th
 cap.consent.stale	The target moved or resized after you confirmed, so nothing was captured
 cap.consent.stale_hint	The rectangle to sample is no longer inside the area you approved. Select the target again and retry (you will be asked again)
 consent.output_stdout	standard output
+
+# ---------------------------------------------------------------------------
+# Runtime capability (src/SystemCompat.cpp): whether this machine's Windows version provides
+# what the request asked for. The three floors live in os_floor in SystemCompat.h, each with its
+# evidence; the text here only reports numbers and never re-decides anything.
+# Hint strings carry no placeholders (EnvBase loads them with Msg); numbers go in message.
+# ---------------------------------------------------------------------------
+env.os_too_old	This machine's Windows build %1 is below this tool's floor %2, so no capture channel could encode an image
+env.os_too_old_hint	There is one encoder implementation (the WinRT BitmapEncoder) and it does not exist before Windows 10, so this is not about which channel was chosen: another --capture value, another target or a retry all end the same way. The minimum environment this tool claims is 64-bit Windows 10 version 1903 (build 18362) or later, and it has only been tested on Windows 10 22H2 (19045). To see which channels this machine offers, read input.osBuild and input.captureChain from --verbose
+env.channel_unsupported	The %1 channel needs Windows build %2 or later; this machine is %3, so not one pixel was read
+env.channel_unsupported_hint	This is about this machine's version, not about the target window: switching capture channel (--capture / -C) or using auto is what can help, while retrying the same target cannot. A channel you asked for explicitly is never substituted, so auto will not quietly route around this
+note.channel_unavailable	The auto fallback chain has no %1: it needs Windows build %2 or later and this machine is %3
+note.os_unverifiable	This machine's Windows build could not be read, so no channel was filtered out by version this time; a channel that really cannot run reports its own error code

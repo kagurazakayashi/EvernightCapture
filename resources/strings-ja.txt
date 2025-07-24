@@ -17,6 +17,7 @@ help.output2	          --help / --version、および条件なしのときはテ
 help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
 help.exit2	        6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
 help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること
+help.system	実行環境: 64 ビット版 Windows、宣言上の下限はビルド 18362（Windows 10 version 1903）、実測はビルド 19045 のみ。この機のバージョンでは提供されない経路は、取得も確認表示も前に env.os_too_old / env.channel_unsupported として報告します（前者は経路を変えても変わりません）。--verbose の input.osBuild と input.captureChain に今回の利用可能な経路が出力されます
 
 help.examples	例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -333,3 +334,15 @@ consent.deadline_line	%1 ミリ秒以内にご回答ください。応答が無�
 cap.consent.stale	確認の対象の位置またはサイズが変わったため、撮影しませんでした
 cap.consent.stale_hint	取得する矩形が、承諾済みの画面領域の外に出ています。対象を選び直して再度実行してください（再び確認します）
 consent.output_stdout	標準出力
+
+# ---------------------------------------------------------------------------
+# 実行環境の能力判定（src/SystemCompat.cpp）：この機の Windows バージョンが要求に応えられるか。
+# 三つの下限は SystemCompat.h の os_floor に判定根拠付きで置き、文言は数値を伝えるだけで判定を変えない。
+# hint にはプレースホルダを置かない（EnvBase は Msg で読む）。数値はすべて message に書く。
+# ---------------------------------------------------------------------------
+env.os_too_old	この機の Windows ビルド %1 は本ツールの下限 %2 より低く、どの取得経路でも画像を符号化できません
+env.os_too_old_hint	画像符号化は実装が一つ（WinRT の BitmapEncoder）で Windows 10 より前に存在しません。だから取得経路の選び方とは無関係です。--capture を変えても対象を変えても再試行しても結果は同じです。本ツールが宣言する最低実行環境は 64 ビット版 Windows 10 version 1903（ビルド 18362）以上で、実測は Windows 10 22H2（19045）のみです。この機で使える経路は --verbose の input.osBuild と input.captureChain に含まれます
+env.channel_unsupported	%1 経路には Windows ビルド %2 以上が必要ですが、この機は %3 なので画素を一切読みませんでした
+env.channel_unsupported_hint	これはこの機のバージョンの話で、対象ウィンドウの話ではありません。取得経路の切り替え（--capture / -C）か auto にすることが効きます。同じ対象を再試行しても同じです。明示された経路を別の経路に置き換えることはしません
+note.channel_unavailable	auto のフォールバック列に %1 は含まれません（Windows ビルド %2 以上が必要、この機は %3）
+note.os_unverifiable	この機の Windows ビルドを調べられなかったため、今回はバージョンによる経路の絞り込みを行いませんでした。実際に使えない経路は各自のエラーコードを返します

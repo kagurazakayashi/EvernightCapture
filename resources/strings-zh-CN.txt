@@ -18,6 +18,7 @@ help.output2	      --help / --version 以及不给条件时是文本
 help.exit1	退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
 help.exit2	        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
 help.status	当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在
+help.system	运行环境: 64 位 Windows，声明的最低内部版本 18362（Windows 10 版本 1903），只在内部版本 19045 上实测过；本机版本提供不了的路线在取帧、弹框之前就报 env.os_too_old / env.channel_unsupported（前者换通道也没用），--verbose 的 input.osBuild 与 input.captureChain 回显这一次能走哪几条
 
 help.examples	示例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -334,3 +335,15 @@ consent.deadline_line	请在 %1 毫秒内回答；到点仍没人回答就按"�
 cap.consent.stale	确认之后目标的位置或大小变了，这次没有截
 cap.consent.stale_hint	要取样的矩形已经不在你批准的那一片屏幕范围内。重新选定目标再截一次（会再问一遍）
 consent.output_stdout	标准输出
+
+# ---------------------------------------------------------------------------
+# 运行环境能力判据（src/SystemCompat.cpp）：这一台机器上的 Windows 版本提供不提供得了所要求的东西。
+# 三条下限各写在 SystemCompat.h 的 os_floor 里并逐条注明判据出处；文案只报数字，不改判据。
+# 提示文字里不放占位符（EnvBase 用 Msg 取 hint），数字一律写在 message 里。
+# ---------------------------------------------------------------------------
+env.os_too_old	这台机器的 Windows 内部版本 %1 低于本工具的下限 %2，任何取图通道都编不出图片
+env.os_too_old_hint	图片编码只有一套实现（WinRT 的 BitmapEncoder），Windows 10 之前不存在，所以这一条与选了哪条取图通道无关：换 --capture、换目标、重试都不会有别的下场。本工具声明的最低运行环境是 64 位 Windows 10 版本 1903（内部版本 18362）以上，且只在 Windows 10 22H2（19045）上实测过；想知道本机这次能走哪几条通道，用 --verbose 看 input.osBuild 与 input.captureChain
+env.channel_unsupported	%1 通道要 Windows 内部版本 %2 或更新，本机是 %3，因此一个像素都没取
+env.channel_unsupported_hint	这一条是本机版本的事，与目标窗口无关：换一条取图通道（--capture / -C）或改用 auto 才有意义，重试同一个目标不会有别的下场。显式指定的通道绝不换成别的，所以这条不会被 auto 自动绕开
+note.channel_unavailable	auto 回退链里没有 %1：它要 Windows 内部版本 %2 或更新，本机 %3
+note.os_unverifiable	没能问出本机 Windows 的内部版本，所以这一次没有按版本筛通道；真不可用的那一条会交回它自己的错误码

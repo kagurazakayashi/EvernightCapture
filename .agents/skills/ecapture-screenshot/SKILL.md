@@ -260,12 +260,19 @@ caller must do:
 
 ## Choosing a capture channel (`--capture`)
 
-| Goal | Use |
-| --- | --- |
-| The window itself, even when covered | `wgc` (default) or `dwm` - both read the DWM-cached surface; neither sees through DRM protection |
-| What the screen looks like right now, occluder included | `bitblt` or `duplication` - they copy visible pixels only, and both need a human confirmation every single time |
-| Try the next channel if one comes back empty | `auto`: wgc→dwm→printwindow→bitblt; for a whole screen wgc→duplication→bitblt. A successful fallback reports `note.capture_channel`. With `--yes` the first three ask nothing; entering `bitblt` asks |
-| A whole screen | Only `wgc` / `duplication` / `bitblt`; `dwm` and `printwindow` are rejected while parsing with `capture.unsupported` + exit 1. Whole-screen `wgc` is a desktop path too: it always asks |
+Each route has a Windows build it cannot work below (that is its **API history floor**, not what this
+program claims - see `references/cli-contract.md`, "运行环境与能力检查", and the README's "System support"
+section): any image at all needs 10.0.10240 because every format goes through the one WinRT encoder;
+`duplication` 10.0.9200; `printwindow` / `dwm` 10.0.9600 (`PW_RENDERFULLCONTENT`); `wgc` 10.0.18362
+(`CreateForWindow` / `CreateForMonitor` - the namespace is from 1803 but this tool never uses the picker).
+Declared support: 64-bit Windows 10 1903 (18362) or later; tested only on 19045.
+
+| Goal | Use | Needs (Windows build) |
+| --- | --- | --- |
+| The window itself, even when covered | `wgc` (default) or `dwm` - both read the DWM-cached surface; neither sees through DRM protection | `wgc` 18362, `dwm` 9600 |
+| What the screen looks like right now, occluder included | `bitblt` or `duplication` - they copy visible pixels only, and both need a human confirmation every single time | `bitblt` none, `duplication` 9200 |
+| Try the next channel if one comes back empty | `auto`: wgc→dwm→printwindow→bitblt; for a whole screen wgc→duplication→bitblt. A successful fallback reports `note.capture_channel`. With `--yes` the first three ask nothing; entering `bitblt` asks | whatever the remaining links need; a link this build cannot offer is dropped from the chain and reported as `note.channel_unavailable` |
+| A whole screen | Only `wgc` / `duplication` / `bitblt`; `dwm` and `printwindow` are rejected while parsing with `capture.unsupported` + exit 1. Whole-screen `wgc` is a desktop path too: it always asks | `wgc` 18362, `duplication` 9200 |
 
 `images[].path` / `images[].scope` tell you which of those two families actually produced the frame
 (`dwm.thumbnail` vs `dwm.screen` are the same channel on different sides of that line). `dwm` enters its
@@ -299,8 +306,21 @@ that ever happens it surfaces as `capture.frame_invalid` / `capture.frame_timeou
 
 ## What to do about the common codes
 
+**Separate "this target" from "this machine".** `env.os_too_old` and `env.channel_unsupported` are about the
+Windows version installed here, and they are raised before any window is enumerated, before any consent dialog and
+before a single pixel is read - so do not retry the same target, do not relax the conditions, and never read them as
+DRM or as a refusal. Whether another channel can help is decided by which of the two it is (see the rows below).
+Ask the capability question without capturing anything: `--verbose` echoes `input.osBuild` (the Windows build this
+machine really reports) and `input.captureChain` (the channels this run can actually use for the requested target
+kind, in order). Floors, the declared support range and what has actually been measured are in
+`references/cli-contract.md` ("系统支持") and in the README's "System support" section.
+
 | code | exit | handling |
 | --- | --- | --- |
+| `env.os_too_old` | 7 | This machine's Windows build is below 10.0.10240, where the one WinRT encoder every format goes through does not exist - **switching `--capture` cannot help**, and neither can another target or a retry. Report that the environment is unsupported |
+| `env.channel_unsupported` | 7 | The channel you asked for explicitly needs a newer build than this machine has (message carries both numbers). **Another `--capture` value or `auto` can help**; the tool never substitutes the requested channel on its own |
+| `note.channel_unavailable` | - | A link of the `auto` chain was dropped because this build is under its floor; the image may still have been captured by another channel (`images[].source` names it). Not an error |
+| `note.os_unverifiable` | - | The Windows build could not be read, so nothing was filtered by version this time. No answer is neither "unsupported" nor "supported" - judge by whatever the step actually reports |
 | `match.no_window` | 4 | Conditions too narrow, or the target is minimised (minimised windows cannot be captured); relax with `--title-contains` |
 | `match.ambiguous_window` | 5 | Disambiguate as described above |
 | `match.index_out_of_range` / `match.monitor_out_of_range` | 1 | `--index` / `--monitor` out of range; `hint` lists everything on this machine |

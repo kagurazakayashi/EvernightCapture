@@ -52,6 +52,42 @@
 - **`--verbose` 与 `--quiet` 同时给出时按 `--verbose` 处理**：notes 照常交付，另发一条 `note.flag_overrides_quiet` 说明原因。`errors`、以及 `images[].source` / `path` / `scope` 这些来路字段任何时候都不被 `--quiet` 隐藏。
 - **输出名里的数字占位符不受这条约束**：`%i` / `%h` / `%p` 是模板而不是命令行取值，写错形式也不会报错（`%h` 给的是 `0x001B0C48` 那种形状，见下面《输出名占位符》）。
 
+## 运行环境与能力检查（三件事不要混）
+
+| 层次 | 取值 | 判据来源 |
+| --- | --- | --- |
+| 各条路线的 API 历史下限 | 任何一张图 `10240`（WinRT `BitmapEncoder`，六条通道共用）· `duplication` `9200` · `printwindow` / `dwm` `9600`（`PW_RENDERFULLCONTENT`）· `wgc` `18362`（`IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor`；命名空间本身 1803 就有，但本工具不经选择器） | 微软为**该路线实际调用**的那个接口写的文档下限 |
+| 本工具声明的下限 | 64 位 Windows 10 version 1903（build `18362`）以上 | 上面最高的那一条（默认通道要真能出图所要求的），不是最老的那一条 |
+| 已实测的版本 | Windows 10 22H2（build `19045`）x64 | 仓库里所有真机判据都只在这一台机器上跑过 |
+
+10240..18361 之间能装载也能截（工具按各条路线的下限筛通道，不整体拒绝），但**不在声明支持之列、也没实测过**。
+Windows 7 / 8 上这个 exe **根本装载不了**：它静态导入 `api-ms-win-core-winrt-error-l1-1-1.dll`
+（`RoOriginateLanguageException`，微软文档写的最低客户端就是 Windows 8.1）、`api-ms-win-core-winrt-l1-1-0`
+与 `api-ms-win-core-job-l2-1-0`（Windows 8），而 API Set 这套机制在 Windows 7 上根本不存在；
+这三个契约也不在 UCRT 可再分发的名单里，补不上去。`tests\compat.ps1` 会拿发布版二进制核对这些导入名，
+所以"装载下限"是关于这个文件的事实而不是推测。**Windows 8.1 能装载也能启动**，在那上面起作用的就是下面那道
+能力检查（Windows 10 之前没有 `BitmapEncoder`，一张图都编不出来）。所以"某个 `BitBlt` /
+`DwmRegisterThumbnail` 在 Windows 7 上存在"证明不了这个程序能在那儿跑；PE 头里的 `subsystem 6.00`
+同理只是链接器默认值，不是支持声明。
+`tests\compat.ps1` 会拿发布版二进制核对这些导入名。
+
+**能力检查发生的时机**：枚举窗口、规划输出名、弹确认框、读像素**之前**（版本号取自 `ntdll!RtlGetVersion`，
+不是会被清单与版本伪装影响的 `GetVersionEx`）。所以环境不满足时一个像素都没读、人也不会被打扰，
+之前写完的图仍然留着。
+
+| 情况 | 码 | 退出码 | 换 `--capture` 有没有用 |
+| --- | --- | --- | --- |
+| 本机 build < 10240 | `env.os_too_old` | 7 | **没有**。这是这台机器整体的事，与选哪条通道、与目标都无关 |
+| 显式指定的那条通道下限高于本机 | `env.channel_unsupported` | 7 | **有**。换一条或改 `auto`；重试同一个目标没有意义，工具也不会自己把你指定的那条换成别的 |
+| `auto` 链里某条被挡下 | `note.channel_unavailable`（提示） | 不变 | 剩下的几条照旧退回，实际出图的写在 `images[].source` |
+| 版本号问不出来 | `note.os_unverifiable`（提示） | 不变 | 这次没按版本筛过任何一条：问不出来既不等于不支持，也不等于支持 |
+
+**不截图就能问出能力**：`--verbose` 的 `input.osBuild`（本机 build；整个键不出现就是没问出来）与
+`input.captureChain`（本次这类目标实际可用的通道链，按尝试顺序；显式指定的那条被挡时是空数组）。
+`--dry-run` 不取帧，所以不会因为环境判据报错。设备层面的能力（驱动不喂帧、系统拒绝 WGC、会话里没有桌面、
+N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己的 `capture.*` 码与真实 HRESULT
+（例如 `capture.encoder_unavailable`）。
+
 ## 截图授权（两级：谁必须问人）
 
 **调用方规矩一句话：可靠窗口截图带 `--yes`；会拍到别家窗口时先向用户说明范围，启动后等用户本人点「是」；
@@ -180,6 +216,9 @@
   的兜底诊断也跟着它（一律 stderr，工具不为此再解析一遍命令行）。**约定那条流写不出去就是失败**：
   退出码 8，即使另一条流补发成功也不留成原来的值。
 - 文本输出只有三种情况：`--help`、`--version`、没给任何条件。
+- `--verbose` 的 `input` 里另有两项环境判据：`osBuild`（本机 Windows 内部版本；整个键不出现 = 这一问没成功）与
+  `captureChain`（本次这类目标实际可用的通道链，按尝试顺序；显式指定的那条被挡下时是空数组）。用它们可以在
+  不截图、不打扰人的情况下问出「这台机器给得出哪几条通道」，见上面「运行环境与能力检查」一节。
 
 ### 窗口图（`images[]` 每一项）
 
@@ -252,14 +291,15 @@
 | 4 | 无匹配窗口 |
 | 5 | 匹配多个窗口 |
 | 6 | 这次截图没拿到人的同意：人在确认框上答"否"或把框关掉（`capture.access_denied`），那个会话根本没有可交互的桌面、框弹不出来（`capture.consent_unavailable`），或在 `--consent-timeout-ms` 之内没有人回答（`capture.consent_timeout`）；也包括目标受保护 |
-| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`，也含身份复核没过的 `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`） |
+| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`，含身份复核没过的 `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`） |
 | 8 | 写文件失败（也含结果 JSON 没送到约定那条流，以及预算耗尽落在写/stdout 阶段的 `io.timeout`） |
 | 9 | 内部异常 |
 
 退出码与 body 是两套独立信号：先看 `errors`，再看 `captured`，最后才用退出码做粗分支。
 
 - `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout` 与"结果送不到约定流"给出 8；截图/编码阶段的其它失败（含
-  `capture.failed`、`capture.timeout`、`capture.encoder_unavailable`、`capture.consent_stale`、`capture.worker_failed`）都给 7；`capture.access_denied`、
+  `capture.failed`、`capture.timeout`、`capture.encoder_unavailable`、`capture.consent_stale`、`capture.worker_failed`，
+  以及环境类的 `env.os_too_old` / `env.channel_unsupported`）都给 7；`capture.access_denied`、
   `capture.consent_unavailable` 与 `capture.consent_timeout` 给 6（都算"这一张没人批准"，但下一步动作不同：
   有人答了否 / 那里没有桌面可弹 / 人在 `--consent-timeout-ms` 之内没答）。
 - 某个后端抛异常（而不是返回失败）只作废它所在的那一个目标：前面成功的图留着，剩下的目标照旧继续；
@@ -317,6 +357,14 @@ UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 绝不会静默改截别的屏幕，授权始终绑在人看过的那一块上。屏幕目标裁不出与该屏等大的图、以及桌面复制的
 `AcquireNextFrame` 回 `DXGI_ERROR_ACCESS_LOST` / `NOT_FOUND` 都走这一条码）
 
+**`env.*`（这一台机器的 Windows 版本给不出所要求的东西；两条都在枚举目标、弹框、读像素之前给出，`stage=capture`，退出码 7）**
+`env.os_too_old`（7，本机 build 低于 10240：所有格式共用的那唯一一套 WinRT 编码器不在。`message` 给本机 build 与
+要求的 build，`value` 是本机那个数字。**换 `--capture`、换目标、重试都不可能有别的下场**）
+`env.channel_unsupported`（7，显式 `--capture` 指定的那条通道的下限高于本机 build。`message` 给通道名、要求的
+build 与实际 build，`value` / `backend` 都是那条通道名。下一步是换一条通道或改用 `auto`，而工具不会自己把
+指定的那条顶替掉）
+判据、三条下限与实测范围见上面「运行环境与能力检查」一节。
+
 **`io.*`**
 `io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）`io.timeout`（8，`--timeout-ms` 在写文件 / 写 stdout 阶段耗尽，`stage=write`/`stdout`：已截好的那一张也不写）
 
@@ -326,6 +374,9 @@ UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 `note.format_extension_mismatch` `note.format_defaulted_png` `note.output_defaulted_stdout`
 `note.output_extension_appended` `note.quality_ignored` `note.all_without_placeholder`
 `note.flag_overrides_quiet` `note.pipe_default_format` `note.json_flag_deprecated` `note.frame_uniform`（这一张整幅只有一个颜色：质量提示，图片照常交付）`note.capture_clipped`（目标没被完整截下来：`message` 给"要截多大 / 只截到多大"，`hint` 给四边各少了几像素。图照常交付、退出码不变，配 `capturedRect` / `clipped` 一起看）
+`note.channel_unavailable`（`auto` 链里那一条被本机版本挡下、已从链中去掉：`message` 给通道名与两个 build
+数字；图仍可能由别的那几条截到）`note.os_unverifiable`（本机 build 没问出来，所以这一次没有按版本筛通道 ——
+问不出来不等于不支持，也不等于支持）
 `note.help_ignored_arguments`
 
 ## 帧的形状与像素上限

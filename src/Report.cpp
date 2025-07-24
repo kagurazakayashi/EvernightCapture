@@ -12,6 +12,7 @@
 #include "Json.h"
 #include "Capture.h"
 #include "Lang.h"
+#include "SystemCompat.h"
 
 namespace ecapture {
 namespace {
@@ -167,6 +168,20 @@ void WriteInputEcho(Json& j, const Options& opt) {
     j.Key(L"formatGiven").Value(opt.formatExplicit);
     j.Key(L"capture").Value(CaptureMethodName(opt.capture));
     j.Key(L"captureGiven").Value(opt.captureExplicit);
+    // 运行环境这两项是"这台机器能走哪几条通道"的答案，与 --capture 请求了什么无关：
+    //   osBuild       本机 Windows 内部版本；整个键不出现 = 这一问没成功（问不出来不等于支持，
+    //                 也不等于不支持，所以下面那条链这时没有被版本筛过）
+    //   captureChain  这一次真正可以试的通道，按尝试顺序（auto 时被版本挡掉的那几条不在里面；
+    //                 显式指定且被挡掉时是空数组，而不是偷偷换成别的那一条）
+    // 有了这两项，调用方（含 AI）在不必先截图、也不必打扰人的情况下就能判出"这次失败该换后端"
+    // 还是"这台机器不行"。
+    const OsVersion os = ProbeOsVersion();
+    if (os.known) j.Key(L"osBuild").Value(static_cast<long long>(os.build));
+    j.Key(L"captureChain").Arr();
+    for (const CaptureMethod usable : GateChannels(opt.capture, opt.ScreenMode(), os).chain) {
+        j.Value(CaptureMethodName(usable));
+    }
+    j.End();
     j.Key(L"lang").Value(LanguageTag(CurrentLanguage()));
     j.Key(L"policy").Value(MultiKey(opt.multi));
     if (opt.multi == MultiMatch::kIndex) j.Key(L"index").Value(opt.index);
@@ -235,6 +250,7 @@ std::wstring HelpText() {
     t += Msg(L"help.exit1") + L"\r\n";
     t += Msg(L"help.exit2") + L"\r\n";
     t += Msg(L"help.status") + L"\r\n";
+    t += Msg(L"help.system") + L"\r\n";
     // 授权这件事写在选项目录里（grp.consent 那一行 + --yes 的说明），不另立一段正文：
     // 免得同一个规矩在两处各写一遍，改了一处忘了另一处。
     t += L"\r\n";
@@ -248,8 +264,12 @@ std::wstring HelpText() {
 }
 
 std::wstring VersionText() {
+    // minWindowsBuild 是本工具**对外声明**的最低 Windows 内部版本，与运行时那道能力检查取的是
+    // 同一个数（src/SystemCompat.h 的 kSupportedMinBuild），所以脚本不必先读文档就能问出
+    // "这个 exe 打算在哪种系统上工作"。它是声明，不是实测范围：实测只有 README
+    // 《系统支持》那一节写的那一个版本。
     return std::wstring(L"EvernightCapture ") + kVersion + L"  (ECAPTURE.EXE / x64)  stage=" + kStage +
-           L"\r\n";
+           L"  minWindowsBuild=" + std::to_wstring(os_floor::kSupportedMinBuild) + L"\r\n";
 }
 
 // ---------------------------------------------------------------------------

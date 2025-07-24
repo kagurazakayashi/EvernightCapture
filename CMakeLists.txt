@@ -32,6 +32,7 @@ add_executable(ecapture
   src/WindowMatch.cpp
   src/WindowIdentity.cpp
   src/ScreenMatch.cpp
+  src/SystemCompat.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
   src/Deadline.cpp
@@ -292,4 +293,29 @@ target_link_libraries(ecapture-dup-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-dup-tests PROPERTIES OUTPUT_NAME "ecapture-dup-tests")
 set_property(TARGET ecapture-dup-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 运行环境能力判据的离线判据（由 tests\compat.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的是"这台机器的 Windows 内部版本是 X"那个现场，
+# 而降级一台机器既做不到也不该做。判据本体（src/SystemCompat.cpp 那三个纯函数）不碰窗口、
+# 不碰取帧、不弹框，注入假版本就能逐条判边界；只有文案那一段要读 .rc 里编进的四份资源。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-compat-tests
+  tests/compat_state.cpp
+  src/SystemCompat.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-compat-tests PRIVATE resources src)
+target_compile_features(ecapture-compat-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-compat-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-compat-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-compat-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-compat-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-compat-tests PROPERTIES OUTPUT_NAME "ecapture-compat-tests")
+set_property(TARGET ecapture-compat-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

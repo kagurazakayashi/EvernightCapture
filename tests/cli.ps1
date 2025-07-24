@@ -49,6 +49,9 @@ $cases = @(
        Has = (@('用法:') + $MATCH_FLAGS) }
     @{ Name = '/help 斜杠形式'; A = @('/help'); Exit = 3; Text = $true; Has = @('窗口匹配条件') }
     @{ Name = '帮助体积受控（<6KB）'; A = @('--version'); Exit = 0; Text = $true; Has = @('EvernightCapture') }
+    # --version 里那句是**对外声明**的最低 Windows 内部版本，与运行时能力检查同源（判据见 compat.ps1）
+    @{ Name = '--version 带出声明的最低内部版本'; A = @('--version'); Exit = 0; Text = $true
+       Has = @('minWindowsBuild=18362') }
     @{ Name = '帮助含取图方式一节'; A = @('--help'); Exit = 3; Text = $true
        Has = @('取图方式', 'Windows.Graphics.Capture', 'printwindow', 'bitblt', 'auto') }
 
@@ -148,6 +151,35 @@ $cases = @(
     @{ Name = '未给输出路径的整屏 dry-run 走 stderr'
        A = @('--monitor','1','--dry-run'); Exit = 0; ToStderr = $true
        Notes = @('note.output_defaulted_stdout', 'note.dry_run') }
+
+    # ---------- 运行环境能力判据（SystemCompat；判据本体在 tests\compat.ps1 的离线层）----------
+    # 这几条只判"契约形状"：回显里那两个键在不在、auto 展开出的链对不对、dry-run 会不会
+    # 因为环境判据而报错。本机 Windows 版本具体挡不挡得住哪条通道不在这里判（那要另一台机器）。
+    @{ Name = '-v 回显本机内部版本与本次可用通道链'
+       A = ($ANCHOR + @('-v','out.png')); Exit = 0
+       Check = { param($o) $o.input.osBuild -gt 0 -and
+                            @($o.input.captureChain).Count -ge 1 -and
+                            (@($o.input.captureChain) -contains 'wgc') } }
+    @{ Name = 'auto 展开成整条窗口链（本机版本够时一条不少）'
+       A = ($ANCHOR + @('-v','-C','auto','out.png')); Exit = 0
+       Check = { param($o) (@($o.input.captureChain) -join ',') -like 'wgc,*bitblt' -and
+                            (@($o.input.captureChain) -contains 'dwm') } }
+    @{ Name = 'auto 在屏幕模式下展开成屏幕那条链'
+       A = @('--monitor','1','-v','-C','auto','--dry-run','out.png'); Exit = 0
+       Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,duplication,bitblt' } }
+    @{ Name = '显式指定某条通道时链就只有那一条'
+       A = ($ANCHOR + @('-v','-C','printwindow','out.png')); Exit = 0
+       Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'printwindow' } }
+    @{ Name = 'dry-run 不因环境判据报错（它一个像素都不取）'
+       A = ($ANCHOR + @('-C','wgc','--dry-run','out.png')); Exit = 0
+       # 判据写在 Check 里：用例表的 Notes 键在 PowerShell 5.1 下取不到（见 harness 注释），
+       # 写在键上等于没写。
+       Check = { param($o) (@($o.notes | ForEach-Object code) -join ',') -eq 'note.dry_run' -and
+                            -not (@($o.errors | ForEach-Object code) -like 'env.*') -and
+                            -not (@($o.notes | ForEach-Object code) -like 'env.*') } }
+    @{ Name = '帮助里有运行环境那一节与那两条环境码'
+       A = @('--help'); Exit = 3; Text = $true
+       Has = @('运行环境', '18362', 'env.os_too_old', 'env.channel_unsupported', 'input.captureChain') }
 
     # ---------- 匹配条件被正确解析（必然无窗口命中 -> exit 4）----------
     @{ Name = '8 个条件同时给出被接受'; A = @('--hwnd','0x10','--pid','1','--process','p.exe','--exe','D:\e.exe',

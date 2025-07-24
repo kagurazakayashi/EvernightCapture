@@ -32,6 +32,7 @@
 #include "OutputPlan.h"
 #include "Report.h"
 #include "ScreenMatch.h"
+#include "SystemCompat.h"
 #include "WindowIdentity.h"
 #include "WindowMatch.h"
 #include "Worker.h"
@@ -316,12 +317,14 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, 
     return false;
 }
 
-// --capture 分派。auto 对窗口按 wgc -> dwm -> printwindow -> bitblt，对屏幕按
-// wgc -> duplication -> bitblt。显式指定的通道绝不回退：用户要哪个就要哪个。
+// --capture 分派。chain 是"这一次真正可以试的通道"（已经过通道闸门按本机 Windows 版本筛过；
+// 见 SystemCompat.h）：显式指定一条时它就只有那一条，auto 时是回退链减去被版本挡掉的那几条。
+// 显式指定的那条绝不回退：用户要哪个就要哪个。
 // 交给这里的不是裸句柄，而是选定那一刻的快照与查询层（WindowTarget）—— 每一次尝试之前
 // 都要照它复核一遍，所以通道手里没有"跳过复核直接取像素"的那条路可走。
 bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
-                       const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
+                       const WindowTarget& win, CaptureMethod method,
+                       const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
                        const Deadline& dl, CapturedFrame* out, Diagnostic* err,
                        std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
@@ -332,8 +335,6 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const R
                            },
                            err, fatal);
     }
-    const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
-                                              CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt};
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl,
@@ -342,7 +343,8 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const R
 }
 
 bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
-                             const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
+                             const ScreenInfo& screen, CaptureMethod method,
+                             const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
                              const Deadline& dl, CapturedFrame* out, Diagnostic* err,
                              std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
@@ -353,8 +355,6 @@ bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
                            },
                            err, fatal);
     }
-    const std::vector<CaptureMethod> chain = {CaptureMethod::kWgc, CaptureMethod::kDuplication,
-                                              CaptureMethod::kBitBlt};
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureScreenOneChannel(gate, targetKey, screen, m, timeoutMs,
@@ -486,6 +486,23 @@ CaptureOutcome RunCapture(const Options& opt) {
 
     // 屏幕矩形必须与物理像素一致，否则 GDI 通道会截偏
     EnsureDpiAware();
+
+    // 运行环境这一关开在枚举窗口、规划输出名、弹确认框、读像素之前：
+    // 这一台机器上的 Windows 版本提供不了所要求的东西时，后面每一步都只是白做功，而最要紧的是
+    // **别去打扰人** —— 人在确认框上点"是"之后才知道根本截不出来，是这条链最坏的失败形状。
+    // 判据与那三条下限各是什么见 src/SystemCompat.h。
+    // --dry-run 不取帧，所以这一关不替它下结论（它那条"这次会挑到哪几条通道"的答案在 -v 的
+    // input.captureChain 与 input.osBuild 里，问能力不必等到要截图的时候）。
+    const OsVersion os = ProbeOsVersion();
+    const ChannelGate caps = GateChannels(opt.capture, opt.ScreenMode(), os);
+    if (!opt.dryRun) {
+        if (!caps.error.code.empty()) {
+            outcome.errors.push_back(caps.error);
+            outcome.exitCode = EX_CAPTURE_FAILED;
+            return outcome;
+        }
+        for (const Diagnostic& n : caps.notes) outcome.notes.push_back(n);
+    }
 
     // 整条自动处理链路共用这一份预算：目标选择、后端重试、等帧、编码、提交。
     // 人工确认那一段不计在这里（见 GateConfig.consentTimeoutMs 与 --consent-timeout-ms）。
@@ -702,13 +719,14 @@ CaptureOutcome RunCapture(const Options& opt) {
                              [&] {
                                  return t.isScreen
                                             ? CaptureScreenWithMethod(gate, t.Tag(), t.screen,
-                                                                      opt.capture, kFrameTimeoutMs,
-                                                                      dl, &frame, &targetErr,
-                                                                      &outcome.notes, &fatal)
+                                                                      opt.capture, caps.chain,
+                                                                      kFrameTimeoutMs, dl, &frame,
+                                                                      &targetErr, &outcome.notes,
+                                                                      &fatal)
                                             : CaptureWithMethod(gate, t.Tag(), t.area, t.win,
-                                                                opt.capture, kFrameTimeoutMs, dl,
-                                                                &frame, &targetErr, &outcome.notes,
-                                                                &fatal);
+                                                                opt.capture, caps.chain,
+                                                                kFrameTimeoutMs, dl, &frame,
+                                                                &targetErr, &outcome.notes, &fatal);
                              },
                              &targetErr, &fatal);
             if (ok) {

@@ -150,6 +150,7 @@ Output: success and failure are both JSON, holding only captured / images (plus 
 Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
         6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
 Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
+Runtime: 64-bit Windows, declared floor build 18362 (Windows 10 version 1903), tested only on build 19045; a route this machine's version cannot offer is reported before any frame or dialog as env.os_too_old / env.channel_unsupported (the first does not improve with another channel). --verbose echoes input.osBuild and input.captureChain
 
 Examples:
   ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -360,7 +361,9 @@ Rules:
 `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no matching window /
 `5` several matches / `6` target protected, refused on the confirmation dialog, nobody answered it within
 `--consent-timeout-ms`, or no dialog could be shown / `7` capture failed, an exhausted `--timeout-ms` budget
-included / `8` write failed, a budget exhausted in the write/stdout stage included / `9` internal error.
+**and this machine's Windows version not offering what was asked** (`env.os_too_old` /
+`env.channel_unsupported`, see [System support](#system-support)) included / `8` write failed, a budget
+exhausted in the write/stdout stage included / `9` internal error.
 New meanings only ever append numbers.
 `8` also covers "the result JSON could not reach the agreed stream" (writing stdout or stderr failed); text delivered
 on the other stream does not count as delivery in that case.
@@ -376,16 +379,70 @@ batch deliberately instead of being retried one target at a time. An access deni
 falling back, and neither is a refusal: once somebody answers "No" (or no dialog can be shown), the rest of that
 request is not attempted — no other backend, no second ask, while every image already completed stays in `images`.
 
+## System support
+
+Three different numbers must not be blended into one slogan:
+
+| Layer | Value | Where it comes from |
+| --- | --- | --- |
+| Per-route API history floor | any image at all 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | what Microsoft documents for the exact call that route makes. The encoder (WinRT `BitmapEncoder`) is shared by every channel and every format; the WGC route goes through `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor`, which arrived with Windows 10 version 1903 — even though the `Windows.Graphics.Capture` namespace itself appeared in 1803, and this tool has no "let the user pick a window in the system picker" path to fall back on |
+| What this tool declares | 64-bit Windows 10 version 1903 (build 18362) or later | the highest of those floors, because that is what the default channel needs in order to deliver a window image — not the oldest API some route touches |
+| What has actually been tested | Windows 10 version 22H2 (build 19045), x64 | every on-device judgement under `tests\` runs on that one machine |
+
+Builds between 10240 and 18361 can load this exe, and can capture: the tool gates each route by its own
+floor instead of refusing the whole program there. They are not declared support and have never been
+measured, so treat them as "expected to work, unverified".
+
+Nothing here claims anything about Windows 7 or 8 — **this binary cannot load there at all**. It statically
+imports the `api-ms-win-core-winrt-error-l1-1-1` API-set contract (whose documented minimum client is
+Windows 8.1) plus `api-ms-win-core-winrt-l1-1-0` and `api-ms-win-core-job-l2-1-0` (Windows 8), and the
+API-set mechanism does not exist on Windows 7; none of those three contracts is in the set the UCRT
+redistributable installs, so they cannot be added to an older system. `.\tests\compat.ps1` checks those
+names against the shipped binary, so the load floor is a fact about this file rather than an inference.
+Windows 8.1 *can* load and start it - and there the capability check below is what answers, because
+`Windows.Graphics.Imaging.BitmapEncoder` does not exist before Windows 10 and no image at all can be
+produced. A single `BitBlt` or `DwmRegisterThumbnail` call existing on Windows 7 therefore says nothing
+about this program, and the PE header's `subsystem version 6.00` is the MSVC linker default, not a
+support claim either.
+
+### Capability check at run time
+
+Before enumerating windows, planning output names, showing a consent dialog or reading a pixel, the tool
+compares the Windows build read from `ntdll!RtlGetVersion` (never `GetVersionEx` — that one answers
+according to the application manifest and to version helper) against the floors above, and reports:
+
+| Code | When | Exit | Does another channel help? |
+| --- | --- | --- | --- |
+| `env.os_too_old` | build below 10240 (so also Windows 8.1, which can load the file): the one encoder implementation every format goes through is not there | 7 | **No.** Not a channel problem and not a target problem — nothing on this machine can produce an image |
+| `env.channel_unsupported` | the channel asked for explicitly has a higher floor than this build | 7 | **Yes** — another `--capture` value, or `auto`. Retrying the same target cannot help, and the requested channel is never substituted |
+| `note.channel_unavailable` | `auto` found a channel whose floor this build is under and dropped it from the chain | unchanged | the image can still come from another channel; `images[].source` names the one that did it |
+| `note.os_unverifiable` | the build number could not be read at all | unchanged | nothing was filtered by version this time - no answer counts as either "supported" or "unsupported" |
+
+`--verbose` echoes `input.osBuild` and `input.captureChain` (the channels this machine can actually offer
+for the kind of target requested), so an agent can ask the capability question without capturing
+anything. `--dry-run` never gates on the environment, because it takes no frame.
+
+Device-level capability is deliberately not predicted: a driver that will not feed desktop duplication, a
+machine that refuses Windows.Graphics.Capture, a session with no interactive desktop, an N edition missing
+media components — none of those show up in a version number, and each reports its own `capture.*` code
+with the real HRESULT rather than being guessed at in advance.
+
 ## Capture channels
 
-| Value | Channel | Covered window | Hardware-accelerated content | Minimum OS |
+| Value | Channel | Covered window | Hardware-accelerated content | API history floor |
 | --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | yes (DWM cache) | normal | Win10 1803+ |
-| `dwm` | DwmRegisterThumbnail | yes | mostly normal, protected windows black | Win7+ |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | yes (window self-draw) | often fully black | Win8.1+ |
-| `bitblt` | BitBlt from a screen DC | no, visible pixels only | partly black | all versions |
-| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal | Win8+; RDP / virtual GPUs often yield nothing |
-| `auto` | falls back wgc → dwm → printwindow → bitblt | best effort | best effort | — |
+| `wgc` | Windows.Graphics.Capture | yes (DWM cache) | normal | Win10 1903 (18362) — the `CreateForWindow` / `CreateForMonitor` interop, not the 1803 namespace |
+| `dwm` | DwmRegisterThumbnail | yes | mostly normal, protected windows black | Win8.1 (9600) — registering is older, but the read-back is `PrintWindow(PW_RENDERFULLCONTENT)` |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | yes (window self-draw) | often fully black | Win8.1 (9600) for that flag |
+| `bitblt` | BitBlt from a screen DC | no, visible pixels only | partly black | no floor of its own |
+| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal | Win8 (9200); RDP / virtual GPUs often yield nothing |
+| `auto` | falls back wgc → dwm → printwindow → bitblt | best effort | best effort | the chain minus whatever this build gates out |
+
+Those are the **API history floors**, each checked against the Microsoft documentation for the exact call
+that route makes. They are not what this program claims to run on, and they are not measured either: see
+[System support](#system-support) for the declared floor (Win10 1903, x64), the encoder floor that applies
+to every channel, the version actually tested (Win10 22H2 / 19045), and what the run-time capability check
+reports instead of a vague failure.
 
 - Want "the window's own content", even if something is on top of it: keep the default `wgc`. Want "what the screen
   looks like right now", occluder included: use `bitblt` or `duplication`.
@@ -616,6 +673,14 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    `capture.consent_stale` (7, the target moved after consent — select it again and expect a fresh ask),
    `io.write_failed` (8, directory missing or the commit failed), `io.file_exists` (8, with `--no-overwrite`),
    `io.output_collision` (8, two targets expand to the same output name — nothing was captured).
+   Two of those are about **this machine**, not about the target, and they are the ones where retrying the same
+   window is pointless: `env.os_too_old` (7, the Windows build is below the one encoder every format uses —
+   changing `--capture` changes nothing) and `env.channel_unsupported` (7, the channel that was asked for
+   explicitly needs a newer build — another channel or `auto` is what can help, and the tool will not switch
+   on its own). `note.channel_unavailable` says the same about one link of an `auto` chain that was dropped
+   while the rest still captured. Read `input.osBuild` / `input.captureChain` with `--verbose` to ask which
+   channels this machine offers before capturing anything. See
+   [System support](#system-support) for the floors and for what has actually been tested.
    Every error also carries `target` / `backend` / `stage` / `hresult` / `win32` (see the output rules above) as far as
    that step really had them, so there is no need to dig values out of `message`.
 3. **Read the right stream**: with `--out <file>` the JSON is on stdout and stderr is empty, so parse stdout
@@ -647,12 +712,13 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 135 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms included) + stream separation + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 495 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms included) + stream separation + multi-language checks (all `--dry-run`, no capture) |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
 | `.\tests\image.ps1` | Frame checks: offline suite (135 checks) over hand-built pixel layouts (stripes, checkerboard, alpha, row padding, over-large / short buffers, out-of-range crops) plus on-device single-colour captures |
 | `.\tests\dup.ps1` | Desktop Duplication multi-monitor checks: offline layer (`build\ecapture-dup-tests.exe`, from `tests\dup_state.cpp`) injects the four rotations against the production geometry judges — pixel judgements are taken against the test's own naive "rotate the whole frame first, then crop" — plus negative coordinates, cropped/clipped rectangles, a fake two-adapter output table (target on the second adapter, no outputs, detached) and the "that monitor changed after the confirmation" cases; on-device layer checks the dialog must appear (`--yes` cannot skip a desktop route), `requestedRect` / `capturedRect` / `clipped` / `rotation` against real images, a four-corner orientation probe per monitor, and that every monitor is reachable. Displays are never re-arranged or re-oriented: rotated-panel and hot-unplug judgements are recorded as SKIP ("not verified") when the machine does not offer that situation |
+| `.\tests\compat.ps1` | System support checks. Offline layer (`build\ecapture-compat-tests.exe`, from `tests\compat_state.cpp`) injects fake Windows builds into the production capability judges: every floor on both sides, an explicitly requested channel that is gated out never being substituted, which link an `auto` chain loses, and no filtering at all when the build cannot be read. On-device layer (captures nothing): the probed build equals what WMI reports independently (so the probe is not version-helped), the echoed chain agrees with that build, `--dry-run` never fails on the environment gate, all four help texts carry the floors and the `env.*` codes, and the shipped binary really imports the Windows 8-era WinRT / job API sets that are why the load floor is what it is. Anything needing a second Windows version is recorded as unverified rather than inferred |
 | `.\tests\smoke.ps1` | On-device smoke: capture its own test window → validate PNG size and pixel content |
 | `.\tests\save.ps1` | On-device file saving and overwrite protection: every `--no-overwrite` boolean form against a real file, batch output-name planning + collision detection (`%p` / `%n` / `%d` / `%t` / `%%` / unknown `%x` / case / cleaning / truncation), atomic commit (locked target, target is a directory, missing directory, killed mid-run), concurrent `--no-overwrite` race |
 | `.\tests\channels.ps1` | On-device channel comparison: six channels + occlusion control, against its own windows. The window-content channels run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` sample the desktop, so their image judgements need `-SimulateConsent` and are recorded as SKIP ("not verified") without it |

@@ -166,6 +166,11 @@ inline constexpr const wchar_t* kDeprecatedOption = L"note.deprecated_option";
 inline constexpr const wchar_t* kDryRun = L"note.dry_run";
 inline constexpr const wchar_t* kHelpIgnoredArguments = L"note.help_ignored_arguments";
 inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
+// 环境这一侧的提示（不是错误，图照常由别的那几条截出来）：
+//   note.channel_unavailable  auto 回退链里那一条被本机 Windows 版本挡掉，已经不在链里了
+//   note.os_unverifiable      本机版本没能问出来，所以这一次没有按版本筛通道（不等于支持）
+inline constexpr const wchar_t* kNoteChannelUnavailable = L"note.channel_unavailable";
+inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
 // 质量提示（不是错误，图片照常交付）：整帧逐像素比过之后确实只有一个颜色。
 // 单色本身不说明采集失败 —— 目标窗口可以本来就是一块纯色；它也可能是没合成出画面。
 // 所以这条只说事实、把两种可能都列在 hint 里，由调用方自己判断要不要再看一眼图。
@@ -216,6 +221,13 @@ inline constexpr const wchar_t* kWindowGone = L"capture.window_gone";
 // 行距×高还短）。它与 capture.failed 分开给码：调用方的下一步是换通道或报告实现缺陷，
 // 而不是"再试一次这个窗口"。退出码仍是 7。
 inline constexpr const wchar_t* kFrameInvalid = L"capture.frame_invalid";
+// 运行环境（这一台机器上的 Windows 版本）提供不了所要求的东西，与"这个目标截不到"是两回事。
+// 判据与三条下限各写在哪儿见 src/SystemCompat.h；两条都在枚举目标、弹确认框、读像素**之前**
+// 给出，一个像素都不读，退出码 7。分开给码的理由就是调用方的下一步不同：
+//   env.os_too_old            这台机器整工具都不行（唯一那套编码器不在）—— 换 --capture 没用
+//   env.channel_unsupported   只有这一条通道不行 —— 换通道或 auto 回退是有意义的
+inline constexpr const wchar_t* kEnvOsTooOld = L"env.os_too_old";
+inline constexpr const wchar_t* kEnvChannelUnsupported = L"env.channel_unsupported";
 // 期限。三条各归一个阶段，因为调用方的下一步不同：
 //   match.timeout    —— 条件求值（含 --title-regex 的正则）没在预算内跑完，重来或加大预算
 //   capture.timeout  —— 取帧 / 编码没在预算内完成（含"辅助进程被中止"这种情况）
