@@ -312,6 +312,22 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 那個目標寫清楚）。只有 `duplication` 還會因為單色拒絕一影格，而且必須兩條一起成立——這一個影格沒有任何
 present 記錄，且整幅只有一個顏色。
 
+## 不給輸出路徑（相容性說明）
+
+沒給輸出路徑與顯式寫 `--out -` 是**同一個請求**：圖片按 png 走 stdout，JSON 整份走 stderr，而每條診斷都是
+那一步真實產生的那一條。
+
+| | 舊行為 | 現在的行為 |
+| --- | --- | --- |
+| 沒給輸出路徑時失敗 | 整段換成一條 `cli.missing_output` + 退出碼 1，`images` 與 `notes` 清空、真實原因不外洩（例外只有 `cli.stdout_multiple_targets` 與確認被拒） | 原樣的 code 與原樣的退出碼：`match.no_window`（4）、`match.ambiguous_window`（5）、`capture.access_denied`（6）、`capture.failed`（7）、`io.write_failed`（8）、`cli.invalid_number`（1）…… |
+| 沒給輸出路徑時的部分成功 | 看不見（`images` 被整段丟掉） | 已經送到 stdout 的圖仍在 `images` 裡，`captured` 照實計數 |
+| `cli.missing_output` | 退出碼 1 | 不再發出。這條 code 仍留在清單裡，為的是它不被挪作別的含義 |
+| 「這次沒給輸出路徑」這句話 | 一個 code | 只在「補上檔名確實繞得開這次故障」的那一條上作為 `hint` 出現：隱式 stdout 且 `io.write_failed` + `stage=stdout`。寫 `--out -` 的人本來就選定了這條管道，所以那句 hint 不出現 |
+
+怎麼分支：讀 `errors[].code`（以及它的 `stage` / `target` / `backend` / `hresult` / `win32`），
+既不要只看退出碼，也不要根據「有沒有給 `--out`」推斷原因。code 只追加不改名，所以按舊行為寫出來的呼叫端
+仍然能用——它只是再也讀不到一條假原因。
+
 ## 退出碼
 
 `0` 成功 / `1` 參數錯 / `2` 未給條件 / `3` `--help` / `4` 無匹配視窗 / `5` 匹配多個視窗 /
@@ -447,9 +463,8 @@ Windows 8.1 **可以**裝載也可以啟動 —— 在那上面起作用的正�
 - 沒有可互動桌面時（服務工作階段、排程工作、鎖屏），帶 `--yes` 的視窗內容截圖照舊正常完成，而桌面路徑只能被拒絕——
   絕不會因為「彈不出框」就放行。答「否」給 `capture.access_denied` + `6`，彈不出框給新的穩定碼
   `capture.consent_unavailable` + `6`；兩者都帶 `stage=consent`、`target`、`backend`，`value` 寫的是那條路徑。
-- 被拒絕**不再**收斂成 `cli.missing_output`，所以就算沒給輸出路徑，呼叫端也看得見「是人拒了」。這條偷懶路徑上其餘
-  失敗照舊一律收斂成 `cli.missing_output` + 退出碼 1、真實原因不外洩；另一個例外還是 `cli.stdout_multiple_targets`
-  ——多個目標要共用同一條 stdout 本來就是參數錯，報成缺少輸出路徑反而會把人引向補 `--out`。
+- 被人拒絕就是被人拒絕：`capture.access_denied`（`stage=consent`）+ 退出碼 `6`，與有沒有給輸出路徑無關。
+  省略 `--out` 就等於 `--out -`，授權結果不因它而變，見[不給輸出路徑（相容性說明）](#不給輸出路徑相容性說明)。
 - 多張螢幕 + 寫 stdout（`--monitor all --out -`）在任何彈框之前就被拒：一次確認換不來「每張螢幕一張圖擠進同一條串流」。
   只有一張螢幕時 `--monitor all` 是一個目標，那條路仍然按單張走 stdout。
 - 說清楚邊界：這就是一個 `MessageBox`。它是給合作式自動化（人或 AI）準備的誤點防護，既證明不了按下按鈕的是人，
@@ -559,12 +574,13 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 1. **先 `--dry-run` 探一次**，再消歧，最後真的截圖。`--dry-run` 不取影格、不寫檔案、也不彈確認框，候選在
    `notes[0].value`：
-   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。注意 `--dry-run` 仍要求給 `--out`，
-   否則報 `cli.missing_output` + 1；而**只給 `--dry-run` 不給任何視窗條件 = 文字說明 + 退出碼 2**。
-2. **依 `errors[].code` 分支，不要比對 `message` 文字**（那會隨 `--lang` 變）。常用的幾條：
+   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` 也不必給 `--out`
+   （那一次沒有圖片要交付，結果整份在 stderr）；而**只給 `--dry-run` 不給任何視窗條件 = 文字說明 + 退出碼 2**。
+2. **依 `errors[].code` 分支，不要比對 `message` 文字**（那會隨 `--lang` 變），也不要拿「有沒有給 `--out`」當原因——
+   省略它那條路與 `--out -` 報的是同樣的碼。常用的幾條：
    `match.no_window`（4，條件太窄或目標被最小化）、`match.ambiguous_window`（5，從 `hint` 的候選裡挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候選）、
-   `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多個目標要共用
+   `cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多個目標要共用
    同一條 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等影格逾時）、
    `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.frame_invalid`（7，交回來的影格記憶體形狀不合法）、
    `capture.consent_unavailable`（6，這個工作階段沒有可互動的桌面，沒人能夠同意）、
@@ -605,7 +621,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 建置，產物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可選 |
-| `.\tests\cli.ps1` | 495 例輸出契約斷言（含 `--yes` 與 `--no-overwrite` 的每種布林寫法）+ 通道分離 + 多語言檢查（一律 `--dry-run`，不截圖） |
+| `.\tests\cli.ps1` | 495 例輸出契約斷言（含 `--yes` 與 `--no-overwrite` 的每種布林寫法）+ 通道分離 + 省略 `--out` 與 `--out -` 的等價對拍 + 多語言檢查（一律 `--dry-run`，不截圖） |
 | `.\scripts\check-lang.ps1` | 四語文案的 key / 佔位符對齊檢查，並確認 exe 裡真的編進了四份資源 |
 | `.\tests\invoker.ps1` | 離線檢查共用的測試程序呼叫器：argv 引號、兩條流同時輸出、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄（不截圖） |
 | `.\tests\build-path.ps1` | 建置路徑判據：離線那層驗暫存批次檔正文只能是 ASCII、VS 環境匯入失敗要在跑 cmake 之前就報錯；真機那層在含中文、空白、括號、百分號的目錄裡跑 Release / Debug / RelWithDebInfo 與 `-Clean`，再把 `%TEMP%` 換成中文目錄建置一次（不截圖；`-OfflineOnly` 只跑離線那層） |
@@ -620,7 +636,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `.\tests\isolation.ps1` | 實機資源隔離：同名的既有處理程序保持存活且不會被當成目標、並發兩輪互不串、異常退出只清理自身 |
 | `.\tests\identity.ps1` | 目標身份與 Z 序選擇判據。離線層（`build\ecapture-identity-tests.exe`，注入假查詢層）：句柄被另一個處理程序佔用、PID 相同但那是另一個處理程序、類別名換了、當初的條件不再成立、每一問各自問不出來，以及兩檔覆核各問哪幾問與短路順序。實機層（只用自建視窗）：健康目標一次都不誤傷、批次中途目標被銷毀確實報 `capture.target_gone`、改了名而 `--title` 條件不再成立確實報 `capture.target_changed`、改名而條件仍成立就照常出圖、`--topmost-match` / `--bottommost-match` 對著當下的 Z 序判（先建但置頂的那扇贏，正是「最後建立」那種讀法會挑錯的情形）。句柄與 PID 何時被回收沒辦法安排現場（那要結束別人的處理程序），確認框那一段又要代人點「是」，兩者一律記未驗證而不偽造通過 |
 | `.\tests\screen.ps1` | 實機整張螢幕測試：三條螢幕通道（都屬於桌面路徑，每一條都必須彈框）+ 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用；不加時凡是要答框的判據一律記 SKIP（未驗證） |
-| `.\tests\streams.ps1` | 實機標準串流與結構化結果可靠性：單個目標寫 stdout、多個目標被拒、判據是實際命中的目標數、多螢幕被拒而且確認框根本不彈、診斷的定位欄位、批次中途失敗時保留前面已經成功的圖、結果送不到約定的那條串流時報 8（只截自己建的視窗） |
+| `.\tests\streams.ps1` | 實機標準串流與結構化結果可靠性：單個目標寫 stdout、多個目標被拒、判據是實際命中的目標數、多螢幕被拒而且確認框根本不彈、診斷的定位欄位、批次中途失敗時保留前面已經成功的圖、結果送不到約定的那條串流時報 8，以及省略 `--out` 與顯式 `--out -` 在成功 / 無匹配 / 歧義 / 非法參數 / 後端失敗 / 被拒絕 / 寫入斷管七個場景上的機器語義對拍（只截自己建的視窗） |
 | `.\tests\window_shot.bat` | 給人跑的批次檔：編譯測試視窗程式 → 逐通道截圖 → 開啟截圖目錄 → 只結束自己起的那個 PID |
 | `.\scripts\mkreadme.ps1` | 用各語言 `--help` 的原樣輸出重新產生四份 README 的說明段 |
 

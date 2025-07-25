@@ -135,6 +135,11 @@ inline constexpr const wchar_t* kInvalidValue = L"cli.invalid_value";
 inline constexpr const wchar_t* kInvalidFormat = L"cli.invalid_format";
 inline constexpr const wchar_t* kUnrecognizedExtension = L"cli.unrecognized_extension";
 inline constexpr const wchar_t* kUnexpectedPositional = L"cli.unexpected_positional";
+// 保留而不再发出：0.4.0 之前"没给 --out 而这次又没出图"会把真实原因整段换成这一条，
+// 于是调用方读到的是"缺少输出路径"而不是"人拒绝了 / 没命中 / 写坏了"。现在省略 --out 与
+// 显式 --out - 语义一致，这条 code 一律不出现；留着是为了它不被挪作别的含义。
+// 同源的文案 cli.missing_output_hint 还在用，只在"图片必须挤过 stdout 而 stdout 写坏了"
+// 那一条上作为 hint 出现（见 Capture.cpp）。
 inline constexpr const wchar_t* kMissingOutput = L"cli.missing_output";
 inline constexpr const wchar_t* kDuplicateOutput = L"cli.duplicate_output";
 inline constexpr const wchar_t* kConflictingOptions = L"cli.conflicting_options";

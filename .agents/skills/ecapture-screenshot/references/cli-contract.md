@@ -154,8 +154,9 @@ N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己�
 - 批准之后目标又挪了位置或变了大小 → `capture.consent_stale` + 退出码 7、`stage=capture`：
   这一张不取，可重试（重新选定目标，再让人确认一次）。
 - **任何一次拒绝之后，这一次请求剩下的截图全部停止**：不换后端、不重试，之前已经写好的图留着。
-- 不给输出路径那条"偷懒路径"上，**确认被拒不再塌成 `cli.missing_output`**（其余失败照旧会塌）。
-  所以"是不是被人拒了"直接看 `errors[].code` 就知道，不必为了看清而先补一个 `--out`。
+- **省略 `--out` 与显式 `--out -` 是同一条路**：同样的 code、同样的退出码、同样的部分成功结果。
+  所以"是不是被人拒了"直接看 `errors[].code` 就知道，不必为了看清而先补一个 `--out`；
+  旧实现那种"没给输出路径就把一切失败换成 `cli.missing_output` + 1"的行为已经删除（见《行为变更》一节）。
 - 注定不弹框、也不截图的情况：`--help`、`--version`、不给任何条件（退出码 2 —— `--yes` **不是**选择条件，
   光给它绝不等于"那就顺手拍张桌面"）、无匹配（4）、多匹配（5）、解析期错误（1）、
   输出名规划失败（如 `io.output_collision` 8）、以及 `--dry-run`。
@@ -307,6 +308,27 @@ N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己�
 - **部分成功**：`--all` / `--monitor all` 里某些目标失败时，已写出的图照样在 `images` 里
   （`captured` 可以大于 0），但退出码仍是 7。所以"退出码非 0"不等于"什么都没拿到"。
 
+## 行为变更：省略 `--out` 不再折叠错误
+
+省略 `--out` 与显式 `--out -` 从此是**同一个请求**：图片按 png 走 stdout、JSON 整份走 stderr，
+每条诊断都是那一步真实产生的那一条。
+
+| | 原行为 | 新行为 |
+| --- | --- | --- |
+| 没给输出路径而这次又失败 | 整段换成一条 `cli.missing_output` + 退出码 1，`images` 与 `notes` 清空，真实原因不外泄（例外只有 `cli.stdout_multiple_targets` 与 `stage=consent` 的拒绝 / 弹不出） | 原样的 code 与原样的退出码：`match.no_window`（4）、`match.ambiguous_window`（5）、`capture.access_denied`（6）、`capture.failed`（7）、`io.write_failed`（8）、`cli.invalid_number`（1）…… |
+| 没给输出路径时的部分成功 | 看不见（`images` 被整段丢掉） | 已送到 stdout 的图仍在 `images` 里，`captured` 照实计数 |
+| `cli.missing_output` | 解析期 / 输出期的兜底码，退出码 1 | **不再发出**。这条 code 保留在编号空间里，为的是它不被挪作别的含义；读到旧日志里有这一条，说明那次运行的版本早于本次变更，真实原因当时没交出来 |
+| "这次没给输出路径"这句话 | 一个 code | 只在补上文件名确实绕得开这次故障的那一条上作为 `hint` 出现：隐式 stdout 且 `io.write_failed` + `stage=stdout`。写 `--out -` 的人本来就选定了这条管道，那句 hint 不出现 |
+
+调用方怎么分支：
+
+1. 先看 `errors[].code`，再用它的 `stage` / `target` / `backend` / `hresult` / `win32` 定位；
+   `message` / `hint` 随 `--lang` 变，只能给人看。
+2. 退出码与 body 是两套独立信号：`0` 也可能带着 notes，`7` 也可能已经有图（部分成功）。
+3. **不要根据"有没有给 `--out`"推断原因**，也不要因为看见 `cli.missing_output` 就补一个 `--out` 再截一次——
+   旧实现正是这么把它说成缺少输出路径的，而那种失败补 `--out` 一个都治不了。
+4. code 只追加、不改名、不改含义，所以照旧行为写的调用方仍然能跑：它只是再也读不到一条假原因。
+
 ## 诊断码全表
 
 只按 `code` 分支。码值只增不改名。
@@ -314,7 +336,7 @@ N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己�
 **`cli.*`（解析期，全部退出码 1）**
 `cli.unknown_option` `cli.missing_value` `cli.switch_takes_no_value` `cli.invalid_number`
 `cli.invalid_regex` `cli.invalid_value` `cli.invalid_format` `cli.unrecognized_extension`
-`cli.unexpected_positional` `cli.missing_output` `cli.duplicate_output` `cli.conflicting_options`
+`cli.unexpected_positional` `cli.duplicate_output` `cli.conflicting_options`
 `cli.unknown_capture_method` `cli.unknown_language` `cli.monitor_conflict` `cli.internal_error`
 `cli.stdout_multiple_targets`（stdout 一次只交付一张图，实际目标多于一个；整批没截也没写，也不弹框）
 `cli.no_condition`（→ 文本帮助 + 2）
@@ -425,7 +447,7 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 ## 常用配方
 
 ```powershell
-# 1) 先看命中谁（不写文件，但 --out 必须给；--dry-run 在任何确认框之前就返回，不打扰人）
+# 1) 先看命中谁（不写文件；--dry-run 在任何确认框之前就返回，不打扰人。给不给 --out 都行）
 ECAPTURE.EXE --process notepad.exe --dry-run --out D:\shots\_probe.png
 
 # 2) 精确锁定一个窗口：默认 wgc 是窗口内容路径，带 --yes 才真的不弹框
@@ -441,8 +463,8 @@ ECAPTURE.EXE --pid 12345 --title-contains 报告 --all --yes --out "D:\shots\rpt
 ECAPTURE.EXE --process notepad.exe --yes --out - > D:\shots\snap.png
 
 # 6) 整屏 = 桌面像素：一定要人本人点"是"，--yes / --quiet / 环境变量都跳不过。
-#    先把"会拍到什么范围"说清楚再启动，然后等用户点；被拒不再塌成 cli.missing_output，
-#    所以不补 --out 也看得见 capture.access_denied（弹不出框则是 capture.consent_unavailable）
+#    先把"会拍到什么范围"说清楚再启动，然后等用户点；被拒就是 capture.access_denied（+ stage=consent），
+#    与有没有给 --out 无关（弹不出框则是 capture.consent_unavailable）
 ECAPTURE.EXE --monitor primary --out D:\shots\screen.png
 ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 

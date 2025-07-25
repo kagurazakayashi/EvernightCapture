@@ -151,9 +151,10 @@ try {
     Assert-Ec ($null -eq $o.notes) '--quiet 之下不该再有 notes（errors 必须留着）'
 
     # =========================================================================
-    Write-Host "`n=== 3) 没给输出路径时被拒绝：不许塌成 cli.missing_output ==="
+    Write-Host "`n=== 3) 没给输出路径时被拒绝：报的是人答了否 ==="
     # =========================================================================
     # 这条很重要：AI 调用方读到"缺少输出路径"会去补一个 --out 再截一次，而真正的原因是没人同意。
+    # 省略 --out 与显式 --out - 走的是同一条路，所以这里不需要任何特例。
     $a3 = @('--hwnd', $hwnd, '-v')
     $r = Invoke-EcConsentShot -Exe $Exe -Arguments $a3 -Answer $IDNO
     Assert-Ec $r.Dialog '隐式 stdout 的窗口截图没弹确认框'

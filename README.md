@@ -356,6 +356,22 @@ Rules:
    frame on such grounds, and only when the API itself says there was nothing to show — no present record at all
    *and* the whole frame one colour.
 
+## Omitting `--out` (compatibility note)
+
+Giving no output path is **the same request as `--out -`**: the image goes to stdout as PNG, the JSON goes to stderr,
+and every diagnostic is the one that step really produced.
+
+| | before | now |
+| --- | --- | --- |
+| Failure with no output path | rewritten into a single `cli.missing_output` + exit code `1`; `images` and `notes` cleared, real reason held back (exceptions: `cli.stdout_multiple_targets` and a consent refusal) | the real code and the real exit code, unchanged: `match.no_window` (4), `match.ambiguous_window` (5), `capture.access_denied` (6), `capture.failed` (7), `io.write_failed` (8), `cli.invalid_number` (1), … |
+| Partial success with no output path | never visible (the whole `images` array was dropped) | images already delivered on stdout stay in `images`, `captured` counts them |
+| `cli.missing_output` | exit code 1 | no longer produced. The code is kept in the list so it can never be given a different meaning |
+| "You did not give an output path" | a code | a `hint`, and only where naming a file actually avoids the failure: `io.write_failed` + `stage=stdout` on that implicit route (`--out -` means you chose the pipe, so it stays unsaid there) |
+
+How to branch: read `errors[].code` (and its `stage` / `target` / `backend` / `hresult` / `win32`), never the exit
+code alone and never whether `--out` was present. `code` values are append-only, so a caller written against either
+behaviour keeps working — it only stops seeing a reason that was a lie.
+
 ## Exit codes
 
 `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no matching window /
@@ -527,10 +543,9 @@ images follow the window rows above.
   goes ahead normally, while a desktop route can only be refused — it never proceeds just because the dialog could
   not be shown. A refusal gives `capture.access_denied` + `6`, an undisplayable dialog the distinct
   `capture.consent_unavailable` + `6`; both carry `stage=consent`, `target`, `backend` and the route in `value`.
-- Being refused is **not** folded into `cli.missing_output`, so you see "a person said no" even without an output
-  path. Every other failure on that shortcut path still collapses into `cli.missing_output` + exit code `1` with the
-  real reason held back, and the only other exception stays `cli.stdout_multiple_targets` — several targets wanting
-  to share one stdout is a bad argument, and "missing output path" would only steer people towards adding `--out`.
+- A refusal is reported as what it is — `capture.access_denied` (`stage=consent`) with exit code `6` — whether or not
+  an output path was given. Omitting `--out` is `--out -`, so nothing about the authorization result depends on it;
+  see [Omitting `--out` (compatibility note)](#omitting---out-compatibility-note).
 - Several monitors plus stdout (`--monitor all --out -`) is refused before any dialog appears: one confirmation
   cannot buy "one image per monitor squeezed into the same stream". With only one monitor attached, `--monitor all`
   is a single target and that path still delivers one image on stdout.
@@ -658,13 +673,14 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 
 1. **Probe with `--dry-run` first**, then disambiguate, then capture for real. `--dry-run` takes no frame, writes no
    file and shows no consent dialog; candidates are in `notes[0].value`, shaped like
-   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`. Note that `--dry-run` still requires
-   `--out`, otherwise `cli.missing_output` + 1; and **`--dry-run` alone with no window condition = text help + exit
-   code 2**.
-2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`). The codes you actually hit:
+   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`. `--dry-run` does not need an output path
+   either (with none it just means "nothing to deliver", so the JSON goes to stderr with
+   `note.output_defaulted_stdout`); **`--dry-run` alone with no window condition = text help + exit code 2**.
+2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`) and never on whether you passed
+   `--out` — the two ways of asking for stdout report the same codes. The codes you actually hit:
    `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose
    from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
-   candidates), `cli.missing_output` (1), `cli.invalid_format` (1), `cli.stdout_multiple_targets` (1, several targets
+   candidates), `cli.invalid_format` (1), `cli.stdout_multiple_targets` (1, several targets
    want to share one stdout), `capture.failed` (7), `capture.frame_timeout` (7, waiting for the frame ran out),
    `capture.window_gone` (7, the target is already gone — enumerate again), `capture.frame_invalid` (7, the frame's own
    memory layout does not add up — zero size, a side beyond 16384 px, or a row pitch / buffer that contradicts it),
@@ -712,7 +728,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 495 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms included) + stream separation + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 495 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms included) + stream separation + "no `--out`" against `--out -` equivalence + multi-language checks (all `--dry-run`, no capture) |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |
@@ -726,7 +742,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
 | `.\tests\identity.ps1` | Target identity and z-order selection. Offline layer (`build\ecapture-identity-tests.exe`, injected fake query layer): handle reused by another process, same PID but a different process, class changed, the selection condition no longer holding, every question that cannot be answered, and which questions each grade asks in what order. On-device layer (self-made windows only): healthy targets are never blocked, `capture.target_gone` when the target is destroyed mid-batch, `capture.target_changed` when a renamed window no longer satisfies the `--title` condition, a refreshed title that still satisfies it captures normally, and `--topmost-match` / `--bottommost-match` are judged against the current z-order (the window created first but living in the topmost band wins — exactly what a "most recently created" reading gets wrong). Handle and PID recycling cannot be staged on purpose without killing somebody's process, and the consent-dialog span needs `-SimulateConsent`; both are recorded as unverified, never faked |
 | `.\tests\screen.ps1` | On-device whole-screen test: three screen channels (all desktop routes, so every one of them must ask) + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing; without it the judgements that need an answer are recorded as SKIP |
-| `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8 (only its own windows are captured, the desktop-route case again needs `-SimulateConsent`) |
+| `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8, plus the no-`--out` / `--out -` equivalence across success, no match, ambiguity, bad arguments, a backend failure, a refusal and a broken stdout (only its own windows are captured, the desktop-route case again needs `-SimulateConsent`) |
 | `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel (a person clicks the dialogs) → whole-screen step → open the screenshot folder → end just that PID |
 | `.\scripts\mkreadme.ps1` | Regenerates the help block of all four READMEs from each language's `--help` output |
 

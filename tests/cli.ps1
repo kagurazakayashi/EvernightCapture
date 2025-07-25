@@ -133,8 +133,11 @@ $cases = @(
     @{ Name = '屏幕编号越界'; A = @('--monitor','99','--dry-run','out.png'); Exit = 1
        Errors = @('match.monitor_out_of_range')
        Check = { param($o) $o.errors[0].option -eq '--monitor' -and $o.errors[0].hint } }
-    @{ Name = '屏幕编号越界且未给输出路径 -> 只报 cli.missing_output'
-       A = @('--monitor','99'); Exit = 1; ToStderr = $true; Errors = @('cli.missing_output') }
+    @{ Name = '屏幕编号越界且未给输出路径 -> 与给了路径时同一条真实原因'
+       A = @('--monitor','99'); Exit = 1; ToStderr = $true
+       Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'match.monitor_out_of_range' -and
+                            (@(Codes $o.notes) -join ',') -eq 'note.output_defaulted_stdout' -and
+                            $o.errors[0].option -eq '--monitor' -and $o.errors[0].hint } }
     @{ Name = '--monitor 取值非数字非关键字 -> 位置参数，不当取值'
        A = @('--monitor=abc','out.png'); Exit = 1; Errors = @('cli.invalid_number') }
     @{ Name = '--monitor 0 被拒绝'; A = @('--monitor','0','out.png'); Exit = 1
@@ -217,9 +220,11 @@ $cases = @(
        A = ($ANCHOR + @('-v')); Exit = 0; ToStderr = $true; Notes = @('note.output_defaulted_stdout')
        Check = { param($o) $o.input.output -eq '-' -and $o.input.toStdout -eq $true -and
                             $o.input.format -eq 'png' -and $o.input.formatGiven -eq $false } }
-    @{ Name = '不给输出路径且未出图 -> 只报 cli.missing_output'
-       A = @('--pid','1'); Exit = 1; ToStderr = $true; Errors = @('cli.missing_output')
-       Check = { param($o) @($o.errors).Count -eq 1 -and @($o.images).Count -eq 0 } }
+    @{ Name = '不给输出路径且未出图 -> 真实原因原样送出（不再塌成 cli.missing_output）'
+       A = @('--pid','1'); Exit = 4; ToStderr = $true
+       Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'match.no_window' -and
+                            (@(Codes $o.notes) -join ',') -eq 'note.output_defaulted_stdout' -and
+                            @($o.images).Count -eq 0 -and $o.errors[0].hint } }
     @{ Name = '扩展名判不出格式 -> png + note（不再报错）'
        A = ($ANCHOR + @('out.unknown')); Exit = 0; Notes = @('note.format_defaulted_png') }
     @{ Name = '--format 拒绝没有编码器的取值'
@@ -765,6 +770,90 @@ Write-Host ''
 
 
 Write-Host ("共 {0} 例，通过 {1}，失败 {2}" -f $cases.Count, $pass, $fail) -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
+
+# ---------------------------------------------------------------------------
+# 省略 --out 与显式 --out - 必须是同一件事（真机那半由 tests\streams.ps1 判）
+#   比对的机器语义：退出码、errors 的 code 与其全部定位字段、captured 与 images 的形状
+#   允许不同的：notes（隐式那条发 note.output_defaulted_stdout，显式那条发
+#              note.pipe_default_format）、message / hint 的人读文字、-v 的 input 回显
+#   旧实现把隐式这条路上的失败整段换成 cli.missing_output + 退出码 1，调用方补上 --out
+#   也治不了原问题（没命中窗口、人拒绝了、写坏了文件都一样被说成"缺少输出路径"）。
+# ---------------------------------------------------------------------------
+function Read-EcJson {
+    param($Result)
+    $body = if ($Result.Stdout.Trim()) { $Result.Stdout } else { $Result.Stderr }
+    try { return ($body | ConvertFrom-Json) } catch { return $null }
+}
+
+function Get-EcMachineShape {
+    <# 只取"调用方据此分支"的那些字段：code 与定位字段都不随 --lang 变。 #>
+    param($Json)
+    if (-not $Json) { return '<非 JSON>' }
+    $lines = @('captured={0}' -f $Json.captured, 'images={0}' -f @( $Json.images ).Count)
+    foreach ($e in @($Json.errors)) {
+        if ($null -eq $e) { continue }
+        $lines += (@('err', $e.code, $e.option, $e.value, $e.target, $e.backend, $e.stage,
+                     $e.hresult, $e.win32) -join '|')
+    }
+    foreach ($i in @($Json.images)) {
+        if ($null -eq $i) { continue }
+        $lines += (@('img', $i.file, $i.source, $i.width, $i.height, $i.bytes) -join '|')
+    }
+    return ($lines -join "`n")
+}
+
+$EQUIV_BASE = @(
+    @{ Name = '未知选项';             A = @('--nope') },
+    @{ Name = 'hwnd 非法';            A = @('--hwnd', 'zzz') },
+    @{ Name = 'pid 为 0';             A = @('--pid', '0') },
+    @{ Name = '格式取值没有编码器';   A = @('--format', 'webp', '--pid', '1') },
+    @{ Name = '选项冲突';             A = @('--index', '2', '--newest', '--pid', '1') },
+    @{ Name = '无匹配窗口';           A = @('--class', 'NoSuchWindowXyz') },
+    @{ Name = 'index 越界';           A = @('--class', 'Shell_TrayWnd', '--index', '99') },
+    @{ Name = '屏幕编号越界';         A = @('--monitor', '99') },
+    @{ Name = '整屏模式拒绝 dwm';     A = @('--monitor', 'primary', '--capture', 'dwm') },
+    @{ Name = 'dry-run 命中一个窗口'; A = @('--class', 'Shell_TrayWnd', '--dry-run') },
+    @{ Name = 'dry-run 屏幕目标';     A = @('--monitor', '1', '--dry-run') }
+)
+$equivBad = 0
+foreach ($case in $EQUIV_BASE) {
+    $ri = Invoke-Ec $case.A                                       # 根本没给输出路径
+    $re = Invoke-Ec ($case.A + @('--out', '-'))                   # 显式写 stdout
+    $oi = Read-EcJson $ri
+    $oe = Read-EcJson $re
+    $problems = @()
+    if (-not $oi -or -not $oe) {
+        $problems += '有一侧的输出不是 JSON'
+    } else {
+        $si = Get-EcMachineShape $oi
+        $se = Get-EcMachineShape $oe
+        if ($si -ne $se) {
+            $problems += ("机器语义不同：`n        隐式 [{0}]`n        显式 [{1}]" -f `
+                          ($si -replace "`n", '`n'), ($se -replace "`n", '`n'))
+        }
+        if ((Codes $oi.errors) -contains 'cli.missing_output') { $problems += '又出现了 cli.missing_output' }
+        if (@(Codes $oi.notes) -notcontains 'note.output_defaulted_stdout') { $problems += '隐式那条没发默认走 stdout 的提示' }
+    }
+    if ($ri.Exit -ne $re.Exit) { $problems += ("退出码 隐式={0} 显式={1}" -f $ri.Exit, $re.Exit) }
+    # 这两条路都不落地：一张图都没出（上面每个用例都在取帧之前就返回），
+    # 而 stdout 在任何情况下都不许冒出文字——图片字节才是它的主人
+    if ($ri.StdoutBytes.Length -ne 0) { $problems += '隐式 stdout 时 stdout 收到了不该有的字节' }
+    if ($re.StdoutBytes.Length -ne 0) { $problems += '显式 --out - 时 stdout 收到了不该有的字节' }
+    if ($ri.Stderr.Trim() -eq '') { $problems += '结果没走 stderr' }
+
+    if ($problems.Count) {
+        $equivBad++
+        Write-Host ("  FAIL  显式/隐式 stdout · {0}" -f $case.Name) -ForegroundColor Red
+        foreach ($p in $problems) { Write-Host ("        · {0}" -f $p) -ForegroundColor Red }
+    } else {
+        Write-Host ("  PASS  显式/隐式 stdout · {0}（exit={1}）" -f $case.Name, $ri.Exit) -ForegroundColor DarkGreen
+    }
+}
+if ($equivBad) {
+    Write-Host ("省略 --out 与 --out - 的等价检查失败：{0} 项" -f $equivBad) -ForegroundColor Red
+    exit 1
+}
+
 if ($fail) { exit 1 }
 
 # ---------------------------------------------------------------------------
@@ -781,6 +870,7 @@ if ($r.Stdout.Trim() -eq '' -and $o -and $o.captured -eq 0 -and $r.Exit -eq 0) {
     exit 1
 }
 
+
 # ---------------------------------------------------------------------------
 # 多语言：换语言只能换文字，不能换契约
 #   1. 四种语言的 --help 各不相同（证明读的是四份资源，不是同一份兜底）
@@ -792,7 +882,7 @@ $LANGS = @('zh-CN', 'zh-TW', 'en', 'ja')
 $LEFTOVER = '%[1-9]|\?[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]'
 $PROBE = @(
     @{ Name = 'hwnd 非法'; A = @('--hwnd', 'zzz', 'out.png'); Exit = 1 },
-    @{ Name = '偷懒路径失败'; A = @('--pid', '1'); Exit = 1 },
+    @{ Name = '未给输出路径且无匹配'; A = @('--pid', '1'); Exit = 4 },
     @{ Name = '无匹配窗口'; A = @('--class', 'NoSuchWindowXyz', 'out.png'); Exit = 4 },
     @{ Name = '未知取图方式'; A = @('--capture', 'waiwang', '--pid', '1', 'out.png'); Exit = 1 },
     @{ Name = 'index 越界'; A = @('--class', 'Shell_TrayWnd', '--index', '99', 'out.png'); Exit = 1 },

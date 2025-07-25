@@ -818,8 +818,13 @@ CaptureOutcome RunCapture(const Options& opt) {
                 if (!ok) {
                     outcome.images.pop_back();
                     recorded = false;
+                    // 这一条是"缺少显式输出路径"唯一还需要说出来的地方：本次没给 --out，
+                    // 图片就得整张挤过 stdout 这条管道，管道坏了把它写成文件就能绕开。
+                    // 给了 --out - 的人本来就选定了这条道，所以那里不补这句话。
+                    std::wstring hint;
+                    if (opt.outputImplicitStdout) hint = Msg(L"cli.missing_output_hint");
                     targetErr = Diagnostic{codes::kWriteFailed, Msg(L"io.stdout_failed"),
-                                           L"--out", L"-", std::wstring(), t.Tag(), backend,
+                                           L"--out", L"-", std::move(hint), t.Tag(), backend,
                                            stages::kStdout};
                     targetErr.win32 = ioError;
                 }

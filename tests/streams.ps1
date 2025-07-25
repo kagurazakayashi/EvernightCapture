@@ -9,13 +9,16 @@
     覆盖的事：
       1. 单个目标写 stdout：图片字节走 stdout、JSON 整份走 stderr，file 是 "-"，source 是真实通道
       2. 多个目标写 stdout：在确认与取帧之前就被拒（cli.stdout_multiple_targets + 退出码 1），
-         显式 --out - 与"根本没给输出路径"两种都一样，且后者不得被折叠成 cli.missing_output
+         显式 --out - 与"根本没给输出路径"两种都一样
       3. 判据是实际目标数而不是 --all：--all 只命中一个窗口时仍然允许 stdout
       4. 多屏 --monitor all + stdout 的拒绝发生在确认框之前（本机不足两块屏时记未验证）
       5. 诊断的定位字段：target / backend / stage / hresult / win32 来自真实那一步
          （bitblt 是桌面像素通道，默认只答"否"判拒绝那一半；加 -SimulateConsent 才走到取帧失败）
       6. 批次中途失败：前面成功的图保留，失败那条带着自己的目标标识
       7. 结果送不到约定通道时退出码是 8，且绝不把文字补写进已被图片占用的 stdout
+      8. 省略 --out 与显式 --out - 给出同一套机器语义：成功、无匹配、歧义、非法参数、
+         后端失败、被拒绝、写入断管这七个场景逐个对拍退出码与 code 及定位字段
+         （旧实现会把隐式那条路上的一切失败换成 cli.missing_output + 退出码 1，已删除）
     注入不了的两项（后端真的抛出异常、进程被强杀在半途）如实记成未验证。
 .EXAMPLE
     .\tests\streams.ps1
@@ -105,6 +108,69 @@ function Get-Field {
             -not [string]::IsNullOrEmpty([string]$Object.$Name))
 }
 
+function Get-MachineShape {
+    <# 调用方据此分支的那一套：code 与全部定位字段 + 交付形状。
+       images[].bytes 故意不参与 —— 两次截图之间光标可能落在窗口里、编码时间也不同，
+       字节数会变，而那不是"隐式与显式 stdout 是否等价"这条判据要问的事。 #>
+    param($Json)
+    if (-not $Json) { return '<不是 JSON>' }
+    $lines = @('captured={0}' -f $Json.captured, 'images={0}' -f @( $Json.images ).Count)
+    foreach ($e in @($Json.errors)) {
+        if ($null -eq $e) { continue }
+        $lines += (@('err', $e.code, $e.option, $e.value, $e.target, $e.backend, $e.stage,
+                     $e.hresult, $e.win32) -join '|')
+    }
+    foreach ($i in @($Json.images)) {
+        if ($null -eq $i) { continue }
+        $lines += (@('img', $i.file, $i.source, $i.path, $i.scope, $i.width, $i.height,
+                     $i.hwnd) -join '|')
+    }
+    return ($lines -join "`n")
+}
+
+function Invoke-EcStdoutPair {
+    <# 同一条命令跑两遍：一遍省略 --out（隐式 stdout），一遍显式 --out -。
+       两遍各自独占一个空工作目录：上一次留下的图看起来和本遍的成功一模一样。
+       两种写法的 output 都是 "-"，所以结果 JSON 一定在 stderr，这里只解析那一条流。 #>
+    param([string]$Name, [string[]]$BaseArgs, [hashtable]$Extra = @{})
+
+    $out = @{}
+    foreach ($kind in @('implicit', 'explicit')) {
+        $dir = New-ShotDir ('eq-{0}-{1}' -f $Name, $kind)
+        $argv = if ($kind -eq 'explicit') { @($BaseArgs) + @('--out', '-') } else { @($BaseArgs) }
+        if ($Extra.ContainsKey($kind)) { $argv = $argv + @($Extra[$kind]) }
+        $r = Invoke-EcProcess -FilePath $Exe -TimeoutMs 60000 -WorkingDirectory $dir -Arguments $argv
+        $json = $null
+        try { $json = $r.Stderr | ConvertFrom-Json } catch { }
+        $out[$kind] = [pscustomobject]@{ Result = $r; Json = $json; Dir = $dir }
+    }
+    return $out
+}
+
+function Assert-EcPairEquivalent {
+    <# 两条路必须给出同一套机器语义：退出码、code 与其定位字段、交付形状，
+       以及"什么都没写进磁盘"（省略 --out 绝不等于"存个默认文件名"）。 #>
+    param([string]$Name, $Pair, [int]$ExpectExit, [string[]]$ExpectCodes)
+
+    foreach ($kind in @('implicit', 'explicit')) {
+        $p = $Pair[$kind]
+        Assert-Ec ($null -ne $p.Json) "$Name（$kind）的 stderr 不是 JSON：[$($p.Result.Stderr.Trim())]"
+        Assert-Ec ($p.Result.Exit -eq $ExpectExit) `
+            "$Name（$kind）退出码 $($p.Result.Exit)，期望 $ExpectExit"
+        $codes = @(Get-Codes $p.Json.errors) -join ','
+        Assert-Ec ($codes -eq ($ExpectCodes -join ',')) `
+            "$Name（$kind）的 code 表是 [$codes]，期望 [$($ExpectCodes -join ',')]"
+        Assert-Ec (-not ($codes -match 'cli\.missing_output')) `
+            "$Name（$kind）又冒出 cli.missing_output：那条折叠已经删掉了"
+        Assert-Ec (@(Get-ChildItem -LiteralPath $p.Dir -File -Recurse -Force).Count -eq 0) `
+            "$Name（$kind）在工作目录里写出了文件"
+    }
+    $si = Get-MachineShape $Pair.implicit.Json
+    $se = Get-MachineShape $Pair.explicit.Json
+    Assert-Ec ($si -eq $se) `
+        "$Name：隐式与显式 stdout 的机器语义不同 / 隐式 [$($si -replace '\r?\n', ' / ')] / 显式 [$($se -replace '\r?\n', ' / ')]"
+}
+
 try {
     # =========================================================================
     Write-Host "`n=== 1) 单个目标写 stdout：图走 stdout，JSON 整份走 stderr ==="
@@ -154,14 +220,14 @@ try {
     $multiErr = Get-ErrorBy $oe 'cli.stdout_multiple_targets'
     Assert-Ec (Get-Field $multiErr 'hint') '该有一条怎么改的 hint'
 
-    # 2b) 根本没给输出路径（隐式 stdout）：旧折叠规则会把这条偷懒路径上的失败都写成
-    #     cli.missing_output，那样调用方会去补 --out，而补了也没用 —— 必须原样报新码。
+    # 2b) 根本没给输出路径（隐式 stdout）：报的必须是同一条真实原因。
+    #     "缺少输出路径"从来不是这条失败的原因 —— 补上 --out 也治不了多个目标挤一条 stdout。
     $implicit = Invoke-EcProcess -FilePath $Exe -TimeoutMs 60000 -WorkingDirectory $dir2 -Arguments $argv
     $oi = Get-JsonOf @{ Stdout = ''; Stderr = $implicit.Stderr }
     Assert-Ec ($implicit.Exit -eq 1) "隐式 stdout 的多目标该报参数错（exit=$($implicit.Exit)）"
     $codes = if ($oi) { @(Get-Codes $oi.errors) -join ',' } else { 'JSON 解析失败' }
     Assert-Ec ($oi -and (@(Get-Codes $oi.errors) -contains 'cli.stdout_multiple_targets')) `
-        "隐式 stdout 被折叠成了别的原因：[$codes]"
+        "隐式 stdout 报的不是那条真实原因：[$codes]"
     Assert-Ec ($oi -and -not (@(Get-Codes $oi.errors) -contains 'cli.missing_output')) `
         "新诊断不该和 cli.missing_output 同时出现：[$codes]"
     Assert-Ec ($implicit.StdoutBytes.Length -eq 0) '隐式 stdout 被拒时往 stdout 写了东西'
@@ -368,7 +434,146 @@ try {
     Assert-Ec ($txt.Trim() -eq '') "JSON 该留在 stderr，却被补写进了 stdout：$($txt.Trim())"
 
     # =========================================================================
-    Write-Host "`n=== 8) 注入不了的两项（如实记未验证） ==="
+    Write-Host "`n=== 8) 省略 --out 与显式 --out - 等价（真实错误、退出码、部分成功） ==="
+    # =========================================================================
+    # 0.4.0 之前的旧实现只要没给 --out，就把这条路上的一切失败换成一条 cli.missing_output +
+    # 退出码 1，并清空 images 与 notes。现在两种写法走的是同一条代码路径：这里逐个场景对拍
+    # "调用方据此分支"的那一套（code、定位字段、captured、交付形状），人读文字与 notes 不参与
+    # （隐式那条发 note.output_defaulted_stdout，显式那条发 note.pipe_default_format）。
+    $eqOk = Start-EcWindow -RunDir $run -Class "ec-stream-eq-$tag" -Title "标准流等价 $tag" `
+                           -Rect $RECT_ON -Seed 31
+    $eqHwnd = Get-EcHwndHex $eqOk.Hwnd
+
+    # 8a) 成功：图必须是 stdout 里那一张完整 PNG，而且一个文件都不许落地
+    $p = Invoke-EcStdoutPair -Name 'success' -BaseArgs @('--hwnd', $eqHwnd, '--yes')
+    Assert-EcPairEquivalent -Name '成功' -Pair $p -ExpectExit 0 -ExpectCodes @()
+    foreach ($kind in @('implicit', 'explicit')) {
+        $bytes = $p[$kind].Result.StdoutBytes
+        $bad = Test-PngSingle -Bytes $bytes
+        Assert-Ec ($bad -eq '') "$kind 那条的 stdout 不是一张完整 PNG：$bad"
+        $img = @($p[$kind].Json.images)[0]
+        Assert-Ec ($img.bytes -eq $bytes.Length) `
+            "$kind 那条的 images[].bytes($($img.bytes)) 与 stdout 实际字节数($($bytes.Length))不一致"
+        Assert-Ec ($img.file -eq '-') "$kind 那条的 images[].file 不是 -：$($img.file)"
+        Assert-Ec ($img.scope -eq 'window') "$kind 那条的 scope 不是 window：$($img.scope)"
+    }
+    Write-Host ("  成功那一对：隐式 {0} 字节 / 显式 {1} 字节，两次都是 {2}x{3}" -f `
+        $p.implicit.Result.StdoutBytes.Length, $p.explicit.Result.StdoutBytes.Length,
+        @($p.implicit.Json.images)[0].width, @($p.implicit.Json.images)[0].height) -ForegroundColor DarkGray
+
+    # 8b) 无匹配：两个都没给路径的调用，报的都是"没有窗口满足条件"，退出码 4
+    $p = Invoke-EcStdoutPair -Name 'no-match' -BaseArgs @('--class', "ec-no-such-class-$tag")
+    Assert-EcPairEquivalent -Name '无匹配' -Pair $p -ExpectExit 4 -ExpectCodes @('match.no_window')
+
+    # 8c) 歧义（同一进程两扇同标题窗口，不给消歧策略）：退出码 5，一条图都不出
+    $eqPair = Start-EcWindow -RunDir $run -Class "ec-stream-eq2-$tag" -Title "标准流成双 $tag" `
+                            -Rect $RECT_ON -Seed 32 -Windows 2
+    $p = Invoke-EcStdoutPair -Name 'ambiguous' -BaseArgs @('--title', "标准流成双 $tag")
+    Assert-EcPairEquivalent -Name '歧义' -Pair $p -ExpectExit 5 -ExpectCodes @('match.ambiguous_window')
+    Stop-EcWindow -Window $eqPair
+
+    # 8d) 非法参数：屏幕编号越界在解析/选择期就报错，两种写法都是 cli 之外的同一条码
+    $p = Invoke-EcStdoutPair -Name 'bad-arg' -BaseArgs @('--monitor', '99')
+    Assert-EcPairEquivalent -Name '非法参数' -Pair $p -ExpectExit 1 -ExpectCodes @('match.monitor_out_of_range')
+    $p = Invoke-EcStdoutPair -Name 'bad-arg2' -BaseArgs @('--hwnd', 'zzz')
+    Assert-EcPairEquivalent -Name '非法取值' -Pair $p -ExpectExit 1 -ExpectCodes @('cli.invalid_number')
+
+    # 8e) 后端失败：任务栏那种"WGC 自己拒绝"的目标（窗口内容路径，带 --yes 不弹框）。
+    #     本机允许截任务栏时这一档就造不出失败 —— 照实记未验证，不拿别的场景凑数。
+    $p = Invoke-EcStdoutPair -Name 'backend' -BaseArgs @('--class', 'Shell_TrayWnd', '--capture', 'wgc', '--yes')
+    if ($p.implicit.Result.Exit -eq 0) {
+        Skip-Ec '本机 WGC 允许截任务栏，"后端失败"这一场景的显式/隐式等价无法现场判'
+        Assert-EcPairEquivalent -Name '后端失败（本机变成成功）' -Pair $p -ExpectExit 0 -ExpectCodes @()
+    } else {
+        Assert-EcPairEquivalent -Name '后端失败' -Pair $p -ExpectExit 7 -ExpectCodes @('capture.failed')
+        foreach ($kind in @('implicit', 'explicit')) {
+            $e = @($p[$kind].Json.errors)[0]
+            Assert-Ec (Get-Field $e 'hresult') "$kind 那条的后端失败没带 hresult"
+            Assert-Ec ($e.hresult -ne '0x80004002') "$kind 那条又是 E_NOINTERFACE 顶掉了真实码"
+        }
+    }
+
+    # 8f) 被拒绝：bitblt 是桌面像素通道，一定弹框；测试侧一律只答"否"（拒绝不拍到任何东西）
+    $eqOff = Start-EcWindow -RunDir $run -Class "ec-stream-eq-off-$tag" -Title "标准流屏外 $tag" `
+                           -Rect $RECT_OFF -Seed 33
+    $refused = @{}
+    foreach ($kind in @('implicit', 'explicit')) {
+        $argv = @('--hwnd', (Get-EcHwndHex $eqOff.Hwnd), '--capture', 'bitblt')
+        if ($kind -eq 'explicit') { $argv += @('--out', '-') }
+        $r = Invoke-EcConsentShot -Exe $Exe -Arguments $argv -Answer 7
+        $j = $null
+        try { $j = $r.Stderr | ConvertFrom-Json } catch { }
+        $refused[$kind] = [pscustomobject]@{ Result = $r; Json = $j }
+        Assert-Ec $r.Dialog "$kind 那条的桌面像素路径没弹确认框"
+        Assert-Ec $r.Clicked "$kind 那条没点到`"否`""
+        Assert-Ec ($r.StdoutBytes.Length -eq 0) "$kind 那条被拒时往 stdout 写了东西"
+    }
+    Assert-Ec ($refused.implicit.Result.Exit -eq 6 -and $refused.explicit.Result.Exit -eq 6) `
+        "答`"否`"之后两种写法都该是退出码 6：隐式 $($refused.implicit.Result.Exit) / 显式 $($refused.explicit.Result.Exit)"
+    Assert-Ec ((Get-MachineShape $refused.implicit.Json) -eq (Get-MachineShape $refused.explicit.Json)) `
+        "被拒绝时隐式与显式 stdout 的机器语义不同 / 隐式 [$((Get-MachineShape $refused.implicit.Json) -replace '\r?\n', ' / ')] / 显式 [$((Get-MachineShape $refused.explicit.Json) -replace '\r?\n', ' / ')]"
+    foreach ($kind in @('implicit', 'explicit')) {
+        $codes = @(Get-Codes $refused[$kind].Json.errors) -join ','
+        Assert-Ec ($codes -eq 'capture.access_denied') "$kind 那条被拒的 code 是 [$codes]"
+        Assert-Ec (-not ($codes -match 'cli\.missing_output')) "$kind 那条被拒又塌成缺少输出路径"
+        $e = @($refused[$kind].Json.errors)[0]
+        Assert-Ec ($e.stage -eq 'consent' -and $e.value -eq 'bitblt.screen') `
+            "$kind 那条的授权诊断该带 stage=consent 与实际路径名：[$($e.stage)/$($e.value)]"
+    }
+    Stop-EcWindow -Window $eqOff
+
+    # 8g) 写入断管：stdout 这条道本身写坏了（把 cmd 的 stdout 接到 CONIN$ 上，往它写就失败）。
+    #     两种写法都必须原样报 I/O 失败、退出码 8，而且都不把成功的图片写成文件。
+    #     批处理正文按仓库规矩只有 ASCII，路径经 set 递进去。
+    $dirPipe = New-ShotDir 'eq-pipe'
+    $pipeBat = Join-Path $dirPipe 'pipe-probe.bat'
+    $pipeLines = @(
+        '@echo off',
+        ('set "EXE=' + $Exe + '"'),
+        ('set "H=' + $eqHwnd + '"'),
+        'call "%EXE%" --hwnd %H% --yes > CONIN$ 2> "implicit.json"',
+        'echo implicit_exit=%ERRORLEVEL%',
+        'call "%EXE%" --hwnd %H% --yes --out - > CONIN$ 2> "explicit.json"',
+        'echo explicit_exit=%ERRORLEVEL%'
+    )
+    Set-Content -LiteralPath $pipeBat -Value $pipeLines -Encoding ascii
+    $pipeRun = Invoke-EcProcess -FilePath (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+                                -TimeoutMs 120000 -WorkingDirectory $dirPipe `
+                                -Arguments @('/d', '/c', $pipeBat)
+    $pipeExit = @{}
+    foreach ($l in (($pipeRun.Stdout -split "`r?`n") + ($pipeRun.Stderr -split "`r?`n"))) {
+        if ($l -match '^(implicit|explicit)_exit=(\d+)$') { $pipeExit[$Matches[1]] = [int]$Matches[2] }
+    }
+    Assert-Ec ($pipeExit.ContainsKey('implicit') -and $pipeExit.ContainsKey('explicit')) `
+        "没拿到批处理的回显：[$($pipeRun.Stdout.Trim()) $($pipeRun.Stderr.Trim())]"
+    $pipeJson = @{}
+    foreach ($kind in @('implicit', 'explicit')) {
+        $f = Join-Path $dirPipe ($kind + '.json')
+        Assert-Ec (Test-Path -LiteralPath $f) "$kind 那条没有把结果写到 stderr（断管时结果该整份留在 stderr）"
+        $body = '' + (Get-Content -LiteralPath $f -Raw)
+        $j = $null
+        try { $j = $body | ConvertFrom-Json } catch { }
+        Assert-Ec ($null -ne $j) "$kind 那条 stderr 上的结果不是 JSON：[$($body.Trim())]"
+        Assert-Ec ($pipeExit[$kind] -eq 8) "$kind 那条 stdout 写坏时退出码该是 8，实际 $($pipeExit[$kind])"
+        $codes = @(Get-Codes $j.errors) -join ','
+        Assert-Ec ($codes -eq 'io.write_failed') "$kind 那条断管该报 io.write_failed，实际 [$codes]"
+        $e = @($j.errors)[0]
+        Assert-Ec ($e.stage -eq 'stdout' -and $e.value -eq '-') `
+            "$kind 那条的断管诊断该定位到 stdout：[$($e.stage)/$($e.value)]"
+        Assert-Ec ($j.captured -eq 0 -and @($j.images).Count -eq 0) "$kind 那条字节没送到 stdout 却报了图"
+        $pipeJson[$kind] = $j
+    }
+    Assert-Ec ((Get-MachineShape $pipeJson.implicit) -eq (Get-MachineShape $pipeJson.explicit)) `
+        "断管时隐式与显式 stdout 的机器语义不同 / 隐式 [$((Get-MachineShape $pipeJson.implicit) -replace '\r?\n', ' / ')] / 显式 [$((Get-MachineShape $pipeJson.explicit) -replace '\r?\n', ' / ')]"
+    # 隐式那条在断管时才说得出"给个 --out 就能绕开管道"；显式那条本来就选定了这条路，不补这句
+    Assert-Ec (Get-Field @($pipeJson.implicit.errors)[0] 'hint') '隐式断管那条该带上"改成显式 --out"的 hint'
+    Assert-Ec (-not (Get-Field @($pipeJson.explicit.errors)[0] 'hint')) '显式 --out - 那条不该出现同一句 hint'
+    Assert-Ec (@(Get-ChildItem -LiteralPath $dirPipe -File -Filter '*.png').Count -eq 0) `
+        '断管的两次里有一把成功的图片自动写成了文件'
+    Stop-EcWindow -Window $eqOk
+
+    # =========================================================================
+    Write-Host "`n=== 9) 注入不了的两项（如实记未验证） ==="
     # =========================================================================
     Skip-Ec '后端真的抛出异常（而非返回失败）没有注入点：本机能稳定造出的异常路径已由第 5、6 节的返回失败覆盖'
     Skip-Ec '进程被强杀在写图与写结果之间时无法承诺 JSON 送达，这是文档里写明的边界'

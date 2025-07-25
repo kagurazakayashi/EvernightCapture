@@ -313,6 +313,22 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    那个目标写清楚）。只有 `duplication` 还会因为单色拒绝一帧，而且必须两条一起成立——这一帧没有任何
    present 记录，且整幅只有一个颜色。
 
+## 不给输出路径（兼容性说明）
+
+不给输出路径与显式写 `--out -` 是**同一个请求**：图片按 png 走 stdout，JSON 整份走 stderr，而每条诊断都是
+那一步真实产生的那一条。
+
+| | 旧行为 | 现在的行为 |
+| --- | --- | --- |
+| 没给输出路径时失败 | 整段换成一条 `cli.missing_output` + 退出码 1，`images` 与 `notes` 清空、真实原因不外泄（例外只有 `cli.stdout_multiple_targets` 与确认被拒） | 原样的 code 与原样的退出码：`match.no_window`（4）、`match.ambiguous_window`（5）、`capture.access_denied`（6）、`capture.failed`（7）、`io.write_failed`（8）、`cli.invalid_number`（1）…… |
+| 没给输出路径时的部分成功 | 看不见（`images` 被整段丢掉） | 已经送到 stdout 的图仍在 `images` 里，`captured` 照实计数 |
+| `cli.missing_output` | 退出码 1 | 不再发出。这条 code 仍留在清单里，为的是它不被挪作别的含义 |
+| "本次没给输出路径"这句话 | 一个 code | 只在"补上文件名确实绕得开这次故障"的那一条上作为 `hint` 出现：隐式 stdout 且 `io.write_failed` + `stage=stdout`。写 `--out -` 的人本来就选定了这条管道，所以那句 hint 不出现 |
+
+怎么分支：读 `errors[].code`（以及它的 `stage` / `target` / `backend` / `hresult` / `win32`），
+既不要只看退出码，也不要根据"有没有给 `--out`"推断原因。code 只追加不改名，所以按旧行为写出来的调用方
+仍然能用——它只是再也读不到一条假原因。
+
 ## 退出码
 
 `0` 成功 / `1` 参数错 / `2` 未给条件 / `3` `--help` / `4` 无匹配窗口 / `5` 匹配多个窗口 /
@@ -447,9 +463,8 @@ Windows 8.1 **能**装载也能启动 —— 在那上面起作用的正是下�
 - 没有可交互桌面时（服务会话、计划任务、锁屏），带 `--yes` 的窗口内容截图照旧正常完成，而桌面路径只能被拒绝——
   绝不会因为"弹不出框"就放行。答"否"给 `capture.access_denied` + `6`，弹不出框给新的稳定码
   `capture.consent_unavailable` + `6`；两者都带 `stage=consent`、`target`、`backend`，`value` 写的是那条路径。
-- 被拒绝**不再**塌成 `cli.missing_output`，所以就算没给输出路径，调用方也看得见"是人拒了"。这条偷懒路径上其余
-  失败照旧一律塌成 `cli.missing_output` + 退出码 1、真实原因不外泄；另一个例外还是 `cli.stdout_multiple_targets`
-  ——多个目标要共用同一条 stdout 本来就是参数错，报成缺少输出路径只会把人引向补 `--out`。
+- 被人拒绝就是被人拒绝：`capture.access_denied`（`stage=consent`）+ 退出码 `6`，与有没有给输出路径无关。
+  省略 `--out` 就等于 `--out -`，授权结果不因它而变，见[不给输出路径（兼容性说明）](#不给输出路径兼容性说明)。
 - 多块屏 + 写 stdout（`--monitor all --out -`）在任何弹框之前就被拒：一次确认换不来"每块屏一张图挤进同一条流"。
   只有一块屏时 `--monitor all` 是一个目标，那条路仍然按单张走 stdout。
 - 说清楚边界：这就是一个 `MessageBox`。它是给合作式自动化（人或 AI）准备的误点防护，既证明不了按下按钮的是人，
@@ -559,12 +574,13 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 
 1. **先 `--dry-run` 探一次**，再消歧，最后真截图。`--dry-run` 不取帧、不写文件、也不弹确认框，候选在
    `notes[0].value`：
-   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。注意 `--dry-run` 仍要求给 `--out`，
-   否则报 `cli.missing_output` + 1；而**只给 `--dry-run` 不给任何窗口条件 = 文本帮助 + 退出码 2**。
-2. **按 `errors[].code` 分支，不要匹配 `message` 文字**（那随 `--lang` 变）。常用的几条：
+   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` 也不必给 `--out`
+   （那一次没有图片要交付，结果整份在 stderr）；而**只给 `--dry-run` 不给任何窗口条件 = 文本帮助 + 退出码 2**。
+2. **按 `errors[].code` 分支，不要匹配 `message` 文字**（那随 `--lang` 变），也不要拿"有没有给 `--out`"当原因——
+   省略它那条路与 `--out -` 报的是同样的码。常用的几条：
    `match.no_window`（4，条件太窄或目标最小化）、`match.ambiguous_window`（5，从 `hint` 的候选里挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候选）、
-   `cli.missing_output`（1）、`cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多个目标要共用
+   `cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多个目标要共用
    同一条 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等帧超时）、
    `capture.window_gone`（7，目标已经没了，该重新枚举）、`capture.frame_invalid`（7，交回来的帧内存形状不合法）、
    `capture.consent_unavailable`（6，这个会话没有可交互的桌面，没人能同意）、
@@ -605,8 +621,8 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 495 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法）+ 通道分离 + 多语言检查（一律 `--dry-run`，不截图） |
-| `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒（含隐式 stdout 不被折叠成"缺少输出路径"）、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8（只截自建的窗口） |
+| `.\tests\cli.ps1` | 495 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法）+ 通道分离 + 省略 `--out` 与 `--out -` 的等价对拍 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8，以及省略 `--out` 与显式 `--out -` 在成功 / 无匹配 / 歧义 / 非法参数 / 后端失败 / 被拒绝 / 写入断管七个场景上的机器语义对拍（只截自建的窗口） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
 | `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
 | `.\tests\build-path.ps1` | 构建路径判据：离线一层验临时批处理正文只能是 ASCII、VS 环境导入失败在跑 cmake 之前就报错；真机一层在含中文、空格、括号、百分号的目录里跑 Release / Debug / RelWithDebInfo 与 `-Clean`，再把 `%TEMP%` 换成中文目录构建一次（不截图；`-OfflineOnly` 只跑离线那层） |

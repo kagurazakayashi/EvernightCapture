@@ -309,28 +309,11 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         code = outcome.exitCode;
     }
 
-    // 没给输出路径时图片字节已经占了 stdout，这条"偷懒路径"失败就只回一条
-    // cli.missing_output：让调用方补 --out 比堆一串原因更有用（用户明确要求）。
-    // 例外一："多个目标要写到同一条 stdout"——那本身就是参数用法错误，
-    // 报成"缺少输出路径"会把人引向补 --out（补了也没用），必须原样送出去。
-    // 例外二：确认这一关的结果（被答"否"、或这个会话根本没有可交互的桌面）。塌成"缺少输出
-    // 路径"会让调用方以为补个 --out 就成功，于是又发起一次截图 —— 而真实原因是没有人的同意。
-    const bool stdoutRejected =
-        std::any_of(errors.begin(), errors.end(), [](const Diagnostic& d) {
-            return d.code == codes::kStdoutMultipleTargets;
-        });
-    const bool consentRefused =
-        std::any_of(errors.begin(), errors.end(), [](const Diagnostic& d) {
-            return d.stage == stages::kConsent &&
-                   (d.code == codes::kAccessDenied || d.code == codes::kConsentUnavailable);
-        });
-    if (opt.outputImplicitStdout && code != EX_OK && !stdoutRejected && !consentRefused) {
-        images.clear();
-        notes.clear();
-        errors = {Diagnostic{codes::kMissingOutput, Msg(L"cli.missing_output"), L"--out", L"-",
-                             Msg(L"cli.missing_output_hint")}};
-        code = EX_USAGE;
-    }
+    // 省略 --out 与显式 --out - 是同一件事：真实诊断、退出码与已经交出去的图原样送出，
+    // 不再把这一条路上的失败统一换成 cli.missing_output（旧行为会把"人拒绝了""没命中窗口"
+    // "写坏了文件"都说成"缺少输出路径"，调用方补上 --out 之后又试一次，白打扰人一遍）。
+    // "本次没给输出路径"只在它确实是下一步可执行的那一条上以 hint 出现（见 Capture.cpp 里
+    // io.stdout_failed 那处），不作为 code 出现。
 
     j.Obj();
     j.Key(L"captured").Value(static_cast<long long>(images.size()));

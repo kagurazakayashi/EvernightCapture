@@ -30,9 +30,10 @@ programmatically.
 1. `--dry-run` with the window conditions: it stops right after target selection - no frame, no file.
    Candidates are in the `note.dry_run` entry of `notes[]`, under `value`, shaped like
    `hwnd=0x000A1146 pid=31468 1261x614+237+418 class=CabinetWClass title=…`.
-   Pass `--out` anyway: without an output path the JSON moves to **stderr**, and every failure on that
-   path collapses into `cli.missing_output` + exit 1, which hides the real reason (`match.no_window`,
-   `match.ambiguous_window`, …).
+   Pass `--out` when you want a file; without one the image bytes are delivered on stdout and the JSON moves to
+   **stderr**. Omitting it is exactly `--out -`: the failures are the real ones (`match.no_window`,
+   `match.ambiguous_window`, `capture.access_denied`, `io.write_failed`, …) with their own exit codes, and nothing
+   is collapsed into a generic "missing output path" any more.
    Conditions alone with nothing else still means "no condition": `--dry-run` by itself prints the text
    help and exits 2. `--monitor` counts as a target, so `--monitor --dry-run` lists screens instead.
 2. Several matches (exit 5): read the candidate list from `errors[0].hint`
@@ -212,8 +213,8 @@ request was phrased.
   other refusal. This wait is timed separately and does not consume the `--timeout-ms` budget; the ~1 s
   dialog-close animation after "Yes" belongs to the human stage and is never skipped to meet a deadline.
   (Omitted or `0` = the dialog waits forever.)
-- A consent refusal is reported as itself even when no output path was given - it no longer collapses into
-  `cli.missing_output`, so adding `--out` is not the fix for "a human declined".
+- A consent refusal is reported as itself - `capture.access_denied` + exit 6 with `stage=consent` - whether or not
+  an output path was given. Adding `--out` was never the fix for "a human declined", and the tool no longer says it.
 - If the target moves or resizes after you were granted desktop consent, that capture is skipped with
   `capture.consent_stale` (exit 7): re-select the target and let the human confirm again.
 - After "Yes" the tool waits about a second before grabbing a frame so the dialog's closing animation cannot
@@ -325,7 +326,7 @@ kind, in order). Floors, the declared support range and what has actually been m
 | `match.ambiguous_window` | 5 | Disambiguate as described above |
 | `match.index_out_of_range` / `match.monitor_out_of_range` | 1 | `--index` / `--monitor` out of range; `hint` lists everything on this machine |
 | `match.timeout` | 7 | The `--timeout-ms` budget was spent before/while evaluating conditions (`stage=match`; regex work or a hung window's title fetch) - raise `--timeout-ms` or simplify the regex |
-| `cli.missing_output` | 1 | No output path on the stdout-shortcut path and something failed; pass `--out <path inside an existing directory>` |
+| `cli.missing_output` | - | Retired: it used to replace every failure that happened while `--out` was omitted. Never produced now - read the real code (`match.no_window` / `capture.access_denied` / `io.write_failed` / …) instead |
 | `cli.invalid_format` | 1 | `--format` accepts only png / jpg / jpeg / bmp / tiff / gif (no webp, no ico, no `auto`) |
 | `cli.unknown_capture_method` / `cli.unknown_language` | 1 | Bad value, caught while parsing - it never degrades to the default |
 | `cli.invalid_regex` | 1 | `--title-regex` too complex for the engine (`stage=match`, message says backtracking complexity) - raising `--timeout-ms` does not help; rewrite the pattern or use `--title-contains` |
