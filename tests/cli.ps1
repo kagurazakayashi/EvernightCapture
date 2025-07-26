@@ -694,6 +694,97 @@ $cases += @{ Name = '帮助里写了 -v 与 -q 同时给出按 -v 处理'
 $cases += @{ Name = '帮助里写了数字取值只认十进制'
    A = @('--help'); Exit = 3; Text = $true; Has = @('数字取值只认十进制') }
 
+# ---------- 只读查询（--capabilities / --diagnostics）----------
+# 这两份文档不是截图结果：没有 captured / images，也没有 notes / input。用例要标 Query，
+# 跑批那一段才按查询契约判（判据本体在 tests\capabilities.ps1 与离线层）。
+$cases += @{ Name = '--capabilities 出查询文档、不截图'
+   A = @('--capabilities'); Exit = 0; Query = $true
+   Check = { param($o) $o.contract -eq 'capabilities' -and $o.contractVersion -eq 1 -and
+                        @($o.backends).Count -eq 5 -and @($o.formats).Count -ge 7 -and
+                        ($o.program.version -is [string]) -and $o.program.binary -eq 'ECAPTURE.EXE' -and
+                        $o.os.declaredMinBuild -eq 18362 -and
+                        $o.authorization.yesSkips -eq 'window-content' -and
+                        $o.privacy.capturesScreen -eq $false -and $o.privacy.showsDialog -eq $false -and
+                        $o.limits.stdoutTargetsMax -eq 1 } }
+$cases += @{ Name = '--diagnostics 带可核对的构建标识'
+   A = @('--diagnostics'); Exit = 0; Query = $true
+   Check = { param($o) $o.contract -eq 'diagnostics' -and $o.contractVersion -eq 1 -and
+                        ($o.build.id -is [string]) -and ($o.build.linkTimestamp -is [string]) -and
+                        $o.build.known -eq $true -and $o.build.subsystemVersionIsSupportClaim -eq $false -and
+                        $o.program.buildId -eq $o.build.id } }
+$cases += @{ Name = '两条查询的共享字段一致（同一批判据，不是两份信息）'
+   A = @('--capabilities'); Exit = 0; Query = $true
+   Check = { param($o)
+       $d = (Invoke-Ec @('--diagnostics')).Stdout | ConvertFrom-Json
+       $same = ($d.os.build -eq $o.os.build) -and ($d.program.version -eq $o.program.version) -and
+               ($d.session.displayTopology -eq $o.session.displayTopology) -and
+               (@($d.backends | ForEach-Object { $_.name + ':' + $_.status + ':' + $_.reason }) -join ',') -eq
+               (@($o.backends | ForEach-Object { $_.name + ':' + $_.status + ':' + $_.reason }) -join ',')
+       $same -and $d.contract -eq 'diagnostics' } }
+$cases += @{ Name = '查询文档不随 --lang 变（全部 ASCII，不读文案）'
+   A = @('--capabilities'); Exit = 0; Query = $true
+   Check = { param($o)
+       $base = (Invoke-Ec @('--capabilities')).Stdout
+       foreach ($l in @('zh-TW', 'en', 'ja')) {
+           if ((Invoke-Ec @('--capabilities', '--lang', $l)).Stdout -ne $base) { return $false }
+       }
+       $true } }
+$cases += @{ Name = '-v 给查询加 probes，-q 只去掉 caveats'
+   A = @('--capabilities', '-v'); Exit = 0; Query = $true
+   Check = { param($o)
+       $names = @($o.PSObject.Properties.Name)
+       $q = @((Invoke-Ec @('--capabilities', '-q')).Stdout | ConvertFrom-Json).PSObject.Properties.Name
+       ($names -contains 'probes') -and ($names -contains 'caveats') -and
+       ($names -notcontains 'input') -and ($q -notcontains 'caveats') -and
+       (@((Invoke-Ec @('--capabilities', '-q')).Stdout | ConvertFrom-Json).backends).Count -eq 5 } }
+
+# 查询与截图选项互斥：两条路对流与输出的约定不同，一起给出就是一次用法错，一张都不截。
+$QUERY_CONFLICT = @(
+    @('--capabilities', '--title', 'foo'),
+    @('--capabilities', '--hwnd', '0x10'),
+    @('--capabilities', '--monitor', '1'),
+    @('--capabilities', '--capture', 'auto'),
+    @('--capabilities', '--out', 'a.png'),
+    @('--capabilities', '--yes'),
+    @('--capabilities', '--dry-run'),
+    @('--capabilities', '--timeout-ms', '100'),
+    @('--capabilities', '--help'),
+    @('--capabilities', '--version'),
+    @('--diagnostics', '--class', 'Shell_TrayWnd'),
+    @('--diagnostics', '--all')
+)
+foreach ($a in $QUERY_CONFLICT) {
+    $cases += @{ Name = ('查询与截图选项互斥: ' + ($a -join ' '))
+       A = $a; Exit = 1; Query = $false
+       Check = { param($o)
+           ((Codes $o.errors) -join ',') -match 'cli.query_conflict' -and
+           $o.captured -eq 0 -and @($o.images).Count -eq 0 }.GetNewClosure() }
+}
+$cases += @{ Name = '两条查询同时给出 = 冲突，value 里两个名字都列出来'
+   A = @('--capabilities', '--diagnostics'); Exit = 1
+   Check = { param($o) $o.errors[0].code -eq 'cli.query_conflict' -and
+                        $o.errors[0].option -eq '--capabilities' -and
+                        $o.errors[0].value -like '*--capabilities*' -and
+                        $o.errors[0].value -like '*--diagnostics*' } }
+$cases += @{ Name = '位置参数在查询里也算输出路径（value 报 --out 而不回显那条路径）'
+   A = @('--capabilities', 'D:\shots\secret.png'); Exit = 1
+   Check = { param($o) $o.errors[0].code -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -eq '--out' -and
+                        -not ($o.errors[0].value -match 'secret') } }
+$cases += @{ Name = '冲突时报错只有一条，且所有冲突项一次列全'
+   A = @('--diagnostics', '--title', 'a', '--yes', '--format', 'png'); Exit = 1
+   Check = { param($o) @($o.errors).Count -eq 1 -and $o.errors[0].code -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -like '*--title*' -and $o.errors[0].value -like '*--yes*' -and
+                        $o.errors[0].value -like '*--format*' } }
+$cases += @{ Name = '帮助里有能力查询一节与两个查询选项'
+   A = @('--help'); Exit = 3; Text = $true
+   Has = @('--capabilities', '--diagnostics', 'cli.query_conflict') }
+$cases += @{ Name = '帮助里有先查询再选路的示例'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--capabilities  先只读问一次') }
+$cases += @{ Name = '查询不需要窗口条件，也不掉进"零条件 = 帮助"'
+   A = @('--capabilities'); Exit = 0; Query = $true
+   Check = { param($o) $o.contract -eq 'capabilities' } }
+
 
 
 
@@ -725,8 +816,17 @@ foreach ($r in $results) {
             try { $o = $body | ConvertFrom-Json } catch { $problems += "JSON 解析失败: $_" }
         }
         if ($o) {
-            if ($null -eq $o.captured) { $problems += '缺 captured' }
-            if ($null -eq $o.images)   { $problems += '缺 images' }
+            # 查询文档（--capabilities / --diagnostics）是另一份契约：它按规矩不带
+            # captured / images，也不许带。截图结果那份仍然必须有这两项。
+            if ($c.Query) {
+                if ($null -ne $o.captured) { $problems += '查询 JSON 不该有 captured' }
+                if ($null -ne $o.images)   { $problems += '查询 JSON 不该有 images' }
+                if ($null -eq $o.contract) { $problems += '查询 JSON 缺 contract' }
+                if ($null -eq $o.contractVersion) { $problems += '查询 JSON 缺 contractVersion' }
+            } else {
+                if ($null -eq $o.captured) { $problems += '缺 captured' }
+                if ($null -eq $o.images)   { $problems += '缺 images' }
+            }
             if ($c.PSObject.Properties.Name -contains 'Errors' -and
                 ((Codes $o.errors) -join ',') -ne (@($c.Errors) -join ',')) {
                 $problems += "errors=[$((Codes $o.errors) -join ',')] 期望 [$(@($c.Errors) -join ',')]" }
@@ -900,7 +1000,10 @@ $PROBE = @(
     @{ Name = 'hwnd 溢出'; A = @('--hwnd', '0x1FFFFFFFFFFFFFFFF', 'out.png'); Exit = 1 },
     @{ Name = 'monitor 编号写成写坏的数字'; A = @('--monitor', '1e3', 'out.png'); Exit = 1 },
     @{ Name = 'index 写成非 ASCII 数字'; A = @('--class', 'Shell_TrayWnd', '--index', '１', 'out.png'); Exit = 1 },
-    @{ Name = '语言取值非法'; A = @('--lang', 'klingon', '--pid', '1', 'out.png'); Exit = 1 }
+    @{ Name = '语言取值非法'; A = @('--lang', 'klingon', '--pid', '1', 'out.png'); Exit = 1 },
+    # 只读查询的冲突那两条：文字四种语言都要有，而被拒的 code 与退出码必须完全一致
+    @{ Name = '查询与截图选项冲突'; A = @('--capabilities', '--title', 'x'); Exit = 1 },
+    @{ Name = '两条查询同时给出'; A = @('--capabilities', '--diagnostics'); Exit = 1 }
 )
 $bad = 0
 

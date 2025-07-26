@@ -11,6 +11,7 @@
 
 #include "Json.h"
 #include "Capture.h"
+#include "EnvReport.h"
 #include "Lang.h"
 #include "SystemCompat.h"
 
@@ -196,6 +197,7 @@ const wchar_t* GroupTitle(const std::wstring& group) {
     if (group == L"consent") return L"grp.consent";
     if (group == L"timeout") return L"grp.timeout";
     if (group == L"output") return L"grp.output";
+    if (group == L"query") return L"grp.query";
     return L"grp.behavior";
 }
 
@@ -223,7 +225,7 @@ std::wstring HelpText() {
 
     const auto& catalog = OptionCatalog();
     const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"consent", L"timeout",
-                               L"output", L"behavior"};
+                               L"output", L"query", L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);
@@ -257,7 +259,7 @@ std::wstring HelpText() {
     t += Msg(L"help.examples") + L"\r\n";
     for (const wchar_t* key : {L"help.example1", L"help.example2", L"help.example3", L"help.example4",
                                L"help.example5", L"help.example6", L"help.example7",
-                               L"help.example8"}) {
+                               L"help.example8", L"help.example9"}) {
         t += L"  " + Msg(key) + L"\r\n";
     }
     return t;
@@ -280,12 +282,28 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     out->body.clear();
     out->toStderr = false;
 
-    if (opt.showVersion) {
+    // 查询命令（--capabilities / --diagnostics）与 --version / --help 是三个不同的出口，
+    // 而且互斥（解析层把同时给出判成 cli.query_conflict）。所以这里必须**先**认查询这一路：
+    // 参数不合查询契约时不能落到帮助那一段去，否则调用方永远看不到那条冲突。
+    if (opt.QueryMode()) {
+        if (parse.ok) {
+            const EnvQueryKind kind =
+                opt.diagnostics ? EnvQueryKind::kDiagnostics : EnvQueryKind::kCapabilities;
+            const EnvReport report = BuildEnvReport(ProbeEnvFacts(), kind);
+            out->body = RenderEnvJson(report, opt.verbose, opt.quiet);
+            out->exitCode = EX_OK;
+            // 查询没有图片要挤 stdout（输出路径这一路恒为空），所以结果恒走 stdout。
+            // 这里仍然问同一个 ResultGoesToStderr，不在两处各写一套流规则。
+            out->toStderr = ResultGoesToStderr(opt);
+            return EX_OK;
+        }
+        // 落到下面的错误 JSON：形状与每一条解析错误完全相同（captured=0、images=[]、errors=[...]），
+        // 调用方按 errors[].code 分支的那段代码不必为查询另写一份。
+    } else if (opt.showVersion) {
         out->body = VersionText();
         out->exitCode = EX_OK;
         return EX_OK;
-    }
-    if (opt.showHelp) {
+    } else if (opt.showHelp) {
         if (!opt.helpReason.empty())
             out->body += Msg(L"help.no_condition") + L"\r\n\r\n";
         out->body += HelpText();

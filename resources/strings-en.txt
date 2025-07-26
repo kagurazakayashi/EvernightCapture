@@ -29,6 +29,7 @@ help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 help.example8	ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
+help.example9	ECAPTURE.EXE --capabilities  ask what this machine can do first, then choose --capture and the target
 help.no_condition	No match condition was given, so this help is shown.
 grp.target	Capture target (without --monitor only the window conditions below are used)
 grp.match	Window match conditions (repeat one option for OR, combine different options with AND)
@@ -38,6 +39,7 @@ grp.consent	Capture authorization (a real capture asks first; --yes skips window
 grp.timeout	Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
 grp.output	Output
 grp.behavior	Miscellaneous
+grp.query	Capability queries (read-only: no capture, no dialog, no files)
 
 # ---------------------------------------------------------------------------
 # Option descriptions (kOptions, keyed by option name)
@@ -72,6 +74,8 @@ opt.quiet	Drop notes; errors are always returned whatever this says. --verbose w
 opt.lang	Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
 opt.help	Print this text help
 opt.version	Print version and stage
+opt.capabilities	Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
+opt.diagnostics	Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
 
 # ---------------------------------------------------------------------------
 # Parse-time diagnostics (src/CliOptions.cpp)
@@ -106,6 +110,8 @@ cli.missing_value	This option requires a value
 cli.unexpected_positional	Extra positional argument: only the first one is the output path, give every other condition as an option
 cli.conflicting_options	These selection strategies are mutually exclusive; pick one
 cli.conflicting_hint	e.g. keep only --index 2
+cli.query_conflict	Query commands cannot be combined with capture options: --capabilities / --diagnostics only ask about the environment and never capture
+cli.query_conflict_hint	Questions accept only --lang, -v/--verbose and -q/--quiet; drop the other options and the output path, or run the capture separately
 cli.unhandled_option	Internal error: option is in the catalog but the parser does not handle it
 cli.missing_output	No output path was given, and writing to stdout by default produced no image
 cli.missing_output_hint	Give --out <path> explicitly, or use --dry-run first to check whether a window matches

@@ -28,6 +28,7 @@ help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 help.example8	ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
+help.example9	ECAPTURE.EXE --capabilities  --capture を決める前に照会する
 help.no_condition	一致条件が指定されていないため、ヘルプを表示しています。
 grp.target	取得対象（--monitor を付けない場合は下のウィンドウ条件だけで探します）
 grp.match	ウィンドウ検索条件（同一オプションの繰り返しは OR、異なるオプションは同時成立）
@@ -37,6 +38,7 @@ grp.consent	撮影の承諾（実際の撮影では既定で確認します。--
 grp.timeout	実行期限（自動処理区間の総予算。承諾を待つ時間は別計算で、期限切れは拒否として扱います）
 grp.output	出力
 grp.behavior	その他
+grp.query	能力照会
 
 # ---------------------------------------------------------------------------
 # オプション説明（kOptions、オプション名で key を引く）
@@ -71,6 +73,8 @@ opt.quiet	notes を省略。errors は常に返る。--verbose と同時指定�
 opt.lang	メッセージの言語。auto（既定、システム表示言語に従う）/ zh-CN / zh-TW / en / ja。未対応のシステム言語は en
 opt.help	テキストのヘルプ（この部分）を出力
 opt.version	バージョンと段階を出力
+opt.capabilities	この機の能力を JSON で返す（版数、OS とセッション条件、各経路の available / unavailable / unverified、--yes の適用範囲）。読み取り専用で撮影も確認も書き込みもしない。available は保証ではない。--lang / -v / -q のみ可、撮影オプションや出力先と併用すると cli.query_conflict
+opt.diagnostics	ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
 
 # ---------------------------------------------------------------------------
 # 解析時の診断（src/CliOptions.cpp）
@@ -105,6 +109,8 @@ cli.missing_value	このオプションには値が必要です
 cli.unexpected_positional	位置引数が多すぎます。先頭のみ出力パスとして扱い、他の条件はすべてオプションで指定してください
 cli.conflicting_options	これらの選択方針は互斥です。1 つだけ選んでください
 cli.conflicting_hint	例：--index 2 だけを残す
+cli.query_conflict	照会コマンドは撮影オプションと同時に指定できません。--capabilities / --diagnostics は環境を読み取りで問うだけで、撮影はしません
+cli.query_conflict_hint	照会が受け付けるのは --lang、-v/--verbose、-q/--quiet だけです。他のオプションと出力先を外すか、撮影を別の実行にしてください
 cli.unhandled_option	内部エラー：一覧にあるオプションをパーサが処理していません
 cli.missing_output	出力パスが指定されず、既定で標準出力へ書く手順でも画像を出力できませんでした
 cli.missing_output_hint	--out <パス> を明示するか、まず --dry-run でウィンドウが一致するか確認してください

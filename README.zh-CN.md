@@ -32,6 +32,10 @@
   工具能停下来的辅助进程里，所以卡死的目标窗口再也卡不住这个工具
 - **四语文案**：`zh-CN` / `zh-TW` / `en` / `ja`，默认跟随系统显示语言，全部编在 exe 的资源里
 - **机器读的 JSON**：只装捕获结果与错误，不带工具名、版本、schema、参数回显之类的元信息
+- **能力可只读查询**：`--capabilities` / `--diagnostics` 在不动一个像素、不弹确认框、不写文件、不联网的前提下
+  问出这台机器现在能走哪几条通道、`--yes` 到底管到哪一层、以及可核对的构建标识；「这个构建里有这条路线」「本机
+  现在让不让走」「本项目有没有在这种系统上实测过」是三件分开写的事，问不出来就照实写 `unknown`，
+  也绝不靠实际截屏或实际编码去探测能力
 
 ## 快速开始
 
@@ -123,6 +127,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --quality <1-100>               JPEG 质量，十进制 1..100，默认 100
   --no-overwrite                  目标已存在时不覆盖，报错退出（不给取值就是禁止覆盖）；写 --no-overwrite=false（0 / no / n / off）取消这条禁令，=true / 1 / yes / y / on 与不给取值同义。重复给出时最后一个生效
 
+能力查询（只读：不截图、不弹框、不写文件）
+  --capabilities                  输出本机能力报告（JSON）：版本、系统与会话条件、各条取图路线的 available / unavailable / unverified、格式与 --yes 的适用范围。只读：不截图、不弹确认框、不写文件，也不靠实际截屏来探测能力。available 只说明"这个构建里有这条路线，且这次问出来的环境判据没挡掉它"，不保证某个窗口一定截得到。只接受 --lang / -v / -q，与任何截图选项或输出路径同时给出 = cli.query_conflict + 退出码 1，一张都不截
+  --diagnostics                   输出诊断与版本报告（JSON）：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态，字段与 --capabilities 同源，不另立第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；--verbose 追加每一问的原始答案，便于核对后再提交。互斥规则与 --capabilities 相同
+
 其它
   --dry-run, -d                   只解析并列出候选窗口，不截图不写文件
   --json, -j                      已废弃的兼容开关，无副作用：成功与错误本来就输出 JSON
@@ -149,6 +157,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
   ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
+  ECAPTURE.EXE --capabilities  先只读问一次这台机器能走哪几条路线，再决定 --capture 与目标条件
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -198,6 +207,11 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 ## 输出形式
 
 `--help`、`--version`、以及不给任何条件时是纯文本。其余一律 JSON，只装捕获结果与错误。
+
+只读查询那两条是**另两份契约**（`--capabilities` / `--diagnostics`，见[系统支持](#系统支持)）：
+它们装的是这台机器的环境与能力，而不是某次截图的结果，所以只有它们带 `contract` 与 `contractVersion`。
+这一条**不**反过来说明截图 JSON 该加顶层元信息——那份照旧只有 `captured` / `images`（按需再加
+`errors` / `notes` / `input`），也不因为查询里出现了 `program.version` 就多写一份。
 
 窗口图（真实输出的形状，数值来自一次实际截取）：
 
@@ -345,6 +359,11 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 访问被拒不是继续回退的理由，被人拒绝也不是：一旦有人答"否"（或这个会话根本弹不出框），本次请求剩下的目标
 一律不再尝试——不换后端、不重试、不再问第二遍，之前已经完成的图全部留着。
 
+只读查询那两条（`--capabilities` / `--diagnostics`）只用 `0` 与 `1` 两个编号：`0` = 这份文档出完了（哪怕里面
+写着"这台机器版本太低、哪几条都不可用"——**查询成功与截图能成是两件事**，调用方按 `status` 分支而不是按退出码
+猜环境）；`1` = 这条用法不合契约（`cli.query_conflict`，见[系统支持](#系统支持)）。它们不产生 `4`/`5`/`6`/`7`/`8`：
+一次窗口都没枚举、一个框都没弹、一个文件都没写。
+
 ## 系统支持
 
 三个不同的数字不能混成一句"支持 Windows X 以上"：
@@ -386,6 +405,58 @@ Windows 8.1 **能**装载也能启动 —— 在那上面起作用的正是下�
 设备层面的能力刻意不去预测：驱动不喂桌面复制帧、这台机器拒绝 Windows.Graphics.Capture、会话里没有可交互
 桌面、N 版缺媒体组件——这些都不在版本号里，也都不由本工具提前猜；那一步会交回它自己的 `capture.*` 码与
 真实 HRESULT。
+
+### 只读的能力查询（`--capabilities` / `--diagnostics`）
+
+上面那套判据在截图**开始之前**就会起作用，但它只在真的下单一次之后才看得见。这两条命令是同一条判据的
+只读出口：一次像素都不取、一个确认框都不弹、一个文件都不写、不联网、不读环境变量，也不需要窗口条件。
+
+```powershell
+ECAPTURE.EXE --capabilities              # 这台机器现在能走哪几条路线（JSON）
+ECAPTURE.EXE --diagnostics               # 构建版本 + 可核对的构建标识 + 后端状态（JSON）
+ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原始答案与它是从哪个 API 问来的
+```
+
+三条规矩：
+
+* **三件事分开写。** `compiled` 说的是这个二进制里有没有实现那条路线；`status` 说的是本机现在的判据
+  （版本下限 + 屏幕拓扑）让不让走；`verifiedOnThisMachine` 说的是**本项目**有没有在这一模一样的系统上
+  实测过（只有开发机那一台，见上表）。三者互不冒充。
+* **问不出来就说问不出来。** 每一条事实都是 `yes` / `no` / `unknown` 三值之一，`unknown` 既不折成"能"
+  也不折成"不能"，也不整个键消失。版本没问出来时所有 `status` 都是 `unverified`，而 `autoChainWindow`
+  仍然原样列出全部四条——不筛就是没筛，不是"都支持"。
+* **`available` 不是保证。** 它不含"某个窗口这一次一定截得到"这层意思：驱动、受保护内容、HDR 模式都不在
+  这层的断言里。文档末尾的 `caveats` 数组就是把"这份报告没说过什么"逐条列出来。
+
+| 段 | 内容 |
+| --- | --- |
+| `contract` / `contractVersion` | 只有这两份文档带契约版本（现在是 1）。普通截图 JSON 仍然按《输出形式》保持精简，不因此多出任何顶层元信息 |
+| `program` | 名称、`ECAPTURE.EXE` 这个文件名本身（不含目录）、版本、架构、`buildId` |
+| `os` | 本机内部版本（`known` 为假时那一组数字写成 `unknown`）、`declaredMinBuild`（对外声明的下限）、`encoderMinBuild`、`testedMinBuild` + `testedArch`（本项目实测过的那一台）、`matchesTestedEnvironment` |
+| `session` | 是否接在控制台会话上、是否远程桌面、有没有可用的屏幕拓扑与有几块屏、本进程是否被提升过、`consentDialogExpected`（推出来的，`consentDialogProbed: false` 明说没真去弹框） |
+| `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登记路径按 `desktop` 处理，外加整份内部路径登记表（每条带 `scope` 与 `consentWithoutYes` / `consentWithYes`）——就是《截图授权与 --yes》那张表的机器可读版本 |
+| `backends` | 每条路线：`compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`，以及它在窗口目标与屏幕目标上各走哪条内部路径（`dwm` 那条屏幕退路也在，所以 `--yes` 的适用范围不会被人读大） |
+| `formats` | 每种格式：`compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` 恒为 `unknown`，因为这一层不去实测编码器（实测就是"用一次编码来探测能力"，与"不靠截屏探测"是同一条理由）；曾经列过但没有编码器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里，好让调用方拿到确定答案 |
+| `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 逐条比对这两处 |
+| `limits` | 单边像素上限、整帧字节上限、`--timeout-ms` 上限、隔离调用内置上限、WGC 帧池重建次数、编号与 PID 上限、`stdoutTargetsMax: 1`、JPEG 质量区间 |
+| `privacy` | 自述这份查询没做的事：不采集画面、不弹框、不上传、不枚举用户文件、不读环境变量、不含用户名、不含路径 |
+| `caveats` | 稳定的 ASCII token，列"这份报告没有断言什么"：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及按本机情况追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+
+两份文档由**同一个**判据函数（`src/EnvReport.cpp` 的 `BuildEnvReport`）算出，只差段落取舍：
+`--diagnostics` 固定带 `build` 那一段（PE 链接时间戳、机器类型、映像大小、子系统），`--capabilities` 只在
+`--verbose` 时展开它。版本号、`status`、后端清单、`limits` 都是同一份，所以不存在"两份互相打脸的环境信息"。
+
+**构建标识是可核对的**：`buildId` 是 `版本-架构-十六进制链接时间戳`，那一个时间戳与 `dumpbin /headers`
+读发布产物读到的是同一个字段，读的是本进程自己已经映射进内存的那份 PE 头——不开文件、不枚举目录，
+所以也不会因为安装路径里有用户名而漏出身份。PE 头里的 `subsystem version` 只作为事实列出，并配一条
+`subsystem_version_is_linker_default` 的 caveat：那是 MSVC 链接器默认值，不是支持声明。
+
+`--capabilities` / `--diagnostics` 只接受 `--lang`、`-v`、`-q`：截图那一套选项（窗口条件、`--monitor`、
+`--capture`、`--out` 与位置参数、`--yes`、`--dry-run`、两条期限）与它们**同时给出就是 `cli.query_conflict`
++ 退出码 1**，一次报全所有冲突项，一张都不截、一个文件都不写。这两条命令也不参加"没给条件就显示帮助"
+那一条：查询本身就是明确的意图。`-q` 对查询只去掉 `caveats` 那一段，`-v` 加的是 `probes`，都不会动答案本身。
+
+这份文档从头到尾是 ASCII（机器读的取值一律不翻译），所以同一台机器上换任何一种 `--lang`，输出逐字节相同。
 
 ## 取图方式
 
@@ -572,8 +643,14 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 工具就是为程序化调用设计的，按下面这套约定走最省事。项目里还带了一份教 AI 用它的 skill：
 `.agents/skills/ecapture-screenshot/`（里面有 `SKILL.md`、`references/cli-contract.md` 和一份 exe 副本）。
 
-1. **先 `--dry-run` 探一次**，再消歧，最后真截图。`--dry-run` 不取帧、不写文件、也不弹确认框，候选在
-   `notes[0].value`：
+1. **先问一次能力，再 `--dry-run` 探目标，最后真截图。** `--capabilities` 是只读的：不取像素、不弹确认框、
+   不写文件，也就不会打扰人，适合放在自动化流程的最前面。它把这台机器的版本、会话、屏幕拓扑、每条路线的
+   `available` / `unavailable` / `unverified`、每种格式、`--yes` 到底管哪几条内部路径，以及取值上限一次交给你，
+   于是"该用哪条 `--capture`""这次失败该换通道还是这台机器不行""这里弹框有没有人会答"都在动手之前就有答案。
+   要提交问题报告就再跑一次 `--diagnostics`（同一批判据，另加可核对的构建标识；`-v` 展开每一问的原始答案）。
+   两份文档都不随 `--lang` 变（全 ASCII），所以比对结果稳定。注意 `available` **不是**"这个窗口一定截得到"：
+   驱动、受保护内容、HDR 都不在那层的断言里，文档末尾的 `caveats` 就是写来钉住这一点的。
+   之后照旧 `--dry-run`：它不取帧、不写文件、也不弹确认框，候选在 `notes[0].value`：
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` 也不必给 `--out`
    （那一次没有图片要交付，结果整份在 stderr）；而**只给 `--dry-run` 不给任何窗口条件 = 文本帮助 + 退出码 2**。
 2. **按 `errors[].code` 分支，不要匹配 `message` 文字**（那随 `--lang` 变），也不要拿"有没有给 `--out`"当原因——
@@ -621,7 +698,8 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 495 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法）+ 通道分离 + 省略 `--out` 与 `--out -` 的等价对拍 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\cli.ps1` | 518 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法、查询与截图选项互斥那一组）+ 通道分离 + 省略 `--out` 与 `--out -` 的等价对拍 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\capabilities.ps1` | 能力与诊断查询（`--capabilities` / `--diagnostics`）：离线跑 `build\ecapture-capabilities-tests.exe`（注入假探针判"一块屏都没有""版本正好低于某条下限""版本问不出来""某个编码器没登记""`--yes` 的适用范围与登记表一致""两份查询共享同一批判据"）；真机层判查询确实不弹框（期限就是判据）、不落地、`os` / `arch` / 通道链与 WMI 及 `--dry-run -v` 两处独立值同源、文档全 ASCII 且不随 `--lang` 变、不含用户名与任何路径。无图形会话、更低版本、编码器缺失、ARM64 / Server / 远程桌面这几项本机造不出，一律记未验证 |
 | `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8，以及省略 `--out` 与显式 `--out -` 在成功 / 无匹配 / 歧义 / 非法参数 / 后端失败 / 被拒绝 / 写入断管七个场景上的机器语义对拍（只截自建的窗口） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
 | `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |

@@ -39,6 +39,7 @@ CRT を静的リンクしているのでターゲットマシンに VC++ ラン�
   プロセスで走るので、フリーズした対象ウィンドウがこのツールをフリーズできなくなりました
 - **4 か国語のメッセージ**：`zh-CN` / `zh-TW` / `en` / `ja`。既定はシステム表示言語に従い、すべて exe 内のリソースにコンパイル済み
 - **機械が読む JSON**：画面取得結果とエラーだけを含み、ツール名・バージョン・schema・引数のエコーバックのようなメタ情報は載せない
+- **能力を読み取りで照会できる**：`--capabilities` / `--diagnostics` は、ピクセルも取らず確認も出さずファイルも書かず通信もしないで、この機がいま通せる経路、`--yes` が実際に及ぶ範囲、検証可能なビルド識別子を返す。「このビルドにその経路がある」「いまこの機で通せる」「本プロジェクトがこういうシステムで実測した」は別々の欄として書き分け、答えが出なければ `unknown` をそのまま返す。実際の撮影や符号化で能力を探ることはしない
 
 ## クイックスタート
 
@@ -132,6 +133,10 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   --quality <1-100>               JPEG の品質。10 進で 1..100、既定 100
   --no-overwrite                  ターゲットが既に存在するなら上書きせずエラー終了（値を省略すれば禁止が有効）。--no-overwrite=false（0 / no / n / off）で禁止を取り消します。=true / 1 / yes / y / on は値を省略した時と同じ。複数指定した場合は最後のものが有効
 
+能力照会
+  --capabilities                  この機の能力を JSON で返す（版数、OS とセッション条件、各経路の available / unavailable / unverified、--yes の適用範囲）。読み取り専用で撮影も確認も書き込みもしない。available は保証ではない。--lang / -v / -q のみ可、撮影オプションや出力先と併用すると cli.query_conflict
+  --diagnostics                   ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
+
 その他
   --dry-run, -d                   解析と候補ウィンドウの列挙だけ行い、画面取得もファイル書き出しもしない
   --json, -j                      廃止済みの互換スイッチで副作用なし：成功もエラーも元から JSON
@@ -158,6 +163,7 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
   ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
+  ECAPTURE.EXE --capabilities  --capture を決める前に照会する
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -213,6 +219,12 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 `--help`、`--version`、そして条件を一切与えない場合はプレーンテキスト。それ以外はすべて JSON で、
 画面取得結果とエラーだけを入れる。
+
+読み取り専用の照会 2 つ（`--capabilities` / `--diagnostics`）は**別の契約書**で、載せているのはこのマシンの
+環境と能力、つまり 1 回の撮影結果ではない。だから `contract` と `contractVersion` を持つのはこの 2 つだけ。
+逆に通常の撮影 JSON がトップレベルのメタ情報を増やす理由にはならない —— あちらはこれまでどおり
+`captured` / `images`（必要に応じ `errors` / `notes` / `input`）だけで、照会側に `program.version` があっても
+写しは書かない。
 
 ウィンドウの画像（実際の出力の形。数値は一度の実際の画面取得から来たもの）：
 
@@ -372,6 +384,12 @@ JSON は丸ごと stderr へ移り、各診断は実際にそのステップが�
 `DXGI_ERROR_DEVICE_HUNG`）——は 1 件ずつ試し続けるのではなく、一括分を明確に打ち切る。アクセス拒否や人の拒否は、
 フォールバックを続ける理由にならない。
 
+読み取り専用の照会 2 つ（`--capabilities` / `--diagnostics`）が使う番号は `0` と `1` だけである。`0` =
+その文書を出し終えた（なかに「このマシンは古くてどの経路も使えない」と書いてあっても同じ。
+**照会が成功したことと撮影が可能なことは別物**なので、環境を推測するには終了コードではなく `status` を見る）。
+`1` = この使い方自体が契約に合わない（`cli.query_conflict`。「[動作環境のサポート](#動作環境のサポート)」参照）。
+`4`/`5`/`6`/`7`/`8` は出さない：ウィンドウも列挙せず、確認も出さず、ファイルも書かない。
+
 ## 動作環境のサポート
 
 三つの違う数字を「Windows X 以上に対応」という一文に混ぜてはいけない。
@@ -419,6 +437,56 @@ Windows 7 や 8 に対応するという文はここに一つもない —— **
 断る機械、対話デスクトップのないセッション、メディア機能パックのない N エディション —— これらはどれも
 バージョン番号には現れず、本ツールは先に推測しない。該当するステップが各自の `capture.*` コードと実際の
 HRESULT を返す。
+
+### 読み取り専用の能力照会（`--capabilities` / `--diagnostics`）
+
+上の判定は撮影より前に効くが、実際に見えるのは発注した後だけ。この 2 コマンドは同じ判定の読み取り専用口で、
+ピクセルも取らず確認ダイアログも出さずファイルも書かず、通信も環境変数読みもしない。ウィンドウ条件も不要。
+
+```powershell
+ECAPTURE.EXE --capabilities              # この機がいま通せる経路（JSON）
+ECAPTURE.EXE --diagnostics               # ビルド版数 + 検証可能なビルド識別子 + 経路の状態（JSON）
+ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生の答えと、どの API から出たか
+```
+
+三つの決まり：
+
+* **三件事を分けて書く。** `compiled` はこのバイナリにその経路が実装されているか、`status` は本機のいまの判定（バージョン下限と画面トポロジー）が通すか、`verifiedOnThisMachine` は**本プロジェクト**がそっくりのシステムで実測したか（開発機 1 台のみ、上の表を参照）。互いに代役しない。
+* **答えが出なければ出ないと言う。** 各事実はいずれも `yes` / `no` / `unknown` の三値で、`unknown` は「できる」にも「できない」にも丸めず、キーごと消えたりもしない。ビルド番号が取れなかったとき `status` はすべて `unverified` になり、`autoChainWindow` は 4 本そのまま並ぶ —— 絞っていないだけで「全部対応」ではない。
+* **`available` は保証ではない。** 「このウィンドウが必ず撮れる」という意味はない。ドライバ・保護内容・HDR はこの層の外で、文末の `caveats` 配列はまさに「この報告が何を言ってないか」を並べるためにある。
+
+| 段 | 内容 |
+| --- | --- |
+| `contract` / `contractVersion` | 契約版数を持つのはこの 2 つの文書だけ（いまは 1）。通常の撮影 JSON は《出力の形》どおり簡潔なままで、ここに入ったからといってトップレベルのメタ情報は増えない |
+| `program` | 名称、`ECAPTURE.EXE` というファイル名そのもの（ディレクトリなし）、版数、アーキテクチャ、`buildId` |
+| `os` | 本機のビルド（`known` が偽ならその group は `unknown`）、`declaredMinBuild`（対外宣言の下限）、`encoderMinBuild`、`testedMinBuild` + `testedArch`（実測した 1 台）、`matchesTestedEnvironment` |
+| `session` | コンソールセッションに付しているか、リモートデスクトップか、画面トポロジーの有無と画面数、本プロセスが昇格しているか、`consentDialogExpected`（推定で、`consentDialogProbed: false` が「実際には出していない」を明言） |
+| `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登録パスは `desktop` 扱い、加えて内部経路登録表の全行（各行に `scope` と `consentWithoutYes` / `consentWithYes`）。《撮影の承諾と --yes》の表の機械可読版 |
+| `backends` | 各経路の `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`、そしてウィンドウ対象・画面対象でそれぞれどの内部経路を通るか（`dwm` のデスクトップ退路も含む。だから `--yes` の適用範囲を読み広げられない） |
+| `formats` | 各形式の `compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` は常に `unknown` —— この層はエンコーダを実際に試さない（試すと「1 枚符号化して能力を探る」になり、撮影で探らないのと同じ理由に触れる）。かつて挙げたがエンコーダが無い `webp` / `ico` は `compiled: false` + `reason: "not_compiled"` に残し、推測ではなく確定した答えを渡す |
+| `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる |
+| `limits` | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲 |
+| `privacy` | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし |
+| `caveats` | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+
+両方の文書は**同一の**判定関数（`src/EnvReport.cpp` の `BuildEnvReport`）から出る。違いは段落の取捨だけで、
+`--diagnostics` は `build` 段（PE のリンク時刻・機械種別・イメージサイズ・subsystem）を常に載せ、
+`--capabilities` は `--verbose` のときだけ展開する。版数も `status` も経路一覧も `limits` も同じオブジェクトなので、
+互いに矛盾しうる環境情報の第二の複製は存在しない。
+
+**ビルド識別子は検証できる**：`buildId` は `版数-アーキテクチャ-16 進のリンク時刻` で、その時刻は
+`dumpbin /headers` が公開成果物から読むのと同じフィールド。読んでいるのは自プロセスがすでにメモリへ
+マッピング済みの PE ヘッダで、ファイルも開かなければディレクトリも列挙しない。だからインストールパスに
+ユーザー名が入っていても漏れない。PE ヘッダの `subsystem version` は事実としてだけ載せ、
+`subsystem_version_is_linker_default` を添えてある —— MSVC のリンカ既定値であって対応宣言ではない。
+
+`--capabilities` / `--diagnostics` が受けするのは `--lang`、`-v`、`-q` だけ。撮影側の選択肢（ウィンドウ条件、
+`--monitor`、`--capture`、`--out` と位置引数、`--yes`、`--dry-run`、2 つの期限）と同時に指定すれば
+`cli.query_conflict` + 終了コード 1 で、衝突項は一度に全部列挙し、撮影も書き込みもしない。「条件なしならヘルプ」にも
+該当しない：照会それ自体が明確な意図だからだ。`-q` は照会では `caveats` 段だけを外し、`-v` は `probes` を足す。
+どちらも答え自体は動かない。
+
+この文書は最初まで ASCII（機械が読む値は翻訳しない）。同じ機で `--lang` をどれに変えても出力はバイト単位でまったく同じ。
 
 ## 画面取得方式
 
@@ -635,8 +703,17 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 リポジトリには AI に使い方を教える skill も同梱してある：`.agents/skills/ecapture-screenshot/`
 （`SKILL.md`、`references/cli-contract.md`、exe のコピー入り）。
 
-1. **まず `--dry-run` で一度探る**、それから区別を付け、最後に本番の画面取得。`--dry-run` はフレームも取得せず
-   ファイルも書き出さず、候補は `notes[0].value` に入る：
+1. **まず能力を一度照会し、それから `--dry-run` で対象を探り、最後に本番の画面取得。**
+   `--capabilities` は読み取り専用で、ピクセルも取らなければ確認ダイアログも出さず、ファイルも書かない。
+   だから人を邪魔しないので、自動化の先頭に置ける。このマシンのビルド・セッション・画面トポロジー、
+   各経路の `available` / `unavailable` / `unverified`、各形式、`--yes` が実際に及ぶ内部経路の一覧、
+   そして値の上限を一度で返す。「どの `--capture` を頼むべきか」「今回の失敗はチャネルの話か機械の話か」
+   「ここで確認を出しても誰も答えないのか」が、手を動かす前に分かる。報告を投稿するなら `--diagnostics` を
+   もう一度（同じ判定に加えて検証可能なビルド識別子も載せる。`-v` で各質問の生の答えも展開）。
+   どちらも `--lang` で変わらない（全域 ASCII）ので、突き合わせは安定する。
+   `available` は**保証ではない**：ドライバ・保護内容・HDR はその層の外で、文末の `caveats` はまさにそれを
+   釘を刺すためにある。
+   そのあと従来どおり `--dry-run`：フレームも取得せずファイルも書き出さず、候補は `notes[0].value` に入る：
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` に `--out` は
    要りません（届ける画像が無いので、結果は丸ごと stderr に出ます）。そして
    **`--dry-run` だけ・ウィンドウ条件を一切与えない = テキストのヘルプ + 終了コード 2** である。
@@ -692,7 +769,8 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 | コマンド | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release ビルド、成果物 `build\ecapture.exe`。`-Config Debug`、`-Clean` が選べる |
-| `.\tests\cli.ps1` | 出力契約の断言 495 例（`--yes` と `--no-overwrite` の各真偽表記を含む）+ ストリーム分離 + `--out` 省略と `--out -` の等価取り合わせ + 多言語チェック（すべて `--dry-run`、画面取得なし） |
+| `.\tests\cli.ps1` | 出力契約の断言 518 例（`--yes` と `--no-overwrite` の各真偽表記、照会と撮影オプションの排他群を含む）+ ストリーム分離 + `--out` 省略と `--out -` の等価取り合わせ + 多言語チェック（すべて `--dry-run`、画面取得なし） |
+| `.\tests\capabilities.ps1` | 能力と診断の照会（`--capabilities` / `--diagnostics`）：オフラインでは `build\ecapture-capabilities-tests.exe` を走らせ（仮の probe を注入して「画面が 1 つもない」「あるチャネルの下限ちょうだ下」「ビルド番号が取れない」「エンコーダが 1 つ登録されていない」「`--yes` の適用範囲が登録表と一致」「2 つの照会が同じ判定群を共有する」を項目ごとに判定）、実機では照会が本当にダイアログを出さない（期限そのものが判定になっている）、ファイルも残さない、`os` / `arch` / 経路の列が WMI と `--dry-run -v` の別経路の値と同源、文書が全域 ASCII で `--lang` に左右されない、ユーザー名もパスも含ない、を判定する。対話デスクトップのないセッション、それより古いビルド、エンコーダの欠落、ARM64 / Server / リモートデスクトップは本機では作れないので未検証として記録する |
 | `.\scripts\check-lang.ps1` | 4 か国語のメッセージの key / プレースホルダの対応チェック。exe に本当に 4 本のリソースがコンパイル済みかも確かめる |
 | `.\tests\invoker.ps1` | 共有テスト起動ラッパーのオフライン検査：argv のクォーティング、2 ストリーム同時出力、バイナリが変換されないこと、ハングした子プロセス、実行ごとの一時ディレクトリ（画面取得なし） |
 | `.\tests\build-path.ps1` | ビルド経路の検査：オフライン層では一時バッチ本文が ASCII のみであること、VS 環境の読み込み失敗が cmake 実行前に報告されることを確認。実機層では中国語・空白・括弧・`%` を含むディレクトリで Release / Debug / RelWithDebInfo と `-Clean` をビルドし、`%TEMP%` を中国語のディレクトリにしてもう一度ビルドする（画面取得なし。`-OfflineOnly` でオフライン層だけ） |

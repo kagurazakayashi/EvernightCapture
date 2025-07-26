@@ -33,6 +33,7 @@ add_executable(ecapture
   src/WindowIdentity.cpp
   src/ScreenMatch.cpp
   src/SystemCompat.cpp
+  src/EnvReport.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
   src/Deadline.cpp
@@ -318,4 +319,35 @@ target_link_libraries(ecapture-compat-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-compat-tests PROPERTIES OUTPUT_NAME "ecapture-compat-tests")
 set_property(TARGET ecapture-compat-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 能力与诊断查询的离线判据（由 tests\capabilities.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的是"这台机器不是那一台开发机"的现场 ——
+# 无图形会话（一块屏都没有）、版本低于某条通道的下限、版本根本问不出来、某个编码器没登记。
+# 本机既降不了级也没有第二块显卡，也绝不能为了看"没有屏幕拓扑时会怎么判"而把显示器拔掉。
+# 判据本体（src/EnvReport.cpp 的 BuildEnvReport）是纯函数，注入一份假的 EnvProbe 就能
+# 逐条判；只有格式名与通道名那两套机器名要读 CliOptions，而它连带文案资源（.rc）一起编进来。
+# 这里不碰 WinRT / D3D / 窗口 / 弹框，链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-capabilities-tests
+  tests/capabilities_state.cpp
+  src/EnvReport.cpp
+  src/SystemCompat.cpp
+  src/CaptureScope.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  src/Json.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-capabilities-tests PRIVATE resources src)
+target_compile_features(ecapture-capabilities-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-capabilities-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-capabilities-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-capabilities-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-capabilities-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib)
+set_target_properties(ecapture-capabilities-tests PROPERTIES OUTPUT_NAME "ecapture-capabilities-tests")
+set_property(TARGET ecapture-capabilities-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

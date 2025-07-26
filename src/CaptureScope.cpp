@@ -9,12 +9,8 @@ namespace {
 
 // 登记表：路径名 -> 像素来源。这里就是"哪种截图要真人确认"的唯一一份事实，
 // 加新通道时必须在这里登记一条；漏登记不会变松，因为 ScopeOf 对未知名字给 kDesktop。
-struct PathEntry {
-    const wchar_t* path;
-    PixelScope scope;
-};
-
-constexpr PathEntry kTable[] = {
+// 表体本身通过 RegisteredCapturePaths() 整份对外（能力查询要照着它列 --yes 的适用范围）。
+constexpr PathScopeEntry kTable[] = {
     {paths::kWgc, PixelScope::kWindowContent},
     {paths::kPrintWindow, PixelScope::kWindowContent},
     {paths::kDwmThumbnail, PixelScope::kWindowContent},
@@ -37,6 +33,11 @@ PixelScope ScopeOf(const wchar_t* path) {
         if (std::wcscmp(e.path, path) == 0) return e.scope;
     }
     return PixelScope::kDesktop;
+}
+
+const std::vector<PathScopeEntry>& RegisteredCapturePaths() {
+    static const std::vector<PathScopeEntry> view(kTable, kTable + (sizeof(kTable) / sizeof(kTable[0])));
+    return view;
 }
 
 PixelScope ScopeOf(const std::wstring& path) { return ScopeOf(path.c_str()); }

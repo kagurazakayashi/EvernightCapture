@@ -10,6 +10,7 @@
 // 测试进程里被逐条断言（见 tests\consent_state.cpp）。
 
 #include <string>
+#include <vector>
 
 namespace ecapture {
 
@@ -59,5 +60,15 @@ const wchar_t* ScreenPathOf(CaptureMethod method);
 
 // scope -> JSON 里的那个取值。
 const wchar_t* ScopeName(PixelScope scope);
+
+// 登记表本体的一行（只读视图）。
+struct PathScopeEntry {
+    const wchar_t* path;
+    PixelScope scope;
+};
+
+// 登记表整份交出去。能力查询（--capabilities / --diagnostics）要把"--yes 到底管哪几条"
+// 说清楚，而那份事实只应该有一个出处，所以这里给的是下面那个数组本身而不是又抄一份表。
+const std::vector<PathScopeEntry>& RegisteredCapturePaths();
 
 }  // namespace ecapture

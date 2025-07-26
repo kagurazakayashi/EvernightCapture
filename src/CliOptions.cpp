@@ -227,14 +227,12 @@ bool LooksLikeOptionalValue(const std::wstring& name, const std::wstring& raw) {
 constexpr const wchar_t* kFormatValues[] = {
     L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", nullptr};
 
-// --timeout-ms / --consent-timeout-ms 的上限：24 小时。再大的数字基本上是把期限当成装饰，
-// 而那正是这条参数要解决的问题，所以宁可不接受。
-constexpr uint64_t kMaxTimeoutMs = 86400000ull;
-// --index 与 --monitor 的编号上限。一个条件命中六万多个窗口、或者机器上有六万多块屏，
-// 都是不可能的；超过这个数的编号一定是敲错了，照实在解析期拒掉，不留到匹配阶段去凑越界。
-constexpr uint64_t kMaxOrdinal = 0xFFFFull;
-// 进程 ID 的上限就是 Windows 给 PID 留的那 32 位（0 不是合法 PID）。
-constexpr uint64_t kMaxPid = 0xFFFFFFFFull;
+// --timeout-ms / --consent-timeout-ms、--index 与 --monitor 的编号、--pid 的上限：
+// 数字本体在 CliOptions.h 的 cli_limits 里（--capabilities 报告的 limits 段读的是同一份），
+// 这里只是把名字引进来，不在这儿再抄一份数，否则两处迟早打脸。
+using cli_limits::kMaxTimeoutMs;
+using cli_limits::kMaxOrdinal;
+using cli_limits::kMaxPid;
 constexpr const wchar_t* kCaptureValues[] = {
     L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
 
@@ -307,6 +305,12 @@ constexpr OptionSpec kOptions[] = {
     {L"lang", L"l", true, L"behavior", L"<language>", kLangValues, L"opt.lang"},
     {L"help", L"h", false, L"behavior", L"", nullptr, L"opt.help"},
     {L"version", L"", false, L"behavior", L"", nullptr, L"opt.version"},
+    // ---- 只读查询 ----
+    // 这两条既不截图也不弹框，也不写文件，问的是"这台机器现在能让哪几条路线走"。
+    // 与截图意图那一整套选项互斥（cli.query_conflict）：它们对流与输出的约定都不一样，
+    // 一起给出时替用户挑一个执行，不如把这条用法当场说清楚。见 src/EnvReport.h。
+    {L"capabilities", L"", false, L"query", L"", nullptr, L"opt.capabilities"},
+    {L"diagnostics", L"", false, L"query", L"", nullptr, L"opt.diagnostics"},
 };
 
 std::vector<OptionInfo> BuildCatalog() {
@@ -663,6 +667,22 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     bool newestAliasUsed = false;   // --newest / --oldest：旧名字，各留一条废弃 note
     bool oldestAliasUsed = false;
 
+    // ---- 查询命令的互斥收集 ----
+    // --capabilities / --diagnostics 只接受 --lang / -v / -q，其余每一条选项与位置参数说的都是
+    // "那一次截图要怎么做"。这里只按 argv 出现顺序收集，等整条扫完再一次报出来（与选择策略
+    // 互斥那一条同一做法）：一次报错就把用户写的所有冲突项列全，而不是修一个报一个。
+    // 位置参数（输出路径）单独在扫完之后补进这一份清单，因为它没有 spec 可问。
+    std::vector<std::wstring> queryConflicts;
+    const auto AllowedWithQuery = [](const wchar_t* name) {
+        return std::wstring(name) == L"lang" || std::wstring(name) == L"verbose" ||
+               std::wstring(name) == L"quiet" || std::wstring(name) == L"capabilities" ||
+               std::wstring(name) == L"diagnostics";
+    };
+    const auto NoteQueryConflict = [&](const std::wstring& flag) {
+        if (std::find(queryConflicts.begin(), queryConflicts.end(), flag) == queryConflicts.end())
+            queryConflicts.push_back(flag);
+    };
+
     // 单个选项 -> 数据结构。取值型选项的 value 是用户给的原文；开关的 value 是布尔写法的规范化结果：
     // 裸开关 = 空串，--flag=true/1/yes/y/on = "1"，=false/0/no/n/off = "0"（普通开关写 =false 时压根不到这里）。
     // 目前只有负向开关 --no-overwrite 会看这个值。
@@ -857,7 +877,8 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
         if (name == L"quality") {
             uint64_t q = 0;
-            if (!ParseDecimal(value, 1, 100, &q)) {
+            // 区间的数字本体在 cli_limits 里（--capabilities 的 limits 段读同一份）
+            if (!ParseDecimal(value, cli_limits::kJpegQualityMin, cli_limits::kJpegQualityMax, &q)) {
                 Err(codes::kInvalidNumber, Msg(L"cli.quality_value"), L"--quality", value,
                     Msg(L"cli.decimal_hint"));
                 return;
@@ -898,6 +919,12 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (name == L"help") { helpFlag = true; return; }
         if (name == L"version") { versionFlag = true; return; }
 
+        // ---- 只读查询 ----
+        // 落到 Options 上的只是"这一次要出哪份文档"，环境本身那一堆事实由 EnvReport 现问，
+        // 所以这里不预判任何能力（也不该预判：那正是查询的用途）。
+        if (name == L"capabilities") { opt.capabilities = true; return; }
+        if (name == L"diagnostics") { opt.diagnostics = true; return; }
+
         Err(codes::kInvalidValue, Msg(L"cli.unhandled_option"), L"--" + name, value);
     };
 
@@ -918,6 +945,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
 
         const ScannedOption& scanned = it.option;
+        if (!AllowedWithQuery(scanned.spec->name)) {
+            // 只登记"与查询冲突"这一件事，不改变 Apply 的行为：这一次到底算不算查询，
+            // 要等整条 argv 扫完、看见 --capabilities / --diagnostics 出没出没才知道。
+            NoteQueryConflict(L"--" + std::wstring(scanned.spec->name));
+        }
         if (scanned.spec->takesValue) {
             if (scanned.missingValue) {
                 Err(codes::kMissingValue, Msg(L"cli.missing_value"),
@@ -980,18 +1012,47 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     }
     opt.multi = distinctPick.empty() ? MultiMatch::kAsk : multiFlag;
 
+    // ---- 查询命令的互斥判定 ----
+    // 判据是"这一次是不是查询"，不是"有没有某个选项本身写坏了"：写在查询后面的 --title 就算
+    // 值法不对，这里也先报冲突（一次只报最前面那条说不通的地方，免得调用方修完一个又一个）。
+    if (opt.QueryMode()) {
+        if (opt.capabilities && opt.diagnostics) {
+            // 两条查询命令同时给出：两份文档都由同一批判据算出，同时出两份只会让调用方
+            // 不知道读哪一份，所以这里也是一条冲突，而不是把两份拼起来。
+            NoteQueryConflict(L"--capabilities");
+            NoteQueryConflict(L"--diagnostics");
+        }
+        // 位置参数就是输出路径：它不吃 spec，所以扫完之后单独登记。报错里写 --out 而不回显
+        // 用户那条路径本身——查询这一路的规矩是不把路径带进输出。
+        if (!positional.empty()) NoteQueryConflict(L"--out");
+        if (!queryConflicts.empty()) {
+            std::wstring joined;
+            for (size_t k = 0; k < queryConflicts.size(); ++k) {
+                if (k) joined += L", ";
+                joined += queryConflicts[k];
+            }
+            const std::wstring wanted = opt.capabilities ? L"--capabilities" : L"--diagnostics";
+            Err(codes::kQueryConflict, Msg(L"cli.query_conflict"), wanted, joined,
+                Msg(L"cli.query_conflict_hint"));
+        }
+    }
+
     opt.showVersion = versionFlag;
     if (helpFlag) opt.showHelp = true;
     // 只有在没有参数错误、且没显式 --help/--version 时，才因为"零条件"返回帮助。
     // 给了 --monitor 就不算零条件：那是明确的屏幕目标。
-    if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.HasAnyCondition() &&
-        !opt.monitor.given) {
+    // 查询命令同理：它本身就是明确的意图，没有窗口条件正是它的正常用法（一次截图都不做）。
+    if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.QueryMode() &&
+        !opt.HasAnyCondition() && !opt.monitor.given) {
         opt.showHelp = true;
         opt.helpReason = codes::kNoCondition;
     }
 
     // ---- 输出与格式 ----
-    if (!opt.showHelp && !versionFlag) {
+    // 查询这一路不进这一段：它没有输出路径要展开，也不该因为"没给 --out"而被记成
+    // "隐式 stdout + note.output_defaulted_stdout"（那条 note 说的是图片要挤哪条流，
+    // 而查询压根没有图片）。输出路径留空，结果 JSON 因此恒走 stdout。
+    if (!opt.showHelp && !versionFlag && !opt.QueryMode()) {
         // 屏幕目标的两条硬规矩，都在解析期定下来，不留到运行期退化：
         // --monitor all 是"每块屏各一张"，与"按屏过滤窗口"没法同时成立；
         // dwm / printwindow 取的是窗口自己的画面，屏幕上没有这样一个窗口可取。

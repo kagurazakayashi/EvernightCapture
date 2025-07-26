@@ -29,6 +29,7 @@ help.example5	ECAPTURE.EXE --process notepad.exe --out - > snap.png
 help.example6	ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
 help.example7	ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
 help.example8	ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
+help.example9	ECAPTURE.EXE --capabilities  先唯讀問一次這台機器能走哪幾條路徑，再決定 --capture 與目標條件
 help.no_condition	未指定任何匹配條件，因此顯示說明。
 grp.target	截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
 grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
@@ -38,6 +39,7 @@ grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes �
 grp.timeout	執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
 grp.output	輸出
 grp.behavior	其他
+grp.query	能力查詢（唯讀：不截圖、不彈框、不寫檔案）
 
 # ---------------------------------------------------------------------------
 # 選項說明（kOptions 目錄，依選項名取 key）
@@ -72,6 +74,8 @@ opt.quiet	省略 notes；errors 無論如何都會返回；與 --verbose 同時�
 opt.lang	文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
 opt.help	輸出文字說明（本段）
 opt.version	輸出版本與階段
+opt.capabilities	輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
+opt.diagnostics	輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
 
 # ---------------------------------------------------------------------------
 # 解析期診斷（src/CliOptions.cpp）
@@ -106,6 +110,8 @@ cli.missing_value	該選項需要一個取值
 cli.unexpected_positional	多餘的位置參數：只有第一個位置參數當作輸出路徑，其餘條件請用選項給出
 cli.conflicting_options	這些選擇策略互斥，只能選一個
 cli.conflicting_hint	例如只保留 --index 2
+cli.query_conflict	查詢命令與截圖選項不能同時給出：--capabilities / --diagnostics 是唯讀地問環境，本身不截圖
+cli.query_conflict_hint	查詢只接受 --lang、-v/--verbose、-q/--quiet；請去掉其餘選項與輸出路徑，或把截圖另起一次
 cli.unhandled_option	內部錯誤：目錄中存在但解析器未處理的選項
 cli.missing_output	缺少輸出路徑，且預設寫標準輸出時未能出圖
 cli.missing_output_hint	顯式給 --out <路徑>，或用 --dry-run 先看視窗是否命中

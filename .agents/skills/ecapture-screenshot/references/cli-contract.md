@@ -34,6 +34,8 @@
 | `--verbose` | `-v` | 开关 | JSON 追加 `input` 段（规范化后的全部输入，含最终生效的 `lang`、`overwrite`、`yes` 与 `timeoutMs` / `consentTimeoutMs`），并保留 notes。**与 `--quiet` 同时给出时按 `--verbose` 处理**：notes 照常交付，另发一条 `note.flag_overrides_quiet` 说明原因 |
 | `--quiet` | `-q` | 开关 | 省略 `notes`；**`errors` 不受抑制**，`images[]` 也一条不会少（`path` / `scope` / `rect` 那三项是隐私判据，尤其不许被藏起来）。它与 `--verbose` 同时给出时**按 `--verbose` 处理**（notes 留着 + 一条 `note.flag_overrides_quiet`） |
 | `--lang` | `-l` | `auto`（默认，跟随系统显示语言）/`zh-CN`/`zh-TW`/`en`/`ja` | 只影响给人看的 `message`/`hint`/`--help`；`code`、JSON 键名、取值枚举、`0x…` 句柄一律不变。取值宽容：忽略大小写、`_` 与 `-` 等价、`zh_TW`/`zh-Hant`/`cht`/`tw`/`chs`/`cn`/`jp` 都认。重复给出以**最后一个有效的**为准，`auto`（或省略取值）是明确回到系统显示语言而不是保留上一条。写错报 `cli.unknown_language`，并按已经定下的那种语言写这条报错。语言在解析一开始就定下来，判据与其余选项共用同一套 token 消费规则：被 `--title` 吃掉的 `--lang`、`--` 之后的 `--lang` 都不算语言开关 |
+| `--capabilities` | | 开关 | **只读能力查询**，输出 JSON（见「只读的能力查询」一节）。问的是这台机器现在能走哪几条路线：版本与会话条件、每条通道的 `available` / `unavailable` / `unverified`、每种格式、`--yes` 实际管到哪几条内部路径、以及各种取值上限。一个像素都不取、不弹确认框、不写文件、不联网、不读环境变量，也不需要窗口条件。只接受 `--lang` / `-v` / `-q`，与截图那一套选项或输出路径同时给出 = `cli.query_conflict` + 退出码 1 |
+| `--diagnostics` | | 开关 | **只读诊断/版本查询**，输出 JSON：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态。字段与 `--capabilities` 出自同一个判据函数，不是第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；`-v` 追加每一问的原始答案。互斥规则同上 |
 | `--help` | `-h` | | 文本帮助，退出码 3 |
 | `--version` | | | 版本与阶段，纯文本 |
 
@@ -87,6 +89,65 @@ Windows 7 / 8 上这个 exe **根本装载不了**：它静态导入 `api-ms-win
 `--dry-run` 不取帧，所以不会因为环境判据报错。设备层面的能力（驱动不喂帧、系统拒绝 WGC、会话里没有桌面、
 N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己的 `capture.*` 码与真实 HRESULT
 （例如 `capture.encoder_unavailable`）。
+
+## 只读的能力查询（`--capabilities` / `--diagnostics`）
+
+上面那道检查在每次截图之前都会跑，但只有下单之后才看得见。这两条命令是同一判据的**只读出口**：
+不取一个像素、不弹确认框、不写文件、不联网、不读环境变量，也不需要窗口条件。
+
+```powershell
+ECAPTURE.EXE --capabilities        # 该走哪条路线（JSON）
+ECAPTURE.EXE --diagnostics         # 出问题要提交的东西：构建标识 + 平台 + 后端状态（JSON）
+ECAPTURE.EXE --capabilities -v     # 另加 probes 段：每一问的原始答案与出处 API
+```
+
+三条读法（彼此不能混）：
+
+| 字段 | 意思 | 不是什么意思 |
+| --- | --- | --- |
+| `compiled` | 这个二进制里有没有实现这条路线 / 编出这种格式 | 不是"本机让不让用" |
+| `status` | `available` / `unavailable` / `unverified` —— 本机**现在**的判据（版本下限 + 屏幕拓扑）让不让走 | 不是"某个窗口一定截得到"；驱动、受保护内容、HDR 都不在这层断言里 |
+| `verifiedOnThisMachine` / `os.matchesTestedEnvironment` | 本项目有没有在这一模一样的系统上实测过（只有开发机那台 19045 x64） | 不是"能用"也不是"不能用"，只是"我们没在这上面跑过判据" |
+
+**未知就写 `unknown`。** 每一条事实都是 `yes` / `no` / `unknown` 三值之一，绝不折成两边之一，也不整个键消失；
+数字类问不出来时配一个 `known: false`（例如 `os.known`）。版本号问不出来时所有通道的 `status` 都是
+`unverified`，而 `autoChainWindow` 仍原样列出全部四条 —— 没筛就是没筛，不等于都支持。
+
+| 段 | 内容 |
+| --- | --- |
+| `contract` / `contractVersion` | 只有这两份文档带契约版本（现为 1）。**截图结果那份照旧精简**，不因此多出顶层元信息 |
+| `program` | `name`、`binary`（只有 `ECAPTURE.EXE` 这个名字，不含目录）、`version`、`arch`、`buildId` |
+| `os` | 本机版本三要件 + `declaredMinBuild`（对外声明下限）+ `encoderMinBuild` + `testedMinBuild`/`testedArch`（实测过的那一台）+ `matchesTestedEnvironment` |
+| `session` | `attachedToConsoleSession`、`remoteSession`、`displayTopology`、`monitors`、`elevated`、`consentDialogExpected`（+ `consentDialogProbed: false`：这一条是推出来的，查询没有真去弹框） |
+| `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、`unregisteredPathScope: "desktop"`，以及整份内部路径登记表：每条带 `scope` 与 `consentWithoutYes` / `consentWithYes`（后者为 `true` 就是"`--yes` 也跳不过"） |
+| `backends[]` | 每条路线的 `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine` 与 `paths[]`（窗口目标与屏幕目标各走哪条内部路径；`dwm` 的屏幕退路也列出来，免得 `--yes` 被读大） |
+| `formats[]` | 每种格式的 `compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` 恒为 `unknown`：这一层不去实测编码器。`webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里 |
+| `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与真实截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 判两处一致 |
+| `limits` | `maxFrameSide` 16384、`maxFrameBytes` 1 GiB、`maxTimeoutMs` 86400000、`isolatedCallMs` 5000、`maxWgcRecreates` 4、`maxOrdinal` 65535、`maxPid` 4294967295、`stdoutTargetsMax` 1、`jpegQualityMin`/`Max` 1/100 |
+| `privacy` | 自述：`capturesScreen` / `showsDialog` / `uploads` / `enumeratesUserFiles` / `readsEnvironmentVariables` / `includesUsernames` / `includesPaths` 全为 `false` |
+| `caveats` | 稳定 ASCII token，列"这份报告没断言什么"：`no_capture_performed`、`no_consent_dialog_shown`、`available_is_not_a_guarantee`、`device_capability_not_predicted`、`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，按本机情况追加 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+
+`reason` 的取值同样稳定：`none`、`not_compiled`、`os_below_min_build`、`os_version_unavailable`、
+`no_display_topology`、`display_topology_unavailable`、`encoder_not_registered`。
+
+**两份文档不是两套信息**：都由 `src/EnvReport.cpp` 的 `BuildEnvReport` 算出，只差段落取舍（`--diagnostics`
+固定带 `build` 段，`--capabilities` 只在 `-v` 时展开）。版本、`status`、后端清单、`limits` 都是同一份。
+
+**构建标识可核对**：`buildId` = `版数-架构-十六进制链接时间戳`（例：`0.4.0-x64-6ABC6DF2`），那个时间戳与
+`dumpbin /headers` 读发布产物读到的是同一个字段。读的是本进程已映射进内存的 PE 头，不开文件也不枚举目录，
+所以安装路径里的用户名不会跟着漏出来。`build.subsystemVersion` 只是事实，配 `subsystem_version_is_linker_default`
+这一条 caveat：那是 MSVC 链接器默认值，不是支持声明。
+
+**互斥与流**：这两条只接受 `--lang` / `-v` / `-q`。与窗口条件、`--monitor`、`--capture`、`--out` 或位置参数、
+`--yes`、`--dry-run`、`--timeout-ms` / `--consent-timeout-ms` 中任何一条同时给出，或两条查询同时给出，
+都是 `cli.query_conflict` + 退出码 1（`value` 一次列全所有冲突项；位置参数报成 `--out`，不回显那条路径本身），
+一张都不截、一个文件都不写。它们也不参加"没给条件就出帮助"那一条。查询没有图片要交付，所以结果恒在 **stdout**，
+stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
+
+**退出码只有两个**：`0` = 文档出完了（哪怕里面写着这台机器哪条都不行——查询成功与截图能成是两件事，
+按 `status` 分支而不是按退出码猜环境）；`1` = 用法不合契约。不会出现 `4`/`5`/`6`/`7`/`8`。
+
+整份文档是 ASCII（机器读的取值不翻译），所以同一台机器上换 `--lang` 输出逐字节相同 —— 可以放心做前后两次比对。
 
 ## 截图授权（两级：谁必须问人）
 
@@ -297,6 +358,9 @@ N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己�
 | 9 | 内部异常 |
 
 退出码与 body 是两套独立信号：先看 `errors`，再看 `captured`，最后才用退出码做粗分支。
+只读查询那两条只用 `0` 与 `1`：`0` = 文档出完了（里面写"这台机器哪条都不行"也算成功，环境要看 `status` 而不是
+退出码），`1` = `cli.query_conflict`。它们不产生 `4`/`5`/`6`/`7`/`8`，因为一次窗口都没枚举、一个框都没弹、
+一个文件都没写。
 
 - `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout` 与"结果送不到约定流"给出 8；截图/编码阶段的其它失败（含
   `capture.failed`、`capture.timeout`、`capture.encoder_unavailable`、`capture.consent_stale`、`capture.worker_failed`，
@@ -338,6 +402,7 @@ N 版缺媒体组件）**不由版本号预测**，那一步会交回它自己�
 `cli.invalid_regex` `cli.invalid_value` `cli.invalid_format` `cli.unrecognized_extension`
 `cli.unexpected_positional` `cli.duplicate_output` `cli.conflicting_options`
 `cli.unknown_capture_method` `cli.unknown_language` `cli.monitor_conflict` `cli.internal_error`
+`cli.query_conflict`（只读查询 `--capabilities` / `--diagnostics` 与截图选项或输出路径同时给出；`value` 一次列全冲突项，一张都不截也没一个文件被写）
 `cli.stdout_multiple_targets`（stdout 一次只交付一张图，实际目标多于一个；整批没截也没写，也不弹框）
 `cli.no_condition`（→ 文本帮助 + 2）
 `cli.invalid_regex` 还有匹配期这一处：模式撞上正则引擎的回溯复杂度上限（`stage=match` + 1，消息说的就是回溯复杂度）——
@@ -447,6 +512,11 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 ## 常用配方
 
 ```powershell
+# 0) 先只读问一次这台机器能走哪几条：不截图、不弹框、不写文件，也不需要窗口条件。
+#    用它选 --capture、判断"这次失败该换通道还是这台机器不行"、以及确认这里弹框有没有人会答。
+ECAPTURE.EXE --capabilities
+ECAPTURE.EXE --diagnostics        # 要提交问题报告时用这份（构建标识 + 平台 + 后端状态）
+
 # 1) 先看命中谁（不写文件；--dry-run 在任何确认框之前就返回，不打扰人。给不给 --out 都行）
 ECAPTURE.EXE --process notepad.exe --dry-run --out D:\shots\_probe.png
 

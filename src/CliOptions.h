@@ -115,9 +115,17 @@ struct Options {
     std::wstring helpReason;          // 非空 => 因为缺少条件而显示帮助
     bool showVersion = false;
 
+    // 只读的机器可读查询（判据与字段本体在 src/EnvReport.h）。这两条不截图、不弹框、不写文件，
+    // 所以与"截图意图"那一整套选项互斥：一起给出是 cli.query_conflict，而不是挑一个来执行。
+    // 查询命令也不参加"零条件 => 帮助"那一条 —— 它们本身就是明确的意图。
+    bool capabilities = false;        // --capabilities
+    bool diagnostics = false;         // --diagnostics
+
     bool HasAnyCondition() const { return !match.IsEmpty(); }
     // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面
     bool ScreenMode() const { return monitor.given && match.IsEmpty(); }
+    // 这一次是查询而不是截图（两条查询命令里任意一条给出即为真）
+    bool QueryMode() const { return capabilities || diagnostics; }
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +155,12 @@ inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_me
 inline constexpr const wchar_t* kUnknownLanguage = L"cli.unknown_language";
 inline constexpr const wchar_t* kMonitorConflict = L"cli.monitor_conflict";
 inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
+// 只读的查询命令（--capabilities / --diagnostics）与"截图意图"的那一整套选项互斥：
+// 两条命令同时给出，或查询与任何窗口条件 / 输出路径 / 取图方式 / 授权 / 期限选项一起给出，
+// 都是这一条（退出码 1，value 里列出用户实际写的那些名字）。
+// 理由是这两个意图对流的约定不同：截图可能把图片字节压进 stdout 而让 JSON 整份改走 stderr，
+// 查询则一定把这一份文档写在 stdout。与其替用户猜一个执行，不如把这条用法说清楚。
+inline constexpr const wchar_t* kQueryConflict = L"cli.query_conflict";
 // 多个目标却要写到标准输出：标准输出一次只能交付一张图，属参数用法错误（退出码 1）。
 // 判据是"实际命中的目标数"，所以 --all / --monitor all 只命中一个时仍然放行。
 inline constexpr const wchar_t* kStdoutMultipleTargets = L"cli.stdout_multiple_targets";
@@ -249,6 +263,22 @@ inline constexpr const wchar_t* kFileExists = L"io.file_exists";
 // 多个目标算出同一个输出名：整批一张都不截，也不静默改名
 inline constexpr const wchar_t* kOutputCollision = L"io.output_collision";
 }  // namespace codes
+
+// 命令行取值的上限。数字只在这里写一次：解析判据与 --capabilities 报告的 limits 段读的都是
+// 同一份，免得"帮助里说 24 小时"而查询里报另一个数。
+namespace cli_limits {
+// --timeout-ms / --consent-timeout-ms 的上限：24 小时。再大的数字基本上是把期限当成装饰，
+// 而那正是这条参数要解决的问题，所以宁可不接受。
+inline constexpr uint64_t kMaxTimeoutMs = 86400000ull;
+// --index 与 --monitor 的编号上限。一个条件命中六万多个窗口、或者机器上有六万多块屏，
+// 都是不可能的；超过这个数的编号一定是敲错了，照实在解析期拒掉，不留到匹配阶段去凑越界。
+inline constexpr uint64_t kMaxOrdinal = 0xFFFFull;
+// 进程 ID 的上限就是 Windows 给 PID 留的那 32 位（0 不是合法 PID）。
+inline constexpr uint64_t kMaxPid = 0xFFFFFFFFull;
+// --quality 只对 jpeg 生效，取值区间写在帮助里。
+inline constexpr int kJpegQualityMin = 1;
+inline constexpr int kJpegQualityMax = 100;
+}  // namespace cli_limits
 
 // 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。
 namespace stages {

@@ -41,6 +41,11 @@ previously implemented `magnification` channel was removed (reasons in AGENTS.md
 - **Four message languages**: `zh-CN` / `zh-TW` / `en` / `ja`, defaulting to the system display language, all
   embedded as resources inside the exe
 - **Machine-readable JSON**: capture results and errors only — no tool name, version, schema or argument echo
+- **Capabilities you can ask about read-only**: `--capabilities` / `--diagnostics` report which routes this machine
+  can take, how far `--yes` really reaches, and a checkable build id — without taking a pixel, showing a dialog,
+  writing a file or talking to the network. "compiled into this build", "usable here right now" and "actually tested
+  by this project" stay three separate fields, an unanswered question is reported as `unknown`, and capability is
+  never probed by capturing or encoding something
 
 ## Quick start
 
@@ -135,6 +140,10 @@ Output
   --quality <1-100>               JPEG quality, decimal 1-100, default 100
   --no-overwrite                  Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
+Capability queries (read-only: no capture, no dialog, no files)
+  --capabilities                  Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
+  --diagnostics                   Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
+
 Miscellaneous
   --dry-run, -d                   Parse and list candidate windows only - no capture, no file written
   --json, -j                      Deprecated compatibility switch, no effect: success and errors are already JSON
@@ -161,6 +170,7 @@ Examples:
   ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
   ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
+  ECAPTURE.EXE --capabilities  ask what this machine can do first, then choose --capture and the target
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -220,6 +230,12 @@ ECAPTURE.EXE --process notepad.exe --title-contains Report D:\shots\r.png
 
 `--help`, `--version` and the "no conditions given" case are plain text. Everything else is JSON carrying only the
 capture result and the errors.
+
+The two read-only queries are **separate contracts** (`--capabilities` / `--diagnostics`, see
+[System support](#system-support)): they carry this machine's
+environment rather than one capture outcome, so only they have `contract` and `contractVersion`. That does not
+run the other way - the capture JSON keeps exactly `captured` / `images` (plus `errors` / `notes` / `input` as
+described below) and never grows a `program.version` because the query has one.
 
 A window image (real shape of the output; the numbers come from one actual capture):
 
@@ -395,6 +411,12 @@ batch deliberately instead of being retried one target at a time. An access deni
 falling back, and neither is a refusal: once somebody answers "No" (or no dialog can be shown), the rest of that
 request is not attempted — no other backend, no second ask, while every image already completed stays in `images`.
 
+The two read-only queries use only `0` and `1`: `0` = the document was delivered, even when it says this machine is
+too old and no route is available (**a successful query and a possible capture are two different things** - branch
+on `status`, do not infer the environment from an exit code); `1` = that invocation does not fit the contract
+(`cli.query_conflict`, see [System support](#system-support)).
+They never produce `4`/`5`/`6`/`7`/`8`: no window was enumerated, no dialog was shown, no file was written.
+
 ## System support
 
 Three different numbers must not be blended into one slogan:
@@ -442,6 +464,67 @@ Device-level capability is deliberately not predicted: a driver that will not fe
 machine that refuses Windows.Graphics.Capture, a session with no interactive desktop, an N edition missing
 media components — none of those show up in a version number, and each reports its own `capture.*` code
 with the real HRESULT rather than being guessed at in advance.
+
+### Read-only capability queries (`--capabilities` / `--diagnostics`)
+
+That check does run before any capture, but you only see it after placing an order. These two commands are
+the read-only outlet for the same judgement: not a pixel taken, not a consent dialog shown, no file written,
+no network, no environment variables read, and no window condition required.
+
+```powershell
+ECAPTURE.EXE --capabilities              # which routes this machine can take right now (JSON)
+ECAPTURE.EXE --diagnostics               # build version + a checkable build id + backend status (JSON)
+ECAPTURE.EXE --capabilities -v           # plus a probes section: each raw answer and which API gave it
+```
+
+Three rules:
+
+* **Three separate facts.** `compiled` says whether this binary implements the route at all. `status` says
+  whether this machine's own evidence (version floors plus screen topology) lets it run now.
+  `verifiedOnThisMachine` says whether **this project** has actually exercised the route on a machine just
+  like this one (only the development machine - see the table above). None of the three stands in for another.
+* **No answer is reported as no answer.** Every fact is one of `yes` / `no` / `unknown`; `unknown` is never
+  folded into either "works" or "does not work", and the key is not silently dropped. When the build number
+  could not be read, every `status` becomes `unverified` while `autoChainWindow` still lists all four
+  channels - not filtered means not filtered, not "all supported".
+* **`available` is not a guarantee.** It carries no promise that some specific window will capture: drivers,
+  protected content and HDR mode are outside this layer. The `caveats` array at the end of the document
+  exists precisely to pin that down.
+
+| Section | Contents |
+| --- | --- |
+| `contract` / `contractVersion` | only these two documents carry a contract version (currently 1). The capture JSON stays as lean as 《Output format》 describes and gains no top-level metadata from this |
+| `program` | name, the file name `ECAPTURE.EXE` itself (no directory), version, architecture, `buildId` |
+| `os` | this machine's build (that group reads `unknown` when `known` is false), `declaredMinBuild`, `encoderMinBuild`, `testedMinBuild` + `testedArch` (the environment this project actually tested) and `matchesTestedEnvironment` |
+| `session` | attached to the console session, remote desktop, screen topology present and how many monitors, whether this process is elevated, `consentDialogExpected` (inferred; `consentDialogProbed: false` says no dialog was ever shown) |
+| `authorization` | `yesSkips: "window-content"`, `desktopPixelsAlwaysAsk: true`, unregistered paths treated as `desktop`, plus the whole internal-path registry with `scope` and `consentWithoutYes` / `consentWithYes` per row - the machine-readable form of the table in 《Screenshot authorization and \`--yes\`》 |
+| `backends` | per route: `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`, plus which internal path it takes for window and for screen targets (`dwm`'s screen fallback included, so `--yes` cannot be read as covering more than it does) |
+| `formats` | per format: `compiled` / `status` / `reason` / `minBuild` / `registered`. `registered` is always `unknown` because this layer does not exercise encoders (doing so would be probing capability by producing an image, the same reason we never probe by capturing). `webp` / `ico`, once advertised and then removed for lack of an encoder, stay here as `compiled: false` + `reason: "not_compiled"` so a caller gets a definite answer |
+| `autoChainWindow` / `autoChainScreen` | the `auto` chain this machine can take now. Computed by the **same** `GateChannels` call that fills `input.captureChain` for a real run, and `tests\capabilities.ps1` compares the two |
+| `limits` | maximum frame side and bytes, `--timeout-ms` ceiling, built-in isolated-call ceiling, WGC frame-pool rebuild count, ordinal and PID ceilings, `stdoutTargetsMax: 1`, JPEG quality range |
+| `privacy` | what this query declares it did not do: no screen captured, no dialog shown, nothing uploaded, no user files enumerated, no environment variables read, no usernames, no paths |
+| `caveats` | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+
+Both documents come out of **one** judgement function (`BuildEnvReport` in `src/EnvReport.cpp`) and differ only
+in which sections they print: `--diagnostics` always includes the `build` section (PE link timestamp, machine
+type, image size, subsystem) while `--capabilities` expands it only under `--verbose`. Version numbers,
+statuses, the backend list and `limits` are the same object, so there is no second copy of the environment
+that could contradict the first.
+
+**The build identity is checkable**: `buildId` is `version-architecture-hex link timestamp`, and that timestamp
+is the same field `dumpbin /headers` reads in the published artifact. It is read from this process's own
+already-mapped PE headers - no file is opened and no directory is enumerated, so an installation path
+containing a user name cannot leak into the report either. The PE `subsystem version` is listed as a bare fact
+with the `subsystem_version_is_linker_default` caveat attached: it is MSVC's linker default, not a support claim.
+
+`--capabilities` / `--diagnostics` accept only `--lang`, `-v` and `-q`. Combining them with any capture option
+(window conditions, `--monitor`, `--capture`, `--out` or a positional path, `--yes`, `--dry-run`, either
+deadline) is `cli.query_conflict` + exit code 1, which lists every offending name at once and captures nothing
+and writes nothing. Neither command falls into "no condition means help": a query is itself an explicit intent.
+`-q` on a query drops only the `caveats` section, `-v` adds `probes`, and neither touches the answers.
+
+The whole document is ASCII (machine-readable values are never translated), so on one machine every `--lang`
+produces byte-identical output.
 
 ## Capture channels
 
@@ -671,11 +754,20 @@ The tool is designed for programmatic calls; following these conventions is the 
 repository also ships a skill that teaches an agent to drive it: `.agents/skills/ecapture-screenshot/` (contains
 `SKILL.md`, `references/cli-contract.md`, and a copy of the exe).
 
-1. **Probe with `--dry-run` first**, then disambiguate, then capture for real. `--dry-run` takes no frame, writes no
-   file and shows no consent dialog; candidates are in `notes[0].value`, shaped like
-   `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`. `--dry-run` does not need an output path
-   either (with none it just means "nothing to deliver", so the JSON goes to stderr with
-   `note.output_defaulted_stdout`); **`--dry-run` alone with no window condition = text help + exit code 2**.
+1. **Ask the capability question first, then probe with `--dry-run`, then capture for real.**
+   `--capabilities` is read-only - no pixel taken, no consent dialog, no file written - so it never disturbs anybody
+   and belongs at the front of an automation flow. It hands back this machine's version, session and screen topology,
+   every route as `available` / `unavailable` / `unverified`, every format, exactly which internal paths `--yes`
+   covers, and the value ceilings. That answers "which `--capture` should I ask for", "is this failure about the
+   channel or about the machine" and "would a dialog here ever be answered" *before* you take an image. For a bug
+   report run `--diagnostics` (same judgements, plus a checkable build id; `-v` expands each raw answer). Neither
+   document changes with `--lang` (all ASCII), so comparisons stay stable. `available` is **not** "this window will
+   capture": drivers, protected content and HDR are outside that layer, and the `caveats` array says so.
+   Then `--dry-run` as usual: it takes no frame, writes no file and shows no dialog; candidates are in
+   `notes[0].value`, shaped like `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`.
+   `--dry-run` does not need an output path either (with none it just means "nothing to deliver", so the JSON goes
+   to stderr with `note.output_defaulted_stdout`); **`--dry-run` alone with no window condition = text help +
+   exit code 2**.
 2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`) and never on whether you passed
    `--out` — the two ways of asking for stdout report the same codes. The codes you actually hit:
    `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose
@@ -728,7 +820,8 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 495 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms included) + stream separation + "no `--out`" against `--out -` equivalence + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 518 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms, and the query-versus-capture conflict group included) + stream separation + "no `--out`" against `--out -` equivalence + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\capabilities.ps1` | Capability and diagnostics queries (`--capabilities` / `--diagnostics`): offline runs `build\ecapture-capabilities-tests.exe` (fake probes for "no screen at all", "just under a channel's floor", "the build number could not be read", "one encoder is missing", "the `--yes` scope matches the registry", "both queries come from one set of judgements"); the real-machine layer proves the query never blocks on a dialog (the timeout is itself the assertion), writes no file, agrees with WMI and with `--dry-run -v` on version / architecture / chain, is all-ASCII so it cannot change with `--lang`, and carries no user name or path. A session with no interactive desktop, older builds, a genuinely missing encoder, ARM64 / Server / Remote Desktop cannot be arranged here and are recorded as unverified |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
 | `.\tests\build-path.ps1` | Build-path checks: offline layer (the temporary batch body must stay ASCII, VS environment import failures reported before cmake runs) + on-device layer (Release / Debug / RelWithDebInfo and `-Clean` built from a directory holding CJK text, spaces, parentheses and `%`, plus a CJK `%TEMP%`; no capture, `-OfflineOnly` skips the on-device layer) |

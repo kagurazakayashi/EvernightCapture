@@ -25,6 +25,38 @@ programmatically.
   & "$PSScriptRoot\ECAPTURE.EXE" --process notepad.exe --out D:\shots\epad.png
   ```
 
+## Step 0: ask what this machine can do (`--capabilities`)
+
+Before choosing a channel, a target kind, or deciding whether a dialog will ever be answered here, run the
+read-only query. It takes **no pixel, shows no consent dialog, writes no file**, needs no window condition and
+never probes by capturing something:
+
+```powershell
+& "$PSScriptRoot\ECAPTURE.EXE" --capabilities        # routing decisions: backends / formats / --yes scope / limits
+& "$PSScriptRoot\ECAPTURE.EXE" --diagnostics         # for a bug report: build id + platform + backend status
+& "$PSScriptRoot\ECAPTURE.EXE" --capabilities -v     # plus `probes`: each raw answer and which API produced it
+```
+
+How to read it - three separate facts per row, never to be blended:
+
+- `compiled` - this binary implements the route at all.
+- `status` - `available` / `unavailable` / `unverified` for **this machine right now** (version floors plus
+  screen topology). `unverified` means one of those questions could not be answered; it is not "no".
+- `verifiedOnThisMachine` - whether this project has actually exercised that route on a machine like this one
+  (only the development build 19045 x64, so anything else honestly says `no`).
+
+`available` is **not** a promise that some window will capture: drivers, protected content and HDR are outside
+this layer, and the `caveats` array at the end lists exactly what the report does not assert
+(`available_is_not_a_guarantee`, `no_capture_performed`, `encoder_state_not_probed`, …).
+`authorization.paths` is the machine-readable version of the consent table: `consentWithYes: true` means
+`--yes` cannot skip that dialog. `autoChainWindow` / `autoChainScreen` are produced by the same judgement as a
+real run's `-v` `input.captureChain`, so the chain you read here is the chain you would get there.
+
+Both documents are pure ASCII, so they do not change with `--lang` and you may diff them between runs. They are
+the only JSON that carries `contract` / `contractVersion`; the capture result stays as lean as the section below
+describes. `--capabilities` and `--diagnostics` accept only `--lang`, `-v` and `-q` - combining them with any
+capture option or an output path is `cli.query_conflict` + exit 1, and nothing is captured.
+
 ## Three steps: dry-run, disambiguate, capture
 
 1. `--dry-run` with the window conditions: it stops right after target selection - no frame, no file.
@@ -261,6 +293,11 @@ caller must do:
 
 ## Choosing a capture channel (`--capture`)
 
+**Ask first, do not probe by capturing:** `--capabilities` already lists each channel's `status`, its
+`minBuild`, whether it is even compiled in, and the chain `auto` would walk on this machine - without taking a
+frame, without a dialog and without touching a target window. Use it to choose below, and use
+`--diagnostics` when you need to report what you found.
+
 Each route has a Windows build it cannot work below (that is its **API history floor**, not what this
 program claims - see `references/cli-contract.md`, "运行环境与能力检查", and the README's "System support"
 section): any image at all needs 10.0.10240 because every format goes through the one WinRT encoder;
@@ -311,9 +348,11 @@ that ever happens it surfaces as `capture.frame_invalid` / `capture.frame_timeou
 Windows version installed here, and they are raised before any window is enumerated, before any consent dialog and
 before a single pixel is read - so do not retry the same target, do not relax the conditions, and never read them as
 DRM or as a refusal. Whether another channel can help is decided by which of the two it is (see the rows below).
-Ask the capability question without capturing anything: `--verbose` echoes `input.osBuild` (the Windows build this
-machine really reports) and `input.captureChain` (the channels this run can actually use for the requested target
-kind, in order). Floors, the declared support range and what has actually been measured are in
+Ask the capability question without capturing anything: the dedicated read-only query `--capabilities`
+(see "Step 0" above) answers it in one call, and `--verbose` on a real run echoes
+`input.osBuild` (the Windows build this machine really reports) and `input.captureChain` (the channels this run
+can actually use for the requested target kind, in order) - the same judgement, from the same function.
+Floors, the declared support range and what has actually been measured are in
 `references/cli-contract.md` ("系统支持") and in the README's "System support" section.
 
 | code | exit | handling |
@@ -331,6 +370,7 @@ kind, in order). Floors, the declared support range and what has actually been m
 | `cli.unknown_capture_method` / `cli.unknown_language` | 1 | Bad value, caught while parsing - it never degrades to the default |
 | `cli.invalid_regex` | 1 | `--title-regex` too complex for the engine (`stage=match`, message says backtracking complexity) - raising `--timeout-ms` does not help; rewrite the pattern or use `--title-contains` |
 | `cli.monitor_conflict` | 1 | `--monitor all` plus window match conditions; use a single monitor number to filter instead |
+| `cli.query_conflict` | 1 | A read-only query (`--capabilities` / `--diagnostics`) was combined with capture intent - window conditions, `--monitor`, `--capture`, `--out` or a positional path, `--yes`, `--dry-run`, either deadline, or the two queries together. `value` lists every offending name at once. Nothing was captured and no file written; run the query alone, then the capture separately. Queries accept only `--lang`, `-v`, `-q` |
 | `capture.failed` | 7 | Target protected, gone, or unsupported by the OS; retry once with `--capture auto`, and if it fails again nothing is reachable |
 | `capture.worker_failed` | 7 | This tool's own hidden helper could not run (spawn blocked, pipe broke, message did not match the protocol, task invalid) - `cap.worker.*` wording, the helper's last exit code in `hint`; its exit codes are not part of the contract. Check the execution environment (policy, antivirus, permissions), not the target window |
 | `capture.timeout` | 7 | `--timeout-ms` budget exhausted during capture/encode (`stage=capture`); with `backend=printwindow` / `dwm` the target's UI thread is likely stuck - same-backend retry may time out again, prefer `--capture wgc` or raise the budget |
@@ -352,7 +392,9 @@ kind, in order). Floors, the declared support range and what has actually been m
 
 - `references/cli-contract.md` - every option and value (including `--timeout-ms` /
   `--consent-timeout-ms` and the hidden helper process behind them), the full JSON field tables (window image /
-  screen image), the complete diagnostic-code list, the output-name placeholders
+  screen image), the read-only query documents (`--capabilities` / `--diagnostics`: field list, the
+  `available` / `unavailable` / `unverified` rule, `unknown` handling, the `caveats` tokens and the privacy
+  statement), the complete diagnostic-code list, the output-name placeholders
   (`%i` `%h` `%p` `%n` `%d` `%t`; `%n` is the window title for a window target and the device name such
   as `DISPLAY1` for a screen target), plus the shell-specific traps measured under PowerShell and Git
   Bash.
