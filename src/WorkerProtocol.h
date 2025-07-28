@@ -33,8 +33,11 @@ namespace worker {
 
 inline constexpr uint32_t kMagic = 0x31434557u;   // "WEC1" 的字节序写法，只做一眼能认的标记
 // 2：WindowInfo 多了枚举那一刻的进程创建时间（身份复核的基线，见 WindowIdentity.h）。
+// 3：WindowInfo 多了三条跨进程问句各自的下场（映像路径 / 进程创建时间 / 窗口矩形）。
+//    结构化窗口查询（--list / --inspect）要靠它们把"这一项问不出来"与"这一项是空的"分开写，
+//    而这些问答发生在辅助进程里，父进程事后补问已经不是同一个时刻的答案了。
 // 这份格式不是对外契约，父进程与辅助进程是同一个 exe，所以演进只要两边一起改 + 这里加一。
-inline constexpr uint16_t kProtocolVersion = 2;
+inline constexpr uint16_t kProtocolVersion = 3;
 // 报头固定 24 字节：magic(4) + version(2) + kind(2) + payloadLen(4) + 保留(4) + nonce(8)。
 // 保留那段必须写 0、读时校验是 0 —— 将来要加字段就先占在这里，两边对不上就是整条作废，
 // 不允许"多出来的字节当没看见"。

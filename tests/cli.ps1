@@ -785,6 +785,164 @@ $cases += @{ Name = '查询不需要窗口条件，也不掉进"零条件 = 帮�
    A = @('--capabilities'); Exit = 0; Query = $true
    Check = { param($o) $o.contract -eq 'capabilities' } }
 
+# ---------------------------------------------------------------------------
+# 结构化的窗口发现与检查（--list / --inspect）：同一类只读出口，但走的是另一份契约。
+# 带 WindowQuery 键的用例由跑批那一段按"窗口查询文档"判（不许出现 captured / images），
+# 而报**参数冲突**那几条仍然按截图失败那一份形状判 —— 那是有意的：调用方按 code 分支的
+# 代码不必为查询另写一份（与上面 --capabilities 那批的 Query = $false 同一道理）。
+# 这里一律不截图：这两条命令一个像素都不取，也不弹框、不写文件（真机那层在 tests\windows.ps1）。
+# ---------------------------------------------------------------------------
+$cases += @{ Name = '--list 无匹配 = 空列表 + 退出码 0（不是截图那一次的 match.no_window + 4）'
+   A = @('--list', '--class', 'NoSuchWindowXyz'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.contract -eq 'windowquery' -and $o.contractVersion -eq 1 -and
+                        $o.query -eq 'list' -and @($o.windows).Count -eq 0 -and
+                        $o.pagination.matched -eq 0 -and $o.pagination.returned -eq 0 -and
+                        $o.pagination.truncated -eq $false -and
+                        -not (@(Codes $o.errors).Count) } }
+$cases += @{ Name = '--list 只读自述：没取像素、没弹框、没写文件，且 --yes 不影响结果'
+   A = @('--list', '--class', 'NoSuchWindowXyz'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.authorization.readOnly -eq $true -and
+                        $o.authorization.pixelsRead -eq 0 -and
+                        $o.authorization.consentDialogShown -eq $false -and
+                        $o.authorization.filesWritten -eq $false -and
+                        $o.authorization.yesAffectsResult -eq $false -and
+                        $o.authorization.identityFieldsAreNotConsent -eq $true -and
+                        (@($o.caveats) -contains 'snapshot_expires') -and
+                        (@($o.caveats) -contains 'identity_fields_are_not_a_token') -and
+                        (@($o.caveats) -contains 'no_capture_performed') -and
+                        (@($o.caveats) -contains 'no_window_touched') -and
+                        (@($o.caveats) -contains 'invisible_and_zero_sized_excluded') } }
+$cases += @{ Name = '--list 的默认可见性策略写在 policy 段里（不靠调用方猜）'
+   A = @('--list', '--class', 'NoSuchWindowXyz'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.policy.invisibleExcluded -eq $true -and
+                        $o.policy.zeroSizedExcluded -eq $true -and
+                        $o.policy.minimizedIncluded -eq $false -and
+                        $o.policy.systemWindowAssertion -eq $false -and
+                        $o.policy.order -eq 'zOrder' -and
+                        $o.pagination.limit -eq 50 -and $o.pagination.limitDefaulted -eq $true -and
+                        $o.pagination.defaultLimit -eq 50 -and $o.pagination.maxLimit -eq 8192 } }
+$cases += @{ Name = '--list 命中任务栏那一条：字段齐、默认不写完整路径、身份字段写明要复核'
+   A = @('--list', '--class', 'Shell_TrayWnd'); Exit = 0; WindowQuery = $true
+   Check = { param($o)
+       $w = @($o.windows)[0]
+       if (-not $w) { return $false }
+       # 完整路径这个键在默认那一份里整个不出现（不是写一个空值）：键名都不该出现在文档文本里。
+       $raw = (Invoke-Ec @('--list', '--class', 'Shell_TrayWnd')).Stdout
+       ($w.hwnd -like '0x*') -and ($w.'class' -eq 'Shell_TrayWnd') -and ($w.pid -gt 0) -and
+       $w.rect.width -gt 0 -and $w.readability.process.state -eq 'readable' -and
+       $w.identity.verificationRequired -eq $true -and
+       $w.identity.isAuthorizationToken -eq $false -and
+       $w.identity.'class' -eq $w.'class' -and $w.identity.pid -eq $w.pid -and
+       $w.identity.hwnd -eq $w.hwnd -and
+       ($raw -notmatch 'exePath') } }
+$cases += @{ Name = '--inspect 无匹配报 match.no_window + 4，并补上 stage=match'
+   A = @('--inspect', '--class', 'NoSuchWindowXyz'); Exit = 4; WindowQuery = $true
+   Check = { param($o) $o.contract -eq 'windowinspect' -and
+                        (@(Codes $o.errors) -join ',') -eq 'match.no_window' -and
+                        $o.errors[0].stage -eq 'match' -and @($o.windows).Count -eq 0 -and
+                        $o.pagination.returned -eq 0 -and $o.pagination.limit -eq 1 -and
+                        -not $o.errors[0].PSObject.Properties.Name.Contains('target') } }
+$cases += @{ Name = '--inspect 按 --hwnd 点名一个不存在的句柄：match.no_window + 4'
+   A = @('--inspect', '--hwnd', '0x1A0B4C'); Exit = 4; WindowQuery = $true
+   Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'match.no_window' } }
+$cases += @{ Name = '--list 与 --inspect 同时给出一条冲突，value 里两个名字都列出来'
+   A = @('--list', '--inspect', '--class', 'Shell_TrayWnd'); Exit = 1
+   Check = { param($o) $o.errors[0].code -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -like '*--list*' -and
+                        $o.errors[0].value -like '*--inspect*' -and
+                        @($o.errors).Count -eq 1 } }
+# 冲突、越界、条件写坏这几档：交回的必须是截图那一份失败形状（captured / images / errors），
+# 而不是窗口查询那份文档 —— 调用方按 errors[].code 分支的那段代码因此不用分叉。
+$WIN_CONFLICT = @(
+    @('--list', '--out', 'a.png'), @('--list', 'a.png'), @('--list', '--format', 'png'),
+    @('--list', '--capture', 'auto'), @('--list', '--dry-run'),
+    @('--list', '--consent-timeout-ms', '100'), @('--list', '--no-overwrite'),
+    @('--list=all', '--index', '1'), @('--list=all', '--topmost-match'), @('--list', '--newest'),
+    @('--inspect', '--all'), @('--inspect', '--quality', '50'),
+    @('--list', '--capabilities'), @('--inspect', '--diagnostics')
+)
+foreach ($a in $WIN_CONFLICT) {
+    $cases += @{ Name = ('窗口查询与截图那一级互斥: ' + ($a -join ' '))
+       A = $a; Exit = 1
+       Check = { param($o)
+           # 每一条都必须是某类查询冲突（两类查询同时给出时会各报一条），且 stage 恒为 parse。
+           (@($o.errors).Count -ge 1) -and
+           (@(@($o.errors) | Where-Object { $_.code -notlike 'cli.*conflict' }).Count -eq 0) -and
+           (@(@($o.errors) | Where-Object { $_.stage -ne 'parse' }).Count -eq 0) -and
+           $o.captured -eq 0 -and @($o.images).Count -eq 0 }.GetNewClosure() }
+}
+# 环境查询与窗口查询同时给出：两份都登记，一条文档都出不来。
+$cases += @{ Name = '--capabilities 与 --list 同时给出：两条冲突一次列全，不出任何文档'
+   A = @('--capabilities', '--list'); Exit = 1
+   Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'cli.query_conflict,cli.window_query_conflict' -and
+                        $o.errors[0].value -like '*--list*' -and $o.errors[1].value -like '*--capabilities*' } }
+# 数值写法与 --pid / --index 同一条规矩（只认严格十进制，越界在解析期就拒）。
+$cases += @{ Name = '--limit 写 0 被拒（默认条数才是不给 --limit 的结果）'
+   A = @('--list', '--limit', '0'); Exit = 1; Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'cli.invalid_number' } }
+$cases += @{ Name = '--limit 写成十六进制被拒'; A = @('--list', '--limit', '0x10'); Exit = 1
+   Check = { param($o) $o.errors[0].option -eq '--limit' } }
+$cases += @{ Name = '--offset 写成负号被拒'; A = @('--list', '--offset', '-1'); Exit = 1
+   Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'cli.invalid_number' } }
+$cases += @{ Name = '--limit 超过一次求值的条数上限在解析期就拒'
+   A = @('--list', '--limit', '8193'); Exit = 1; Check = { param($o) $o.errors[0].option -eq '--limit' } }
+$cases += @{ Name = '--offset 到上限这个数本身合法（0 到 8192 那道线含两端）'
+   A = @('--list', '--offset', '8192'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.pagination.offset -eq 8192 } }
+# 取舍写在选项自己的取值里（--list=all / --inspect=path）：认得的取值改策略，认不了的整条作废，
+# 而"省略取值"不吃后面的参数（那条位置参数照旧按输出路径算冲突）。
+$cases += @{ Name = '--list=all 打开最小化这条策略并在 -v 回显'
+   A = @('--list=all', '--class', 'NoSuchWindowXyz', '-v'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.policy.minimizedIncluded -eq $true -and
+                        $o.input.includeIconic -eq $true -and $o.input.exePath -eq $false } }
+$cases += @{ Name = '--inspect=path 打开完整路径这一项并在 -v 回显'
+   A = @('--inspect=path', '--hwnd', '0x1A0B4C', '-v'); Exit = 4; WindowQuery = $true
+   Check = { param($o) $o.input.exePath -eq $true -and $o.input.action -eq 'inspect' } }
+$cases += @{ Name = '--list 的取值认不了就整条作废（不退化成默认策略）'
+   A = @('--list=allx', '--class', 'Shell_TrayWnd'); Exit = 1
+   Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                        $o.errors[0].option -eq '--list' -and $o.errors[0].value -eq 'allx' } }
+$cases += @{ Name = '--inspect 的取值认不了也报 cli.invalid_value'
+   A = @('--inspect=iconic', '--hwnd', '0x1A0B4C'); Exit = 1
+   Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                        $o.errors[0].option -eq '--inspect' } }
+$cases += @{ Name = '两条窗口查询各带取值同时给出也算冲突'
+   A = @('--list=all', '--inspect=path'); Exit = 1
+   Check = { param($o) $o.errors[0].code -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -like '*--list*' -and $o.errors[0].value -like '*--inspect*' } }
+$cases += @{ Name = '--list 省略取值时不吃后面的参数（那条按输出路径算冲突，不回显路径本身）'
+   A = @('--list', 'shot.png'); Exit = 1
+   Check = { param($o) $o.errors[0].code -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -eq '--out' -and
+                        -not ((Invoke-Ec @('--list', 'shot.png')).Stdout -match 'shot') } }
+$cases += @{ Name = '窗口查询与 --monitor 越界按同一判据报退出码 1'
+   A = @('--list', '--monitor', '99'); Exit = 1; WindowQuery = $true
+   Check = { param($o) (@(Codes $o.errors) -join ',') -eq 'match.monitor_out_of_range' } }
+# -v 的 input 段：规范化后的这一次查询，不掺截图那一级（格式 / 输出路径）的东西。
+$cases += @{ Name = '-v 给窗口查询追加 input 段并回显条件与分页'
+   A = @('--list', '--class', 'Shell_TrayWnd', '--offset', '1', '--limit', '2', '-v')
+   Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.input.action -eq 'list' -and $o.input.lang -eq 'zh-CN' -and
+                        $o.input.offset -eq 1 -and $o.input.limit -eq 2 -and
+                        $o.input.limitGiven -eq $true -and (@($o.input.class) -contains 'Shell_TrayWnd') -and
+                        (@($o.input.title).Count -eq 0) -and $o.input.'policy' -eq 'ask' -and
+                        -not $o.input.PSObject.Properties.Name.Contains('output') } }
+$cases += @{ Name = '-q 抑制窗口查询的 notes，但 caveats 与 errors 不抑制'
+   A = @('--list', '--class', 'NoSuchWindowXyz', '-q'); Exit = 0; WindowQuery = $true
+   Check = { param($o) -not ($o.PSObject.Properties.Name.Contains('notes')) -and
+                        (@($o.caveats).Count -gt 0) } }
+$cases += @{ Name = '--lang 只换窗口查询的人话文字，不换 code 与字段名'
+   A = @('--list', '--class', 'NoSuchWindowXyz', '--lang', 'en'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $o.contract -eq 'windowquery' -and $o.query -eq 'list' -and
+                        (@($o.caveats) -contains 'snapshot_expires') -and
+                        $o.pagination.matched -eq 0 } }
+$cases += @{ Name = '帮助里有窗口查询那一节与两个入口'
+   A = @('--help'); Exit = 3; Text = $true
+   Has = @('--list [<all>]', '--inspect [<path>]', '--offset <n>', '--limit <n>') }
+$cases += @{ Name = '窗口查询的文档不带 captured / images，也不许被截图那一段误判'
+   A = @('--list', '--class', 'NoSuchWindowXyz'); Exit = 0; WindowQuery = $true
+   Check = { param($o) $null -eq $o.captured -and $null -eq $o.images -and
+                        ($null -ne $o.contract) } }
+
 
 
 
@@ -816,9 +974,12 @@ foreach ($r in $results) {
             try { $o = $body | ConvertFrom-Json } catch { $problems += "JSON 解析失败: $_" }
         }
         if ($o) {
-            # 查询文档（--capabilities / --diagnostics）是另一份契约：它按规矩不带
-            # captured / images，也不许带。截图结果那份仍然必须有这两项。
-            if ($c.Query) {
+            # 查询文档（--capabilities / --diagnostics / --list / --inspect）是另外的契约：它按规矩
+            # 不带 captured / images，也不许带。截图结果那份仍然必须有这两项。
+            # WindowQuery = 判的是窗口查询那一份成功文档（windowquery / windowinspect）；
+            # 它报参数冲突时交回的是截图那一份失败形状，所以那批用例不带这个键。
+            $isQueryDoc = [bool]$c.Query -or [bool]$c.WindowQuery
+            if ($isQueryDoc) {
                 if ($null -ne $o.captured) { $problems += '查询 JSON 不该有 captured' }
                 if ($null -ne $o.images)   { $problems += '查询 JSON 不该有 images' }
                 if ($null -eq $o.contract) { $problems += '查询 JSON 缺 contract' }
@@ -1003,7 +1164,14 @@ $PROBE = @(
     @{ Name = '语言取值非法'; A = @('--lang', 'klingon', '--pid', '1', 'out.png'); Exit = 1 },
     # 只读查询的冲突那两条：文字四种语言都要有，而被拒的 code 与退出码必须完全一致
     @{ Name = '查询与截图选项冲突'; A = @('--capabilities', '--title', 'x'); Exit = 1 },
-    @{ Name = '两条查询同时给出'; A = @('--capabilities', '--diagnostics'); Exit = 1 }
+    @{ Name = '两条查询同时给出'; A = @('--capabilities', '--diagnostics'); Exit = 1 },
+    # 窗口查询那几条同规矩：cli.window_query_conflict 与 match.no_window 的文案四语都要有，
+    # 而被拒的 code、stage 与退出码必须逐字一致（message 才随 --lang 变）。
+    @{ Name = '窗口查询与 --out 冲突'; A = @('--inspect', 'a.png'); Exit = 1 },
+    @{ Name = '窗口查询与取图方式/格式共存'; A = @('--list', '--format', 'png', '--capture', 'auto'); Exit = 1 },
+    @{ Name = '窗口查询无匹配报 match.no_window'; A = @('--inspect', '--class', 'NoSuchWindowXyz'); Exit = 4 },
+    @{ Name = '窗口查询的分页数字写坏'; A = @('--list', '--limit', '1e2'); Exit = 1 },
+    @{ Name = '窗口查询的 --offset 越界写法'; A = @('--list', '--offset', '9.5'); Exit = 1 }
 )
 $bad = 0
 

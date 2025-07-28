@@ -194,6 +194,8 @@ namespace EcTestHelper
         public bool NoRedirect;         // WS_EX_NOREDIRECTIONBITMAP：没有 DWM 缓存面，取图只能走 WM_PRINT
         public int StallMs;             // >0：收到 WM_USER+7 之后把这条消息线程堵住这么久
         public int DestroyAfterMs;      // >0：N 毫秒之后把第一扇窗口 DestroyWindow 掉，进程照旧活着
+        public bool Minimize;           // 第一扇建好就最小化：结构化窗口查询要判「最小化窗口默认被排除、
+                                        // 写 --list=all 才列进来」，而最小化窗口截不到，所以只做这一扇
         public int RenameAfterMs;       // >0：N 毫秒之后把标题换成 --title2 给的那个
         public string Title2;           // 配合 --rename-after-ms：换成这个标题
         public int PayloadStart = -1;     // "--" 之后的第一条：args 模式把它之后全当数据
@@ -212,6 +214,7 @@ namespace EcTestHelper
         private const uint SWP_NOMOVE = 0x0002u;
         private const uint SWP_NOACTIVATE = 0x0010u;
         private const int SW_SHOW = 5;
+        private const int SW_SHOWMINIMIZED = 2;
         private const uint WM_DESTROY = 0x0002u;
         private const uint WM_CLOSE = 0x0010u;
         private const uint WM_PAINT = 0x000Fu;
@@ -287,6 +290,7 @@ namespace EcTestHelper
                     case "--seed": o.Seed = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
                     case "--color": o.Color = uint.Parse(Need(args, ref i, key), NumberStyles.HexNumber, CultureInfo.InvariantCulture); break;
                     case "--topmost": o.TopMost = true; break;
+                    case "--minimize": o.Minimize = true; break;
                     case "--watch-pid": o.WatchPid = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
                     case "--max-life": o.MaxLifeSeconds = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
                     case "--stdout-bytes": o.StdoutBytes = long.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
@@ -395,7 +399,9 @@ namespace EcTestHelper
                 }
                 if (k == 1) { g_hwnd = hwnd; }        // 第一扇仍是 g_hwnd：等窗与判据都按主类名认它
                 g_windows.Add(hwnd);
-                Native.ShowWindow(hwnd, SW_SHOW);
+                // 第一扇可以最小化（--minimize），其余照旧可见：一次运行就同时有
+                // 「可见的命中」与「最小化的命中」，结构化窗口查询的分页与排除判据要好对号。
+                Native.ShowWindow(hwnd, (k == 1 && opt.Minimize) ? SW_SHOWMINIMIZED : SW_SHOW);
                 if (opt.TopMost)
                 {
                     Native.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);

@@ -41,6 +41,11 @@ previously implemented `magnification` channel was removed (reasons in AGENTS.md
 - **Four message languages**: `zh-CN` / `zh-TW` / `en` / `ja`, defaulting to the system display language, all
   embedded as resources inside the exe
 - **Machine-readable JSON**: capture results and errors only — no tool name, version, schema or argument echo
+- **Windows you can list and inspect without capturing**: `--list` returns the matched windows as structured JSON
+  (handle, PID, class, title, image name, physical rectangle, visibility / minimized, z-order, and the identity
+  fields a later capture re-checks) with paging instead of an ambiguity error; `--inspect` describes one window and
+  reports several matches as an ambiguity instead of picking one. Neither takes a pixel, shows a dialog, writes a
+  file or touches a window, `--yes` changes nothing there, and the answer is an explicitly-labelled snapshot
 - **Capabilities you can ask about read-only**: `--capabilities` / `--diagnostics` report which routes this machine
   can take, how far `--yes` really reaches, and a checkable build id — without taking a pixel, showing a dialog,
   writing a file or talking to the network. "compiled into this build", "usable here right now" and "actually tested
@@ -140,9 +145,13 @@ Output
   --quality <1-100>               JPEG quality, decimal 1-100, default 100
   --no-overwrite                  Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
-Capability queries (read-only: no capture, no dialog, no files)
+Capability queries (read-only: no capture, no dialog, no file)
   --capabilities                  Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
   --diagnostics                   Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
+  --list [<all>]                  List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
+  --inspect [<path>]              Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
+  --offset <n>                    Skip the first n windows (decimal, from 0)
+  --limit <n>                     At most n windows per batch (default 50)
 
 Miscellaneous
   --dry-run, -d                   Parse and list candidate windows only - no capture, no file written
@@ -417,6 +426,16 @@ on `status`, do not infer the environment from an exit code); `1` = that invocat
 (`cli.query_conflict`, see [System support](#system-support)).
 They never produce `4`/`5`/`6`/`7`/`8`: no window was enumerated, no dialog was shown, no file was written.
 
+The two read-only window queries (`--list` / `--inspect`) share `0` and `1`, and additionally use `4`
+(`match.no_window`, only for `--inspect`, which needs one target) and `5` (`match.ambiguous_window`, several
+windows survive the selection policy), plus **`7` on exactly one path**: this run's *condition evaluation did not
+finish* (`match.timeout` - the `--timeout-ms` budget was spent on regex backtracking or on fetching a title from a
+hung window, or that step's helper process itself failed). That `7` means "this question could not be answered",
+not "the capture failed", so its `hint` is written in query terms and says plainly that switching `--capture` does
+nothing - there is no channel to switch on this path. **`6` and `8` never appear**: no dialog was shown and no file
+was written, and those two codes are exactly about those two things. For `--list` the exit code is `0` even when
+nothing matched - an empty list is the answer.
+
 ## System support
 
 Three different numbers must not be blended into one slogan:
@@ -525,6 +544,113 @@ and writes nothing. Neither command falls into "no condition means help": a quer
 
 The whole document is ASCII (machine-readable values are never translated), so on one machine every `--lang`
 produces byte-identical output.
+
+### Structured window discovery and inspection (`--list` / `--inspect`)
+
+Before these two commands existed, an AI caller that wanted to know *which* windows a set of conditions hits had
+exactly two ways to ask, and both were wrong. `--dry-run` answers with one human-readable line per candidate inside
+`note.dry_run` (`hwnd=0x… pid=… 1261x614+681+22 class=… title=…`), so the handle, the rectangle and the title have
+to be parsed back out of a string that the tool never promised to keep stable - and a title containing a space or a
+`|` breaks the parsing. Asking for a real image instead requires an output path, opens the capture-level consent
+dialog, and turns "several windows match" into an error - which is a sensible outcome for a batch of screenshots and
+a nonsense outcome for "let me look first".
+
+These two commands are the read-only outlet for that question. They run **the same condition evaluation** as a
+capture - same OR within one option, same AND across options, same `--monitor` screen filtering, and the same helper
+process whenever `--title-regex` or `--timeout-ms` is in play - but they produce no image:
+
+```powershell
+ECAPTURE.EXE --list --process notepad.exe                    # every matching window, structured
+ECAPTURE.EXE --list --class CabinetWClass --limit 5 --offset 5
+ECAPTURE.EXE --list=all --title-contains Report              # also the minimised ones
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C                     # one window, fully described
+ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # disambiguate exactly like a capture would
+```
+
+Five rules, and each one exists because the alternative was worse:
+
+* **Nothing is captured, nothing is asked, nothing is written.** No backend is called, no consent dialog is shown,
+  no file is created, no network access, no environment variable read - the document itself states this in
+  `authorization` (`pixelsRead: 0`, `consentDialogShown: false`, `filesWritten: false`). The query also **never
+  touches a target window**: no restore, no activation, no z-order change, because "let me look at what is open"
+  must not change what is on the screen. `caveats` carries `no_capture_performed` and `no_window_touched` for this.
+* **Several matches are not a capture ambiguity.** `--list` pages them (`--offset` / `--limit`, default 50 per
+  batch) and reports the real total in `pagination.matched`, so a short list never reads as "there are only these".
+  Zero matches is a normal answer: `windows: []` and exit code `0`, not `match.no_window` + `4`. `--inspect` needs
+  one target, so it applies **the same** selection policy a capture uses: if that policy still leaves several, it is
+  `match.ambiguous_window` + exit code `5` - it never picks one for you, and it never grabs a look-alike instead.
+* **The list is a snapshot and it expires.** Handles get reused, titles change, processes exit, so the `hwnd` / `pid`
+  / class in here are **not a credential** you may hold on to. Every successful query carries
+  `note.window_query_stale`, and the `identity` block of each row states `verificationRequired: true`,
+  `isAuthorizationToken: false` and `raceWindowReducedNotEliminated: true`. A later capture re-checks the target
+  identity before reading a pixel (that is `capture.target_gone` / `capture.target_changed` /
+  `capture.target_unverifiable`), and consent is still decided by where the pixels come from: **`--yes` changes
+  nothing here** (`authorization.yesAffectsResult: false`) - it neither unlocks a field nor skips a dialog that this
+  query never shows.
+* **An unreadable field says so.** Cross-process questions have three outcomes, written per field: `readable`,
+  `denied` (the system refused this caller), `failed` (asked and it did not answer), each with the raw Win32 code.
+  Unreadable values are sentinels (`0` / empty) plus that state, never silent absences, and the document does not
+  advise running elevated: `caveats` carries `unreadable_fields_are_not_a_prediction`.
+* **The visibility policy is stated, not implied.** Invisible and zero-sized windows are excluded - the same rule the
+  capture enumeration uses - and `policy` says so (`invisibleExcluded`, `zeroSizedExcluded`); minimized windows are
+  excluded by default too, are counted in `policy.minimizedExcluded`, and `--list=all` merges them into the same
+  z-order. There is **no** claim about "system windows": Windows exposes no attribute that means "this is a system
+  window", so `policy.systemWindowAssertion` is `false`.
+
+Fields per row (window inspect returns the same object as `window` instead of the `windows` array):
+
+```json
+{ "contract": "windowquery", "contractVersion": 1, "query": "list",
+  "program": { "version": "0.4.0" },
+  "authorization": { "readOnly": true, "pixelsRead": 0, "consentDialogShown": false,
+                     "filesWritten": false, "yesAffectsResult": false,
+                     "identityFieldsAreNotConsent": true },
+  "policy": { "invisibleExcluded": true, "zeroSizedExcluded": true, "minimizedIncluded": false,
+              "minimizedExcluded": 2, "systemWindowAssertion": false, "order": "zOrder" },
+  "pagination": { "offset": 0, "limit": 50, "limitDefaulted": true, "defaultLimit": 50,
+                  "maxLimit": 8192, "matched": 52, "returned": 50, "truncated": true,
+                  "nextOffset": 50 },
+  "windows": [ { "hwnd": "0x001A0B4C", "pid": 31468, "title": "…", "class": "CabinetWClass",
+                 "image": "explorer.exe",
+                 "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
+                 "visible": true, "minimized": false, "zOrder": 3,
+                 "readability": { "process": { "state": "readable" },
+                                  "imagePath": { "state": "denied", "win32": 5 },
+                                  "processStart": { "state": "readable" },
+                                  "rect": { "state": "readable" } },
+                 "identity": { "hwnd": "0x001A0B4C", "pid": 31468, "class": "CabinetWClass",
+                               "processStartTicks": 134351142668527401,
+                               "selectionNeedsRecheck": false, "verificationRequired": true,
+                               "isAuthorizationToken": false,
+                               "raceWindowReducedNotEliminated": true } } ],
+  "caveats": [ "no_capture_performed", "no_consent_dialog_shown", "no_window_touched",
+               "snapshot_expires", "identity_fields_are_not_a_token",
+               "invisible_and_zero_sized_excluded", "unreadable_fields_are_not_a_prediction",
+               "list_may_be_partial" ] }
+```
+
+`title`, `class` and `image` are delivered verbatim - not truncated, not escaped into a prose line, not case-folded -
+so a caller reads fields instead of parsing a sentence. The full process path is **not** written unless
+`--inspect=path` asks for it, because installation paths commonly contain a user name; matching `--exe` reads the
+path either way, which is unrelated to what the report exposes. `identity` carries exactly the facts the capture
+pipeline re-checks (handle, PID, that PID's creation time, class, plus whether the original conditions have to be
+re-evaluated), so `--inspect --hwnd <that handle>` describes the same constraint set the capture will insist on.
+`processStartTicks` is `unknown` when it could not be read at enumeration time - which is a judgement that was not
+made, not a value of zero.
+
+`--list` / `--inspect` accept the window conditions, `--monitor`, `--offset` / `--limit`, `--timeout-ms`, `--yes`
+(inert) and `--lang` / `-v` / `-q`. Capture-level options are a `cli.window_query_conflict` + exit code `1`
+(`--out`, a positional path, `--format`, `--quality`, `--no-overwrite`, `--capture`, `--dry-run`,
+`--consent-timeout-ms`, `--capabilities`, `--diagnostics`, and the two queries together). The pick options are
+handled per entry point: they narrow a single target, so they are valid with `--inspect` and a conflict with
+`--list`, which is by definition about all matches. Like the environment queries, these never fall into "no
+condition means help", and when a query itself has nothing to report the failure shape stays the one the capture
+uses (`captured: 0`, `images: []`, `errors[]` with the same codes) for argument-level problems - so a caller's
+`errors[].code` branch does not fork. `--list`'s document is `windowquery`, `--inspect`'s is `windowinspect`:
+different shapes, different contract names, one shared set of fields.
+
+`--dry-run` is unchanged and remains the compatible entry point: it still answers in `note.dry_run`, still requires
+no output path, and is still a conflict with `--list` / `--inspect` rather than being silently replaced by them.
 
 ## Capture channels
 
@@ -754,7 +880,7 @@ The tool is designed for programmatic calls; following these conventions is the 
 repository also ships a skill that teaches an agent to drive it: `.agents/skills/ecapture-screenshot/` (contains
 `SKILL.md`, `references/cli-contract.md`, and a copy of the exe).
 
-1. **Ask the capability question first, then probe with `--dry-run`, then capture for real.**
+1. **Ask the capability question first, then discover windows with `--list` / `--inspect`, then capture for real.**
    `--capabilities` is read-only - no pixel taken, no consent dialog, no file written - so it never disturbs anybody
    and belongs at the front of an automation flow. It hands back this machine's version, session and screen topology,
    every route as `available` / `unavailable` / `unverified`, every format, exactly which internal paths `--yes`
@@ -768,6 +894,12 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    `--dry-run` does not need an output path either (with none it just means "nothing to deliver", so the JSON goes
    to stderr with `note.output_defaulted_stdout`); **`--dry-run` alone with no window condition = text help +
    exit code 2**.
+   When you need the *list* rather than one line of prose, use `--list` (structured, paged, several matches are not
+   an error, zero matches is an empty list + exit `0`) and `--inspect` (one window, and several matches stay an
+   ambiguity - the tool will not pick one for you). Both read no pixel and open no dialog, and neither is changed by
+   `--yes`. What they hand back is a snapshot: capture still re-checks the target identity, so pass the handle from a
+   fresh `--inspect` rather than one cached from an earlier run. See the section
+   《Structured window discovery and inspection》 above.
 2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`) and never on whether you passed
    `--out` — the two ways of asking for stdout report the same codes. The codes you actually hit:
    `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose

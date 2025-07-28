@@ -31,6 +31,8 @@ add_executable(ecapture
   src/Report.cpp
   src/WindowMatch.cpp
   src/WindowIdentity.cpp
+  src/WindowQuery.cpp
+  src/WindowQueryRun.cpp
   src/ScreenMatch.cpp
   src/SystemCompat.cpp
   src/EnvReport.cpp
@@ -350,4 +352,42 @@ target_link_libraries(ecapture-capabilities-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib)
 set_target_properties(ecapture-capabilities-tests PROPERTIES OUTPUT_NAME "ecapture-capabilities-tests")
 set_property(TARGET ecapture-capabilities-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 结构化窗口发现与检查（--list / --inspect）的离线判据（由 tests\windows.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的是"某一问读不到""命中 100 扇而只交回 3 扇"
+# "同一个条件命中两扇而没人消歧""归属进程是受限进程"这些现场 —— 真机上要么安排不出来
+# （不能为了造"读不到"去杀别人的进程，也不能把窗口尺寸改成 0 还指望它可见），
+# 要么没有阴性对照。判据本体（src/WindowQuery.cpp 的 BuildWindowQueryResult /
+# MakeWindowRecord / RenderWindowQuery）全是纯函数，注入一条假候选就能逐条判，
+# 连渲染都判得到"字段齐不齐、路径有没有漏出去"。
+# 这里不链 Worker / 取帧通道：条件求值那条辅助进程路线只在真机入口（WindowQueryRun.cpp）用，
+# 而离线判据判的是"拿到快照之后怎么算、怎么写"。链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-windows-tests
+  tests/windows_state.cpp
+  src/WindowQuery.cpp
+  src/WindowIdentity.cpp
+  src/WindowMatch.cpp
+  src/ScreenMatch.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  src/Json.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-windows-tests PRIVATE resources src)
+target_compile_features(ecapture-windows-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-windows-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-windows-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-windows-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-windows-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-windows-tests PROPERTIES OUTPUT_NAME "ecapture-windows-tests")
+set_property(TARGET ecapture-windows-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

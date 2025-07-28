@@ -39,11 +39,8 @@ grp.consent	Capture authorization (a real capture asks first; --yes skips window
 grp.timeout	Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
 grp.output	Output
 grp.behavior	Miscellaneous
-grp.query	Capability queries (read-only: no capture, no dialog, no files)
-
-# ---------------------------------------------------------------------------
-# Option descriptions (kOptions, keyed by option name)
-# ---------------------------------------------------------------------------
+grp.query	Capability queries (read-only: no capture, no dialog, no file)
+opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images
 opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
 opt.pid	Process id, decimal only and greater than 0
 opt.process	Image file name (no path), case-insensitive; without an extension .exe is assumed
@@ -58,7 +55,6 @@ opt.bottommost-match	Take the bottommost matched window in the current z-order
 opt.newest	Deprecated alias of --topmost-match: it picks by z-order, not by creation time
 opt.oldest	Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
 opt.all	Save one image per matched window
-opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images
 opt.capture	wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 opt.yes	Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 opt.timeout-ms	Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
@@ -76,8 +72,10 @@ opt.help	Print this text help
 opt.version	Print version and stage
 opt.capabilities	Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
 opt.diagnostics	Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
-
-# ---------------------------------------------------------------------------
+opt.list	List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
+opt.inspect	Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
+opt.offset	Skip the first n windows (decimal, from 0)
+opt.limit	At most n windows per batch (default 50)
 # Parse-time diagnostics (src/CliOptions.cpp)
 # ---------------------------------------------------------------------------
 cli.hwnd_value	--hwnd needs a valid handle value (decimal, or hexadecimal with a 0x prefix)
@@ -112,6 +110,13 @@ cli.conflicting_options	These selection strategies are mutually exclusive; pick 
 cli.conflicting_hint	e.g. keep only --index 2
 cli.query_conflict	Query commands cannot be combined with capture options: --capabilities / --diagnostics only ask about the environment and never capture
 cli.query_conflict_hint	Questions accept only --lang, -v/--verbose and -q/--quiet; drop the other options and the output path, or run the capture separately
+cli.list_value	--list accepts only the value all (also list minimized windows), or none at all
+cli.list_value_hint	Write --list=all; use --limit / --offset to bound and page the batch
+cli.inspect_value	--inspect accepts only the value path (also write the full image path), or none at all
+cli.inspect_value_hint	Write --inspect=path; name one window with --hwnd, disambiguate when several match
+cli.window_query_conflict	A window query (--list / --inspect) cannot be combined with capture-level options or an environment query: it produces no image, and several matches are not a capture ambiguity
+cli.window_query_conflict_hint	Window queries accept window conditions, --monitor, --offset / --limit, --timeout-ms, --yes and --lang / -v / -q (the toggles live in --list=all / --inspect=path); drop --out / --format / --quality / --capture / --dry-run / the consent deadline / --capabilities / --diagnostics, or run the query and the capture as two calls
+cli.list_count_value	Invalid count: write it in decimal, 0 to %1
 cli.unhandled_option	Internal error: option is in the catalog but the parser does not handle it
 cli.missing_output	No output path was given, and writing to stdout by default produced no image
 cli.missing_output_hint	Give --out <path> explicitly, or use --dry-run first to check whether a window matches
@@ -154,6 +159,7 @@ match.index_hint	%1 candidate(s) total: %2
 match.ambiguous	Several windows matched, disambiguation required
 match.ambiguous_hint	Use --index/--topmost-match/--bottommost-match/--all or add conditions. Candidates (z-order): %1
 match.untitled	(no title)
+match.inspect_ambiguous_hint	--inspect needs exactly one target: name it with --hwnd, narrow the conditions with --class / --process / --title, or pick with --index / --topmost-match / --bottommost-match. This tool will not choose one for you and will not capture a look-alike instead. Candidates (by Z-order): %1
 
 # ---------------------------------------------------------------------------
 # Pipeline and file writing (src/Capture.cpp, src/OutputPlan.cpp, src/FileSave.cpp)
@@ -208,6 +214,7 @@ cap.unsupported	This capture method is not implemented
 cap.auto_failed	Every auto fallback channel failed (%1)
 cap.timeout	Automatic budget of %1 ms exhausted (took %2 ms)
 cap.timeout_hint	Raise --timeout-ms, or use a channel that cannot get stuck (wgc / dwm for an occluded window); a step with no interruptible wait can only be stopped by killing this tool's helper process when the deadline fires
+cap.timeout_query_hint	Raise --timeout-ms, or make this batch of conditions cheaper (regex backtracking and fetching a title from a hung window both spend this budget); a step with no interruptible wait can only be stopped by killing this tool's helper process when the deadline fires. A window query takes no pixel, so switching --capture does nothing
 cap.worker.spawn_failed	The helper process could not be started, so this capture did not run
 cap.worker.spawn_failed_hint	printwindow and the dwm read-back run inside a helper process of this tool (those calls wait for the target window and have no interrupt point). A failure here usually means a policy, permission or antivirus blocked it: %1
 cap.worker.channel_failed	The pipe to the helper process broke; this capture got no result
@@ -354,3 +361,11 @@ env.channel_unsupported	The %1 channel needs Windows build %2 or later; this mac
 env.channel_unsupported_hint	This is about this machine's version, not about the target window: switching capture channel (--capture / -C) or using auto is what can help, while retrying the same target cannot. A channel you asked for explicitly is never substituted, so auto will not quietly route around this
 note.channel_unavailable	The auto fallback chain has no %1: it needs Windows build %2 or later and this machine is %3
 note.os_unverifiable	This machine's Windows build could not be read, so no channel was filtered out by version this time; a channel that really cannot run reports its own error code
+
+# ---------------------------------------------------------------------------
+# Structured window discovery and inspection (--list / --inspect, src/WindowQuery.cpp)
+#   These queries produce no image, so the wording must keep saying "this list is not a credential"
+#   and "unreadable is not the same as absent".
+# ---------------------------------------------------------------------------
+note.window_query_stale	A window query returns a snapshot of this moment; its fields expire
+note.window_query_stale_hint	Handles get reused, titles change and processes exit, so the hwnd / pid / class in this list are not a credential you may hold on to. A later capture still re-checks the target identity before reading a pixel (capture.target_gone / capture.target_changed / capture.target_unverifiable), and consent is still decided by where the pixels come from - --yes only skips the window-content level

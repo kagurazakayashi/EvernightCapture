@@ -32,6 +32,7 @@
   工具能停下来的辅助进程里，所以卡死的目标窗口再也卡不住这个工具
 - **四语文案**：`zh-CN` / `zh-TW` / `en` / `ja`，默认跟随系统显示语言，全部编在 exe 的资源里
 - **机器读的 JSON**：只装捕获结果与错误，不带工具名、版本、schema、参数回显之类的元信息
+- **窗口可以不截图就列出来看清**：`--list` 把命中的窗口列成结构化 JSON（句柄、PID、类名、标题、映像名、物理矩形、可见/最小化、Z 序，以及后续截图要复核的身份字段），多匹配按 `--offset` / `--limit` 分页而不是报截图歧义；`--inspect` 逐项查清一扇窗口，命中多扇仍算歧义而不会替你挑一个。两条都不取像素、不弹框、不写文件、不触碰任何窗口，`--yes` 对它们没有作用，交回的是一份被明确标注为快照的结果
 - **能力可只读查询**：`--capabilities` / `--diagnostics` 在不动一个像素、不弹确认框、不写文件、不联网的前提下
   问出这台机器现在能走哪几条通道、`--yes` 到底管到哪一层、以及可核对的构建标识；「这个构建里有这条路线」「本机
   现在让不让走」「本项目有没有在这种系统上实测过」是三件分开写的事，问不出来就照实写 `unknown`，
@@ -127,9 +128,13 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --quality <1-100>               JPEG 质量，十进制 1..100，默认 100
   --no-overwrite                  目标已存在时不覆盖，报错退出（不给取值就是禁止覆盖）；写 --no-overwrite=false（0 / no / n / off）取消这条禁令，=true / 1 / yes / y / on 与不给取值同义。重复给出时最后一个生效
 
-能力查询（只读：不截图、不弹框、不写文件）
+查询（只读：不截图、不弹框、不写文件）
   --capabilities                  输出本机能力报告（JSON）：版本、系统与会话条件、各条取图路线的 available / unavailable / unverified、格式与 --yes 的适用范围。只读：不截图、不弹确认框、不写文件，也不靠实际截屏来探测能力。available 只说明"这个构建里有这条路线，且这次问出来的环境判据没挡掉它"，不保证某个窗口一定截得到。只接受 --lang / -v / -q，与任何截图选项或输出路径同时给出 = cli.query_conflict + 退出码 1，一张都不截
   --diagnostics                   输出诊断与版本报告（JSON）：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态，字段与 --capabilities 同源，不另立第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；--verbose 追加每一问的原始答案，便于核对后再提交。互斥规则与 --capabilities 相同
+  --list [<all>]                  只读地把满足全部条件的顶层窗口列成 JSON（句柄 / PID / 类名 / 标题 / 映像名 / 矩形 / Z 序 / 身份约束字段），不截图、不弹框、不写文件，也不需要输出路径。多匹配按 --offset / --limit 分页而不报截图歧义，配选择策略算冲突。取值 all = 也列最小化窗口。结果会过期，截图时仍要复核身份（详见 README）
+  --inspect [<path>]              只读地检查同一套选择策略定出的那一扇窗口；多匹配报 match.ambiguous_window + 退出码 5，不替你选一个。取值 path = 也写出归属映像的完整路径（默认只写文件名）。读不到的项写字段级 denied / failed，不建议改用管理员身份；不恢复或激活任何窗口
+  --offset <n>                    窗口查询跳过开头 n 个（0 起）
+  --limit <n>                     窗口查询本批最多 n 个（默认 50）
 
 其它
   --dry-run, -d                   只解析并列出候选窗口，不截图不写文件
@@ -364,6 +369,14 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 猜环境）；`1` = 这条用法不合契约（`cli.query_conflict`，见[系统支持](#系统支持)）。它们不产生 `4`/`5`/`6`/`7`/`8`：
 一次窗口都没枚举、一个框都没弹、一个文件都没写。
 
+只读的窗口查询那两条（`--list` / `--inspect`）共用 `0` 与 `1`，并另外使用 `4`（`match.no_window`，只可能出自
+`--inspect`，它需要一个目标）与 `5`（`match.ambiguous_window`，选择策略之后仍剩多扇），再加**只有一条来路的 `7`**：
+这一次的**条件求值自己没跑完**（`match.timeout` —— `--timeout-ms` 的预算花在 `--title-regex` 的回溯或向挂起的
+窗口取标题那一步，或那一步的辅助进程自己坏了）。这条 `7` 说的是"这一问没能问完"，与取帧无关，所以它的 `hint`
+也是查询自己的说法，明写换 `--capture` 没有用 —— 这一路根本没有通道可换。**`6` 与 `8` 绝不出现**：一个框都没弹、
+一个文件都没写，而那两条说的正是这两段事。`--list` 在一个都没命中时退出码仍是 `0` —— 空列表
+就是这一次的答案。
+
 ## 系统支持
 
 三个不同的数字不能混成一句"支持 Windows X 以上"：
@@ -457,6 +470,100 @@ ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原
 那一条：查询本身就是明确的意图。`-q` 对查询只去掉 `caveats` 那一段，`-v` 加的是 `probes`，都不会动答案本身。
 
 这份文档从头到尾是 ASCII（机器读的取值一律不翻译），所以同一台机器上换任何一种 `--lang`，输出逐字节相同。
+
+### 结构化的窗口发现与检查（`--list` / `--inspect`）
+
+在这两条命令之前，调用方（尤其是 AI）想知道"这批条件到底命中了哪些窗口"只有两条路，而两条都不对：
+`--dry-run` 把每个候选写成**一行给人看的话**塞在 `note.dry_run` 里
+（`hwnd=0x… pid=… 1261x614+681+22 class=… title=…`），要用的就得从这句里把句柄、矩形、标题再解析出来 ——
+而工具从没承诺过这句话的形状稳定，标题里有一个空格或一个 `|` 就解析错位。另一条是真去截一张图：它要求一个输出
+路径、会按截图那一级弹确认框，还会把"命中多扇"报成错误 —— 那对"我要截一批图"是合理的结论，对"我先看一眼"
+完全是帮倒忙。
+
+这两条命令就是这个问题的只读出口。它们跑的是与截图**同一套**条件求值（同一选项写多次取并集、不同选项取交集、
+`--monitor` 按屏过滤，用了 `--title-regex` 或 `--timeout-ms` 时照旧整步进辅助进程），但不产任何图片：
+
+```powershell
+ECAPTURE.EXE --list --process notepad.exe                    # 每个命中的窗口，结构化
+ECAPTURE.EXE --list --class CabinetWClass --limit 5 --offset 5
+ECAPTURE.EXE --list=all --title-contains 报告                # 把最小化的也列进来
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C                     # 一扇窗口，逐项查清楚
+ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 与截图完全同一套消歧
+```
+
+五条规矩，每一条都因为另一条做法更坏：
+
+* **不取像素、不问人、不写文件。** 不调任何取帧通道，不弹确认框，不建文件，不联网，不读环境变量 —— 文档自己在
+  `authorization` 段写着（`pixelsRead: 0`、`consentDialogShown: false`、`filesWritten: false`）。它同样**不动任何
+  目标窗口**：不恢复、不激活、不改叠放次序 —— "我先看一眼开着什么"不该改变屏幕上的样子。`caveats` 里的
+  `no_capture_performed` 与 `no_window_touched` 就是钉这一条。
+* **命中多扇不是截图歧义。** `--list` 把它们分页交回（`--offset` / `--limit`，本批默认 50 条），真实总数写在
+  `pagination.matched`，于是"这一页很短"永远不会被读成"只有这些窗口"。一个都没命中是正常答复：`windows: []` +
+  退出码 `0`，不是 `match.no_window` + `4`。`--inspect` 需要一个目标，用的正是截图那一条选择策略：策略之后仍剩多扇
+  就是 `match.ambiguous_window` + 退出码 `5` —— 不替你选一个，也不会"先拿一扇看起来一样的"。
+* **列表是一份快照，会过期。** 句柄会被复用、标题会变、进程会退出，所以这里的 `hwnd` / `pid` / 类名**不是**一种可以
+  长期持有的凭证。每次成功的查询都带一条 `note.window_query_stale`，而每一行的 `identity` 段写着
+  `verificationRequired: true`、`isAuthorizationToken: false`、`raceWindowReducedNotEliminated: true`。真去截图时
+  仍在读像素之前复核目标身份（那是 `capture.target_gone` / `capture.target_changed` /
+  `capture.target_unverifiable`），确认框也照旧按像素来源判：**`--yes` 在这里不起任何作用**
+  （`authorization.yesAffectsResult: false`）—— 它既不会多解锁一个字段，也不会跳过一次本就不弹的框。
+* **读不到的字段会说它读不到。** 跨进程的问答有三种下场，逐字段写：`readable`、`denied`（系统挡下了这个调用方）、
+  `failed`（问过而没答案），后者带原始 Win32 码。读不到的值是哨兵（`0` / 空串）**加上**这个状态，不是把键悄悄省掉；
+  文档也不劝你改用管理员身份 —— `caveats` 里写着 `unreadable_fields_are_not_a_prediction`。
+* **可见性策略写出来，不让调用方猜。** 不可见与零尺寸的窗口被排除（与截图那一次枚举同一条规则），`policy` 段就这么
+  说（`invisibleExcluded`、`zeroSizedExcluded`）；最小化窗口默认也不进列表，条数记在
+  `policy.minimizedExcluded`，`--list=all` 把它们按同一根 Z 序轴并进来。这里对"系统窗口"**不作任何断言**：
+  Windows 没有一个"我是系统窗口"的属性可问，所以 `policy.systemWindowAssertion` 是 `false`。
+
+每行的字段如下（`--inspect` 把 `windows` 数组换成单个 `window` 对象，其余字段完全同一形状）：
+
+```json
+{ "contract": "windowquery", "contractVersion": 1, "query": "list",
+  "program": { "version": "0.4.0" },
+  "authorization": { "readOnly": true, "pixelsRead": 0, "consentDialogShown": false,
+                     "filesWritten": false, "yesAffectsResult": false,
+                     "identityFieldsAreNotConsent": true },
+  "policy": { "invisibleExcluded": true, "zeroSizedExcluded": true, "minimizedIncluded": false,
+              "minimizedExcluded": 2, "systemWindowAssertion": false, "order": "zOrder" },
+  "pagination": { "offset": 0, "limit": 50, "limitDefaulted": true, "defaultLimit": 50,
+                  "maxLimit": 8192, "matched": 52, "returned": 50, "truncated": true,
+                  "nextOffset": 50 },
+  "windows": [ { "hwnd": "0x001A0B4C", "pid": 31468, "title": "…", "class": "CabinetWClass",
+                 "image": "explorer.exe",
+                 "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
+                 "visible": true, "minimized": false, "zOrder": 3,
+                 "readability": { "process": { "state": "readable" },
+                                  "imagePath": { "state": "denied", "win32": 5 },
+                                  "processStart": { "state": "readable" },
+                                  "rect": { "state": "readable" } },
+                 "identity": { "hwnd": "0x001A0B4C", "pid": 31468, "class": "CabinetWClass",
+                               "processStartTicks": 134351142668527401,
+                               "selectionNeedsRecheck": false, "verificationRequired": true,
+                               "isAuthorizationToken": false,
+                               "raceWindowReducedNotEliminated": true } } ],
+  "caveats": [ "no_capture_performed", "no_consent_dialog_shown", "no_window_touched",
+               "snapshot_expires", "identity_fields_are_not_a_token",
+               "invisible_and_zero_sized_excluded", "unreadable_fields_are_not_a_prediction",
+               "list_may_be_partial" ] }
+```
+
+`title`、`class`、`image` 逐字交付 —— 不截断、不拼进一句人话、不折叠大小写 —— 调用方读字段，不该再去解析一段句子。
+归属映像的**完整路径**默认不写，因为安装路径里常含用户名；要它得显式写 `--inspect=path`。匹配 `--exe` 本来就一直
+读得到路径，与报告里交不交这件事无关。`identity` 交出的正是截图那一次要复核的几件事（句柄、PID、该 PID 的创建
+时间、类名，外加"要不要靠重跑当初那份条件来认它"），所以 `--inspect --hwnd <那个句柄>` 描述的约束集与截图会坚持
+的那一套完全同源。枚举当时问不到创建时间就写 `unknown` —— 那是一次**没做出来**的判定，不是一个等于 0 的值。
+
+`--list` / `--inspect` 接受窗口条件、`--monitor`、`--offset` / `--limit`、`--timeout-ms`、`--yes`（不起作用）与
+`--lang` / `-v` / `-q`。与截图那一级的选项一起给出是 `cli.window_query_conflict` + 退出码 `1`（`--out`、位置参数、
+`--format`、`--quality`、`--no-overwrite`、`--capture`、`--dry-run`、`--consent-timeout-ms`、`--capabilities`、
+`--diagnostics`，以及两条窗口查询同时给出）。选择策略那一组按入口分别判：它们是用来把目标收窄到一扇的，所以对
+`--inspect` 有效，而 `--list` 说的本来就是"全部命中"，配它算冲突。与环境查询一样，这两条不会掉进"无条件 = 帮助"；
+而**参数本身**说不通时交回的形状仍是截图那一份（`captured: 0`、`images: []`、`errors[]` 用同一批码），调用方按
+`errors[].code` 分支的那段代码不必分叉。`--list` 那份契约叫 `windowquery`，`--inspect` 那份叫 `windowinspect`：
+形状不同、契约名不同，字段共用同一套。
+
+`--dry-run` 原样保留，仍是那个兼容入口：它照旧把答案写在 `note.dry_run` 里，照旧不需要输出路径，也与
+`--list` / `--inspect` 互为冲突 —— 而不是被这两条悄悄替换掉。
 
 ## 取图方式
 
@@ -643,7 +750,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 工具就是为程序化调用设计的，按下面这套约定走最省事。项目里还带了一份教 AI 用它的 skill：
 `.agents/skills/ecapture-screenshot/`（里面有 `SKILL.md`、`references/cli-contract.md` 和一份 exe 副本）。
 
-1. **先问一次能力，再 `--dry-run` 探目标，最后真截图。** `--capabilities` 是只读的：不取像素、不弹确认框、
+1. **先问一次能力，再用 `--list` / `--inspect` 发现窗口，最后真截图。** `--capabilities` 是只读的：不取像素、不弹确认框、
    不写文件，也就不会打扰人，适合放在自动化流程的最前面。它把这台机器的版本、会话、屏幕拓扑、每条路线的
    `available` / `unavailable` / `unverified`、每种格式、`--yes` 到底管哪几条内部路径，以及取值上限一次交给你，
    于是"该用哪条 `--capture`""这次失败该换通道还是这台机器不行""这里弹框有没有人会答"都在动手之前就有答案。
@@ -653,6 +760,10 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
    之后照旧 `--dry-run`：它不取帧、不写文件、也不弹确认框，候选在 `notes[0].value`：
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` 也不必给 `--out`
    （那一次没有图片要交付，结果整份在 stderr）；而**只给 `--dry-run` 不给任何窗口条件 = 文本帮助 + 退出码 2**。
+   要的是**列表**而不是一行人话时，用 `--list`（结构化、分页，多匹配不算错误，一个都没命中是空列表 + 退出码
+   `0`）与 `--inspect`（一扇窗口，多匹配仍算歧义 —— 它不会替你挑一个）。两条都不取像素、不弹框，`--yes`
+   对它们也没有任何作用。它们交回的是快照：真去截图仍要复核目标身份，所以请把**刚做完的一次** `--inspect`
+   里的句柄传给截图，而不是缓存早前那一轮的。详见上文《结构化的窗口发现与检查》一节。
 2. **按 `errors[].code` 分支，不要匹配 `message` 文字**（那随 `--lang` 变），也不要拿"有没有给 `--out`"当原因——
    省略它那条路与 `--out -` 报的是同样的码。常用的几条：
    `match.no_window`（4，条件太窄或目标最小化）、`match.ambiguous_window`（5，从 `hint` 的候选里挑）、

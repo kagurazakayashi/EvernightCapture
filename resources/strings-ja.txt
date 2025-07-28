@@ -38,11 +38,8 @@ grp.consent	撮影の承諾（実際の撮影では既定で確認します。--
 grp.timeout	実行期限（自動処理区間の総予算。承諾を待つ時間は別計算で、期限切れは拒否として扱います）
 grp.output	出力
 grp.behavior	その他
-grp.query	能力照会
-
-# ---------------------------------------------------------------------------
-# オプション説明（kOptions、オプション名で key を引く）
-# ---------------------------------------------------------------------------
+grp.query	照会（読取専用）
+opt.monitor	対象モニタの番号。1 始まりの 10 進（今回の列挙順で、「表示設定」の識別子とは限らない。モニタを特定するには結果の device を見る）；primary = メイン、all = 全モニタを 1 枚ずつ。ウィンドウ条件なし = 画面全体の撮影、ウィンドウ条件あり = そのモニタに重なるウィンドウのみ。値は省略可（= メイン）で、省略時は次の引数を取り込まないので --monitor out.png も従来どおり。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できない；モニタでウィンドウを絞った場合は従来どおりウィンドウ画像
 opt.hwnd	ウィンドウハンドル。数字のみは 10 進、0x 接頭辞または a-f を含む場合は 16 進。0x 推奨。符号と空白は不可、下線は 16 進数字の間に限り有効
 opt.pid	プロセス ID。10 進のみかつ 0 より大きい値
 opt.process	イメージファイル名（パスなし）、大文字小文字を区別しない。拡張子がない場合は .exe として扱う
@@ -57,7 +54,6 @@ opt.bottommost-match	現在の Z 順で最下位の一致ウィンドウを選�
 opt.newest	--topmost-match の旧名。作成日時ではなく現在の Z 順で選びます
 opt.oldest	--bottommost-match の旧名。作成日時ではなく現在の Z 順で選びます
 opt.all	一致した各ウィンドウから 1 枚ずつ保存
-opt.monitor	対象モニタの番号。1 始まりの 10 進（今回の列挙順で、「表示設定」の識別子とは限らない。モニタを特定するには結果の device を見る）；primary = メイン、all = 全モニタを 1 枚ずつ。ウィンドウ条件なし = 画面全体の撮影、ウィンドウ条件あり = そのモニタに重なるウィンドウのみ。値は省略可（= メイン）で、省略時は次の引数を取り込まないので --monitor out.png も従来どおり。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できない；モニタでウィンドウを絞った場合は従来どおりウィンドウ画像
 opt.capture	wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し。モニタの回転に合わせて向きを補正し、対象と最も重なる 1 台の出力だけを取ります。切り足りないときは capturedRect/clipped が付きます) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
 opt.yes	ウィンドウ自身の画像だけを使う経路の確認を省略します。有効な画像を保証せず、権限・保護コンテンツ・エラー・上書き保護にも影響しません。画面からサンプルする経路（bitblt、duplication、画面全体のあらゆる経路、dwm の画面フォールバック）は必ずダイアログを出します。--yes=false は明示的に確認を
 opt.timeout-ms	自動処理区間の総予算（ミリ秒）。対象の選択に成功した時点から、条件評価・バックエンド再試行・フレーム取得・エンコード・ファイル書き込みが同じ残り時間を共有し、どの段階も予算を新しく受け取り直すことはありません。指定なしまたは 0 = 総予算なし。その場合も隔離実行は組み込み上限（5000 ミリ秒）で抑えます。承諾ダイアログを待つ時間はここには含めません（--consent-timeout-ms を参照）。予算を使い切った時点でその画像は書き出されず、段階に応じ match.timeout / capture.timeout / io.timeout を返します
@@ -75,8 +71,10 @@ opt.help	テキストのヘルプ（この部分）を出力
 opt.version	バージョンと段階を出力
 opt.capabilities	この機の能力を JSON で返す（版数、OS とセッション条件、各経路の available / unavailable / unverified、--yes の適用範囲）。読み取り専用で撮影も確認も書き込みもしない。available は保証ではない。--lang / -v / -q のみ可、撮影オプションや出力先と併用すると cli.query_conflict
 opt.diagnostics	ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
-
-# ---------------------------------------------------------------------------
+opt.list	条件を満たす最上位ウィンドウを JSON で一覧化。撮影も確認も書き込みもせず、出力パスも不要。ページ送りは --offset / --limit、all で最小化ウィンドウも含める。結果はこの瞬間のスナップショットなので撮影前に身元を再確認する
+opt.inspect	選択戦略が定める 1 件のウィンドウを読取専用で検査。複数一致は match.ambiguous_window + 5 を返し、代わりに選ばない。path で完全パスも書く（既定はファイル名のみ）
+opt.offset	照会で先頭 n 件を飛ばす（10 進）
+opt.limit	照会の 1 回あたりの最大件数（既定 50）
 # 解析時の診断（src/CliOptions.cpp）
 # ---------------------------------------------------------------------------
 cli.hwnd_value	--hwnd には有効なハンドル値が必要です（10 進、または 0x 付きの 16 進）
@@ -111,6 +109,13 @@ cli.conflicting_options	これらの選択方針は互斥です。1 つだけ選
 cli.conflicting_hint	例：--index 2 だけを残す
 cli.query_conflict	照会コマンドは撮影オプションと同時に指定できません。--capabilities / --diagnostics は環境を読み取りで問うだけで、撮影はしません
 cli.query_conflict_hint	照会が受け付けるのは --lang、-v/--verbose、-q/--quiet だけです。他のオプションと出力先を外すか、撮影を別の実行にしてください
+cli.list_value	--list に書ける値は all（最小化ウィンドウも含める）か、省略のみ
+cli.list_value_hint	--list=all と書いて件数の制限・ページ送りは --limit / --offset で
+cli.inspect_value	--inspect に書ける値は path（帰属イメージの完全パスも書く）か、省略のみ
+cli.inspect_value_hint	--inspect=path のように書く。特定の 1 件を指すなら --hwnd、複数一致ならまず絞り込んでください
+cli.window_query_conflict	ウィンドウ照会（--list / --inspect）は画面取得用のオプションや環境照会と同時に指定できません：画像は生成されず、複数一致は画面取得の曖昧さではありません
+cli.window_query_conflict_hint	ウィンドウ照会は条件・--monitor・--offset / --limit・--timeout-ms・--yes・--lang / -v / -q を受けします（切り替えは --list=all / --inspect=path に書きます）。--out / --format / --quality / --capture / --dry-run / 確認ダイアログの期限 / --capabilities / --diagnostics を外すか、照会と画面取得を 2 回に分けてください
+cli.list_count_value	件数が不正です：10 進で 0 から %1
 cli.unhandled_option	内部エラー：一覧にあるオプションをパーサが処理していません
 cli.missing_output	出力パスが指定されず、既定で標準出力へ書く手順でも画像を出力できませんでした
 cli.missing_output_hint	--out <パス> を明示するか、まず --dry-run でウィンドウが一致するか確認してください
@@ -153,6 +158,7 @@ match.index_hint	候補は計 %1 件：%2
 match.ambiguous	複数のウィンドウに一致しました。区別が必要です
 match.ambiguous_hint	--index/--topmost-match/--bottommost-match/--all を使うか条件を追加してください。候補（Z 順）：%1
 match.untitled	(タイトルなし)
+match.inspect_ambiguous_hint	--inspect は 1 件の指定が必要です：--hwnd で指すか、--class / --process / --title で絞り込み、--index / --topmost-match / --bottommost-match で選んでください。代わりに 1 件を選ぶことも、似たウィンドウを先に取得することもしません。候補（Z 順）：%1
 
 # ---------------------------------------------------------------------------
 # パイプラインとファイル書き出し（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）
@@ -207,6 +213,7 @@ cap.unsupported	この画面取得方式は未実装です
 cap.auto_failed	auto のフォールバック先がすべて失敗しました（%1）
 cap.timeout	自動処理の予算 %1 ms を使い切りました（実際 %2 ms）
 cap.timeout_hint	--timeout-ms を大きくするか、詰まり取得経路（遮られたウィンドウなら wgc / dwm）に切り替えてください。割り込み可能な待機点がない段階は、期限到来時に本ツールのヘルパープロセスを中止するしかありません
+cap.timeout_query_hint	--timeout-ms を大きくするか、この条件の組を軽くしてください（--title-regex のバックトラッキングと、応答のないウィンドウからタイトルを取る処理がここで時間を使います）。割り込み可能な待機点がない段階は、期限到来時に本ツールのヘルパープロセスを中止するしかありません。ウィンドウ照会は影格を取らないため、--capture を切り替えても意味がありません
 cap.worker.spawn_failed	ヘルパープロセスを起動できなかったため、この画像取得は実行されませんでした
 cap.worker.spawn_failed_hint	printwindow と dwm の読み戻しは本ツールのヘルパープロセス内で実行されます（あの呼び出しは対象ウィンドウを同期して待ち、割り込み点がありません）。起動失敗は通常、権限・ポリシー・ウイルス対策ソフトによるブロックです：%1
 cap.worker.channel_failed	ヘルパープロセスとのパイプが切れたため、結果を得られませんでした
@@ -352,3 +359,10 @@ env.channel_unsupported	%1 経路には Windows ビルド %2 以上が必要で�
 env.channel_unsupported_hint	これはこの機のバージョンの話で、対象ウィンドウの話ではありません。取得経路の切り替え（--capture / -C）か auto にすることが効きます。同じ対象を再試行しても同じです。明示された経路を別の経路に置き換えることはしません
 note.channel_unavailable	auto のフォールバック列に %1 は含まれません（Windows ビルド %2 以上が必要、この機は %3）
 note.os_unverifiable	この機の Windows ビルドを調べられなかったため、今回はバージョンによる経路の絞り込みを行いませんでした。実際に使えない経路は各自のエラーコードを返します
+
+# ---------------------------------------------------------------------------
+# 構造化ウィンドウ照会（--list / --inspect、src/WindowQuery.cpp）
+#   この 2 つの照会は画像を産かないため、「一覧は資格証ではない」と「読めない=存在しないではない」を文案で示し続ける。
+# ---------------------------------------------------------------------------
+note.window_query_stale	ウィンドウ照会が返すのはこの瞬間のスナップショットで、値は古くなります
+note.window_query_stale_hint	ハンドルは再利用され、タイトルは変わり、プロセスは終了するので、この一覧の hwnd / pid / クラス名は長く保持できる認証情報ではありません。後の画面取得でも画面取得前に身元を再確認します（capture.target_gone / capture.target_changed / capture.target_unverifiable）。確認ダイアログは画素の出所に従って判定され、--yes はウィンドウ内容の 1 段だけを省略します

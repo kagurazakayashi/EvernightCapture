@@ -212,6 +212,16 @@ bool LooksLikeMonitorValue(const std::wstring& raw) {
     return MonitorKeyword(raw) || DecimalLiteral(raw, nullptr) || LooksLikeNumberAttempt(raw);
 }
 
+// --list / --inspect 的取值：各自只有一个关键字，写成内联形式（--list=all）。
+// 取值可省略，所以"下一个参数要不要吃"必须与实际解析同源 —— 这两条一律不吃后面的裸参数，
+// 只有 =取值 那种内联写法才算给了取值（于是 --list out.png 里的 out.png 仍是位置参数）。
+bool ListQueryValue(const std::wstring& raw, bool* flag) {
+    const std::wstring v = ToLower(Trim(raw));
+    if (v.empty()) return true;             // 省略取值 = 默认策略
+    if (v == L"all" || v == L"path") { *flag = true; return true; }
+    return false;
+}
+
 bool LooksLikeOptionalValue(const std::wstring& name, const std::wstring& raw) {
     if (name == L"monitor") return LooksLikeMonitorValue(raw);
     return false;
@@ -233,6 +243,8 @@ constexpr const wchar_t* kFormatValues[] = {
 using cli_limits::kMaxTimeoutMs;
 using cli_limits::kMaxOrdinal;
 using cli_limits::kMaxPid;
+// --offset / --limit 的上限与 --capabilities 那份 limits 同源（数字只在 cli_limits 写一次）。
+using cli_limits::kMaxWindowListItems;
 constexpr const wchar_t* kCaptureValues[] = {
     L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
 
@@ -311,6 +323,17 @@ constexpr OptionSpec kOptions[] = {
     // 一起给出时替用户挑一个执行，不如把这条用法当场说清楚。见 src/EnvReport.h。
     {L"capabilities", L"", false, L"query", L"", nullptr, L"opt.capabilities"},
     {L"diagnostics", L"", false, L"query", L"", nullptr, L"opt.diagnostics"},
+    // ---- 只读的窗口发现与检查 ----
+    // 与上面两条查询同样不截图、不弹框、不写文件，但走的是与截图同源的条件求值：
+    // --list 把命中的窗口列成机器可读的列表（多匹配不是截图歧义），
+    // --inspect 把一个明确选择器对应的那扇窗口逐项查清楚（多匹配照实报歧义）。
+    // 判据与渲染在 src/WindowQuery.h；真机问答在 src/WindowQueryRun.cpp。
+    // 取值可省略（与 --monitor 同一条规矩）：省略时不吃后面的参数，所以 `--list out.png`
+    // 里的 out.png 仍是输出路径（在这一路算冲突），而 `--list=all` 才是"把最小化也列进来"。
+    {L"list", L"", true, L"query", L"[<all>]", nullptr, L"opt.list", true},
+    {L"inspect", L"", true, L"query", L"[<path>]", nullptr, L"opt.inspect", true},
+    {L"offset", L"", true, L"query", L"<n>", nullptr, L"opt.offset"},
+    {L"limit", L"", true, L"query", L"<n>", nullptr, L"opt.limit"},
 };
 
 std::vector<OptionInfo> BuildCatalog() {
@@ -656,6 +679,10 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     bool formatExplicit = false;
     bool qualityExplicit = false;
     bool outExplicit = false;
+    // 两条窗口查询是否**都**被写出过。opt.windowAction 只留最后一个写法（与其它取值选项的顺序
+    // 语义一致），而互斥判定要看用户到底写了哪几条，所以各记一个给出标记。
+    bool listGiven = false;
+    bool inspectGiven = false;
     // 用过的选择策略写法：按**策略**去重，而不是按用户敲的那个名字 ——
     // --newest 与 --topmost-match 是同一条策略的两种写法，同时给出不是冲突。
     struct PickUsage {
@@ -668,19 +695,53 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     bool oldestAliasUsed = false;
 
     // ---- 查询命令的互斥收集 ----
-    // --capabilities / --diagnostics 只接受 --lang / -v / -q，其余每一条选项与位置参数说的都是
-    // "那一次截图要怎么做"。这里只按 argv 出现顺序收集，等整条扫完再一次报出来（与选择策略
-    // 互斥那一条同一做法）：一次报错就把用户写的所有冲突项列全，而不是修一个报一个。
-    // 位置参数（输出路径）单独在扫完之后补进这一份清单，因为它没有 spec 可问。
-    std::vector<std::wstring> queryConflicts;
-    const auto AllowedWithQuery = [](const wchar_t* name) {
-        return std::wstring(name) == L"lang" || std::wstring(name) == L"verbose" ||
-               std::wstring(name) == L"quiet" || std::wstring(name) == L"capabilities" ||
-               std::wstring(name) == L"diagnostics";
+    // 两套只读查询各有各的允许清单，所以冲突也各收一份，扫完之后按「这一次到底是哪一类查询」
+    // 取对应那一份报出来（与选择策略互斥同一做法：一次把用户写的所有冲突项列全，不修一个报一个）：
+    //   * 环境查询（--capabilities / --diagnostics）只接受 --lang / -v / -q —— 它连目标都不问。
+    //   * 窗口查询（--list / --inspect）问的正是「哪些窗口命中这批条件」，所以窗口条件、
+    //     --monitor 与 --timeout-ms 都在允许之列；而截图那一级的选项（输出路径 / 格式 / 覆盖 /
+    //     --capture / --dry-run / 确认框期限）一条都不成立：它不出图，也就没有「截哪一扇、
+    //     截来放哪」这回事。--yes 同样不成立但**不算错**（见下面那一段）。
+    //   * 选择策略那一组要分开看：--inspect 需要的正是「多匹配里定哪一扇」，判据与截图同一条线，
+    //     所以 --index / --topmost-match / --bottommost-match（含旧别名）对它有效；
+    //     --list 本来就是「全部命中的分页」，再问「取哪一扇」说不通，--all 与 --inspect 也说不通
+    //     （一份快照只能对应一扇窗口）。这两条在扫完整条 argv、看清是哪个入口之后才判。
+    // 位置参数（输出路径）在两类里都算冲突，单独在扫完之后补进清单；报错里写 --out
+    // 而不回显用户那条路径本身 —— 查询这一路的规矩是不把路径带进输出。
+    std::vector<std::wstring> envConflicts;
+    std::vector<std::wstring> windowConflicts;
+    // 用户写过的选择策略名字：窗口查询那一条要在扫完之后按实际入口分别处置，所以先记下来。
+    std::vector<std::wstring> pickFlags;
+    const auto AllowedWithEnvQuery = [](const std::wstring& name) {
+        return name == L"lang" || name == L"verbose" || name == L"quiet" ||
+               name == L"capabilities" || name == L"diagnostics";
     };
-    const auto NoteQueryConflict = [&](const std::wstring& flag) {
-        if (std::find(queryConflicts.begin(), queryConflicts.end(), flag) == queryConflicts.end())
-            queryConflicts.push_back(flag);
+    const auto AllowedWithWindowQuery = [](const std::wstring& name) {
+        // 条件求值那一条线上的东西（与截图用的是同一套匹配语义）
+        if (name == L"hwnd" || name == L"pid" || name == L"process" || name == L"exe" ||
+            name == L"title" || name == L"title-contains" || name == L"title-regex" ||
+            name == L"class" || name == L"monitor" || name == L"timeout-ms") {
+            return true;
+        }
+        // 查询本身与它的取舍开关（取舍写在 --list / --inspect 的取值里）
+        if (name == L"list" || name == L"inspect" || name == L"offset" || name == L"limit") {
+            return true;
+        }
+        // 选择策略那一组：对 --inspect 有效、对 --list 无效 —— 这里先放行，
+        // 由扫完之后的那一段按实际入口处置（pickFlags 记的就是用户写过的那些名字）。
+        if (name == L"index" || name == L"topmost-match" || name == L"bottommost-match" ||
+            name == L"newest" || name == L"oldest") {
+            return true;
+        }
+        // 文案与详略：窗口查询的 message / hint 也随 --lang 变，标题本身更是原样交付
+        if (name == L"lang" || name == L"verbose" || name == L"quiet") return true;
+        // --yes 是截图授权那一级的事（只免掉窗口内容路径的确认框），对一次不取像素的查询
+        // 没有任何作用，所以写了它不算用法错 —— 但结果必须一模一样，包括"哪些字段读得到"。
+        // 判这条的地方是 authorization.yesAffectsResult: false 与 tests\windows.ps1 第 1 节。
+        return name == L"yes";
+    };
+    const auto NoteConflict = [&](std::vector<std::wstring>* into, const std::wstring& flag) {
+        if (std::find(into->begin(), into->end(), flag) == into->end()) into->push_back(flag);
     };
 
     // 单个选项 -> 数据结构。取值型选项的 value 是用户给的原文；开关的 value 是布尔写法的规范化结果：
@@ -924,6 +985,48 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // 所以这里不预判任何能力（也不该预判：那正是查询的用途）。
         if (name == L"capabilities") { opt.capabilities = true; return; }
         if (name == L"diagnostics") { opt.diagnostics = true; return; }
+        // 窗口查询的两个入口。同时给出算冲突（一份是列表、一份是单窗口快照，两份文档说的
+        // 不是同一件事），这里只落最后一个写法，冲突判定在扫完整条 argv 之后做。
+        // 这两条查询的取舍写在取值里：--list=all 把最小化窗口也列进来，
+        // --inspect=path 把归属映像的完整路径也写出来（默认只写文件名，路径常含用户名）。
+        // 取值只认这两个词；其余一律按"没给取值"处理而把后面的参数留给位置参数
+        //（判据与 ScanArgv 里那个 LooksLikeListValue 同源，两处不许各写一套）。
+        if (name == L"list") {
+            listGiven = true;
+            opt.windowAction = WindowAction::kList;
+            if (!value.empty()) {
+                if (ListQueryValue(value, &opt.listIconic)) return;
+                Err(codes::kInvalidValue, Msg(L"cli.list_value"), L"--list", value,
+                    Msg(L"cli.list_value_hint"));
+            }
+            return;
+        }
+        if (name == L"inspect") {
+            inspectGiven = true;
+            opt.windowAction = WindowAction::kInspect;
+            if (!value.empty()) {
+                if (ListQueryValue(value, &opt.inspectPath)) return;
+                Err(codes::kInvalidValue, Msg(L"cli.inspect_value"), L"--inspect", value,
+                    Msg(L"cli.inspect_value_hint"));
+            }
+            return;
+        }
+        // 分页两个数只认严格十进制，与 --index / --monitor 的编号同一套规矩。
+        // 上界取「一次求值本来就能拿到多少条」那一道线，超过它就不可能对真实命中数有意义。
+        if (name == L"offset") {
+            if (!ParseDecimal(value, 0, kMaxWindowListItems, &opt.offset)) {
+                Err(codes::kInvalidNumber, Msgf(L"cli.list_count_value", kMaxWindowListItems),
+                    L"--offset", value, Msg(L"cli.decimal_hint"));
+            }
+            return;
+        }
+        if (name == L"limit") {
+            if (!ParseDecimal(value, 1, kMaxWindowListItems, &opt.limit)) {
+                Err(codes::kInvalidNumber, Msgf(L"cli.list_count_value", kMaxWindowListItems),
+                    L"--limit", value, Msg(L"cli.decimal_hint"));
+            }
+            return;
+        }
 
         Err(codes::kInvalidValue, Msg(L"cli.unhandled_option"), L"--" + name, value);
     };
@@ -945,15 +1048,24 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
 
         const ScannedOption& scanned = it.option;
-        if (!AllowedWithQuery(scanned.spec->name)) {
-            // 只登记"与查询冲突"这一件事，不改变 Apply 的行为：这一次到底算不算查询，
-            // 要等整条 argv 扫完、看见 --capabilities / --diagnostics 出没出没才知道。
-            NoteQueryConflict(L"--" + std::wstring(scanned.spec->name));
+        const std::wstring flagName = L"--" + std::wstring(scanned.spec->name);
+        // 两份允许清单比的是**规范名**（不带 -- 前缀），报错时交出去的才是用户写的那个样子。
+        const std::wstring bareName = scanned.spec->name;
+        // 只登记「与哪一类查询冲突」这件事，不改变 Apply 的行为：这一次到底算哪一路，
+        // 要等整条 argv 扫完、看见 --capabilities / --diagnostics / --list / --inspect 出没出没才知道。
+        if (!AllowedWithEnvQuery(bareName)) NoteConflict(&envConflicts, flagName);
+        if (!AllowedWithWindowQuery(bareName)) NoteConflict(&windowConflicts, flagName);
+        // 选择策略那一组要按窗口查询的实际入口再判一次，所以把用户写过的名字留一份
+        //（--all 也在里面：它与 --inspect 说不通，但与 --list 语义同源，两边各按不同方向判）。
+        if (std::find(pickFlags.begin(), pickFlags.end(), flagName) == pickFlags.end() &&
+            (bareName == L"index" || bareName == L"topmost-match" ||
+             bareName == L"bottommost-match" || bareName == L"newest" || bareName == L"oldest" ||
+             bareName == L"all")) {
+            pickFlags.push_back(flagName);
         }
         if (scanned.spec->takesValue) {
             if (scanned.missingValue) {
-                Err(codes::kMissingValue, Msg(L"cli.missing_value"),
-                    L"--" + std::wstring(scanned.spec->name), L"");
+                Err(codes::kMissingValue, Msg(L"cli.missing_value"), flagName, L"");
                 return;
             }
             Apply(*scanned.spec, scanned.value);
@@ -964,7 +1076,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         std::wstring boolArg;
         if (scanned.hasValue) {
             bool b = false;
-            const std::wstring flag = L"--" + std::wstring(scanned.spec->name);
+            const std::wstring flag = flagName;
             if (!ParseBool(scanned.value, &b)) {
                 Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flag, scanned.value,
                     Msgf(L"cli.switch_no_value_hint", flag));
@@ -1013,27 +1125,57 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     opt.multi = distinctPick.empty() ? MultiMatch::kAsk : multiFlag;
 
     // ---- 查询命令的互斥判定 ----
-    // 判据是"这一次是不是查询"，不是"有没有某个选项本身写坏了"：写在查询后面的 --title 就算
-    // 值法不对，这里也先报冲突（一次只报最前面那条说不通的地方，免得调用方修完一个又一个）。
-    if (opt.QueryMode()) {
+    // 判据是「这一次是哪一类查询」，不是「有没有某个选项本身写坏了」：写在查询后面的 --title 就算
+    // 值法不对，这里也先报冲突（一次只报说不通的那一处，免得调用方修完一个又一个）。
+    // 两类查询各自允许什么写在上面那两份判据里；一份文档里绝不替用户挑一个执行。
+    const auto JoinFlags = [](const std::vector<std::wstring>& items) {
+        std::wstring joined;
+        for (size_t k = 0; k < items.size(); ++k) {
+            if (k) joined += L", ";
+            joined += items[k];
+        }
+        return joined;
+    };
+    if (opt.EnvQueryMode()) {
         if (opt.capabilities && opt.diagnostics) {
-            // 两条查询命令同时给出：两份文档都由同一批判据算出，同时出两份只会让调用方
+            // 两条环境查询同时给出：两份文档都由同一批判据算出，同时出两份只会让调用方
             // 不知道读哪一份，所以这里也是一条冲突，而不是把两份拼起来。
-            NoteQueryConflict(L"--capabilities");
-            NoteQueryConflict(L"--diagnostics");
+            NoteConflict(&envConflicts, L"--capabilities");
+            NoteConflict(&envConflicts, L"--diagnostics");
         }
         // 位置参数就是输出路径：它不吃 spec，所以扫完之后单独登记。报错里写 --out 而不回显
         // 用户那条路径本身——查询这一路的规矩是不把路径带进输出。
-        if (!positional.empty()) NoteQueryConflict(L"--out");
-        if (!queryConflicts.empty()) {
-            std::wstring joined;
-            for (size_t k = 0; k < queryConflicts.size(); ++k) {
-                if (k) joined += L", ";
-                joined += queryConflicts[k];
-            }
+        if (!positional.empty()) NoteConflict(&envConflicts, L"--out");
+        if (!envConflicts.empty()) {
             const std::wstring wanted = opt.capabilities ? L"--capabilities" : L"--diagnostics";
-            Err(codes::kQueryConflict, Msg(L"cli.query_conflict"), wanted, joined,
+            Err(codes::kQueryConflict, Msg(L"cli.query_conflict"), wanted, JoinFlags(envConflicts),
                 Msg(L"cli.query_conflict_hint"));
+        }
+    }
+    if (opt.WindowQueryMode()) {
+        if (listGiven && inspectGiven) {
+            // --list 交回一份列表、--inspect 交回一份单窗口快照：同一次只出一份，
+            // 报法与上面「两条环境查询同时给出」同源。
+            NoteConflict(&windowConflicts, L"--list");
+            NoteConflict(&windowConflicts, L"--inspect");
+        }
+        // 选择策略按入口分别处置（上面那份 pickFlags 就是用户写过的名字）：
+        //   --list   本来就是「全部命中的分页」，再问「取哪一扇」自相矛盾
+        //   --inspect 一份快照只能对应一扇窗口，--all 那个「每扇各一张」没有对象
+        for (const std::wstring& flag : pickFlags) {
+            if (opt.windowAction == WindowAction::kList && flag != L"--all") {
+                NoteConflict(&windowConflicts, flag);
+            }
+            if (opt.windowAction == WindowAction::kInspect && flag == L"--all") {
+                NoteConflict(&windowConflicts, flag);
+            }
+        }
+        if (!positional.empty()) NoteConflict(&windowConflicts, L"--out");
+        if (!windowConflicts.empty()) {
+            const std::wstring wanted =
+                opt.windowAction == WindowAction::kList ? L"--list" : L"--inspect";
+            Err(codes::kWindowQueryConflict, Msg(L"cli.window_query_conflict"), wanted,
+                JoinFlags(windowConflicts), Msg(L"cli.window_query_conflict_hint"));
         }
     }
 

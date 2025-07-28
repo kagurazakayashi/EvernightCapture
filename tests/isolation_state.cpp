@@ -243,6 +243,14 @@ void CheckReply() {
     w.className = L"CabinetWClass";
     w.imageName = L"explorer.exe";
     w.x = -8; w.y = 0; w.width = 1936; w.height = 1048; w.zOrder = 3; w.iconic = true;
+    // 三条跨进程问句各自的下场：结构化窗口查询要靠它们区分"问不出来"与"是空的"，
+    // 所以辅助进程问出来的答案必须逐项原样抵达父进程，不能被折成空值或默认成"能读"。
+    w.pathRead = ecapture::ReadState::kDenied;
+    w.pathWin32 = 5;               // ERROR_ACCESS_DENIED
+    w.startRead = ecapture::ReadState::kReadable;
+    w.processStartTicks = 0x0123456789ABCDEFull;
+    w.rectRead = ecapture::ReadState::kFailed;
+    w.rectWin32 = 1400;
     list.hits.push_back(w);
     std::vector<uint8_t> listBlob;
     Check(EncodeReply(list, &listBlob) && DecodeReply(listBlob.data(), listBlob.size(), &back),
@@ -250,6 +258,23 @@ void CheckReply() {
     Check(back.hits.size() == 1 && back.hits[0].hwnd == 0x001A0B4C && back.hits[0].iconic &&
               back.hits[0].title == L"标题 with D:\\path",
           "列表里的句柄、标志与标题逐项一致");
+    Check(back.hits.size() == 1 &&
+              back.hits[0].pathRead == ecapture::ReadState::kDenied &&
+              back.hits[0].pathWin32 == 5 &&
+              back.hits[0].startRead == ecapture::ReadState::kReadable &&
+              back.hits[0].processStartTicks == 0x0123456789ABCDEFull &&
+              back.hits[0].rectRead == ecapture::ReadState::kFailed &&
+              back.hits[0].rectWin32 == 1400,
+          "三条问句的下场与原因码逐项原样抵达父进程");
+
+    // 没登记过的"问句下场"整条作废：两边不是同一份代码时不能把未知值当成"能读"往下走
+    Reply bogusState;
+    bogusState.hits = back.hits;
+    bogusState.hits[0].pathRead = static_cast<ecapture::ReadState>(99);
+    std::vector<uint8_t> bogusBlob;
+    Check(!EncodeReply(bogusState, &bogusBlob) ||
+              !DecodeReply(bogusBlob.data(), bogusBlob.size(), &back),
+          "没登记过的问句下场不会被接受");
 
     // HWND 为 0 的条目不合法：解码端就挡掉，不给调用方 reinterpret_cast 的机会
     std::vector<uint8_t> zeroCopy = listBlob;

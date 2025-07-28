@@ -14,6 +14,8 @@
 #include "EnvReport.h"
 #include "Lang.h"
 #include "SystemCompat.h"
+#include "WindowQuery.h"
+#include "WindowQueryRun.h"
 
 namespace ecapture {
 namespace {
@@ -282,10 +284,50 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     out->body.clear();
     out->toStderr = false;
 
-    // 查询命令（--capabilities / --diagnostics）与 --version / --help 是三个不同的出口，
-    // 而且互斥（解析层把同时给出判成 cli.query_conflict）。所以这里必须**先**认查询这一路：
-    // 参数不合查询契约时不能落到帮助那一段去，否则调用方永远看不到那条冲突。
-    if (opt.QueryMode()) {
+    // 查询命令（--capabilities / --diagnostics / --list / --inspect）与 --version / --help 是几个
+    // 不同的出口，而且互斥（解析层把同时给出判成 cli.query_conflict / cli.window_query_conflict）。
+    // 所以这里必须**先**认查询这一路：参数不合查询契约时不能落到帮助那一段去，
+    // 否则调用方永远看不到那条冲突。
+    if (opt.WindowQueryMode()) {
+        if (parse.ok) {
+            // 只读的窗口发现与检查：一个像素都不取、不弹框、不写文件、不激活任何窗口
+            //（判据见 src/WindowQuery.h，真机问答见 src/WindowQueryRun.cpp）。
+            const WindowQueryResult wq = RunWindowQuery(opt);
+            const std::wstring contract =
+                opt.windowAction == WindowAction::kInspect ? L"windowinspect"
+                                                            : kWindowQueryContractName;
+            out->body = RenderWindowQuery(wq, contract, opt.verbose, opt.quiet);
+            if (!out->body.empty() && out->body.back() != L'\n') out->body += L'\n';
+            out->exitCode = wq.exitCode;
+            // 窗口查询没有图片要挤 stdout（输出路径这一路恒为空），所以结果恒走 stdout。
+            // 这里仍然问同一个 ResultGoesToStderr，不在两处各写一套流规则。
+            out->toStderr = ResultGoesToStderr(opt);
+            return out->exitCode;
+        }
+        // 参数在这一路就说不通（与截图那一级冲突、条件写坏）：交回与截图那一份**同形**的失败
+        // 文档（captured=0 / images=[] / errors=[…]），调用方按 errors[].code 分支的那段代码
+        // 不必为窗口查询另写一份。这与 --capabilities 那一路的处理完全对称。
+        Json fj;
+        fj.Obj();
+        fj.Key(L"captured").Value(0);
+        fj.Key(L"images").Arr().End();
+        std::vector<Diagnostic> ferr = parse.errors;
+        for (auto& d : ferr) {
+            if (d.stage.empty()) d.stage = stages::kParse;
+        }
+        // DiagnosticArray 只写那一段数组本体，键名要调用点先写（与下面正常截图那一路同一写法）。
+        fj.Key(L"errors");
+        DiagnosticArray(fj, ferr);
+        if (!parse.warnings.empty() && !opt.quiet) {
+            fj.Key(L"notes");
+            DiagnosticArray(fj, parse.warnings);
+        }
+        fj.End();
+        out->body = fj.Str() + L"\n";
+        out->exitCode = EX_USAGE;
+        out->toStderr = ResultGoesToStderr(opt);
+        return EX_USAGE;
+    } else if (opt.QueryMode()) {
         if (parse.ok) {
             const EnvQueryKind kind =
                 opt.diagnostics ? EnvQueryKind::kDiagnostics : EnvQueryKind::kCapabilities;

@@ -32,6 +32,7 @@
   都跑在一個工具能夠停下的輔助處理程序裡，所以卡死的目標視窗再也卡不住這個工具
 - **四語文案**：`zh-CN` / `zh-TW` / `en` / `ja`，預設跟隨系統顯示語言，全部編在 exe 的資源裡
 - **機器讀的 JSON**：只裝擷取結果與錯誤，不含工具名、版本、schema、參數回顯之類的元資訊
+- **視窗可以不截圖就列出來看清**：`--list` 把命中的視窗列成結構化 JSON（句柄、PID、類名、標題、映像名、物理矩形、可見/最小化、Z 序，以及後續截圖要複核的身份欄位），命中多個按 `--offset` / `--limit` 分頁而不是報截圖歧義；`--inspect` 逐項查清一扇視窗，命中多扇仍算歧義而不會替你挑一個。兩條都不取畫素、不彈框、不寫檔案、不觸碰任何視窗，`--yes` 對它們沒有作用，交回的是一份被明確標註為快照的結果
 - **能力可唯讀查詢**：`--capabilities` / `--diagnostics` 在不動一個像素、不彈確認框、不寫檔案、不連網的前提下
   問出這台機器現在能走哪幾條通道、`--yes` 到底管到哪一層，以及可核對的建置識別碼；「這個建置裡有這條路徑」、
   「本機現在讓不讓走」、「本專案有沒有在這種系統上實測過」是三件分開寫的事，問不出來就照實寫 `unknown`，
@@ -127,9 +128,13 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --quality <1-100>               JPEG 品質，十進位 1..100，預設 100
   --no-overwrite                  目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 
-能力查詢（唯讀：不截圖、不彈框、不寫檔案）
+查詢（唯讀：不截圖、不彈框、不寫檔案）
   --capabilities                  輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
   --diagnostics                   輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
+  --list [<all>]                  唯讀地把滿足全部條件的頂層視窗列成 JSON（句柄 / PID / 類名 / 標題 / 映像名 / 矩形 / Z 序 / 身分約束欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。結果會過期，截圖時仍要複核身分
+  --inspect [<path>]              唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到的項寫欄位級 denied / failed，不建議改用管理員身分；不恢復或啟用任何視窗
+  --offset <n>                    視窗查詢跳過開頭 n 個（0 起）
+  --limit <n>                     視窗查詢本批最多 n 個（預設 50）
 
 其他
   --dry-run, -d                   只解析並列出候選視窗，不截圖不寫檔案
@@ -364,6 +369,14 @@ present 記錄，且整幅只有一個顏色。
 `1` = 這次用法不合契約（`cli.query_conflict`，見[系統支援](#系統支援)）。它們不產生 `4`/`5`/`6`/`7`/`8`：
 一個視窗都沒列舉、一個框都沒彈、一個檔案都沒寫。
 
+只讀的視窗查詢那兩條（`--list` / `--inspect`）共用 `0` 與 `1`，並另外使用 `4`（`match.no_window`，只可能出自
+`--inspect`，它需要一個目標）與 `5`（`match.ambiguous_window`，選擇策略之後仍剩多扇），再加**只有一條來路的 `7`**：
+這一次的**條件求值自己沒跑完**（`match.timeout` —— `--timeout-ms` 的預算花在 `--title-regex` 的迴溯或向掛起的
+視窗取標題那一步，或那一步的輔助程序自己壞了）。那條 `7` 說的是「這一問沒能問完」，與取影格無關，所以它的 `hint`
+也是查詢自己的說法，明寫換 `--capture` 沒有用 —— 這一路根本沒有通道可換。**`6` 與 `8` 絕不出現**：一個框都沒彈、
+一個檔案都沒寫，而那兩條說的正是這兩段事。`--list` 在一個都沒命中時退出碼仍是 `0` —— 空列表
+就是這一次的答案。
+
 ## 系統支援
 
 三個不同的數字不能混成一句「支援 Windows X 以上」：
@@ -443,6 +456,100 @@ ECAPTURE.EXE --capabilities -v           # 另加 probes 段：每一問的原�
 `--capabilities` / `--diagnostics` 只接受 `--lang`、`-v`、`-q`：截圖那一套選項（視窗條件、`--monitor`、`--capture`、`--out` 與位置引數、`--yes`、`--dry-run`、兩條期限）與它們**同時給出就是 `cli.query_conflict` + 退出碼 1**，一次報全所有衝突項，一張都不截、一個檔案都不寫。這兩條命令也不參加「沒給條件就顯示說明」那一條：查詢本身就是明確的意圖。`-q` 對查詢只去掉 `caveats` 那一段，`-v` 加的是 `probes`，兩邊都不動答案本身。
 
 這份文件從頭到尾是 ASCII（機器讀的取值一律不翻譯），所以同一台機器上換任何一種 `--lang`，輸出逐位元組相同。
+
+### 結構化的視窗發現與檢查（`--list` / `--inspect`）
+
+在這兩條命令之前，調用方（尤其是 AI）想知道"這批條件到底命中了哪些視窗"只有兩條路，而兩條都不對：
+`--dry-run` 把每個候選寫成**一行給人看的話**塞在 `note.dry_run` 裡
+（`hwnd=0x… pid=… 1261x614+681+22 class=… title=…`），要用的就得從這句裡把句柄、矩形、標題再解析出來 ——
+而工具從沒承諾過這句話的形狀穩定，標題裡有一個空格或一個 `|` 就解析錯位。另一條是真去截一張圖：它要求一個輸出
+路徑、會按截圖那一級彈確認框，還會把"命中多扇"報成錯誤 —— 那對"我要截一批圖"是合理的結論，對"我先看一眼"
+完全是幫倒忙。
+
+這兩條命令就是這個問題的唯讀出口。它們跑的是與截圖**同一套**條件求值（同一選項寫多次取並集、不同選項取交集、
+`--monitor` 按屏過濾，用了 `--title-regex` 或 `--timeout-ms` 時照舊整步進輔助程序），但不產任何圖片：
+
+```powershell
+ECAPTURE.EXE --list --process notepad.exe                    # 每個命中的視窗，結構化
+ECAPTURE.EXE --list --class CabinetWClass --limit 5 --offset 5
+ECAPTURE.EXE --list=all --title-contains 報告                # 把最小化的也列進去
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C                     # 一扇視窗，逐項查清楚
+ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 與截圖完全同一套消歧
+```
+
+五條規矩，每一條都因為另一條做法更壞：
+
+* **不取像素、不問人、不寫檔案。** 不調任何取幀通道，不彈確認框，不建檔案，不聯網，不讀環境變量 —— 文檔自己在
+  `authorization` 段寫着（`pixelsRead: 0`、`consentDialogShown: false`、`filesWritten: false`）。它同樣**不動任何
+  目標視窗**：不恢復、不激活、不改疊放次序 —— "我先看一眼開着什麼"不該改變屏幕上的樣子。`caveats` 裡的
+  `no_capture_performed` 與 `no_window_touched` 就是釘這一條。
+* **命中多扇不是截圖歧義。** `--list` 把它們分頁交回（`--offset` / `--limit`，本批預設 50 條），真實總數寫在
+  `pagination.matched`，於是"這一頁很短"永遠不會被讀成"只有這些視窗"。一個都沒命中是正常答覆：`windows: []` +
+  退出碼 `0`，不是 `match.no_window` + `4`。`--inspect` 需要一個目標，用的正是截圖那一條選擇策略：策略之後仍剩多扇
+  就是 `match.ambiguous_window` + 退出碼 `5` —— 不替你選一個，也不會"先拿一扇看起來一樣的"。
+* **列表是一份快照，會過期。** 句柄會被複用、標題會變、處理程序會退出，所以這裡的 `hwnd` / `pid` / 類名**不是**一種可以
+  長期持有的憑證。每次成功的查詢都帶一條 `note.window_query_stale`，而每一行的 `identity` 段寫着
+  `verificationRequired: true`、`isAuthorizationToken: false`、`raceWindowReducedNotEliminated: true`。真去截圖時
+  仍在讀像素之前複核目標身份（那是 `capture.target_gone` / `capture.target_changed` /
+  `capture.target_unverifiable`），確認框也照舊按像素來源判：**`--yes` 在這裡不起任何作用**
+  （`authorization.yesAffectsResult: false`）—— 它既不會多解鎖一個欄位，也不會跳過一次本就不彈的框。
+* **讀不到的欄位會說它讀不到。** 跨處理程序的問答有三種下場，逐欄位寫：`readable`、`denied`（系統擋下了這個調用方）、
+  `failed`（問過而沒答案），後者帶原始 Win32 碼。讀不到的值是哨兵（`0` / 空串）**加上**這個狀態，不是把鍵悄悄省掉；
+  文檔也不勸你改用管理員身份 —— `caveats` 裡寫着 `unreadable_fields_are_not_a_prediction`。
+* **可見性策略寫出來，不讓調用方猜。** 不可見與零尺寸的視窗被排除（與截圖那一次枚舉同一條規則），`policy` 段就這麼
+  說（`invisibleExcluded`、`zeroSizedExcluded`）；最小化視窗預設也不進列表，條數記在
+  `policy.minimizedExcluded`，`--list=all` 把它們按同一根 Z 序軸並進來。這裡對"系統視窗"**不作任何斷言**：
+  Windows 沒有一個"我是系統視窗"的屬性可問，所以 `policy.systemWindowAssertion` 是 `false`。
+
+每行的欄位如下（`--inspect` 把 `windows` 數組換成單個 `window` 對象，其餘欄位完全同一形狀）：
+
+```json
+{ "contract": "windowquery", "contractVersion": 1, "query": "list",
+  "program": { "version": "0.4.0" },
+  "authorization": { "readOnly": true, "pixelsRead": 0, "consentDialogShown": false,
+                     "filesWritten": false, "yesAffectsResult": false,
+                     "identityFieldsAreNotConsent": true },
+  "policy": { "invisibleExcluded": true, "zeroSizedExcluded": true, "minimizedIncluded": false,
+              "minimizedExcluded": 2, "systemWindowAssertion": false, "order": "zOrder" },
+  "pagination": { "offset": 0, "limit": 50, "limitDefaulted": true, "defaultLimit": 50,
+                  "maxLimit": 8192, "matched": 52, "returned": 50, "truncated": true,
+                  "nextOffset": 50 },
+  "windows": [ { "hwnd": "0x001A0B4C", "pid": 31468, "title": "…", "class": "CabinetWClass",
+                 "image": "explorer.exe",
+                 "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
+                 "visible": true, "minimized": false, "zOrder": 3,
+                 "readability": { "process": { "state": "readable" },
+                                  "imagePath": { "state": "denied", "win32": 5 },
+                                  "processStart": { "state": "readable" },
+                                  "rect": { "state": "readable" } },
+                 "identity": { "hwnd": "0x001A0B4C", "pid": 31468, "class": "CabinetWClass",
+                               "processStartTicks": 134351142668527401,
+                               "selectionNeedsRecheck": false, "verificationRequired": true,
+                               "isAuthorizationToken": false,
+                               "raceWindowReducedNotEliminated": true } } ],
+  "caveats": [ "no_capture_performed", "no_consent_dialog_shown", "no_window_touched",
+               "snapshot_expires", "identity_fields_are_not_a_token",
+               "invisible_and_zero_sized_excluded", "unreadable_fields_are_not_a_prediction",
+               "list_may_be_partial" ] }
+```
+
+`title`、`class`、`image` 逐字交付 —— 不截斷、不拼進一句人話、不折疊大小寫 —— 調用方讀欄位，不該再去解析一段句子。
+歸屬映像的**完整路徑**預設不寫，因為安裝路徑裡常含用戶名；要它得顯式寫 `--inspect=path`。匹配 `--exe` 本來就一直
+讀得到路徑，與報告裡交不交這件事無關。`identity` 交出的正是截圖那一次要複核的幾件事（句柄、PID、該 PID 的創建
+時間、類名，外加"要不要靠重跑當初那份條件來認它"），所以 `--inspect --hwnd <那個句柄>` 描述的約束集與截圖會堅持
+的那一套完全同源。枚舉當時問不到創建時間就寫 `unknown` —— 那是一次**沒做出來**的判定，不是一個等於 0 的值。
+
+`--list` / `--inspect` 接受視窗條件、`--monitor`、`--offset` / `--limit`、`--timeout-ms`、`--yes`（不起作用）與
+`--lang` / `-v` / `-q`。與截圖那一級的選項一起給出是 `cli.window_query_conflict` + 退出碼 `1`（`--out`、位置參數、
+`--format`、`--quality`、`--no-overwrite`、`--capture`、`--dry-run`、`--consent-timeout-ms`、`--capabilities`、
+`--diagnostics`，以及兩條視窗查詢同時給出）。選擇策略那一組按入口分別判：它們是用來把目標收窄到一扇的，所以對
+`--inspect` 有效，而 `--list` 說的本來就是"全部命中"，配它算衝突。與環境查詢一樣，這兩條不會掉進"無條件 = 幫助"；
+而**參數本身**說不通時交回的形狀仍是截圖那一份（`captured: 0`、`images: []`、`errors[]` 用同一批碼），調用方按
+`errors[].code` 分支的那段代碼不必分叉。`--list` 那份契約叫 `windowquery`，`--inspect` 那份叫 `windowinspect`：
+形狀不同、契約名不同，欄位共用同一套。
+
+`--dry-run` 原樣保留，仍是那個兼容入口：它照舊把答案寫在 `note.dry_run` 裡，照舊不需要輸出路徑，也與
+`--list` / `--inspect` 互爲衝突 —— 而不是被這兩條悄悄替換掉。
 
 ## 取圖方式
 
@@ -629,7 +736,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 這個工具就是為程式化呼叫設計，照下面這套約定做最省事。專案裡還附了一份教 AI 使用它的 skill：
 `.agents/skills/ecapture-screenshot/`（裡有 `SKILL.md`、`references/cli-contract.md` 和一份 exe 副本）。
 
-1. **先問一次能力，再 `--dry-run` 探目標，最後真的截圖。** `--capabilities` 是唯讀的：不取像素、不彈確認框、
+1. **先問一次能力，再用 `--list` / `--inspect` 發現視窗，最後真的截圖。** `--capabilities` 是唯讀的：不取像素、不彈確認框、
    不寫檔案，所以不會打擾任何人，適合放在自動化流程最前面。它把這台機器的版本、工作階段、螢幕拓撲、每條路線的
    `available` / `unavailable` / `unverified`、每種格式、`--yes` 到底管哪幾條內部路徑，以及取值上限一次交給你，
    於是「該用哪條 `--capture`」「這次失敗該換通道還是這台機器不行」「這裡彈框有沒有人會答」在動手之前就有答案。
@@ -639,6 +746,10 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    之後照舊 `--dry-run`：它不取影格、不寫檔案、也不彈確認框，候選在 `notes[0].value`：
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` 也不必給 `--out`
    （那一次沒有圖片要交付，結果整份在 stderr）；而**只給 `--dry-run` 不給任何視窗條件 = 文字說明 + 退出碼 2**。
+   要的是**清單**而不是一行人話時，用 `--list`（結構化、分頁，多匹配不算錯誤，一個都沒命中是空清單 + 退出碼
+   `0`）與 `--inspect`（一扇視窗，多匹配仍算歧義 —— 它不會替你挑一個）。兩條都不取畫素、不彈框，`--yes`
+   對它們也沒有任何作用。它們交回的是快照：真去截圖仍要複核目標身份，所以請把**剛做完的一次** `--inspect`
+   裡的句柄傳給截圖，而不是緩存早前那一輪的。詳見上文《結構化的視窗發現與檢查》一節。
 2. **依 `errors[].code` 分支，不要比對 `message` 文字**（那會隨 `--lang` 變），也不要拿「有沒有給 `--out`」當原因——
    省略它那條路與 `--out -` 報的是同樣的碼。常用的幾條：
    `match.no_window`（4，條件太窄或目標被最小化）、`match.ambiguous_window`（5，從 `hint` 的候選裡挑）、

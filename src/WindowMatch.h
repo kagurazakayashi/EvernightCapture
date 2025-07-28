@@ -22,6 +22,15 @@
 
 namespace ecapture {
 
+// 一条跨进程问答的三种下场。「问不出来」不等于「读到了空值」，也不等于「没有这个问题」：
+// 结构化窗口查询要把这一区分原样交给调用方（字段级 unknown），而不是把读不到写成空值。
+// 数值是辅助进程管道上的线上格式（WorkerProtocol.h），加取值要同步协议版本。
+enum class ReadState : uint32_t {
+    kReadable = 0,   // 这一问给出了答案（答案本身可以是空串，那是真值）
+    kDenied = 1,     // 被系统挡下（ERROR_ACCESS_DENIED / ERROR_PRIVILEGE_NOT_HELD）
+    kFailed = 2,     // 问过而失败，原因码记在同一条的 win32 字段里
+};
+
 struct WindowInfo {
     uint64_t hwnd = 0;
     uint32_t pid = 0;
@@ -30,6 +39,14 @@ struct WindowInfo {
     // 而身份复核（WindowIdentity.h）不能靠"当场再问一次"来补 —— 那等于自己跟自己对答案，
     // 所以这个值必须在**枚举那一刻**就记进这一条候选里（辅助进程枚举时也一样）。
     uint64_t processStartTicks = 0;
+    // 上面那一条与下面三条问句各自的下场。默认是 kFailed 而不是 kReadable：
+    // ProcessFactsOf 一条问句都没问成时（量不到 PID、开不到句柄），「没答案」是失败而不是空值。
+    // 它们是**判据**字段而不是画面：结构化窗口查询按它们写「这一项能不能读」，
+    // 截图链路不读它们（身份复核本来就是「基线没有的那一条整个跳过」）。
+    ReadState pathRead = ReadState::kFailed;    // QueryFullProcessImageNameW 的下场
+    ReadState startRead = ReadState::kFailed;   // GetProcessTimes 的下场
+    uint32_t pathWin32 = 0;                     // 问句失败时的系统原因码，0 = 没失败过
+    uint32_t startWin32 = 0;
     std::wstring title;
     std::wstring className;
     std::wstring imageName;   // 映像文件名，取不到时为空
@@ -38,6 +55,10 @@ struct WindowInfo {
     int32_t y = 0;
     int32_t width = 0;
     int32_t height = 0;
+    // 窗口矩形那一问的下场：GetWindowRect 失败时上面四个数是没问出来的初值，
+    // 不是「一个零尺寸的窗口」。查询层靠这一条把 unknown 与 0 分开写。
+    ReadState rectRead = ReadState::kFailed;
+    uint32_t rectWin32 = 0;
     int32_t zOrder = 0;       // EnumWindows 的访问顺序，0 = 最前
     bool iconic = false;      // 最小化
 };

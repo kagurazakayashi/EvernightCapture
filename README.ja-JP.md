@@ -39,6 +39,7 @@ CRT を静的リンクしているのでターゲットマシンに VC++ ラン�
   プロセスで走るので、フリーズした対象ウィンドウがこのツールをフリーズできなくなりました
 - **4 か国語のメッセージ**：`zh-CN` / `zh-TW` / `en` / `ja`。既定はシステム表示言語に従い、すべて exe 内のリソースにコンパイル済み
 - **機械が読む JSON**：画面取得結果とエラーだけを含み、ツール名・バージョン・schema・引数のエコーバックのようなメタ情報は載せない
+- **画面取得なしでウィンドウを一覧・検査できる**：`--list` は該当ウィンドウを構造化 JSON で返す（ハンドル、PID、クラス名、タイトル、イメージ名、物理矩形、表示/最小化、Z 順、後続の画面取得が再確認する身元欄）。複数一致は `--offset` / `--limit` でページ送りし、画面取得の歧義にしない。`--inspect` は 1 窓を項目ごとに検査し、複数一致なら代わりを選ばずに歧義として返す。この 2 つはピクセルも取らず確認も出さずファイルも書かずウィンドウに触れず、`--yes` は効果を持たず、返すものは明示されたスナップショットである
 - **能力を読み取りで照会できる**：`--capabilities` / `--diagnostics` は、ピクセルも取らず確認も出さずファイルも書かず通信もしないで、この機がいま通せる経路、`--yes` が実際に及ぶ範囲、検証可能なビルド識別子を返す。「このビルドにその経路がある」「いまこの機で通せる」「本プロジェクトがこういうシステムで実測した」は別々の欄として書き分け、答えが出なければ `unknown` をそのまま返す。実際の撮影や符号化で能力を探ることはしない
 
 ## クイックスタート
@@ -133,9 +134,13 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   --quality <1-100>               JPEG の品質。10 進で 1..100、既定 100
   --no-overwrite                  ターゲットが既に存在するなら上書きせずエラー終了（値を省略すれば禁止が有効）。--no-overwrite=false（0 / no / n / off）で禁止を取り消します。=true / 1 / yes / y / on は値を省略した時と同じ。複数指定した場合は最後のものが有効
 
-能力照会
+照会（読取専用）
   --capabilities                  この機の能力を JSON で返す（版数、OS とセッション条件、各経路の available / unavailable / unverified、--yes の適用範囲）。読み取り専用で撮影も確認も書き込みもしない。available は保証ではない。--lang / -v / -q のみ可、撮影オプションや出力先と併用すると cli.query_conflict
   --diagnostics                   ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
+  --list [<all>]                  条件を満たす最上位ウィンドウを JSON で一覧化。撮影も確認も書き込みもせず、出力パスも不要。ページ送りは --offset / --limit、all で最小化ウィンドウも含める。結果はこの瞬間のスナップショットなので撮影前に身元を再確認する
+  --inspect [<path>]              選択戦略が定める 1 件のウィンドウを読取専用で検査。複数一致は match.ambiguous_window + 5 を返し、代わりに選ばない。path で完全パスも書く（既定はファイル名のみ）
+  --offset <n>                    照会で先頭 n 件を飛ばす（10 進）
+  --limit <n>                     照会の 1 回あたりの最大件数（既定 50）
 
 その他
   --dry-run, -d                   解析と候補ウィンドウの列挙だけ行い、画面取得もファイル書き出しもしない
@@ -390,6 +395,16 @@ JSON は丸ごと stderr へ移り、各診断は実際にそのステップが�
 `1` = この使い方自体が契約に合わない（`cli.query_conflict`。「[動作環境のサポート](#動作環境のサポート)」参照）。
 `4`/`5`/`6`/`7`/`8` は出さない：ウィンドウも列挙せず、確認も出さず、ファイルも書かない。
 
+読み取り専用のウィンドウ照会 2 つ（`--list` / `--inspect`）は `0` と `1` を共通に使い、さらに `4`
+（`match.no_window`、対象を 1 つ必要とする `--inspect` だけがこのコードを返す）と `5`（`match.ambiguous_window`、
+選択戦略の後も複数残る）を使う。加えて **`7` は来路が 1 つだけ**ある：今回の**条件評価が途中で終わらなかった**
+とき（`match.timeout` —— `--timeout-ms` の予算を `--title-regex` のバックトラッキングか、応答のないウィンドウから
+タイトルを取る処理に使いきった、あるいはその段階のヘルパープロセス自体が壊れた）だ。その `7` は「この質問に
+答えられなかった」の意味で、影格取得の失敗ではない。だから `hint` も照会向けの書き方になっていて、
+`--capture` を切り替えても意味がないことを明言している —— この経路には切り替える取得経路が存在しない。
+**`6` と `8` は絶対に出ない**：確認も出さずファイルも書かないのであり、その 2 つのコードはまさに那段の話である。
+`--list` は 0 件のときも終了コード `0` である — 空の一覧が今回の回答だからだ。
+
 ## 動作環境のサポート
 
 三つの違う数字を「Windows X 以上に対応」という一文に混ぜてはいけない。
@@ -487,6 +502,111 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
 どちらも答え自体は動かない。
 
 この文書は最初まで ASCII（機械が読む値は翻訳しない）。同じ機で `--lang` をどれに変えても出力はバイト単位でまったく同じ。
+
+### 構造化されたウィンドウの発見と検査（`--list` / `--inspect`）
+
+この 2 つの照会ができる以前、呼び出し側（特に AI）が「この条件群に実際にどのウィンドウが当たるか」を知る手立ては
+2 つしかなく、どちらも不適切でした。`--dry-run` は候補を**人間が読む 1 行**にまとめて `note.dry_run` に置きます
+（`hwnd=0x… pid=… 1261x614+681+22 class=… title=…`）。つまりハンドル・矩形・タイトルをその文章から逆パーズする
+ことになり、しかもこの文章の形は安定すると約束されたものではありません — タイトルに空白や `|` が 1 つあるだけで
+パーズがずれます。もう 1 つは実際に画像を取ることですが、それには出力パスが必要になり、画面取得向けの確認
+ダイアログも出ます。さらに「複数該当」をエラーにします — 撮影の連続実行では妥当な結論でも、「まず見たい」だけに
+対しては筋違いです。
+
+この 2 つが、その問いに対する読み取り専用の出口です。評価は画面取得と**まったく同じ**経路を通ります（同一オプションの
+複数指定は和集合、異なるオプションは積集合、`--monitor` の画面絞り込み、`--title-regex` または `--timeout-ms` が
+あるときは補助プロセスへ丸ごと委譲）。ただし画像は一切生成しません。
+
+```powershell
+ECAPTURE.EXE --list --process notepad.exe                    # 該当ウィンドウを構造化して一覧化
+ECAPTURE.EXE --list --class CabinetWClass --limit 5 --offset 5
+ECAPTURE.EXE --list=all --title-contains レポート            # 最小化ウィンドウも含める
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C                    # 1 窓を項目ごとに検査
+ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 画面取得と同じ消歧
+```
+
+ルールは 5 つ。いずれも、もう一方の做法がより悪いために存在します。
+
+* **画素も取らなければ、聞かず、書かない。** どの画面取得経路も呼ばず、確認ダイアログも出さず、ファイルも作らず、
+  通信も環境変数の読み取りもしません — 文書自身が `authorization` にそれを明記します
+  （`pixelsRead: 0` / `consentDialogShown: false` / `filesWritten: false`）。対象ウィンドウに**一切触れない**ことも
+  同じ約束です：復元も前面化も Z 順の変更もしません。「開いているものを見たい」が画面の様子を変えてはいけないため、
+  `caveats` は `no_capture_performed` と `no_window_touched` を載せます。
+* **複数該当は画面取得の歧義ではない。** `--list` はページ送りして返します（`--offset` / `--limit`、既定は 1 回
+  50 件）ので、実際の総数は `pagination.matched` に書かれ、「このページが短い」が「このしかない」に読めることを
+  防ぎます。0 件は正常な回答です：`windows: []` と終了コード `0` であって、`match.no_window` + `4` ではありません。
+  `--inspect` は 1 つの対象を必要とするため、画面取得が使うのと**同じ**選択戦略を適用します。その後も複数残れば
+  `match.ambiguous_window` + 終了コード `5` — 代わりの 1 つを選んだり、よく似た窓を先に取ったりはしません。
+* **一覧はスナップショットで、古くなります。** ハンドルは再利用され、タイトルは変わり、プロセスは終わるので、ここにある
+  `hwnd` / `pid` / クラス名は**長く保持できる資格証ではありません**。成功した照会は毎回 `note.window_query_stale` を
+  伴い、各行の `identity` は `verificationRequired: true` / `isAuthorizationToken: false` /
+  `raceWindowReducedNotEliminated: true` を書きます。あとで画面取得するときは、画素を読む前に対象の身元を再確認します
+  （それが `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`）。確認ダイアログも
+  画素の出所にしたがって判定されます。**`--yes` はここで何も変えません**（`authorization.yesAffectsResult: false`）—
+  項目を解除もしなければ、そもそも出ない框をスキップもしません。
+* **読めない項目は「読めない」と書きます。** プロセスをまたぐ質問には 3 つの結末があり、項目ごとに書かれます：
+  `readable`、`denied`（この呼び出し側がシステムに拒まれた）、`failed`（聞いたが答えがなかった）。後者 2 つは
+  Win32 の生のコードも添えます。読めない値はセンチネル（`0` / 空文字）**プラス**その状態であって、鍵が黙って
+  消えるのではありません。管理者実行を促すこともなく、`caveats` は
+  `unreadable_fields_are_not_a_prediction` を載せます。
+* **表示方針は推測させず書きます。** 非表示とサイズ 0 のウィンドウは除外されます（画面取得の列挙と同じ規則）し、
+  `policy` がそのまま `invisibleExcluded` / `zeroSizedExcluded` と書きます。最小化ウィンドウも既定では一覧に入らず、
+  その件数は `policy.minimizedExcluded` に数えられ、`--list=all` で同じ Z 順軸に併合されます。
+  「システムウィンドウ」については**何も主張しません**：Windows には「私はシステムウィンドウだ」という属性が
+  存在しないため、`policy.systemWindowAssertion` は `false` です。
+
+1 行のフィールドは次の通りです（`--inspect` は `windows` 配列を同じ形状の単一 `window` に差し替えます）：
+
+```json
+{ "contract": "windowquery", "contractVersion": 1, "query": "list",
+  "program": { "version": "0.4.0" },
+  "authorization": { "readOnly": true, "pixelsRead": 0, "consentDialogShown": false,
+                     "filesWritten": false, "yesAffectsResult": false,
+                     "identityFieldsAreNotConsent": true },
+  "policy": { "invisibleExcluded": true, "zeroSizedExcluded": true, "minimizedIncluded": false,
+              "minimizedExcluded": 2, "systemWindowAssertion": false, "order": "zOrder" },
+  "pagination": { "offset": 0, "limit": 50, "limitDefaulted": true, "defaultLimit": 50,
+                  "maxLimit": 8192, "matched": 52, "returned": 50, "truncated": true,
+                  "nextOffset": 50 },
+  "windows": [ { "hwnd": "0x001A0B4C", "pid": 31468, "title": "…", "class": "CabinetWClass",
+                 "image": "explorer.exe",
+                 "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
+                 "visible": true, "minimized": false, "zOrder": 3,
+                 "readability": { "process": { "state": "readable" },
+                                  "imagePath": { "state": "denied", "win32": 5 },
+                                  "processStart": { "state": "readable" },
+                                  "rect": { "state": "readable" } },
+                 "identity": { "hwnd": "0x001A0B4C", "pid": 31468, "class": "CabinetWClass",
+                               "processStartTicks": 134351142668527401,
+                               "selectionNeedsRecheck": false, "verificationRequired": true,
+                               "isAuthorizationToken": false,
+                               "raceWindowReducedNotEliminated": true } } ],
+  "caveats": [ "no_capture_performed", "no_consent_dialog_shown", "no_window_touched",
+               "snapshot_expires", "identity_fields_are_not_a_token",
+               "invisible_and_zero_sized_excluded", "unreadable_fields_are_not_a_prediction",
+               "list_may_be_partial" ] }
+```
+
+`title` / `class` / `image` は一言一句そのまま渡します — 切り詰めも、文章への埋め込み、大文字小文字の折込みもしません。
+呼び出し側はフィールドを読むのであって、文をパーズするのではありません。帰属イメージの**完全パス**は既定で書きません
+（インストール先にはユーザ名が含まれがちだから）で、必要なら `--inspect=path` を明示します。`--exe` の照合はいつも
+パスを読んでいるので、これを報告するかとは無関係です。`identity` が渡すのは、まさに画面取得の回が再確認する事実群
+（ハンドル、PID、その PID の生成時刻、クラス名、それに「当初の条件を再実行して認めるかどうか」）なので、
+`--inspect --hwnd <あのハンドル>` が記述する制約集合は画面取得が守る組と完全に同源です。列挙の時点で生成時刻が
+問えなければ `unknown` と書きます — それは**実施できなかった**判定であって、0 という値ではありません。
+
+`--list` / `--inspect` は、ウィンドウ条件・`--monitor`・`--offset` / `--limit`・`--timeout-ms`・`--yes`
+（効果なし）・`--lang` / `-v` / `-q` を受けします。画面取得向けの選択肢と同時に指定すると
+`cli.window_query_conflict` + 終了コード `1` です（`--out`、位置引数、`--format`、`--quality`、`--no-overwrite`、
+`--capture`、`--dry-run`、`--consent-timeout-ms`、`--capabilities`、`--diagnostics`、および 2 つのウィンドウ照会の
+同時指定）。選択戦略の組は入口ごとに判定します：対象を 1 つに絞るためのものなので `--inspect` では有効で、
+「全て該当」を意味する `--list` とは衝突します。環境照会と同じく「条件なし = ヘルプ」には落ちません。そして
+**引数として**筋が通らない回は、画面取得と同じ形（`captured: 0` / `images: []` / 同じコードの `errors[]`）を
+返すので、`errors[].code` で分岐する呼び出し側のコードは分岐を増やしません。`--list` の契約は `windowquery`、
+`--inspect` のそれは `windowinspect`：形も契約名も別で、フィールドは同じ組を共有します。
+
+`--dry-run` はそのまま残る互換入口です：これまでどおり答えを `note.dry_run` に置き、これまでどおり出力パスを
+必要とせず、`--list` / `--inspect` とは互いに衝突します — この 2 つに黙って置き換えられるのではありません。
 
 ## 画面取得方式
 
@@ -703,7 +823,7 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 リポジトリには AI に使い方を教える skill も同梱してある：`.agents/skills/ecapture-screenshot/`
 （`SKILL.md`、`references/cli-contract.md`、exe のコピー入り）。
 
-1. **まず能力を一度照会し、それから `--dry-run` で対象を探り、最後に本番の画面取得。**
+1. **まず能力を一度照会し、それから `--list` / `--inspect` でウィンドウを発見し、最後に本番の画面取得。**
    `--capabilities` は読み取り専用で、ピクセルも取らなければ確認ダイアログも出さず、ファイルも書かない。
    だから人を邪魔しないので、自動化の先頭に置ける。このマシンのビルド・セッション・画面トポロジー、
    各経路の `available` / `unavailable` / `unverified`、各形式、`--yes` が実際に及ぶ内部経路の一覧、
@@ -717,6 +837,12 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`。`--dry-run` に `--out` は
    要りません（届ける画像が無いので、結果は丸ごと stderr に出ます）。そして
    **`--dry-run` だけ・ウィンドウ条件を一切与えない = テキストのヘルプ + 終了コード 2** である。
+   必要なのが行間の人向けの文章ではなく**一覧**なら、`--list`（構造化・ページ送り、複数一致はエラーではなく、
+   0 件なら空の一覧 + 終了コード `0`）と `--inspect`（1 窓、複数一致は歧義のまま —— 代わりの 1 つを選ばない）
+   を使う。この 2 つは画素も取らなければ確認も出さず、`--yes` は効果を持たない。返すものはスナップショットで
+   ある：実際の画面取得では対象の身元を再確認するので、スクショに渡すハンドルは**たったいま作った**
+   `--inspect` のものを使い、以前の回のものをキャッシュして使わない。詳しくは上の
+   「構造化されたウィンドウの発見と検査」の節を参照。
 2. **`errors[].code` で分岐し、`message` の文字列を突き合わせないこと**（あちらは `--lang` に追随する）。
    「`--out` を付けたかどうか」を原因にもしないこと —— 省略する道も `--out -` と同じ code を返します。
    よく出るいくつか：`match.no_window`（4、条件が狭いか対象が最小化中）、`match.ambiguous_window`（5、`hint` の候補から

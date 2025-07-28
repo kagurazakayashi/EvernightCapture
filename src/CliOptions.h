@@ -78,6 +78,13 @@ struct MonitorSelector {
     int ordinal = 0;    // 1 起，只认十进制；0 = 未指定或 primary，用主屏
 };
 
+// 只读的结构化窗口发现与检查（--list / --inspect）。两条都不取一个像素、不弹框、不写文件，
+// 走的是与截图**同一套**条件求值语义，差别只在「命中多个」这件事怎么处理：
+//   kList    把命中的窗口列成机器可读的列表（多匹配不是截图歧义，分页交出去）
+//   kInspect 把一个明确选择器对应的那扇窗口逐项查清楚（多匹配照实报歧义，不替人选一个）
+// 取值只增不改名。kNone = 这一次不是窗口查询（截图或环境查询）。
+enum class WindowAction { kNone, kList, kInspect };
+
 struct Options {
     MatchOptions match;
     MonitorSelector monitor;    // --monitor / -m
@@ -121,11 +128,27 @@ struct Options {
     bool capabilities = false;        // --capabilities
     bool diagnostics = false;         // --diagnostics
 
+    // 只读的结构化窗口发现与检查（判据与渲染在 src/WindowQuery.h）。这两条复用与截图
+    // **同一套**条件求值，所以窗口条件、--monitor、--timeout-ms 都在允许之列；
+    // 它们不参加「零条件 => 帮助」那一条（一次截图都不做正是它们的正常用法）。
+    WindowAction windowAction = WindowAction::kNone;   // --list / --inspect
+    // 这两条查询的取舍写在**自己的取值**里（--list=all / --inspect=path），不再各立一条开关：
+    // 帮助文本的体积是真实约束（见 tests\cli.ps1 那条上限），少两条选项就少两行表。
+    bool listIconic = false;          // --list=all：把最小化窗口也列进结果
+    bool inspectPath = false;         // --inspect=path：把归属映像的完整路径也写进结果
+    uint64_t offset = 0;              // --offset：跳过命中列表开头多少个（0 起）
+    uint64_t limit = 0;               // --limit：这一次最多交多少个（0 = 用默认值）
+
     bool HasAnyCondition() const { return !match.IsEmpty(); }
     // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面
     bool ScreenMode() const { return monitor.given && match.IsEmpty(); }
-    // 这一次是查询而不是截图（两条查询命令里任意一条给出即为真）
-    bool QueryMode() const { return capabilities || diagnostics; }
+    // 这一次是查询而不是截图（任意一条查询命令给出即为真）
+    bool QueryMode() const { return capabilities || diagnostics ||
+                                    windowAction != WindowAction::kNone; }
+    // 只读的环境查询（--capabilities / --diagnostics）：只接受 --lang / -v / -q
+    bool EnvQueryMode() const { return capabilities || diagnostics; }
+    // 只读的窗口查询（--list / --inspect）：额外接受窗口条件、--monitor、--timeout-ms 等
+    bool WindowQueryMode() const { return windowAction != WindowAction::kNone; }
 };
 
 // ---------------------------------------------------------------------------
@@ -161,6 +184,14 @@ inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
 // 理由是这两个意图对流的约定不同：截图可能把图片字节压进 stdout 而让 JSON 整份改走 stderr，
 // 查询则一定把这一份文档写在 stdout。与其替用户猜一个执行，不如把这条用法说清楚。
 inline constexpr const wchar_t* kQueryConflict = L"cli.query_conflict";
+// 只读的窗口查询（--list / --inspect）有自己的一套允许项：它需要窗口条件与 --monitor 才有意义，
+// 而截图那一级的选项（输出路径、格式、覆盖、--capture、--dry-run、确认框期限）对它一条都不成立，
+// 选择策略那几条还要按实际入口分开判（--inspect 要的正是「多匹配里定哪一扇」，--list 不需要）。
+// --yes 是唯一一条「不成立但不算错」的：它属于截图授权那一级，写了结果一模一样。
+// 与上面那条分开给码是因为文案与允许清单本来就不同：拿环境查询那句
+// 「只接受 --lang / -v / -q」去解释窗口查询会把人引向错误的下一步。退出码同为 1，
+// 一次列全所有冲突项，一个像素都不取。
+inline constexpr const wchar_t* kWindowQueryConflict = L"cli.window_query_conflict";
 // 多个目标却要写到标准输出：标准输出一次只能交付一张图，属参数用法错误（退出码 1）。
 // 判据是"实际命中的目标数"，所以 --all / --monitor all 只命中一个时仍然放行。
 inline constexpr const wchar_t* kStdoutMultipleTargets = L"cli.stdout_multiple_targets";
@@ -190,6 +221,11 @@ inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
 //   note.os_unverifiable      本机版本没能问出来，所以这一次没有按版本筛通道（不等于支持）
 inline constexpr const wchar_t* kNoteChannelUnavailable = L"note.channel_unavailable";
 inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
+// 窗口查询（--list / --inspect）交回的是一份**当时的快照**：句柄会复用、标题会变、进程会退出，
+// 所以列表里的 hwnd / pid / 类名不是一种可以长期持有的凭证。真去截图时仍要按
+// 《窗口选择与身份一致性》那一节复核，这一条提示随每一次成功的窗口查询发出（--quiet 可抑制，
+// 但文档 caveats 里同源的 token 恒在，抑制不掉的才是判据）。
+inline constexpr const wchar_t* kWindowQueryStale = L"note.window_query_stale";
 // 质量提示（不是错误，图片照常交付）：整帧逐像素比过之后确实只有一个颜色。
 // 单色本身不说明采集失败 —— 目标窗口可以本来就是一块纯色；它也可能是没合成出画面。
 // 所以这条只说事实、把两种可能都列在 hint 里，由调用方自己判断要不要再看一眼图。
@@ -278,6 +314,14 @@ inline constexpr uint64_t kMaxPid = 0xFFFFFFFFull;
 // --quality 只对 jpeg 生效，取值区间写在帮助里。
 inline constexpr int kJpegQualityMin = 1;
 inline constexpr int kJpegQualityMax = 100;
+// ---- 只读窗口查询（--list / --inspect）的条数上限 ----
+// 上限取辅助进程回传窗口条数的那一道线（WorkerProtocol.h 的 kMaxWindowEntries），也就是
+// 「一次求值本来就能拿到多少条」这个事实，不是另挑的数：超过它的 --limit / --offset
+// 不可能对一次真实命中有意义，照实在解析期拒掉。
+inline constexpr uint64_t kMaxWindowListItems = 8192ull;
+// 默认条数是另一件事：调用方（含 AI）第一次列窗口时不该一口气拿到整机所有标题，所以要分页。
+// 判「到底命中多少个」看结果里的 pagination.matched，不是看本批交回几条。
+inline constexpr uint64_t kDefaultWindowListLimit = 50ull;
 }  // namespace cli_limits
 
 // 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。

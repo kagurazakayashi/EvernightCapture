@@ -39,11 +39,8 @@ grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes �
 grp.timeout	執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
 grp.output	輸出
 grp.behavior	其他
-grp.query	能力查詢（唯讀：不截圖、不彈框、不寫檔案）
-
-# ---------------------------------------------------------------------------
-# 選項說明（kOptions 目錄，依選項名取 key）
-# ---------------------------------------------------------------------------
+grp.query	查詢（唯讀：不截圖、不彈框、不寫檔案）
+opt.monitor	截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 opt.hwnd	視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
 opt.pid	處理程序 ID，只認十進位且大於 0
 opt.process	映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
@@ -58,7 +55,6 @@ opt.bottommost-match	取 Z 序最靠後的相符視窗（此刻被壓在最下�
 opt.newest	--topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
 opt.oldest	--bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
 opt.all	每個匹配視窗各存一張
-opt.monitor	截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
 opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 opt.timeout-ms	自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
@@ -76,8 +72,10 @@ opt.help	輸出文字說明（本段）
 opt.version	輸出版本與階段
 opt.capabilities	輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
 opt.diagnostics	輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
-
-# ---------------------------------------------------------------------------
+opt.list	唯讀地把滿足全部條件的頂層視窗列成 JSON（句柄 / PID / 類名 / 標題 / 映像名 / 矩形 / Z 序 / 身分約束欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。結果會過期，截圖時仍要複核身分
+opt.inspect	唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到的項寫欄位級 denied / failed，不建議改用管理員身分；不恢復或啟用任何視窗
+opt.offset	視窗查詢跳過開頭 n 個（0 起）
+opt.limit	視窗查詢本批最多 n 個（預設 50）
 # 解析期診斷（src/CliOptions.cpp）
 # ---------------------------------------------------------------------------
 cli.hwnd_value	--hwnd 需要有效的句柄值（十進位，或帶 0x 前綴的十六進位）
@@ -112,6 +110,13 @@ cli.conflicting_options	這些選擇策略互斥，只能選一個
 cli.conflicting_hint	例如只保留 --index 2
 cli.query_conflict	查詢命令與截圖選項不能同時給出：--capabilities / --diagnostics 是唯讀地問環境，本身不截圖
 cli.query_conflict_hint	查詢只接受 --lang、-v/--verbose、-q/--quiet；請去掉其餘選項與輸出路徑，或把截圖另起一次
+cli.list_value	--list 的取值只接受 all（把最小化視窗也列進來），或整個省略
+cli.list_value_hint	寫成 --list=all；要限制條數與翻頁請用 --limit / --offset
+cli.inspect_value	--inspect 的取值只接受 path（寫出歸屬映像的完整路徑），或整個省略
+cli.inspect_value_hint	寫成 --inspect=path；點名某一扇視窗請用 --hwnd，多匹配時請先消歧
+cli.window_query_conflict	視窗查詢（--list / --inspect）不能與截圖那一級或環境查詢同時給出：它不產圖，多匹配也不是截圖歧義
+cli.window_query_conflict_hint	視窗查詢接受視窗條件、--monitor、--offset / --limit、--timeout-ms、--yes 與 --lang / -v / -q（取捨寫在 --list=all / --inspect=path 裡）；請去掉 --out / --format / --quality / --capture / --dry-run / 確認框期限 / --capabilities / --diagnostics，或把截圖與查詢分成兩次
+cli.list_count_value	條數不合法：要寫十進位，0 到 %1
 cli.unhandled_option	內部錯誤：目錄中存在但解析器未處理的選項
 cli.missing_output	缺少輸出路徑，且預設寫標準輸出時未能出圖
 cli.missing_output_hint	顯式給 --out <路徑>，或用 --dry-run 先看視窗是否命中
@@ -154,6 +159,7 @@ match.index_hint	共 %1 個候選：%2
 match.ambiguous	匹配到多個視窗，需要消歧
 match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或補充條件。候選（按 Z 序）：%1
 match.untitled	(無標題)
+match.inspect_ambiguous_hint	--inspect 需要唯一目標：用 --hwnd 點名，或補 --class / --process / --title 把條件收窄到一扇，或用 --index / --topmost-match / --bottommost-match 選定。本工具不替你挑一個，也不因為另一扇「看起來一樣」就先擷取它。候選（按 Z 序）：%1
 
 # ---------------------------------------------------------------------------
 # 流程與寫檔（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）
@@ -208,6 +214,7 @@ cap.unsupported	該取圖方式尚未實現
 cap.auto_failed	auto 的退回通道全部失敗（%1）
 cap.timeout	自動處理預算 %1 ms 已用盡（實際用時 %2 ms）
 cap.timeout_hint	加大 --timeout-ms，或換一條不會卡住的取圖通道（被遮擋的視窗用 wgc / dwm）；沒有可中斷等待點的那一步只能靠期限到點時中止本工具的輔助程序
+cap.timeout_query_hint	加大 --timeout-ms，或把這一批條件寫得更省（--title-regex 的迴溯、以及向掛起的視窗取標題都在這裡花時間）；沒有可中斷等待點的那一步只能靠逾時到點時中止本工具的輔助程序。視窗查詢不取一個影格，所以換 --capture 沒有用
 cap.worker.spawn_failed	輔助程序沒能啟動，這次取圖沒有執行
 cap.worker.spawn_failed_hint	printwindow 與 dwm 的讀回在本工具的輔助程序裡執行（那種呼叫會同步等目標視窗，沒有中斷點）。啟動失敗通常是權限、原則或殺軟攔截：%1
 cap.worker.channel_failed	與輔助程序的管道斷了，這次取圖沒有拿到結果
@@ -353,3 +360,10 @@ env.channel_unsupported	%1 通道要 Windows 內部版本 %2 或更新，本機�
 env.channel_unsupported_hint	這一條是本機版本的事，與目標視窗無關：換一條取圖通道（--capture / -C）或改用 auto 才有意義，重試同一個目標不會有別的下場。顯式指定的通道絕不換成別的，所以這條不會被 auto 自動繞開
 note.channel_unavailable	auto 退回鏈裡沒有 %1：它要 Windows 內部版本 %2 或更新，本機 %3
 note.os_unverifiable	沒能問出本機 Windows 的內部版本，所以這一次沒有按版本篩通道；真不可用的那一條會交回它自己的錯誤碼
+
+# ---------------------------------------------------------------------------
+# 結構化的視窗偵測與檢查（--list / --inspect，src/WindowQuery.cpp）
+#   這兩條查詢不產圖，所以文案裡最要緊的是「這份清單不是憑證」與「讀不到不等於沒有」。
+# ---------------------------------------------------------------------------
+note.window_query_stale	視窗查詢交回的是此刻的快照，欄位會過期
+note.window_query_stale_hint	句柄會被複用、標題會變、處理程序會退出，所以這一份列表裡的 hwnd / pid / 類名不是一種可以長期持有的憑證。真去截圖時本工具仍要在取影格之前複核目標身分（capture.target_gone / capture.target_changed / capture.target_unverifiable），確認框也照舊依像素來源判，--yes 只免掉視窗內容那一級

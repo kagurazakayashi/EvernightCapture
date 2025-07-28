@@ -1,6 +1,6 @@
 ---
 name: ecapture-screenshot
-description: Capture window or full-screen images on Windows with ECAPTURE.EXE (EvernightCapture) by selecting targets through conditions. Use when taking screenshots, grabbing a specific app / window / dialog, capturing several windows at once, capturing one monitor whole, or parsing ECAPTURE's JSON output, exit codes and diagnostic codes.
+description: Capture window or full-screen images on Windows with ECAPTURE.EXE (EvernightCapture) by selecting targets through conditions. Use when taking screenshots, grabbing a specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), capturing several windows at once, capturing one monitor whole, or parsing ECAPTURE's JSON output, exit codes and diagnostic codes.
 argument-hint: <window conditions> <output path>
 ---
 
@@ -57,27 +57,120 @@ the only JSON that carries `contract` / `contractVersion`; the capture result st
 describes. `--capabilities` and `--diagnostics` accept only `--lang`, `-v` and `-q` - combining them with any
 capture option or an output path is `cli.query_conflict` + exit 1, and nothing is captured.
 
-## Three steps: dry-run, disambiguate, capture
+## Step 0b: find the target as data (`--list` / `--inspect`)
 
-1. `--dry-run` with the window conditions: it stops right after target selection - no frame, no file.
-   Candidates are in the `note.dry_run` entry of `notes[]`, under `value`, shaped like
-   `hwnd=0x000A1146 pid=31468 1261x614+237+418 class=CabinetWClass title=…`.
-   Pass `--out` when you want a file; without one the image bytes are delivered on stdout and the JSON moves to
-   **stderr**. Omitting it is exactly `--out -`: the failures are the real ones (`match.no_window`,
-   `match.ambiguous_window`, `capture.access_denied`, `io.write_failed`, …) with their own exit codes, and nothing
-   is collapsed into a generic "missing output path" any more.
+These two are the read-only window discovery entry points. They take **no pixel, call no capture backend, show no
+consent dialog, write no file, and activate or restore no window** - and they need **no output path at all**.
+They reuse the exact same matching semantics as a capture (`OR` within one option, `AND` across options,
+`--monitor` filtering, `--title-regex` in the same isolated helper), and they report **fields**, not a sentence
+you have to parse again.
+
+```powershell
+& "$PSScriptRoot\ECAPTURE.EXE" --list --process notepad.exe            # contract: windowquery  - windows[]
+& "$PSScriptRoot\ECAPTURE.EXE" --list=all --class Notepad              # merge minimised windows into the Z axis
+& "$PSScriptRoot\ECAPTURE.EXE" --list --offset 50 --limit 50           # page; total is pagination.matched
+& "$PSScriptRoot\ECAPTURE.EXE" --inspect --hwnd 0x001A0B4C             # contract: windowinspect - one window object
+& "$PSScriptRoot\ECAPTURE.EXE" --inspect=path --title 订单             # also emit the full image path (opt-in)
+```
+
+- **`--list` never reports ambiguity** - several matches are the normal answer, and it pages. **`--inspect` uses the
+  same selection policy as a capture** (`--index` / `--topmost-match` / `--bottommost-match`), and if that policy
+  cannot single out exactly one window it says so: `match.ambiguous_window` + exit 5. **It will never pick one for
+  you.** `--all` with `--inspect` is a usage conflict, and no match there is `match.no_window` + exit 4.
+- Fields per record: `hwnd` / `pid` / `class` / `title` / `image` / `rect` (physical pixels) / `visible` /
+  `minimized` / `zOrder`, plus `readability` and `identity`. The default visibility policy is stated, not implied:
+  `policy.invisibleExcluded` and `zeroSizedExcluded` are `true`, `minimizedIncluded` is `false` unless you ask with
+  `--list=all`, and `systemWindowAssertion: false` means the list makes **no** claim about which entries are system
+  windows - it reports what it read and classifies nothing for you. `caveats.list_may_be_partial` appears whenever
+  `truncated` or some minimised window was left out, so never count `windows[]` as "all windows on this machine".
+- **A field that could not be read is never written as empty, `0` or `false`.** `readability` answers each
+  cross-process question separately - `state` is `readable` / `denied` / `failed` with the raw `win32` code:
+
+  ```json
+  "readability": { "process": { "state": "denied", "win32": 5 },
+                   "imagePath": { "state": "readable" },
+                   "processStart": { "state": "readable" },
+                   "rect": { "state": "readable" } }
+  ```
+
+  `denied` means what it says - the owner runs at another privilege level. It is **not** a prediction about whether
+  the capture will work and it is **not** a request to run as administrator; nothing here escalates, retries with
+  elevation, or guesses. `unreadable_fields_are_not_a_prediction` is in `caveats` for that reason.
+- **Privacy: the full image path never appears unless you ask.** Default output carries `image` (file name only);
+  `--inspect=path` is the opt-in that adds `exePath`, and it also writes `exePathRequested` / `exePathReadable` so
+  "not requested", "requested but unreadable" and "readable" stay distinguishable. Titles and class names are
+  delivered verbatim because they are the target's own identity.
+- **`--yes` has no effect here**: `authorization.yesAffectsResult: false` is a measured statement - the document is
+  byte-for-byte the same with or without it, including which fields come back. It is accepted (not a usage error)
+  because `--yes` belongs to capture authorization, and a query that reads no pixels has nothing to authorize.
+- Exit codes are `0` (query produced, including zero matches) / `1` (`cli.window_query_conflict`, or a condition that
+  does not parse) / `4` and `5` (`--inspect` only) / `9`, plus **`7` on exactly one path**: this run's condition
+  evaluation did not finish (`match.timeout`, or that step's helper process failing). That `7` means "I could not
+  finish asking", not "the capture failed" - and its `hint` says so in query terms, telling you that switching
+  `--capture` is useless here because there is no channel to switch.
+  **`6` and `8` cannot appear** - those describe a human refusing and a file that failed to land. The document always goes to **stdout** (no image competes for
+  it, so the "JSON moves to stderr" rule does not trigger), stderr stays empty. `-q` drops `notes` only; `policy`,
+  `authorization`, `readability` and `caveats` are judgements and are never suppressed. `-v` adds the normalized
+  `input` section.
+- On a parse-level misuse the failure document is **shaped like a capture result** (`captured: 0`, `images: []`,
+  `errors: [...]`), so `switch ($errors[0].code)` does not need a second branch for queries.
+
+### The snapshot expires; identity fields are not a security token
+
+`--inspect` (and each `--list` record) carries the constraints a later capture will check:
+
+```json
+"identity": { "hwnd": "0x001A0B4C", "pid": 27256, "class": "Notepad",
+              "processStartTicks": 134351164333279485,
+              "selectionNeedsRecheck": true, "verificationRequired": true,
+              "isAuthorizationToken": false, "raceWindowReducedNotEliminated": true }
+```
+
+`processStartTicks` is what separates "the PID was recycled by Windows" from "still that process"; when it could not
+be read it is the string `"unknown"`, never `0`. `selectionNeedsRecheck: true` means the condition that picked this
+window contains volatile parts (title, or filtering by `--monitor`), so the tool will re-run that condition rather
+than compare strings; `false` means a class/handle selection.
+
+Do **not** treat any of this as a credential to cache and present later. Every window query carries
+`note.window_query_stale` saying so, and the real capture re-verifies the target before reading a single pixel
+anyway (`capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`) and still asks for consent
+according to where the pixels come from. If the list is more than a moment old, run `--list` again.
+
+## Four steps: discover, disambiguate, select, capture
+
+1. `--list` with the window conditions to see who matches, as structured data. `--dry-run` does the same target
+   selection and stops right there - no frame, no file - with candidates in the `note.dry_run` entry of `notes[]`,
+   under `value`, shaped like `hwnd=0x000A1146 pid=31468 1261x614+237+418 class=CabinetWClass title=…`. Prefer
+   `--list`: you get one JSON object per window instead of having to parse that string. Omitting `--out` on a real
+   capture is exactly `--out -`: the image bytes go to stdout and the JSON moves to **stderr**, and the failures are
+   the real ones (`match.no_window`, `match.ambiguous_window`, `capture.access_denied`, `io.write_failed`, …) with
+   their own exit codes - nothing is collapsed into a generic "missing output path" any more.
    Conditions alone with nothing else still means "no condition": `--dry-run` by itself prints the text
-   help and exits 2. `--monitor` counts as a target, so `--monitor --dry-run` lists screens instead.
-2. Several matches (exit 5): read the candidate list from `errors[0].hint`
-   (`0x… title [image.exe] | 0x… …`), then narrow with `--class` / `--process` / `--title`
+   help and exits 2 (a window query does not require conditions at all). `--monitor` counts as a target, so
+   `--monitor --dry-run` lists screens instead.
+2. Several matches (exit 5): read them from a `--list` run (`windows[].hwnd` / `title` / `class` / `image` /
+   `rect` / `zOrder`), then narrow with `--class` / `--process` / `--title`
    (note `--title*` is **case-sensitive**, `--class` / `--process` / `--exe` are not), or pick one with
    `--index 1` / `--topmost-match` / `--bottommost-match`, or take them all with `--all` (put `%i` in the output name,
    otherwise `note.all_without_placeholder` fires and `_N` is appended). Those pick a **z-order position in the current
    stacking order** - `--newest` / `--oldest` are the older names for topmost / bottommost and behave identically
    (Windows exposes no window creation timestamp), and using one adds a `note.deprecated_option`.
-3. Drop `--dry-run` and point the output at the real path. **For a window capture also pass `--yes`** so the
+   Confirm the one you mean with `--inspect --hwnd <that handle>` before capturing when the choice matters:
+   `--inspect` applies the very same policy, so an exit 5 there means the policy genuinely does not single out
+   one window - and `--list` then `--inspect` then capture is three calls that never touch a pixel.
+3. Point the output at the real path and drop the query switches. **For a window capture also pass `--yes`** so the
    tool does not stop on a confirmation dialog you cannot answer from a script (`--yes` only ever skips the
    dialog for paths that read the selected window itself - see "When you must ask a human first").
+   Prefer naming the target by handle, taken from a query you just ran - and re-query rather than reusing a handle
+   from an earlier session, because a `0x…` value gets recycled:
+
+   ```powershell
+   & "$PSScriptRoot\ECAPTURE.EXE" --inspect --hwnd 0x001A0B4C          # confirm it is still the window you mean
+   & "$PSScriptRoot\ECAPTURE.EXE" --hwnd 0x001A0B4C --yes --out D:\shots\one.png
+   ```
+
+   The capture re-checks the identity itself (`processStartTicks` / class / the original condition) and reports
+   `capture.target_changed` rather than silently grabbing whatever now owns that handle.
    **The output directory must already exist**, otherwise `io.write_failed` + exit 8.
 4. **Every output name of the batch is planned before the first frame is taken.** Two targets that expand to
    the same path give `io.output_collision` + exit 8 and nothing at all is captured - the tool never renames
@@ -100,11 +193,18 @@ capture option or an output path is `cli.query_conflict` + exit 1, and nothing i
 ## Writing option values
 
 - **Numbers are decimal.** `--pid` (1..4294967295), `--index` (1..65535), `--monitor <n>` (1..65535),
-  `--quality` (1..100) and both timeouts (0..86400000) accept `[0-9]+` only, and the range is checked while
+  `--quality` (1..100), both timeouts (0..86400000) and the two window-query page counts - `--offset`
+  (0..8192) and `--limit` (1..8192, default 50) - accept `[0-9]+` only, and the range is checked while
   parsing. A sign, whitespace, a dot, a thousands comma, an exponent (`1e3`), digit-separator underscores, a
   `0x` prefix or non-ASCII digits is `cli.invalid_number` + exit 1. Nothing is cast, wrapped or re-read in
   another base: `--pid 1e3` is not 483, `--quality 1e` is not 30, `--hwnd -1` is not `UINT64_MAX`. Timeout
   `0` is a real value ("no budget for this"); whitespace is not `0`.
+- **Value-taking switches: `--list` and `--inspect`.** Both may be written bare and then swallow nothing
+  (`--list out.png` keeps `out.png` as a positional, which is a conflict - the query has no output path).
+  `--list=all` merges minimised windows into the same Z axis; `--inspect=path` adds the full image path.
+  Those are the only accepted values: `--list=allx` / `--inspect=xyz` are `cli.invalid_value` + exit 1 and
+  never degrade to the default policy. Exactly one of the two per run, and neither combines with
+  `--capabilities` / `--diagnostics` or with capture-level options.
 - **`--hwnd` is the one option that takes hexadecimal**, in the three spellings it documents: plain digits are
   decimal, `0x` / `0X` prefix is hexadecimal, and a bare spelling containing `a-f` is hexadecimal (the Spy++
   form, so `--hwnd 1e3` means `0x1e3`). Sign, whitespace, overflow past 64 bits and handle `0` are still
@@ -139,6 +239,10 @@ capture option or an output path is `cli.query_conflict` + exit 1, and nothing i
 - Keys: `captured` / `images[]` / `errors[]` / `notes[]` / `input` (only with `--verbose`).
   `--quiet` drops `notes` but **never suppresses `errors`**. **Empty fields are omitted entirely**, so
   `option`, `value` and `hint` may simply be absent - never assume a key is there.
+  The read-only queries use their **own** key sets (`contract` / `contractVersion` / `query` / `authorization` /
+  `policy` / `pagination` / `windows[]` or `window` / `caveats` for `--list` / `--inspect`; see Step 0b) -
+  they never add top-level metadata to the capture document above, and the capture rules for `captured` /
+  `images` / `errors` / `notes` / `input` do not apply to them.
 - Branch on `errors[].code`, never on `message` text (that follows `--lang`); code values are only ever
   added, never renamed. A capture failure now tells a frame timeout (`capture.frame_timeout`) and a window
   that disappeared (`capture.window_gone`) apart from a plain `capture.failed` - all still exit 7, but the
@@ -370,7 +474,9 @@ Floors, the declared support range and what has actually been measured are in
 | `cli.unknown_capture_method` / `cli.unknown_language` | 1 | Bad value, caught while parsing - it never degrades to the default |
 | `cli.invalid_regex` | 1 | `--title-regex` too complex for the engine (`stage=match`, message says backtracking complexity) - raising `--timeout-ms` does not help; rewrite the pattern or use `--title-contains` |
 | `cli.monitor_conflict` | 1 | `--monitor all` plus window match conditions; use a single monitor number to filter instead |
-| `cli.query_conflict` | 1 | A read-only query (`--capabilities` / `--diagnostics`) was combined with capture intent - window conditions, `--monitor`, `--capture`, `--out` or a positional path, `--yes`, `--dry-run`, either deadline, or the two queries together. `value` lists every offending name at once. Nothing was captured and no file written; run the query alone, then the capture separately. Queries accept only `--lang`, `-v`, `-q` |
+| `cli.query_conflict` | 1 | An environment query (`--capabilities` / `--diagnostics`) was combined with capture intent - window conditions, `--monitor`, `--capture`, `--out` or a positional path, `--yes`, `--dry-run`, either deadline, or the two queries together. `value` lists every offending name at once. Nothing was captured and no file written; run the query alone, then the capture separately. Queries accept only `--lang`, `-v`, `-q` |
+| `cli.window_query_conflict` | 1 | A window query (`--list` / `--inspect`) was combined with capture-level options (`--out` / a positional path / `--format` / `--quality` / `--capture` / `--dry-run` / `--consent-timeout-ms`, or a selection policy that has no target to select for - `--all` with `--inspect`), or with an environment query. A window query accepts window conditions, `--monitor`, `--timeout-ms`, `--yes` (which changes nothing), `--offset` / `--limit`, its own values, and `--lang` / `-v` / `-q`. `value` lists all offenders; a positional is reported as `--out` and the path itself is never echoed |
+| `note.window_query_stale` | - | Not an error: appended to every `--list` / `--inspect` result, saying the snapshot expires and its `hwnd` / `pid` / class are not a long-lived credential. Re-run the query rather than caching a handle |
 | `capture.failed` | 7 | Target protected, gone, or unsupported by the OS; retry once with `--capture auto`, and if it fails again nothing is reachable |
 | `capture.worker_failed` | 7 | This tool's own hidden helper could not run (spawn blocked, pipe broke, message did not match the protocol, task invalid) - `cap.worker.*` wording, the helper's last exit code in `hint`; its exit codes are not part of the contract. Check the execution environment (policy, antivirus, permissions), not the target window |
 | `capture.timeout` | 7 | `--timeout-ms` budget exhausted during capture/encode (`stage=capture`); with `backend=printwindow` / `dwm` the target's UI thread is likely stuck - same-backend retry may time out again, prefer `--capture wgc` or raise the budget |
@@ -394,7 +500,9 @@ Floors, the declared support range and what has actually been measured are in
   `--consent-timeout-ms` and the hidden helper process behind them), the full JSON field tables (window image /
   screen image), the read-only query documents (`--capabilities` / `--diagnostics`: field list, the
   `available` / `unavailable` / `unverified` rule, `unknown` handling, the `caveats` tokens and the privacy
-  statement), the complete diagnostic-code list, the output-name placeholders
+  statement; `--list` / `--inspect`: the `windowquery` / `windowinspect` field tables, pagination and
+  `nextOffset`, per-field `readable` / `denied` / `failed`, the expiring-snapshot rule and the `--yes`
+  non-effect), the complete diagnostic-code list, the output-name placeholders
   (`%i` `%h` `%p` `%n` `%d` `%t`; `%n` is the window title for a window target and the device name such
   as `DISPLAY1` for a screen target), plus the shell-specific traps measured under PowerShell and Git
   Bash.

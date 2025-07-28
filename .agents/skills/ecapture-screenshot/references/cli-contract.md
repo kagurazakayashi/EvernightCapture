@@ -36,6 +36,10 @@
 | `--lang` | `-l` | `auto`（默认，跟随系统显示语言）/`zh-CN`/`zh-TW`/`en`/`ja` | 只影响给人看的 `message`/`hint`/`--help`；`code`、JSON 键名、取值枚举、`0x…` 句柄一律不变。取值宽容：忽略大小写、`_` 与 `-` 等价、`zh_TW`/`zh-Hant`/`cht`/`tw`/`chs`/`cn`/`jp` 都认。重复给出以**最后一个有效的**为准，`auto`（或省略取值）是明确回到系统显示语言而不是保留上一条。写错报 `cli.unknown_language`，并按已经定下的那种语言写这条报错。语言在解析一开始就定下来，判据与其余选项共用同一套 token 消费规则：被 `--title` 吃掉的 `--lang`、`--` 之后的 `--lang` 都不算语言开关 |
 | `--capabilities` | | 开关 | **只读能力查询**，输出 JSON（见「只读的能力查询」一节）。问的是这台机器现在能走哪几条路线：版本与会话条件、每条通道的 `available` / `unavailable` / `unverified`、每种格式、`--yes` 实际管到哪几条内部路径、以及各种取值上限。一个像素都不取、不弹确认框、不写文件、不联网、不读环境变量，也不需要窗口条件。只接受 `--lang` / `-v` / `-q`，与截图那一套选项或输出路径同时给出 = `cli.query_conflict` + 退出码 1 |
 | `--diagnostics` | | 开关 | **只读诊断/版本查询**，输出 JSON：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态。字段与 `--capabilities` 出自同一个判据函数，不是第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；`-v` 追加每一问的原始答案。互斥规则同上 |
+| `--list` | | `[<all>]`，可省略 | **只读的窗口发现**：把满足全部条件的顶层窗口列成结构化 JSON（见「只读的窗口查询」一节）。取值可省略，省略时不吃后面的参数（`--list out.png` 里 `out.png` 仍是位置参数并因此算冲突）；写 `--list=all` 时把最小化窗口也并进同一根 Z 序轴。取值只认 `all`，写成别的（`--list=allx`）报 `cli.invalid_value`+1 而不退化成默认策略 |
+| `--inspect` | | `[<path>]`，可省略 | **只读的单窗口检查**：按与截图同一套选择策略定出的那一扇窗口，交回单个 `window` 对象（含后续截图要复核的身份约束字段）。取值写 `path` = 同时写出归属映像的完整路径（默认只写文件名，路径常含用户名）。多匹配仍报 `match.ambiguous_window`+5，不会替你挑一个。取值只认 `path` |
+| `--offset` | | 十进制 0..8192 | 仅窗口查询：跳过命中列表开头 n 个。上界是"一次求值本来能拿到多少条"那道线，超过它一定是对真实命中数没意义的编号 |
+| `--limit` | | 十进制 1..8192，默认 50 | 仅窗口查询：本批最多交回 n 个。命中的总数看结果里的 `pagination.matched`，不是看本批几条 |
 | `--help` | `-h` | | 文本帮助，退出码 3 |
 | `--version` | | | 版本与阶段，纯文本 |
 
@@ -148,6 +152,111 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
 按 `status` 分支而不是按退出码猜环境）；`1` = 用法不合契约。不会出现 `4`/`5`/`6`/`7`/`8`。
 
 整份文档是 ASCII（机器读的取值不翻译），所以同一台机器上换 `--lang` 输出逐字节相同 —— 可以放心做前后两次比对。
+
+## 只读的窗口查询（`--list` / `--inspect`）
+
+这两条命令回答的是「哪一扇窗口命中这批条件」，把窗口条件求值的结果**作为数据**交回，而不是拼成一句要再解析的话。
+一个像素都不取、不调用任何截图后端、不弹确认框、不写文件、不激活也不恢复任何窗口，也**不需要输出路径**。
+原来的 `--dry-run` 入口照旧可用（它挑中目标后就返回），这一节是加在它旁边的结构化出口，没有替换它。
+
+```powershell
+ECAPTURE.EXE --list --title-contains 记事本          # 列表（JSON，contract=windowquery）
+ECAPTURE.EXE --list=all --class Notepad              # 把最小化窗口也并进同一根 Z 序轴
+ECAPTURE.EXE --list --offset 50 --limit 50            # 翻页：总数看 pagination.matched
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C             # 单扇窗口的身份快照（contract=windowinspect）
+ECAPTURE.EXE --inspect=path --title 订单              # 同上，并写出归属映像完整路径（默认只写文件名）
+```
+
+条件语义与截图**同一套**：同一个选项写多次 = OR，不同选项 = AND，`--monitor` 按屏过滤，
+`--title-regex` 与设了 `--timeout-ms` 时同样走辅助进程。所以一次查询里 `--list` 与 `--inspect` 只能选一个入口。
+
+| 项 | `--list` | `--inspect` |
+| --- | --- | --- |
+| 结果字段 | `windows[]`（0 条就是空数组） | `window`（恰好一条） |
+| 多匹配 | **不算歧义**，列全并分页 | 按截图那套选择策略定不出唯一一条 → `match.ambiguous_window` + 退出码 5，**不会替你挑一个** |
+| 零条件 | 允许（列全部顶层可见窗口），不走「没给条件就出帮助 + 退出码 2」 | 同上，但零条件必然多匹配 → 5 |
+| 无匹配 | `windows: []`，退出码 0 | `match.no_window` + 退出码 4 |
+
+`--inspect` 走的是 `SelectFromHits`（与真去截图那次同一个函数），所以 `--index` / `--topmost-match` /
+`--bottommost-match` / `--all` 在这里的含义与截图一致；`--all` 与 `--inspect` 同时给出算用法冲突。
+
+### 每一问的读数：读不到 ≠ 空值
+
+跨进程问的每一件事都带一个三态答案，问不出来绝不写成空串、0 或 false：
+
+```json
+"readability": {
+  "process":      { "state": "denied", "win32": 5 },
+  "imagePath":    { "state": "readable" },
+  "processStart": { "state": "failed", "win32": 87 },
+  "rect":         { "state": "readable" }
+}
+```
+
+`state` 只有 `readable` / `denied` / `failed` 三种，`win32` 是失败点当场取走的 `GetLastError` 原值。
+`denied` 就是字面意思——权限不够，**不因此要求你以管理员运行**，也不预测截图会不会成功
+（`unreadable_fields_are_not_a_prediction` 那条 caveat 钉的就是这点）。
+`exePath` 这个键在默认输出里**根本不出现**（完整路径常含用户名），只有 `--inspect=path` 才逐条写出，
+并且同时写 `exePathRequested: true` 与 `exePathReadable: true/false`，让「没写」与「写了但问不到」分得开。
+
+### 这份快照会过期，身份字段不是凭证
+
+```json
+"identity": {
+  "hwnd": "0x001A0B4C", "pid": 27256, "class": "Notepad",
+  "processStartTicks": 134351164333279485,
+  "selectionNeedsRecheck": true,
+  "verificationRequired": true,
+  "isAuthorizationToken": false,
+  "raceWindowReducedNotEliminated": true
+}
+```
+
+- `processStartTicks` 把「PID 被系统复用」与「还是那个进程」分开；问不到时写字符串 `"unknown"`，不写 0。
+- `selectionNeedsRecheck: true` = 当初的条件含易变项（标题、按屏过滤），截图前要拿条件重跑一次；`false` = 只按类名/句柄选中，比类名就够。
+- 这三件是**给下一次截图带回去的约束**，不是许可凭证：真去截图时本工具仍会在取帧之前复核目标身份
+  （`capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`），确认框也照旧按像素来源判。
+- 每次窗口查询都固定带一条 `note.window_query_stale` 说这件事，`-v` 的 `policy` 与 `caveats` 里也各列一份。
+
+默认策略是显式写出来的，不是隐含的：`policy.invisibleExcluded` / `zeroSizedExcluded` 恒为 `true`，
+`minimizedIncluded` 默认 `false`（`--list=all` 改成 `true`），`systemWindowAssertion: false` 表示
+这份列表**不**声称某条不是系统窗口——它只报告问到的事实，不替你分类。`order: "zOrder"` 说明列表按当下的叠放次序，
+每条带 `zOrder` 下标。`--inspect=path` 之外没有第二条路线能拿到完整路径。
+
+### `--yes` 对查询没有任何作用
+
+`authorization.yesAffectsResult: false` 是当场判出来的事实：带不带 `--yes`，这一份列表的字段与条数完全相同。
+`--yes` 在窗口查询里被接受（写了不算用法错），因为它是截图授权那一级的开关，一次不出图的查询无从受它影响。
+查询**不**产生任何桌面像素，也就不产生任何一级确认框。
+
+### 流、分页与退出码
+
+结果恒在 **stdout**（查询没有图片要交付，所以不触发「图片占用 stdout 时 JSON 改走 stderr」那条规则），stderr 为空。
+`-q` 只去掉 `notes`，`policy` / `authorization` / `caveats` / `readability` 这些隐私与自述判据不许被抑制；
+`-v` 追加 `input` 段（规范化后的条件、`offset` / `limit` / `limitGiven` / `includeIconic` / `exePath` / `policy`）。
+
+`pagination` 一次说清翻到哪了：`offset`、`limit`（本批实际用的上限，没给 `--limit` 时是 `defaultLimit` 50 并配
+`limitDefaulted: true`）、`maxLimit` 8192、`matched`（命中总数）、`returned`（本批条数）、`truncated`
+（`offset` 之后确实还有剩下的）与 `nextOffset`（下一次翻页该写的偏移；没有剩下的东西时**整个键不出现**，
+写 0 会被读成「从头再来」）。**翻页靠 `matched` 与 `nextOffset`，别按本批条数猜还有多少。**
+`policy.minimizedExcluded` 另写本次被默认策略挡掉了几条最小化窗口，与 `truncated` 一起决定
+`caveats` 里的 `list_may_be_partial`——只数 `windows[]` 会以为整机就这几个窗口。
+
+`cli.window_query_conflict` + 退出码 1：窗口查询与截图那一级的选项（`--out` / 位置参数 / `--format` /
+`--quality` / `--capture` / `--dry-run` / `--consent-timeout-ms` / 选择策略与 `--all` 在 `--inspect` 那条入口下）
+或环境查询（`--capabilities` / `--diagnostics`）同时给出。`value` 一次列全所有冲突项，位置参数报成 `--out`
+而不回显那条路径本身。允许清单：窗口条件、`--monitor`、`--timeout-ms`、`--yes`、`--offset` / `--limit`、
+`--list` / `--inspect` 自己的取值、`--lang` / `-v` / `-q`。
+
+退出码用这六个：`0` 查询成功（包括命中 0 条）/ `1` 用法不合契约 / `4` `--inspect` 无匹配 /
+`5` `--inspect` 多匹配歧义 / `7` **只有一条来路** —— 这一次的条件求值自己没跑完（`match.timeout`，
+或那一步的辅助进程故障），说的是「这一次问答没能问完」，与取帧无关；`9` 内部异常。
+**`6` 与 `8` 不可能出现** —— 那两条说的是「没人批准」与「写文件失败」，而一条不弹框、不落地的
+命令没有资格报它们。窗口查询那一条 `match.timeout` 的 `hint` 也是查询自己的说法：它明说
+「换 `--capture` 没有用」，因为这一路根本没有通道可换。
+
+参数级失败（与截图选项冲突、条件写坏）交回的是与**截图结果同形**的失败文档：`captured: 0`、`images: []`、
+`errors: [...]`，调用方按 `errors[].code` 分支的那段代码不必为窗口查询再写一份。
 
 ## 截图授权（两级：谁必须问人）
 
@@ -273,6 +382,9 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
 - `images[]` 里的 `path` / `scope` / `rect` 是**隐私判据**（这一帧出自哪条内部路径、像素是窗口自己的还是屏幕上那块区域、
   当初批准采样的是哪一片），`--quiet` 不抑制它们——`images` 整个数组从来不会被抑制。
 - 输出里**不含**工具名、版本、schema、stage、参数回显之类的元信息。
+- 只有只读查询那三份例外，它们各自带 `contract` / `contractVersion`：`windowquery` / `windowinspect`
+  与 `capabilities` / `diagnostics`（见上面两节）。这两份**不**反推截图那份去加顶层元信息，
+  截图结果的 `captured` / `images` / `errors` / `notes` / `input` 规则也与它们无关。
 - 通道分配：默认全部走 stdout、stderr 为空；一旦图片占用 stdout（`--out -` 或没给输出路径），
   **整份 JSON 改走 stderr**，两个通道永不混流。这条判断在任何图片写出之前就定下，连"渲染结果本身抛异常"
   的兜底诊断也跟着它（一律 stderr，工具不为此再解析一遍命令行）。**约定那条流写不出去就是失败**：
@@ -358,9 +470,13 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
 | 9 | 内部异常 |
 
 退出码与 body 是两套独立信号：先看 `errors`，再看 `captured`，最后才用退出码做粗分支。
-只读查询那两条只用 `0` 与 `1`：`0` = 文档出完了（里面写"这台机器哪条都不行"也算成功，环境要看 `status` 而不是
+只读查询那两条（`--capabilities` / `--diagnostics`）只用 `0` 与 `1`：`0` = 文档出完了（里面写"这台机器哪条都不行"也算成功，环境要看 `status` 而不是
 退出码），`1` = `cli.query_conflict`。它们不产生 `4`/`5`/`6`/`7`/`8`，因为一次窗口都没枚举、一个框都没弹、
 一个文件都没写。
+窗口查询那两条（`--list` / `--inspect`）用 `0`/`1`/`4`/`5`/`9`：`1` = `cli.window_query_conflict` 或条件本身写坏，
+`4` 与 `5` 只有 `--inspect` 会出（一次定不出唯一目标 —— 没命中 / 命中好几种写法都定不到），`--list` 命中 0 条是
+正常答复给 `0`。同样**不会出现 `6` 与 `8`**：不弹框、不落地，那两条说的就是那两段的事；
+`7` 只在条件求值自己没跑完时出现（见上面的退出码一节）。
 
 - `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout` 与"结果送不到约定流"给出 8；截图/编码阶段的其它失败（含
   `capture.failed`、`capture.timeout`、`capture.encoder_unavailable`、`capture.consent_stale`、`capture.worker_failed`，
@@ -403,6 +519,9 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
 `cli.unexpected_positional` `cli.duplicate_output` `cli.conflicting_options`
 `cli.unknown_capture_method` `cli.unknown_language` `cli.monitor_conflict` `cli.internal_error`
 `cli.query_conflict`（只读查询 `--capabilities` / `--diagnostics` 与截图选项或输出路径同时给出；`value` 一次列全冲突项，一张都不截也没一个文件被写）
+`cli.window_query_conflict`（窗口查询 `--list` / `--inspect` 与截图那一级的选项、输出路径或环境查询同时给出；允许清单见
+「只读的窗口查询」一节。两条查询各自的冲突各收一份，扫完之后按「这一次到底是哪一类查询」取对应那一条码报，
+`value` 同样一次列全。位置参数报成 `--out` 而不回显用户那条路径本身）
 `cli.stdout_multiple_targets`（stdout 一次只交付一张图，实际目标多于一个；整批没截也没写，也不弹框）
 `cli.no_condition`（→ 文本帮助 + 2）
 `cli.invalid_regex` 还有匹配期这一处：模式撞上正则引擎的回溯复杂度上限（`stage=match` + 1，消息说的就是回溯复杂度）——
@@ -465,6 +584,9 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 数字；图仍可能由别的那几条截到）`note.os_unverifiable`（本机 build 没问出来，所以这一次没有按版本筛通道 ——
 问不出来不等于不支持，也不等于支持）
 `note.help_ignored_arguments`
+`note.window_query_stale`（每一次 `--list` / `--inspect` 都固定带这一条：交回的是**此刻的快照**，字段会过期，
+`hwnd` / `pid` / 类名不是可以长期持有的凭证；真去截图时仍会在取帧之前复核身份。`--quiet` 会连同整段 notes
+一起去掉，但 `policy` / `authorization` / `caveats` 里那三件自述不受 `--quiet` 影响）
 
 ## 帧的形状与像素上限
 
@@ -517,13 +639,27 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 ECAPTURE.EXE --capabilities
 ECAPTURE.EXE --diagnostics        # 要提交问题报告时用这份（构建标识 + 平台 + 后端状态）
 
-# 1) 先看命中谁（不写文件；--dry-run 在任何确认框之前就返回，不打扰人。给不给 --out 都行）
+# 1) 先只读发现：把候选列成结构化数据，不截图、不弹框、不写文件、也不需要 --out。
+#    字段直接读（hwnd / pid / class / title / image / rect / visible / minimized / zOrder），
+#    不要再去解析一句拼好的描述文本。命中总数看 pagination.matched，翻页用 --offset / --limit。
+ECAPTURE.EXE --list --process notepad.exe
+ECAPTURE.EXE --list --offset 50 --limit 50          # 上一页没列完时接着翻
+ECAPTURE.EXE --list=all --class Notepad             # 把最小化窗口也并进同一根 Z 序轴
+#    旧的探针入口照旧可用（挑中目标就返回，同样不落地、不打扰人）：
 ECAPTURE.EXE --process notepad.exe --dry-run --out D:\shots\_probe.png
+
+# 1b) 定一扇窗口看细节 + 拿身份约束：--inspect 用与截图同一套选择策略，定不出唯一一条就报歧义（+5），
+#     不会替你挑一个。要归属映像完整路径写 --inspect=path（默认只写文件名，路径常含用户名）。
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C
+ECAPTURE.EXE --inspect=path --title LocalSend
+#     identity 那一段是**下一次截图要带回去的约束**，不是许可证：processStartTicks 用来分辨 PID 有没有被复用，
+#     selectionNeedsRecheck=true 说当初的条件含易变项（标题 / 按屏），截图前会拿条件重跑一次。
+#     工具在取帧之前自己还会复核，所以不需要你手工传任何 token —— 这一份快照过期了就重新问一次。
 
 # 2) 精确锁定一个窗口：默认 wgc 是窗口内容路径，带 --yes 才真的不弹框
 ECAPTURE.EXE --title LocalSend --class UnityWndClass --yes --out D:\shots\game.png
 
-# 3) 多匹配：按 hint 里的句柄回来点名（这条没给 --yes，所以照样弹一次"是/否"框）
+# 3) 多匹配：从 --list 的 windows[].hwnd 里点名回来（这条没给 --yes，所以照样弹一次"是/否"框）
 ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite D:\shots\one.png
 
 # 4) 每个命中窗口各一张（授权不跨请求缓存，所以每次调用都要重新带上 --yes）

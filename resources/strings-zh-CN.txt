@@ -39,7 +39,7 @@ grp.consent	截图授权（真实截图默认都要先弹框问一次；--yes �
 grp.timeout	执行期限（自动处理那一段的总预算；人工确认另算，到点按拒绝处理）
 grp.output	输出
 grp.behavior	其它
-grp.query	能力查询（只读：不截图、不弹框、不写文件）
+grp.query	查询（只读：不截图、不弹框、不写文件）
 
 # ---------------------------------------------------------------------------
 # 选项说明（kOptions 目录，按选项名取 key）
@@ -76,6 +76,10 @@ opt.help	输出文本帮助（本段）
 opt.version	输出版本与阶段
 opt.capabilities	输出本机能力报告（JSON）：版本、系统与会话条件、各条取图路线的 available / unavailable / unverified、格式与 --yes 的适用范围。只读：不截图、不弹确认框、不写文件，也不靠实际截屏来探测能力。available 只说明"这个构建里有这条路线，且这次问出来的环境判据没挡掉它"，不保证某个窗口一定截得到。只接受 --lang / -v / -q，与任何截图选项或输出路径同时给出 = cli.query_conflict + 退出码 1，一张都不截
 opt.diagnostics	输出诊断与版本报告（JSON）：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态，字段与 --capabilities 同源，不另立第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；--verbose 追加每一问的原始答案，便于核对后再提交。互斥规则与 --capabilities 相同
+opt.list	只读地把满足全部条件的顶层窗口列成 JSON（句柄 / PID / 类名 / 标题 / 映像名 / 矩形 / Z 序 / 身份约束字段），不截图、不弹框、不写文件，也不需要输出路径。多匹配按 --offset / --limit 分页而不报截图歧义，配选择策略算冲突。取值 all = 也列最小化窗口。结果会过期，截图时仍要复核身份（详见 README）
+opt.inspect	只读地检查同一套选择策略定出的那一扇窗口；多匹配报 match.ambiguous_window + 退出码 5，不替你选一个。取值 path = 也写出归属映像的完整路径（默认只写文件名）。读不到的项写字段级 denied / failed，不建议改用管理员身份；不恢复或激活任何窗口
+opt.offset	窗口查询跳过开头 n 个（0 起）
+opt.limit	窗口查询本批最多 n 个（默认 50）
 
 # ---------------------------------------------------------------------------
 # 解析期诊断（src/CliOptions.cpp）
@@ -112,6 +116,13 @@ cli.conflicting_options	这些选择策略互斥，只能选一个
 cli.conflicting_hint	例如只保留 --index 2
 cli.query_conflict	查询命令与截图选项不能同时给出：--capabilities / --diagnostics 只读地问环境，本身不截图
 cli.query_conflict_hint	查询只接受 --lang、-v/--verbose、-q/--quiet；请去掉其余选项与输出路径，或把截图另起一次
+cli.list_value	--list 的取值只接受 all（把最小化窗口也列进来），或整个省略
+cli.list_value_hint	写成 --list=all；要限制条数与翻页请用 --limit / --offset
+cli.inspect_value	--inspect 的取值只接受 path（写出归属映像的完整路径），或整个省略
+cli.inspect_value_hint	写成 --inspect=path；点名某一扇窗口请用 --hwnd，多匹配时请先消歧
+cli.window_query_conflict	窗口查询（--list / --inspect）不能与截图那一级或环境查询同时给出：它不产图，多匹配也不是截图歧义
+cli.window_query_conflict_hint	窗口查询接受窗口条件、--monitor、--offset / --limit、--timeout-ms、--yes 与 --lang / -v / -q（取舍写在 --list=all / --inspect=path 里）；请去掉 --out / --format / --quality / --capture / --dry-run / 确认框期限 / --capabilities / --diagnostics，或把截图与查询分成两次
+cli.list_count_value	条数不合法：要写十进制，0 到 %1
 cli.unhandled_option	内部错误：目录中存在但解析器未处理的选项
 cli.missing_output	缺少输出路径，且默认写标准输出时未能出图
 cli.missing_output_hint	显式给 --out <路径>，或用 --dry-run 先看窗口是否命中
@@ -154,6 +165,7 @@ match.index_hint	共 %1 个候选：%2
 match.ambiguous	匹配到多个窗口，需要消歧
 match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或补充条件。候选（按 Z 序）：%1
 match.untitled	(无标题)
+match.inspect_ambiguous_hint	--inspect 需要唯一目标：用 --hwnd 点名，或补 --class / --process / --title 把条件收窄到一扇，或用 --index / --topmost-match / --bottommost-match 选定。本工具不替你挑一个，也不因为另一扇"看起来一样"就先截它。候选（按 Z 序）：%1
 
 # ---------------------------------------------------------------------------
 # 流水线与写文件（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）
@@ -208,6 +220,7 @@ cap.unsupported	该取图方式尚未实现
 cap.auto_failed	auto 的回退通道全部失败（%1）
 cap.timeout	自动处理预算 %1 ms 已用尽（实际用时 %2 ms）
 cap.timeout_hint	加大 --timeout-ms，或换一条不会卡住的取图通道（被遮挡的窗口用 wgc / dwm）；没有可中断等待点的那一步只能靠期限到点时中止本工具的辅助进程
+cap.timeout_query_hint	加大 --timeout-ms，或把这一批条件写得更省（--title-regex 的回溯、以及向挂起的窗口取标题都在这里花时间）；没有可中断等待点的那一步只能靠期限到点时中止本工具的辅助进程。窗口查询不取一个像素，所以换 --capture 没有用
 cap.worker.spawn_failed	辅助进程没能启动，这次取图没有执行
 cap.worker.spawn_failed_hint	printwindow 与 dwm 的读回在本工具的辅助进程里执行（那种调用会同步等目标窗口，没有中断点）。启动失败通常是权限、策略或杀软拦截：%1
 cap.worker.channel_failed	与辅助进程的管道断了，这次取图没有拿到结果
@@ -353,3 +366,10 @@ env.channel_unsupported	%1 通道要 Windows 内部版本 %2 或更新，本机�
 env.channel_unsupported_hint	这一条是本机版本的事，与目标窗口无关：换一条取图通道（--capture / -C）或改用 auto 才有意义，重试同一个目标不会有别的下场。显式指定的通道绝不换成别的，所以这条不会被 auto 自动绕开
 note.channel_unavailable	auto 回退链里没有 %1：它要 Windows 内部版本 %2 或更新，本机 %3
 note.os_unverifiable	没能问出本机 Windows 的内部版本，所以这一次没有按版本筛通道；真不可用的那一条会交回它自己的错误码
+
+# ---------------------------------------------------------------------------
+# 结构化的窗口发现与检查（--list / --inspect，src/WindowQuery.cpp）
+#   这两条查询不产图，所以文案里最要紧的是"这份列表不是凭证"与"读不到不等于没有"。
+# ---------------------------------------------------------------------------
+note.window_query_stale	窗口查询交回的是此刻的快照，字段会过期
+note.window_query_stale_hint	句柄会被复用、标题会变、进程会退出，所以这一份列表里的 hwnd / pid / 类名不是一种可以长期持有的凭证。真去截图时本工具仍要在取帧之前复核目标身份（capture.target_gone / capture.target_changed / capture.target_unverifiable），确认框也照旧按像素来源判，--yes 只免掉窗口内容那一级
