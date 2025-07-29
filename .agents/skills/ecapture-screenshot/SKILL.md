@@ -1,6 +1,6 @@
 ---
 name: ecapture-screenshot
-description: Capture window or full-screen images on Windows with ECAPTURE.EXE (EvernightCapture) by selecting targets through conditions. Use when taking screenshots, grabbing a specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), capturing several windows at once, capturing one monitor whole, or parsing ECAPTURE's JSON output, exit codes and diagnostic codes.
+description: Capture window or full-screen images on Windows with ECAPTURE.EXE (EvernightCapture) by selecting targets through conditions. Use when taking screenshots, grabbing a specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), listing monitors and naming one by a stable identifier (--screens), capturing several windows at once, capturing one monitor whole, or parsing ECAPTURE's JSON output, exit codes and diagnostic codes.
 argument-hint: <window conditions> <output path>
 ---
 
@@ -136,6 +136,43 @@ Do **not** treat any of this as a credential to cache and present later. Every w
 anyway (`capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`) and still asks for consent
 according to where the pixels come from. If the list is more than a moment old, run `--list` again.
 
+## Step 0c: name a monitor (`--screens`)
+
+`--monitor <n>` used to be the only way to say which screen, and that `n` is nothing but the position in *this
+run's* enumeration - not the id in Windows Settings, and not stable across a replug or a resolution change.
+Guessing it does not fail loudly: it captures a screen nobody approved. `--screens` hands the identities back as
+data, and two of them can be written straight into `--monitor`:
+
+```powershell
+& "$PSScriptRoot\ECAPTURE.EXE" --screens                  # contract: screens - one record per monitor
+& "$PSScriptRoot\ECAPTURE.EXE" --monitor device:DISPLAY1 --out shot.png
+& "$PSScriptRoot\ECAPTURE.EXE" --monitor "id:\\?\\DISPLAY#GSM41A2#5&…#{…}" --out shot.png
+```
+
+- **Read-only**, like the other queries: no pixel taken, no consent dialog, no file written, and **no display
+  setting touched** - rotating a screen in order to find out whether it is rotated would be editing the exam to
+  read the answer. It needs no window condition and no output path, and it never falls into "no condition = help".
+- `screens[].selectors.device` / `screens[].selectors.id` are the exact strings to write back, and `identity.*`
+  states which kinds are selectors at all. Stability per kind: `ordinal` = `this_invocation`,
+  `deviceName` = `this_desktop_attach`, `monitorDevicePath` = `cross_session_expected`,
+  `adapterLuid` = `this_session` - association only, deliberately **no** selector form, because an LUID is unique
+  only inside the current session and naming a monitor with it is a bet rather than a reference.
+- `dpi` (effective and raw, through `shcore!GetDpiForMonitor`, Win8.1+), `rotation.degrees` (what a person sees)
+  and `rotation.panel` (relative to the panel's native orientation) are separate questions with separate
+  `readability` entries; a value that could not be read is absent rather than written as `0`, and the reason
+  (`denied` / `failed` plus that API's own code) sits next to it. Nothing here asks you to run elevated.
+- **Naming a monitor never replaces consent.** A whole screen is desktop pixels, so the confirmation dialog always
+  appears and `--yes` does not skip it; the list is also a snapshot (`note.screen_query_stale`, and `caveats`
+  include `device_names_are_not_persistent` and `cross_session_stability_not_tested`), so the pre-capture identity
+  re-check still happens. Branch on `errors[].code` if an identifier no longer resolves:
+  `match.monitor_unknown_id` (4 - not on the desktop now, list again), `match.monitor_ambiguous_id`
+  (5 - several screens share it, the tool will not pick one), `match.monitor_id_unverifiable` (7 - the identity
+  question returned no answer, so nothing was captured and nothing was substituted).
+- `--screens` belongs to the environment-query family: it accepts only `--lang` / `-v` / `-q`, and anything else -
+  `--yes`, `--monitor`, an output path, another query - is `cli.query_conflict` + exit code 1 with every conflicting
+  flag named in `value`. Its own exit codes are only `0` and `1`: it selects no target, shows no dialog, writes no
+  file, so `4`/`5`/`6`/`7`/`8` cannot appear here.
+
 ## Four steps: discover, disambiguate, select, capture
 
 1. `--list` with the window conditions to see who matches, as structured data. `--dry-run` does the same target
@@ -213,7 +250,11 @@ according to where the pixels come from. If the list is more than a moment old, 
   prefix.
 - **`--monitor` decides whether it swallows the next argument with the same grammar it parses with**: a
   malformed number there is an error, never a file name, while `out.png`, `2.png`, `v2`, `D:\a\b.png` stay
-  output paths (`--monitor out.png` = primary monitor, written to out.png).
+  output paths (`--monitor out.png` = primary monitor, written to out.png). The identifier forms are
+  `device:<name>` and `id:<monitor device path>`, and **only those two prefixes** are eaten from a bare
+  argument - so `--monitor D:\shots\a.png` still means "primary monitor, write to that file", while an
+  inline `--monitor=foo:1` is `cli.monitor_selector_kind` + 1 and `--monitor=id:` is
+  `cli.monitor_selector_empty` + 1 (never "then use the primary monitor").
 - **Whatever follows an option that takes a value is that value**, even if it looks like another option:
   `--title --lang ja` searches for the title `--lang` - and that also means the swallowed `--lang` never
   becomes the message language. Write `--title=-x` for a value starting with `-`, or `--` to stop option
@@ -279,10 +320,15 @@ according to where the pixels come from. If the list is more than a moment old, 
   means "nothing was left out", not "unknown". These are location judgements too, so `--quiet` does not hide them.
 - `--monitor` numbers are **the position within this run's monitor enumeration**, starting at 1. They are not the ids
   Windows Settings shows, and unplugging a display or changing a resolution reshuffles them - never cache a number
-  as a screen's identity across runs. Use `images[].device` (`\\.\DISPLAY1` shape) to recognize the same monitor
-  later. Before capturing a screen target the tool re-checks that monitor by name: if it left the desktop nothing is
-  captured (`capture.monitor_changed`), and if its rectangle changed, the new rectangle is what a person is asked to
-  approve - an earlier confirmation is never reused for a resized or relocated monitor.
+  as a screen's identity across runs. To name the same monitor again, run `--screens` (Step 0c above) and write back
+  one of its selectors: `--monitor device:DISPLAY1` (the name in this desktop attach) or
+  `--monitor "id:\\?\\DISPLAY#…"` (the monitor devnode path - the identifier that carries across sessions,
+  and the one to store). Before capturing a screen target the tool re-checks that monitor by **identity**: by devnode
+  path when that was known at selection time, by name only when it was not. So a monitor that left the desktop, or a
+  device name that now belongs to a different panel, stops with `capture.monitor_changed` and nothing is captured,
+  while a re-check that cannot be answered stops with `capture.monitor_unverifiable` rather than falling back to the
+  name; if the rectangle changed, the new rectangle is what a person is asked to approve - an earlier confirmation is
+  never reused for a resized or relocated monitor.
 - Exit codes: `0` success / `1` bad arguments / `2` no condition given / `3` `--help` / `4` no match /
   `5` several matches / `6` protected target, or the confirmation was refused (`capture.access_denied`),
   could not be shown (`capture.consent_unavailable`) or nobody answered it within `--consent-timeout-ms`
@@ -468,6 +514,10 @@ Floors, the declared support range and what has actually been measured are in
 | `match.no_window` | 4 | Conditions too narrow, or the target is minimised (minimised windows cannot be captured); relax with `--title-contains` |
 | `match.ambiguous_window` | 5 | Disambiguate as described above |
 | `match.index_out_of_range` / `match.monitor_out_of_range` | 1 | `--index` / `--monitor` out of range; `hint` lists everything on this machine |
+| `match.monitor_unknown_id` | 4 | The `--monitor device:…` / `id:…` identifier is not on the desktop right now (unplugged, disabled, or a stale value from an earlier `--screens`). Run `--screens` again; **the tool does not fall back to the primary monitor** |
+| `match.monitor_ambiguous_id` | 5 | One identifier matches several monitors; every candidate is in `hint`. Pick a more specific identifier (the cross-session `id:` one) or a number - the tool never chooses for you |
+| `match.monitor_id_unverifiable` | 7 | The screen identity could not be read at all (QueryDisplayConfig gave no answer), so naming a monitor by identifier is impossible. Check this machine's display topology - switching `--capture` is not the next step, since no pixel was read and no channel was chosen |
+| `cli.monitor_selector_empty` / `cli.monitor_selector_kind` | 1 | `--monitor`'s identifier form is malformed: nothing after the colon, or a prefix other than `device:` / `id:` |
 | `match.timeout` | 7 | The `--timeout-ms` budget was spent before/while evaluating conditions (`stage=match`; regex work or a hung window's title fetch) - raise `--timeout-ms` or simplify the regex |
 | `cli.missing_output` | - | Retired: it used to replace every failure that happened while `--out` was omitted. Never produced now - read the real code (`match.no_window` / `capture.access_denied` / `io.write_failed` / …) instead |
 | `cli.invalid_format` | 1 | `--format` accepts only png / jpg / jpeg / bmp / tiff / gif (no webp, no ico, no `auto`) |
@@ -488,7 +538,8 @@ Floors, the declared support range and what has actually been measured are in
 | `capture.target_changed` | 7 | That handle value now belongs to another object (different owning process, recycled PID, different window class) or no longer satisfies the condition it was selected by (its title changed, it moved off the `--monitor` screen). The ASCII reason is inside `message`. **Re-select the target**: consent given to the old object is not transferred, and this tool will not grab a look-alike instead - switching channel or relaxing the conditions are both wrong moves |
 | `capture.target_unverifiable` | 7 | One identity question could not be answered (process information unreadable, the condition re-evaluation did not finish), and no answer is never counted as a pass. Check the execution environment or raise `--timeout-ms`, then enumerate and select again |
 | `capture.frame_invalid` | 7 | The frame that came back does not describe its own memory correctly (zero size, a side over 16384 px, a row pitch that cannot hold one row, a buffer shorter than pitch x height, more than 1 GiB). Detected before allocating anything; a target-side problem on that channel - re-check the size, or `--capture wgc` |
-| `capture.monitor_changed` | 7 | That monitor left this machine's desktop during the request, or its picture (resolution / rotation / position) changed after the confirmation - so nothing was sampled and **no other monitor was substituted**. Re-enumerate the monitors (`--monitor` numbers are per-run) and confirm again |
+| `capture.monitor_changed` | 7 | That monitor left this machine's desktop during the request, or its picture (resolution / rotation / position) changed after the confirmation - so nothing was sampled and **no other monitor was substituted**. Re-enumerate with `--screens` and confirm again |
+| `capture.monitor_unverifiable` | 7 | The pre-capture identity re-check got no answer this time while the target had been named by a cross-session identifier. It does **not** fall back to matching by device name (that name may already belong to another panel), so nothing is captured. Re-run `--screens`, then confirm again |
 | `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
 | `io.file_exists` | 8 | `--no-overwrite` (or `=true`) was given and the target already exists; decided by the final rename, not by a pre-check |
 | `io.output_collision` | 8 | Two targets expand to the same output name; the whole batch is refused before any frame is taken, so nothing is written - put `%i` / `%h` into `--out` |

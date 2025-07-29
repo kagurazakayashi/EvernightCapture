@@ -31,6 +31,11 @@ enum class ReadState : uint32_t {
     kFailed = 2,     // 问过而失败，原因码记在同一条的 win32 字段里
 };
 
+// ReadState 的机器名（readable / denied / failed）。不进文案、不随 --lang 变。
+// 屏幕那一路（--screens 的每一问，ScreenIdentity.h）交回的是同一个三值枚举，
+// 所以这个词表也只写一处：两条路的答案形状必须能拿同一份解析代码读。
+const wchar_t* ReadStateName(ReadState state);
+
 struct WindowInfo {
     uint64_t hwnd = 0;
     uint32_t pid = 0;

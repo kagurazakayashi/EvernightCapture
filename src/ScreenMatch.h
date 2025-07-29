@@ -57,7 +57,19 @@ ScreenCheck CompareScreen(const ScreenInfo& wanted, const std::vector<ScreenInfo
 std::wstring DescribeScreen(const ScreenInfo& s);
 std::wstring BriefScreenList(const std::vector<ScreenInfo>& screens);
 
-// 去掉 "\\.\\" 前缀的设备名（"DISPLAY1"），给 %n 占位符当文件名用
+// GDI 视图设备名的前缀（形如 `\\.\`，一共四个字符）。这一条有三处在用：
+// %n 占位符要的裸设备名、--monitor=device: 写的标识本体、以及把设备名与显示配置那条
+// 活动路径对号时的比较键。三份各写一遍迟早打脸，所以形状只在这里写一次。
+// 只去前缀，本体一字不改 —— 设备名是系统用来认对象的键，不是要归一化的文本。
+inline std::wstring StripScreenDevicePrefix(const std::wstring& v) {
+    const std::wstring prefix = L"\\\\.\\";
+    if (v.size() > prefix.size() && v.compare(0, prefix.size(), prefix) == 0) {
+        return v.substr(prefix.size());
+    }
+    return v;
+}
+
+// 去掉前缀的设备名（"DISPLAY1"），给 %n 占位符当文件名用
 std::wstring ScreenDisplayName(const ScreenInfo& s);
 
 }  // namespace ecapture

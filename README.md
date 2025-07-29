@@ -109,58 +109,59 @@ Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all 
        ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
 
 Capture target (without --monitor only the window conditions below are used)
-  --monitor, -m [<n|primary|all>] Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images
+  --monitor, -m [<n|primary|all|device:|id:>] Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images; to name a specific monitor use an identifier from --screens: device:<name> (this desktop attach) or id:<monitor device path> (the cross-session one) - a number can point at a different screen after a replug or a mode change
 
 Window match conditions (repeat one option for OR, combine different options with AND)
-  --hwnd <handle>                 Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
-  --pid <pid>                     Process id, decimal only and greater than 0
-  --process, -p <image-name>      Image file name (no path), case-insensitive; without an extension .exe is assumed
-  --exe <full-path>               Full image path, case-insensitive
-  --title, -t <exact-title>       Window title, exact match
-  --title-contains, -T <text>     Window title contains this substring
-  --title-regex, -R <regex>       Window title regular-expression match (ECMAScript), validated while parsing
-  --class, -c <class-name>        Window class name, case-insensitive, e.g. Notepad / CabinetWClass
+  --hwnd <handle>                             Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
+  --pid <pid>                                 Process id, decimal only and greater than 0
+  --process, -p <image-name>                  Image file name (no path), case-insensitive; without an extension .exe is assumed
+  --exe <full-path>                           Full image path, case-insensitive
+  --title, -t <exact-title>                   Window title, exact match
+  --title-contains, -T <text>                 Window title contains this substring
+  --title-regex, -R <regex>                   Window title regular-expression match (ECMAScript), validated while parsing
+  --class, -c <class-name>                    Window class name, case-insensitive, e.g. Notepad / CabinetWClass
 
 When several windows match (mutually exclusive)
-  --index, -i <n>                 Take the n-th window, 1-based decimal, ordered by visibility and z-order
-  --topmost-match                 Take the topmost matched window in the current z-order
-  --bottommost-match              Take the bottommost matched window in the current z-order
-  --newest                        Deprecated alias of --topmost-match: it picks by z-order, not by creation time
-  --oldest                        Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
-  --all, -a                       Save one image per matched window
+  --index, -i <n>                             Take the n-th window, 1-based decimal, ordered by visibility and z-order
+  --topmost-match                             Take the topmost matched window in the current z-order
+  --bottommost-match                          Take the bottommost matched window in the current z-order
+  --newest                                    Deprecated alias of --topmost-match: it picks by z-order, not by creation time
+  --oldest                                    Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
+  --all, -a                                   Save one image per matched window
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
-  --capture, -C <method>          wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+  --capture, -C <method>                      wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
 
 Capture authorization (a real capture asks first; --yes skips window-content paths)
-  --yes, -y                       Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
+  --yes, -y                                   Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
 
 Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
-  --timeout-ms <ms>               Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
-  --consent-timeout-ms <ms>       How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
+  --timeout-ms <ms>                           Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out the image is not written; you get match.timeout / capture.timeout / io.timeout per stage
+  --consent-timeout-ms <ms>                   How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
 
 Output
-  --out, -o <path|->              Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
-  --format, -f <name>             Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
-  --quality <1-100>               JPEG quality, decimal 1-100, default 100
-  --no-overwrite                  Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
+  --out, -o <path|->                          Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
+  --format, -f <name>                         Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
+  --quality <1-100>                           JPEG quality, decimal 1-100, default 100
+  --no-overwrite                              Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
 Capability queries (read-only: no capture, no dialog, no file)
-  --capabilities                  Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
-  --diagnostics                   Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
-  --list [<all>]                  List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
-  --inspect [<path>]              Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
-  --offset <n>                    Skip the first n windows (decimal, from 0)
-  --limit <n>                     At most n windows per batch (default 50)
+  --capabilities                              Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
+  --diagnostics                               Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
+  --screens                                   Read-only list of every screen: tool number, device name, primary flag, physical rect, DPI and rotation where they can be read, and which adapter drives it - plus how far each of those identities stays true. It reads no pixel, shows no dialog, writes no file and changes no display setting. The device:<name> and id:<path> it returns go straight into --monitor. Mutually exclusive with capture options (cli.query_conflict + exit code 1); a real full-screen capture still always asks and --yes cannot skip it
+  --list [<all>]                              List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
+  --inspect [<path>]                          Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
+  --offset <n>                                Skip the first n windows (decimal, from 0)
+  --limit <n>                                 At most n windows per batch (default 50)
 
 Miscellaneous
-  --dry-run, -d                   Parse and list candidate windows only - no capture, no file written
-  --json, -j                      Deprecated compatibility switch, no effect: success and errors are already JSON
-  --verbose, -v                   Add the input section to the JSON (all input, normalized) and keep notes
-  --quiet, -q                     Drop notes; errors are always returned whatever this says. --verbose wins when both are given
-  --lang, -l <language>           Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
-  --help, -h                      Print this text help
-  --version                       Print version and stage
+  --dry-run, -d                               Parse and list candidate windows only - no capture, no file written
+  --json, -j                                  Deprecated compatibility switch, no effect: success and errors are already JSON
+  --verbose, -v                               Add the input section to the JSON (all input, normalized) and keep notes
+  --quiet, -q                                 Drop notes; errors are always returned whatever this says. --verbose wins when both are given
+  --lang, -l <language>                       Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
+  --help, -h                                  Print this text help
+  --version                                   Print version and stage
 
 Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --. Numbers are decimal only (--hwnd also takes 0x hexadecimal)
 Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
@@ -240,7 +241,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains Report D:\shots\r.png
 `--help`, `--version` and the "no conditions given" case are plain text. Everything else is JSON carrying only the
 capture result and the errors.
 
-The two read-only queries are **separate contracts** (`--capabilities` / `--diagnostics`, see
+The read-only environment queries are **separate contracts** (`--capabilities` / `--diagnostics` / `--screens`, see
 [System support](#system-support)): they carry this machine's
 environment rather than one capture outcome, so only they have `contract` and `contractVersion`. That does not
 run the other way - the capture JSON keeps exactly `captured` / `images` (plus `errors` / `notes` / `input` as
@@ -420,7 +421,7 @@ batch deliberately instead of being retried one target at a time. An access deni
 falling back, and neither is a refusal: once somebody answers "No" (or no dialog can be shown), the rest of that
 request is not attempted — no other backend, no second ask, while every image already completed stays in `images`.
 
-The two read-only queries use only `0` and `1`: `0` = the document was delivered, even when it says this machine is
+The three read-only environment queries use only `0` and `1`: `0` = the document was delivered, even when it says this machine is
 too old and no route is available (**a successful query and a possible capture are two different things** - branch
 on `status`, do not infer the environment from an exit code); `1` = that invocation does not fit the contract
 (`cli.query_conflict`, see [System support](#system-support)).
@@ -652,6 +653,71 @@ different shapes, different contract names, one shared set of fields.
 `--dry-run` is unchanged and remains the compatible entry point: it still answers in `note.dry_run`, still requires
 no output path, and is still a conflict with `--list` / `--inspect` rather than being silently replaced by them.
 
+### Read-only screen enumeration (`--screens`)
+
+Naming "that monitor" used to have exactly one spelling: `--monitor <n>`, where `n` is the position in *this run's*
+`EnumDisplayMonitors` order. That is not the id Windows writes in Settings, and after a replug or a resolution
+change it can name a different panel - and capturing the wrong screen means pixels nobody approved are already on
+disk. `--screens` turns that question into data:
+
+```powershell
+ECAPTURE.EXE --screens                                  # every screen with all of its identities
+ECAPTURE.EXE --monitor device:DISPLAY1 --out shot.png   # by the name of this desktop attach
+ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # by the cross-session monitor path
+```
+
+It is read-only like the other queries: no pixel taken, no consent dialog, no file written, no network, and no
+display setting touched - finding out "is this screen rotated" by calling `SetDisplayConfig` would be editing the
+exam to read the answer. Its document is a third contract (`screens`, version 1) and stays as separate from the
+capture result as `capabilities` and `windowquery` are.
+
+Four identities per screen, each stating how far it stays true (fields, not prose):
+
+| Field | What it is | Stable across | Selector |
+| --- | --- | --- | --- |
+| `ordinal` | position in this run's enumeration | `this_invocation` | `--monitor <n>` |
+| `deviceName` | GDI view device name, `\\.\DISPLAY1` | `this_desktop_attach` | `device:` |
+| `monitorDevicePath` | monitor devnode device interface path | `cross_session_expected` | `id:` |
+| `adapterLuid` | adapter's locally unique id | `this_session` | none - association only |
+
+`screens[].selectors` holds the exact strings to write back (`device:DISPLAY1`, `id:\?\DISPLAY#…`), so nothing has
+to be guessed, and `identity.*` says which kinds may be used as a selector. The adapter LUID deliberately has none:
+it is unique only inside the current session, so naming a monitor with it would be a bet rather than a reference.
+`adapter.devicePath` (the adapter's own devnode path), `adapter.outputTechnology`, `targetId` and `targetAvailable`
+come from the same answer, which is how "which card drives this screen" gets reported.
+
+Three rules this layer keeps:
+
+- **Never another screen instead.** An identifier matching nothing is `match.monitor_unknown_id` (exit 4), one
+  matching several is `match.monitor_ambiguous_id` (exit 5, every candidate listed - the tool will not pick one),
+  and an identity question that returned no answer is `match.monitor_id_unverifiable` (exit 7, whose `hint` says
+  plainly that switching `--capture` is not the next step, because this path never chose a channel). None of them
+  quietly becomes "use the primary monitor then": a whole-screen image nobody approved is exactly what the consent
+  dialog exists to prevent.
+- **Unreadable is reported, not emptied.** `dpi` (effective and raw, through `shcore!GetDpiForMonitor`, Win8.1+),
+  `rotation.degrees` (what a person sees, from the current `DEVMODE`) and `rotation.panel` (relative to the panel's
+  native orientation, from the display config) are separate questions with separate `readability` entries
+  (`readable` / `denied` / `failed`) plus that API's own error code. A missing value always means "no answer", and
+  the reason sits next to it; nothing here suggests running elevated.
+- **A snapshot, not a credential.** Every successful list carries `note.screen_query_stale`, and `caveats` includes
+  `device_names_are_not_persistent`, `cross_session_stability_not_tested` and `screen_capture_always_asks`. Naming a
+  monitor does not skip the identity re-check before the frame, and it does not skip consent: desktop pixels always
+  need a person, `--yes` included (see 《Screenshot authorization and `--yes`》 below).
+
+Identifier naming works wherever a screen is chosen: with window conditions (`--monitor id:… --class …` filters
+windows onto that monitor), with `--list` / `--inspect` (literally the same selection function), and in the
+pre-capture re-check, which uses the identity that was known at selection time - a device name that turns out to
+belong to a different panel stops with `capture.monitor_changed`, and a re-check that cannot be answered stops with
+`capture.monitor_unverifiable` instead of falling back to the name. `--monitor <n>` keeps its old meaning, including
+`match.monitor_out_of_range` with the full local list in `hint`; the two new identifier forms are documented in
+`--help` and in the value syntax section above.
+
+`--screens` belongs to the environment-query family: it accepts only `--lang` / `-v` / `-q`, anything else - `--yes`
+and `--monitor` included - is `cli.query_conflict` + exit code `1`, and it never falls into "no condition means
+help". `--quiet` removes only `notes`; `identity`, `readability`, `authorization` and `caveats` are judgements, not
+courtesy. The document prints device paths and neither a filesystem path nor a username
+(`privacy.includesDevicePaths: true`, `includesFileSystemPaths: false`).
+
 ## Capture channels
 
 | Value | Channel | Covered window | Hardware-accelerated content | API history floor |
@@ -765,11 +831,11 @@ images follow the window rows above.
 `--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
 `--monitor all` one image per monitor. The number is **the position in this run's `EnumDisplayMonitors` enumeration**,
 starting at 1 — it is not the id Windows writes in Settings, and unplugging a monitor or changing a resolution can
-reshuffle it, so do not store a number to identify a screen across runs. Use `images[].device` (the
-`\\.\DISPLAY1`-shaped name) when you need to recognize the same monitor again. Out of range gives
+reshuffle it, so do not store a number to identify a screen across runs. To name that monitor again, run `--screens` and write back what it reports (the
+`\\.\DISPLAY1` name of this desktop attach: `--monitor device:DISPLAY1`, or the monitor devnode path, which is the one that survives a session change: `--monitor "id:\\?\DISPLAY#…"`). An identifier that matches nothing gives `match.monitor_unknown_id` (exit code 4), one that matches several gives `match.monitor_ambiguous_id` (exit code 5, every candidate listed - the tool will not pick one), and an identity question that returned no answer gives `match.monitor_id_unverifiable` (exit code 7) - none of them quietly falls back to the primary monitor. An out-of-range number still gives
 `match.monitor_out_of_range` (exit code 1) with every local monitor listed in `hint`. Before a screen target is
-captured, the tool re-checks that monitor by name: if it left the desktop the capture stops with
-`capture.monitor_changed`, and if its rectangle or position changed, the new rectangle is what a person is asked to
+captured, the tool re-checks that monitor by identity - by devnode path when that was known at selection time, by name only when it was not: if the monitor left the desktop, or that device name now belongs to a different panel, the capture stops with
+`capture.monitor_changed` (a re-check that cannot be answered at all stops with `capture.monitor_unverifiable`), and if its rectangle or position changed, the new rectangle is what a person is asked to
 approve — an old confirmation is never reused for a resized or relocated monitor. `--monitor <n>` together
 with window conditions means "filter windows by monitor" (a window overlapping that monitor matches, and a window
 spanning monitors matches on both), still producing window images, so the window rows of the table above apply.
@@ -904,6 +970,13 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    `--out` — the two ways of asking for stdout report the same codes. The codes you actually hit:
    `match.no_window` (4, conditions too narrow or the window is minimized), `match.ambiguous_window` (5, choose
    from the candidates in `hint`), `match.index_out_of_range` / `match.monitor_out_of_range` (1, `hint` lists all
+   candidates), `match.monitor_unknown_id` (4, an identifier `--screens` reported earlier is not on the desktop
+   now), `match.monitor_ambiguous_id` (5, several screens share that identifier - the tool will not pick one),
+   `match.monitor_id_unverifiable` (7, the screen identity could not be read at all), plus
+   `cli.monitor_selector_empty` / `cli.monitor_selector_kind` (1, `--monitor`'s identifier forms), and
+   `capture.monitor_unverifiable` (7, the pre-capture identity re-check got no answer - it does not fall back to
+   the name either). Naming a monitor by identifier comes from `--screens`; see that section above instead of
+   guessing an ordinal,
    candidates), `cli.invalid_format` (1), `cli.stdout_multiple_targets` (1, several targets
    want to share one stdout), `capture.failed` (7), `capture.frame_timeout` (7, waiting for the frame ran out),
    `capture.window_gone` (7, the target is already gone — enumerate again), `capture.frame_invalid` (7, the frame's own

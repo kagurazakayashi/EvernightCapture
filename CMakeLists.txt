@@ -34,6 +34,8 @@ add_executable(ecapture
   src/WindowQuery.cpp
   src/WindowQueryRun.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
+  src/ScreenQuery.cpp
   src/SystemCompat.cpp
   src/EnvReport.cpp
   src/Capture.cpp
@@ -126,6 +128,7 @@ add_executable(ecapture-consent-tests
   src/CliOptions.cpp
   src/Lang.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
   src/WindowMatch.cpp
   resources/ecapture.rc)
 
@@ -156,6 +159,7 @@ add_executable(ecapture-worker-tests
   src/Deadline.cpp
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
@@ -193,6 +197,7 @@ add_executable(ecapture-image-tests
   src/CliOptions.cpp
   src/Lang.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
   src/WindowMatch.cpp
   resources/ecapture.rc)
 
@@ -245,6 +250,7 @@ add_executable(ecapture-identity-tests
   src/WindowIdentity.cpp
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
@@ -282,6 +288,7 @@ add_executable(ecapture-dup-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
   src/WindowMatch.cpp
   src/CliOptions.cpp
   src/Lang.cpp
@@ -372,6 +379,7 @@ add_executable(ecapture-windows-tests
   src/WindowIdentity.cpp
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
@@ -390,4 +398,45 @@ target_link_libraries(ecapture-windows-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-windows-tests PROPERTIES OUTPUT_NAME "ecapture-windows-tests")
 set_property(TARGET ecapture-windows-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 只读屏幕枚举与按标识选屏（--screens / --monitor=device: / --monitor=id:）的离线判据
+#（由 tests\screens.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的现场是"这台机器只接了一块屏"永远造不出来的 ——
+# 副屏在负坐标、竖屏旋转、同一个设备名被系统重新发给另一块面板、同一个标识命中两块屏、
+# 显示配置整路问不出来、复制模式下两条路径共享一个桌面。真机上要判这些要么得插第二台显示器、
+# 要么得改用户的显示设置，两条都不允许（见 ScreenIdentity.h 顶部第 1 条）。
+# 判据本体（src/ScreenIdentity.cpp 的 SelectScreenCandidates / CompareScreenIdentity 与
+# src/ScreenQuery.cpp 的 BuildScreenQuery / RenderScreenQuery）全是纯函数：候选表注进来就能逐条判，
+# 连渲染都判得到"读不到的那一项有没有被写成 0"与"选择器有没有凭空多出一条"。
+# 这里不链取帧通道也不链 Worker：一次像素都不取的那一路用不着它们。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-screens-tests
+  tests/screens_state.cpp
+  src/ScreenIdentity.cpp
+  src/ScreenQuery.cpp
+  src/WindowQuery.cpp
+  src/WindowMatch.cpp
+  src/WindowIdentity.cpp
+  src/ScreenMatch.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  src/Json.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-screens-tests PRIVATE resources src)
+target_compile_features(ecapture-screens-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-screens-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-screens-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-screens-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-screens-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-screens-tests PROPERTIES OUTPUT_NAME "ecapture-screens-tests")
+set_property(TARGET ecapture-screens-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

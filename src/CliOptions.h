@@ -68,14 +68,29 @@ enum class CaptureMethod {
 };
 
 // --monitor 的取值域：给了这个选项就有屏幕目标。
-//   无窗口条件  -> 整块屏幕截图（ordinal=0 用主屏，all 则每块屏各一张）
+//   无窗口条件  -> 整块屏幕截图（kPrimary 用主屏，kAll 则每块屏各一张）
 //   有窗口条件  -> 只算落在那块屏上的窗口
 // 之所以要显式给 --monitor 才截屏，而不是"没条件就当全屏"：漏写条件的调用方
 // 不该在无意间拍到整个桌面。
+//
+// 定位一块屏有三种来路，说的是三件事（数字只在本机本次枚举里有意义）：
+//   kOrdinal  本次 EnumDisplayMonitors 顺序里的位置。它既不是「显示设置」里那个标识号，
+//             也不保证插拔/改分辨率之后还指同一块屏 —— 所以要认屏请用下面两条。
+//   kDevice   当下的 GDI 视图设备名（`\\.\DISPLAY1`）。它比编号稳：同一块屏在本次桌面连接里
+//             一直是这个名字。但这个名字是系统按连接顺序**发**的，拔掉重插、换接口之后可能
+//             发给另一块屏，所以它仍然只是"本次连接的身份"。
+//   kPath     监视器 devnode 的设备接口路径（`\\?\DISPLAY#...`）。这是唯一一个由设备自己
+//             决定、跨会话与重启都成立的标识（--screens 里那条 id:），也是本工具推荐的
+//             "我要那一块屏"的写法。
+// 取值语法与"下一个参数要不要被吃掉"写在同一处（CliOptions.cpp 的 LooksLikeMonitorValue）。
 struct MonitorSelector {
+    enum class Kind { kPrimary, kOrdinal, kAll, kDevice, kPath };
+
     bool given = false;
-    bool all = false;   // --monitor all
-    int ordinal = 0;    // 1 起，只认十进制；0 = 未指定或 primary，用主屏
+    Kind kind = Kind::kPrimary;
+    uint32_t ordinal = 0;      // Kind::kOrdinal
+    std::wstring id;           // Kind::kDevice：不含前缀的设备名（"DISPLAY1"）；Kind::kPath：devnode 路径原样
+    std::wstring written;      // 用户实际敲下去的那一条取值（诊断的 value 与 -v 回显都用它）
 };
 
 // 只读的结构化窗口发现与检查（--list / --inspect）。两条都不取一个像素、不弹框、不写文件，
@@ -127,6 +142,11 @@ struct Options {
     // 查询命令也不参加"零条件 => 帮助"那一条 —— 它们本身就是明确的意图。
     bool capabilities = false;        // --capabilities
     bool diagnostics = false;         // --diagnostics
+    // 只读的屏幕枚举（--screens，判据与渲染在 src/ScreenQuery.h）。它与环境查询同一类：
+    // 不取像素、不弹框、不写文件，也不需要任何条件，所以与截图那一系列选项互斥。
+    // 差别只在它交回的是"这个会话里有哪几块屏、每块屏的几种身份各稳在哪一层"，
+    // 让调用方（含 AI）不必拿本次枚举顺序里的那个编号去猜哪一块是它要的那块。
+    bool screens = false;             // --screens
 
     // 只读的结构化窗口发现与检查（判据与渲染在 src/WindowQuery.h）。这两条复用与截图
     // **同一套**条件求值，所以窗口条件、--monitor、--timeout-ms 都在允许之列；
@@ -143,10 +163,12 @@ struct Options {
     // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面
     bool ScreenMode() const { return monitor.given && match.IsEmpty(); }
     // 这一次是查询而不是截图（任意一条查询命令给出即为真）
-    bool QueryMode() const { return capabilities || diagnostics ||
+    bool QueryMode() const { return capabilities || diagnostics || screens ||
                                     windowAction != WindowAction::kNone; }
-    // 只读的环境查询（--capabilities / --diagnostics）：只接受 --lang / -v / -q
-    bool EnvQueryMode() const { return capabilities || diagnostics; }
+    // 只读的环境查询（--capabilities / --diagnostics / --screens）：只接受 --lang / -v / -q
+    bool EnvQueryMode() const { return capabilities || diagnostics || screens; }
+    // 只读的屏幕枚举（--screens）：与环境查询同一套允许清单，但交回的是另一份契约文档
+    bool ScreenQueryMode() const { return screens; }
     // 只读的窗口查询（--list / --inspect）：额外接受窗口条件、--monitor、--timeout-ms 等
     bool WindowQueryMode() const { return windowAction != WindowAction::kNone; }
 };
@@ -177,6 +199,11 @@ inline constexpr const wchar_t* kConflictingOptions = L"cli.conflicting_options"
 inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_method";
 inline constexpr const wchar_t* kUnknownLanguage = L"cli.unknown_language";
 inline constexpr const wchar_t* kMonitorConflict = L"cli.monitor_conflict";
+// --monitor 的标识写法在解析期就说不通：前缀认得而取值为空（`--monitor=device:`），
+// 或者前缀根本不是这两种标识之一（`--monitor=foo:1`）。两条都是退出码 1，
+// 都不去猜"是不是想写主屏"——猜成主屏等于把一次写错的选屏变成一次没人批准的截图。
+inline constexpr const wchar_t* kMonitorSelectorEmpty = L"cli.monitor_selector_empty";
+inline constexpr const wchar_t* kMonitorSelectorKind = L"cli.monitor_selector_kind";
 inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
 // 只读的查询命令（--capabilities / --diagnostics）与"截图意图"的那一整套选项互斥：
 // 两条命令同时给出，或查询与任何窗口条件 / 输出路径 / 取图方式 / 授权 / 期限选项一起给出，
@@ -226,6 +253,11 @@ inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
 // 《窗口选择与身份一致性》那一节复核，这一条提示随每一次成功的窗口查询发出（--quiet 可抑制，
 // 但文档 caveats 里同源的 token 恒在，抑制不掉的才是判据）。
 inline constexpr const wchar_t* kWindowQueryStale = L"note.window_query_stale";
+// 屏幕枚举（--screens）交回的同样是一份**当时的快照**：编号是本次枚举顺序里的位置，
+// 设备名是本次桌面连接发的，屏幕本身可能在下一次调用之前被拔掉或改分辨率。
+// 所以这份列表不是可以长期持有的凭证，真去截图时那一路仍要在取帧之前重新核对一次
+// （见 src/ScreenIdentity.h 与 ScreenMatch.h 的 CompareScreen）。
+inline constexpr const wchar_t* kScreenQueryStale = L"note.screen_query_stale";
 // 质量提示（不是错误，图片照常交付）：整帧逐像素比过之后确实只有一个颜色。
 // 单色本身不说明采集失败 —— 目标窗口可以本来就是一块纯色；它也可能是没合成出画面。
 // 所以这条只说事实、把两种可能都列在 hint 里，由调用方自己判断要不要再看一眼图。
@@ -239,6 +271,21 @@ inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
 inline constexpr const wchar_t* kIndexOutOfRange = L"match.index_out_of_range";
 inline constexpr const wchar_t* kMonitorOutOfRange = L"match.monitor_out_of_range";
+// 按标识选屏（--monitor=device:… / --monitor=id:…）的三种下场，各给一条码：
+// 它们的下一步动作不一样，而"没对上"绝不允许被折叠成"那就用主屏吧"——
+// 用户批准的是当初列给他看的那一块屏，换一块屏截到的是谁都没批准过的画面。
+//   match.monitor_unknown_id       这个标识现在不在桌面上（拔掉了、禁用了、或者本来就是
+//                                  上一次枚举留下的旧值）。下一步：重新跑一次 --screens。退出码 4。
+//   match.monitor_ambiguous_id     这个标识同时命中多块屏（同一台机器上接了两台型号与
+//                                  连接方式完全相同的监视器时，devnode 路径以外的标识可能撞车）。
+//                                  下一步：改用 --screens 里那条更具体的一条，或直接用编号。
+//                                  本工具绝不替你挑一块。退出码 5。
+//   match.monitor_id_unverifiable  这一问没给出答案（屏幕拓扑没能读出来），因此**无法判断**
+//                                  哪个标识对应哪块屏。与"没匹配上"是两件事：一次是没找到，
+//                                  一次是没问出来。退出码 7，与 match.timeout 同源。
+inline constexpr const wchar_t* kMonitorUnknownId = L"match.monitor_unknown_id";
+inline constexpr const wchar_t* kMonitorAmbiguousId = L"match.monitor_ambiguous_id";
+inline constexpr const wchar_t* kMonitorIdUnverifiable = L"match.monitor_id_unverifiable";
 inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
 // 确认框弹不出来（服务会话、计划任务、锁屏：那里没有人能答"是"）。它与"人答了否"分开给码，
 // 调用方才知道该换会话再来，而不是把这次失败当成"用户不让"再问一遍。退出码同样算 6。
@@ -250,6 +297,11 @@ inline constexpr const wchar_t* kConsentStale = L"capture.consent_stale";
 // 变了（桌面复制只能取当前拓扑里那块输出的画面）。与 capture.failed 分开给码：调用方的下一步
 // 是重新枚举屏幕并重新确认，而不是换一条通道再来 —— 换通道截到的会是另一块屏。退出码仍是 7。
 inline constexpr const wchar_t* kMonitorChanged = L"capture.monitor_changed";
+// 与 capture.monitor_changed 分别是"发现了变化"和"没发现得起变化"：重新核对屏幕身份的那一问
+// 自己没能给出答案（这次枚举里一个屏幕标识都没读出来），而当初选定那块屏靠的就是标识。
+// 这时**不**按设备名退回去截 —— 名字可能已经发给了另一块屏，照名字截就是截一块没人批准过的屏。
+// 下一步是查这台机器的显示拓扑（重新 --screens 一次），不是换通道碰运气。退出码仍是 7。
+inline constexpr const wchar_t* kMonitorUnverifiable = L"capture.monitor_unverifiable";
 inline constexpr const wchar_t* kUnsupported = L"capture.unsupported";
 inline constexpr const wchar_t* kEncoderUnavailable = L"capture.encoder_unavailable";
 inline constexpr const wchar_t* kCaptureFailed = L"capture.failed";

@@ -5,6 +5,8 @@
 
 #include <windows.h>
 
+#include "ScreenIdentity.h"   // 选择器判据只有一份，见那个头文件顶部那四条规矩
+
 namespace ecapture {
 namespace {
 
@@ -35,10 +37,7 @@ std::vector<ScreenInfo> EnumScreens() {
 }
 
 std::wstring ScreenDisplayName(const ScreenInfo& s) {
-    const std::wstring prefix = L"\\\\.\\";
-    if (s.deviceName.size() > prefix.size() && s.deviceName.compare(0, prefix.size(), prefix) == 0)
-        return s.deviceName.substr(prefix.size());
-    return s.deviceName;
+    return StripScreenDevicePrefix(s.deviceName);
 }
 
 std::wstring DescribeScreen(const ScreenInfo& s) {
@@ -60,28 +59,13 @@ std::wstring BriefScreenList(const std::vector<ScreenInfo>& screens) {
 }
 
 std::vector<ScreenInfo> SelectScreens(const Options& opt, std::vector<Diagnostic>* errors) {
-    const std::vector<ScreenInfo> all = EnumScreens();
-
-    const auto outOfRange = [&](const std::wstring& value) {
-        errors->push_back(Diagnostic{codes::kMonitorOutOfRange, Msg(L"match.monitor_out_of_range"),
-                                     L"--monitor", value,
-                                     Msgf(L"match.monitor_out_of_range_hint", all.size(),
-                                          BriefScreenList(all))});
-        return std::vector<ScreenInfo>{};
-    };
-
-    if (all.empty()) return outOfRange(std::to_wstring(opt.monitor.ordinal));
-    if (opt.monitor.all) return all;
-    if (opt.monitor.ordinal == 0) {
-        for (const auto& s : all) {
-            if (s.primary) return {s};
-        }
-        return {all.front()};  // 没有哪块被标成主屏（远程会话里见过），用第一块
+    // 判据只有一份（ScreenIdentity.h 的 SelectScreenCandidates）：按屏过滤窗口这一路与
+    // 真去截整屏那一路必须认出同一块屏，否则 --list 里点名的那块和实际截到的那块能各判一次。
+    std::vector<ScreenInfo> out;
+    for (const ScreenCandidate& c : SelectScreenCandidatesOf(opt.monitor, errors)) {
+        out.push_back(c.screen);
     }
-    for (const auto& s : all) {
-        if (s.ordinal == static_cast<uint32_t>(opt.monitor.ordinal)) return {s};
-    }
-    return outOfRange(std::to_wstring(opt.monitor.ordinal));
+    return out;
 }
 
 std::vector<RECT> SelectedScreenRects(const Options& opt, std::vector<Diagnostic>* errors) {

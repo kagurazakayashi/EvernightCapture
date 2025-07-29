@@ -39,7 +39,7 @@ grp.timeout	実行期限（自動処理区間の総予算。承諾を待つ時�
 grp.output	出力
 grp.behavior	その他
 grp.query	照会（読取専用）
-opt.monitor	対象モニタの番号。1 始まりの 10 進（今回の列挙順で、「表示設定」の識別子とは限らない。モニタを特定するには結果の device を見る）；primary = メイン、all = 全モニタを 1 枚ずつ。ウィンドウ条件なし = 画面全体の撮影、ウィンドウ条件あり = そのモニタに重なるウィンドウのみ。値は省略可（= メイン）で、省略時は次の引数を取り込まないので --monitor out.png も従来どおり。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できない；モニタでウィンドウを絞った場合は従来どおりウィンドウ画像
+opt.monitor	対象モニタの番号。1 始まりの 10 進（今回の列挙順で、「表示設定」の識別子とは限らない。モニタを特定するには結果の device を見る）；primary = メイン、all = 全モニタを 1 枚ずつ。ウィンドウ条件なし = 画面全体の撮影、ウィンドウ条件あり = そのモニタに重なるウィンドウのみ。値は省略可（= メイン）で、省略時は次の引数を取り込まないので --monitor out.png も従来どおり。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できない；モニタでウィンドウを絞った場合は従来どおりウィンドウ画像；特定のモニタを名指しするには --screens が返す識別子を使う：device:<名前>（このデスクトップ接続）または id:<モニタのデバイスパス>（セッションをまたぐほう）。番号は抜き差しや解像度変更後に別のモニタを指す可能性がある
 opt.hwnd	ウィンドウハンドル。数字のみは 10 進、0x 接頭辞または a-f を含む場合は 16 進。0x 推奨。符号と空白は不可、下線は 16 進数字の間に限り有効
 opt.pid	プロセス ID。10 進のみかつ 0 より大きい値
 opt.process	イメージファイル名（パスなし）、大文字小文字を区別しない。拡張子がない場合は .exe として扱う
@@ -71,6 +71,7 @@ opt.help	テキストのヘルプ（この部分）を出力
 opt.version	バージョンと段階を出力
 opt.capabilities	この機の能力を JSON で返す（版数、OS とセッション条件、各経路の available / unavailable / unverified、--yes の適用範囲）。読み取り専用で撮影も確認も書き込みもしない。available は保証ではない。--lang / -v / -q のみ可、撮影オプションや出力先と併用すると cli.query_conflict
 opt.diagnostics	ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
+opt.screens	全モニタを読み取り専用で列挙する：ツール内の番号、デバイス名、メインかどうか、物理矩形、読み取れた場合の DPI と回転、帰属アダプタ。そしてこれらの識別子がそれぞれどこまで安定かも記す。ピクセルを読まず、確認ダイアログも出さず、ファイルも書かず、表示設定も変更しない。返す device:<名前> と id:<パス> はそのまま --monitor に書ける。スクリーンショット系のオプションとは排他（cli.query_conflict + 終了コード 1）；実際に画面全体を撮るときは必ず確認ダイアログを出し、--yes では省略できない
 opt.list	条件を満たす最上位ウィンドウを JSON で一覧化。撮影も確認も書き込みもせず、出力パスも不要。ページ送りは --offset / --limit、all で最小化ウィンドウも含める。結果はこの瞬間のスナップショットなので撮影前に身元を再確認する
 opt.inspect	選択戦略が定める 1 件のウィンドウを読取専用で検査。複数一致は match.ambiguous_window + 5 を返し、代わりに選ばない。path で完全パスも書く（既定はファイル名のみ）
 opt.offset	照会で先頭 n 件を飛ばす（10 進）
@@ -289,6 +290,8 @@ cap.dup.screen_changed	このモニタの映像は確認の後に変わったた
 cap.dup.screen_changed_hint	要求 %1x%2、実際に取れるのは %3x%4、その出力は現在 %5x%6 です。確認後に解像度・回転・配置が変わりました：モニタを選び直して再確認してください。他のモニタに置き換えることはしません
 cap.monitor_changed	対象モニタはこのリクエスト中にデスクトップから外れました
 cap.monitor_changed_hint	モニタが抜かれるか無効になりました。読み直してから再試行してください（--monitor の番号はその回の列挙順です）
+cap.monitor_unverifiable	画面取得前にモニタの身元を再確認できなかった
+cap.monitor_unverifiable_hint	選んだ時点ではこのモニタのセッションをまたぐ識別子が分かっていましたが、今回はそちらが回答を返さなかった。デバイス名で退いて撮ることはしない：その名前は別のパネルに割り当て直されたかもしれず、撮れるのは誰も承認していない画面です。もう一度 --screens を実行して再確認してください
 note.capture_clipped	対象を切り取れませんでした：要求 %1x%2、取得 %3x%4
 note.capture_clipped_hint	欠けた分：左 %1 上 %2 右 %3 下 %4 ピクセル。このチャネルは 1 台のモニタの合成出力を取るため、複数画面またぎや画面外の対象はそのモニタに重なる部分しか撮れません
 
@@ -308,11 +311,21 @@ enc.apartment	このスレッドで WinRT アパートメントを初期化で�
 # モニタ対象（--monitor、src/ScreenMatch.cpp と各チャネルの CaptureScreenXxx）
 # ---------------------------------------------------------------------------
 cli.monitor_value	--monitor には 1 以上の 10 進モニタ番号、または primary / all を指定してください
-cli.monitor_value_hint	例: --monitor 1（1 台目のモニタ）/ --monitor primary（メイン）/ --monitor all（全モニタを 1 枚ずつ）。番号は 10 進数字のみで、符号・0x・1e3 は認めません
+cli.monitor_value_hint	例: --monitor 1（1 台目のモニタ）/ --monitor primary（メイン）/ --monitor all（全モニタを 1 枚ずつ）。番号は 10 進数字のみで、符号・0x・1e3 は認めません。モニタを正確に名指しするには --screens の device:… または id:… を使う
+cli.monitor_selector_empty	--monitor の識別子の本体が空です
+cli.monitor_selector_empty_hint	形は device:<名前> または id:<モニタのデバイスパス>。コロンの後に本体が必要です。まず --screens を実行してこの PC の識別子を一覧にしてください
+cli.monitor_selector_kind	--monitor の識別子接頭辞が認識できません
+cli.monitor_selector_kind_hint	2 つだけ：device:<名前>（このデスクトップ接続での名前）と id:<モニタのデバイスパス>（セッションをまたぐほう）。それ以外は 10 進番号（1 始まり）、primary、all。一覧は --screens
 cli.monitor_conflict	--monitor all は「全モニタを 1 枚ずつ」という意味で、ウィンドウ条件なしのモニタ全体取得にしか使えません
 cli.monitor_conflict_hint	モニタでウィンドウを絞り込む場合は単一の番号を指定してください。例: --monitor 2
 match.monitor_out_of_range	--monitor のモニタ番号が存在しません
 match.monitor_out_of_range_hint	この PC のモニタは %1 台です: %2
+match.monitor_unknown_id	この --monitor 識別子に一致するモニタがありません
+match.monitor_unknown_id_hint	この PC には現在 %1 台のモニタがあります：%2。そういう識別子は前の列挙の名残である場合が多半です（抜かれた、無効化された、デバイス名が別のパネルに割り当て直された）。もう一度 --screens を実行してください。本ツールはメインのモニタに退いて 1 枚撮ることをしません
+match.monitor_ambiguous_id	この --monitor 識別子が複数のモニタに一致します
+match.monitor_ambiguous_id_hint	%1 台に一致：%2。本ツールは代行して 1 台を選ばないので、--screens のもっと具体的な識別子（セッションをまたぐのは id:）を使うか、番号で名指してください
+match.monitor_id_unverifiable	モニタの身元が読み取れず、識別子で名指しできません
+match.monitor_id_unverifiable_hint	表示設定への問い合わせ（QueryDisplayConfig）が今回回答を返さず、この PC には現在 %1 台のモニタがあります：%2。次に見るのはこの PC の表示トポロジーです（回答が得られるセッションで --screens を再実行）。--capture を変えるのは筋が通らない - この経路はピクセルを読まないから交換すべき経路がない
 match.no_window_monitor_hint	--monitor %1 に絞り込みました。そのモニタにウィンドウが重なっているか確認してください
 cap.unsupported_for_screen	%1 チャネルはウィンドウ自身の面を取得するため、モニタ全体には使えません
 cap.unsupported_for_screen_hint	モニタ全体は wgc / duplication / bitblt、または auto を使ってください
@@ -366,3 +379,5 @@ note.os_unverifiable	この機の Windows ビルドを調べられなかった�
 # ---------------------------------------------------------------------------
 note.window_query_stale	ウィンドウ照会が返すのはこの瞬間のスナップショットで、値は古くなります
 note.window_query_stale_hint	ハンドルは再利用され、タイトルは変わり、プロセスは終了するので、この一覧の hwnd / pid / クラス名は長く保持できる認証情報ではありません。後の画面取得でも画面取得前に身元を再確認します（capture.target_gone / capture.target_changed / capture.target_unverifiable）。確認ダイアログは画素の出所に従って判定され、--yes はウィンドウ内容の 1 段だけを省略します
+note.screen_query_stale	このモニタ一覧はその時点のスナップショットで、古くなります
+note.screen_query_stale_hint	現在 %1 台のモニタ。番号はその回の列挙順にすぎず、デバイス名はシステムによって割り当て直される。セッションをまたぐのは id: のモニタのデバイスパス。後のスクリーンショットでも画面取得前に身元を再確認し、確認ダイアログは画素の出所に従って判定される

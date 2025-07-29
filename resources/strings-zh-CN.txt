@@ -44,7 +44,7 @@ grp.query	查询（只读：不截图、不弹框、不写文件）
 # ---------------------------------------------------------------------------
 # 选项说明（kOptions 目录，按选项名取 key）
 # ---------------------------------------------------------------------------
-opt.monitor	截图目标屏的编号，从 1 开始、只认十进制（本次枚举的顺序，不保证等于「显示设置」里写的标识号；要认屏请看结果里的 device）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整块屏幕拍的是桌面像素，一定要先弹框问人，--yes 也跳不过；按屏过滤窗口出的仍是窗口图
+opt.monitor	截图目标屏的编号，从 1 开始、只认十进制（本次枚举的顺序，不保证等于「显示设置」里写的标识号；要认屏请看结果里的 device）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整块屏幕拍的是桌面像素，一定要先弹框问人，--yes 也跳不过；按屏过滤窗口出的仍是窗口图；要点名某一块屏请用 --screens 交回的标识：device:<设备名>（本次桌面连接的名字）或 id:<监视器设备路径>（跨会话那一条）。编号在插拔或改分辨率之后可能指到另一块屏
 opt.hwnd	窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x。不接受正负号与空白，下划线只能夹在两位十六进制数字之间
 opt.pid	进程 ID，只认十进制且大于 0
 opt.process	映像文件名（不含路径），忽略大小写；无扩展名时按 .exe 处理
@@ -76,6 +76,7 @@ opt.help	输出文本帮助（本段）
 opt.version	输出版本与阶段
 opt.capabilities	输出本机能力报告（JSON）：版本、系统与会话条件、各条取图路线的 available / unavailable / unverified、格式与 --yes 的适用范围。只读：不截图、不弹确认框、不写文件，也不靠实际截屏来探测能力。available 只说明"这个构建里有这条路线，且这次问出来的环境判据没挡掉它"，不保证某个窗口一定截得到。只接受 --lang / -v / -q，与任何截图选项或输出路径同时给出 = cli.query_conflict + 退出码 1，一张都不截
 opt.diagnostics	输出诊断与版本报告（JSON）：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态，字段与 --capabilities 同源，不另立第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；--verbose 追加每一问的原始答案，便于核对后再提交。互斥规则与 --capabilities 相同
+opt.screens	只读地列出本机每块屏：工具编号、设备名、是否主屏、物理矩形、DPI 与旋转（问得到的话）、归属适配器关联，并标出这几种身份各稳到哪一层。不取一个像素、不弹框、不写文件、也不改任何显示设置。交回的 device:<设备名> 与 id:<监视器设备路径> 可以直接写进 --monitor。与截图那一级的选项互斥（cli.query_conflict + 退出码 1）；真去截整屏仍然一定弹框，--yes 跳不过
 opt.list	只读地把满足全部条件的顶层窗口列成 JSON（句柄 / PID / 类名 / 标题 / 映像名 / 矩形 / Z 序 / 身份约束字段），不截图、不弹框、不写文件，也不需要输出路径。多匹配按 --offset / --limit 分页而不报截图歧义，配选择策略算冲突。取值 all = 也列最小化窗口。结果会过期，截图时仍要复核身份（详见 README）
 opt.inspect	只读地检查同一套选择策略定出的那一扇窗口；多匹配报 match.ambiguous_window + 退出码 5，不替你选一个。取值 path = 也写出归属映像的完整路径（默认只写文件名）。读不到的项写字段级 denied / failed，不建议改用管理员身份；不恢复或激活任何窗口
 opt.offset	窗口查询跳过开头 n 个（0 起）
@@ -296,6 +297,8 @@ cap.dup.screen_changed	这块屏幕的画面在确认之后变了，交不出与
 cap.dup.screen_changed_hint	请求 %1x%2，实际只能取到 %3x%4，而那块输出现在是 %5x%6。分辨率、旋转或屏幕位置在确认之后被改过：重新选屏并再确认一次，本工具不会改用别的屏幕
 cap.monitor_changed	那块屏幕在本次请求中已经不在这台机器的桌面里
 cap.monitor_changed_hint	显示器被拔掉或禁用了。请重新枚举（--monitor 的编号是本次枚举的顺序）后再来一次
+cap.monitor_unverifiable	取帧之前没能重新核对屏幕身份
+cap.monitor_unverifiable_hint	选定那一刻问到了这块屏的跨会话标识，而这一次那一路问不出来。这时不按设备名退回去截：那个名字可能已经发给了另一块面板，截到的是没人批准过的画面。请重新 --screens 并重新确认
 note.capture_clipped	目标没有被完整截到：要截 %1x%2，只截到 %3x%4
 note.capture_clipped_hint	丢掉的部分：左 %1 上 %2 右 %3 下 %4 像素。这一条通道取的是某一块显示器的合成分，跨屏或一部分在屏幕外的目标只能截到与那块屏重叠的那一片
 
@@ -315,11 +318,21 @@ enc.apartment	本线程无法初始化 WinRT 套间（%1）
 # 屏幕目标（--monitor，src/ScreenMatch.cpp 与各通道的 CaptureScreenXxx）
 # ---------------------------------------------------------------------------
 cli.monitor_value	--monitor 需要 1 以上的十进制屏幕编号，或 primary / all
-cli.monitor_value_hint	例如 --monitor 1（第一块屏）/ --monitor primary（主屏）/ --monitor all（每块屏各一张）。编号只认十进制数字，不认负号、0x 或 1e3 这种写法
+cli.monitor_value_hint	例如 --monitor 1（第一块屏）/ --monitor primary（主屏）/ --monitor all（每块屏各一张）。编号只认十进制数字，不认负号、0x 或 1e3 这种写法。要精确点名一块屏请用 --screens 交回的 device:… 或 id:…
+cli.monitor_selector_empty	--monitor 的标识取值是空的
+cli.monitor_selector_empty_hint	写法是 device:<设备名> 或 id:<监视器设备路径>，冒号后面要跟内容。先跑一次 --screens 把本机的标识列出来
+cli.monitor_selector_kind	--monitor 的标识前缀不认识
+cli.monitor_selector_kind_hint	只有两种：device:<设备名>（本次桌面连接里的名字）与 id:<监视器设备路径>（跨会话那一条）。其余合法取值是编号（十进制、1 起）、primary、all。要列本机标识请跑 --screens
 cli.monitor_conflict	--monitor all 是"每块屏各截一张"，只能用在没有窗口条件的整屏截图上
 cli.monitor_conflict_hint	按屏幕过滤窗口时请给单个编号，例如 --monitor 2
 match.monitor_out_of_range	--monitor 的屏幕编号不存在
 match.monitor_out_of_range_hint	本机共 %1 块屏幕：%2
+match.monitor_unknown_id	没有屏幕匹配这个 --monitor 标识
+match.monitor_unknown_id_hint	本机此刻有 %1 块屏幕：%2。这个标识多半是上一次枚举留下的旧值（屏被拔掉、禁用，或设备名被重新发给了另一块面板）。请重新跑 --screens 取一次；本工具不会改用主屏凑一张
+match.monitor_ambiguous_id	这个 --monitor 标识同时命中多块屏幕
+match.monitor_ambiguous_id_hint	命中 %1 块：%2。本工具不替你挑一块，请改用 --screens 里更具体的一条标识（跨会话那条是 id:），或直接按编号点名
+match.monitor_id_unverifiable	屏幕身份没能问出来，无法按标识点名一块屏
+match.monitor_id_unverifiable_hint	显示配置那一路（QueryDisplayConfig）这次没给出答案，本机此刻有 %1 块屏幕：%2。下一步是查这台机器的显示拓扑（换一个能问出来的会话再跑 --screens），不是换 --capture——这一路一个像素都没取，没有通道可换
 match.no_window_monitor_hint	已按 --monitor %1 限缩范围；确认窗口确实与那块屏幕有重叠
 cap.unsupported_for_screen	%1 通道取的是窗口自己的画面，整屏截图用不了
 cap.unsupported_for_screen_hint	整屏截图请用 wgc / duplication / bitblt，或者 auto
@@ -373,3 +386,5 @@ note.os_unverifiable	没能问出本机 Windows 的内部版本，所以这一�
 # ---------------------------------------------------------------------------
 note.window_query_stale	窗口查询交回的是此刻的快照，字段会过期
 note.window_query_stale_hint	句柄会被复用、标题会变、进程会退出，所以这一份列表里的 hwnd / pid / 类名不是一种可以长期持有的凭证。真去截图时本工具仍要在取帧之前复核目标身份（capture.target_gone / capture.target_changed / capture.target_unverifiable），确认框也照旧按像素来源判，--yes 只免掉窗口内容那一级
+note.screen_query_stale	这份屏幕列表是此刻的快照，会过期
+note.screen_query_stale_hint	本机此刻 %1 块屏幕。编号只在本次枚举里有意义，设备名会被系统重新发出去，跨会话那一条是 id: 那个监视器设备路径；真去截图时仍要在取帧之前重新核对身份，确认框也照旧按像素来源判

@@ -158,8 +158,8 @@ WindowRecord MakeWindowRecord(const WindowInfo& w, const WindowQuerySpec& spec);
 void WindowIdentityOf(const WindowIdentity& id, std::wstring* hwndHex, std::wstring* className,
                       uint32_t* pid, uint64_t* processStartTicks, bool* selectionNeedsRecheck);
 
-// ReadState 的机器名（readable / denied / failed）。不进文案、不随 --lang 变。
-const wchar_t* ReadStateName(ReadState state);
+// ReadState 的机器名（readable / denied / failed）与那三值枚举同源，写在 WindowMatch.h：
+// 屏幕那一路（--screens）交回的是同一个词表，不在两处各写一份。
 
 // 一条诊断 -> 退出码。判据与 RunCapture 里那一条同源（同一批 code 决定调用方的下一步），
 // 窗口查询与截图两处必须给同一个数，所以这份映射只写在这里一次。0 不在其中：

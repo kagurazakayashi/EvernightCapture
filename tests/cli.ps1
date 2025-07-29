@@ -41,6 +41,18 @@ function Codes($list) { if ($null -eq $list) { @() } else { @($list | ForEach-Ob
 $ANCHOR = @('--class', 'Shell_TrayWnd', '--dry-run')     # 必然存在的窗口，且不截图不写文件
 $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contains','--title-regex','--class')
 
+# 帮助体积的上限，**按语言各一条**。
+# 这条判据要防的是"不知不觉把帮助写胖"（整份文本由选项目录生成，加一条选项就多一行，
+# 而每行的说明文案是各语言自己写的，见 resources/strings-*.txt）。同一份目录在英文里
+# 天然比中文长得多（en 大约是 zh 的 1.7 倍），拿一个数去卡四种语言会把"这个语言的
+# 说明本来就更啰嗦"判成"帮助膨胀"，所以按语言分别给。
+# 上调这条数字只应该发生在**新增一条选项或新增一段说明**的时候，并且要说得出是哪一次改动。
+$HELP_LIMITS = @{ 'zh-CN' = 7000; 'zh-TW' = 7000; 'en' = 12000; 'ja' = 7600 }
+function Get-HelpLimit([string]$tag) {
+    if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
+    return $HELP_LIMITS['zh-CN']
+}
+
 $cases = @(
     # ---------- 文本输出 ----------
     @{ Name = '无参数 -> 文本帮助'; A = @(); Exit = 2; Text = $true
@@ -48,7 +60,7 @@ $cases = @(
     @{ Name = '--help 文本且含全部条件'; A = @('--help'); Exit = 3; Text = $true
        Has = (@('用法:') + $MATCH_FLAGS) }
     @{ Name = '/help 斜杠形式'; A = @('/help'); Exit = 3; Text = $true; Has = @('窗口匹配条件') }
-    @{ Name = '帮助体积受控（<6KB）'; A = @('--version'); Exit = 0; Text = $true; Has = @('EvernightCapture') }
+    @{ Name = '帮助体积受控（按语言各自的上限）'; A = @('--version'); Exit = 0; Text = $true; Has = @('EvernightCapture') }
     # --version 里那句是**对外声明**的最低 Windows 内部版本，与运行时能力检查同源（判据见 compat.ps1）
     @{ Name = '--version 带出声明的最低内部版本'; A = @('--version'); Exit = 0; Text = $true
        Has = @('minWindowsBuild=18362') }
@@ -154,6 +166,31 @@ $cases = @(
     @{ Name = '未给输出路径的整屏 dry-run 走 stderr'
        A = @('--monitor','1','--dry-run'); Exit = 0; ToStderr = $true
        Notes = @('note.output_defaulted_stdout', 'note.dry_run') }
+    # ---- 按标识选屏的**写法**（本机有没有那块屏由文末的 ad-hoc 判据现场判，这里只判语法）----
+    # 旧的数字形式保留：它的语义就是"本次枚举顺序里的第 n 块"，不重新解释成别的东西。
+    # 两条标识写法只认 device: 与 id: 这两个前缀，其余带冒号的 token 照旧不是取值
+    #（盘符路径、备用数据流都长那样，吃掉它就等于替用户改了一个输出文件名）。
+    @{ Name = '--monitor 的标识前缀不认识 -> 单独一条码，不退化成 invalid_number'
+       A = @('--monitor=foo:1','out.png'); Exit = 1; Errors = @('cli.monitor_selector_kind')
+       Check = { param($o) $o.errors[0].value -eq 'foo:1' -and $o.errors[0].hint } }
+    @{ Name = '--monitor 的标识本体为空 -> 报错而不是当成主屏'
+       A = @('--monitor=id:','out.png'); Exit = 1; Errors = @('cli.monitor_selector_empty') }
+    @{ Name = '空格写法的空标识也被吃掉并报错（证明它是取值不是输出路径）'
+       A = @('--monitor','device:','out.png'); Exit = 1; Errors = @('cli.monitor_selector_empty') }
+    @{ Name = '--monitor D:\...png 不吃盘符路径（取值可省略那条没松动）'
+       A = @('--monitor','D:\shots\a.png','--dry-run','-v'); Exit = 0
+       Check = { param($o) ($o.input.output -like '*a.png' -and
+                            $o.input.monitorKind -eq 'primary' -and
+                            $o.input.target -eq 'screen') } }
+    @{ Name = '不存在的设备名 -> match.monitor_unknown_id，绝不改用主屏'
+       A = @('--monitor=device:NOSUCHSCREEN','--dry-run','out.png'); Exit = 4
+       Errors = @('match.monitor_unknown_id')
+       Check = { param($o) ($o.captured -eq 0 -and @($o.images).Count -eq 0 -and
+                            $o.errors[0].option -eq '--monitor' -and
+                            $o.errors[0].stage -eq 'match' -and $o.errors[0].hint) } }
+    @{ Name = '不存在的跨会话标识 -> 同一条码（屏不在了就说屏不在了）'
+       A = @('--monitor=id:\\?\DISPLAY#NOPE#0','--dry-run','out.png'); Exit = 4
+       Errors = @('match.monitor_unknown_id') }
 
     # ---------- 运行环境能力判据（SystemCompat；判据本体在 tests\compat.ps1 的离线层）----------
     # 这几条只判"契约形状"：回显里那两个键在不在、auto 展开出的链对不对、dry-run 会不会
@@ -776,6 +813,57 @@ $cases += @{ Name = '冲突时报错只有一条，且所有冲突项一次列�
    Check = { param($o) @($o.errors).Count -eq 1 -and $o.errors[0].code -eq 'cli.query_conflict' -and
                         $o.errors[0].value -like '*--title*' -and $o.errors[0].value -like '*--yes*' -and
                         $o.errors[0].value -like '*--format*' } }
+
+# ---------------------------------------------------------------------------
+# 只读的屏幕枚举（--screens）：与环境查询同一家族，但交回的是**第三份**契约文档
+#   * 它不截图、不弹框、不写文件、不改显示设置，所以截图那一级的选项一条都不成立
+#   * 交回的每条屏都自带"这几种身份各稳到哪一层"，只有设备名与跨会话标识有选择器写法
+#   * --yes 在这里是冲突而不是"不起作用但合法"：与 --capabilities 同一条判据
+#     （窗口查询那边 --yes 是被接受但不影响结果，因为那一路真的会去问窗口的事）
+# ---------------------------------------------------------------------------
+$cases += @{ Name = '--screens 出的是 screens 那份契约，且不带截图那一份的顶层键'
+   A = @('--screens'); Exit = 0; Query = $true
+   Check = { param($o) ($o.contract -eq 'screens' -and $o.contractVersion -eq 1 -and
+                        $o.authorization.pixelsRead -eq 0 -and
+                        $o.authorization.displaySettingsChanged -eq $false -and
+                        @($o.screens).Count -ge 1) } }
+$cases += @{ Name = '--screens 里只有设备名与跨会话标识有选择器写法'
+   A = @('--screens'); Exit = 0; Query = $true
+   Check = { param($o) ($o.identity.deviceName.usableAsSelector -eq $true -and
+                        $o.identity.monitorDevicePath.usableAsSelector -eq $true -and
+                        $o.identity.adapterLuid.usableAsSelector -eq $false -and
+                        $o.identity.ordinal.stableAcross -eq 'this_invocation' -and
+                        $o.identity.adapterLuid.stableAcross -eq 'this_session') } }
+$cases += @{ Name = '--screens 的授权自述：整屏一定要问人，--yes 不生效（隐私判据）'
+   A = @('--screens'); Exit = 0; Query = $true
+   Check = { param($o) ($o.authorization.screenCaptureConsent.desktopPixelsAlwaysAsk -eq $true -and
+                        $o.authorization.screenCaptureConsent.yesSkipsThisLevel -eq $false -and
+                        (@($o.caveats) -contains 'screen_capture_always_asks') -and
+                        (@($o.caveats) -contains 'cross_session_stability_not_tested')) } }
+$cases += @{ Name = '--screens 的 limits 与解析层同一个数（不在两处各写一遍）'
+   A = @('--screens'); Exit = 0; Query = $true
+   Check = { param($o) $o.limits.maxOrdinal -eq 65535 } }
+$cases += @{ Name = '--screens 带 -q 只去掉 notes，稳定性与隐私判据一条不藏'
+   A = @('--screens', '-q'); Exit = 0; Query = $true
+   Check = { param($o) ($null -eq $o.notes -and @($o.caveats).Count -ge 8 -and
+                        $o.privacy.includesDevicePaths -eq $true -and
+                        $o.privacy.includesUsernames -eq $false -and
+                        $o.privacy.includesFileSystemPaths -eq $false) } }
+$cases += @{ Name = '--screens 带 -v 追加这一次查询的回显'
+   A = @('--screens', '-v'); Exit = 0; Query = $true
+   Check = { param($o) ($o.input.query -eq 'screens' -and $o.input.lang) } }
+$cases += @{ Name = '--screens 与 --yes 冲突：它不截图，没有可授权的事'
+   A = @('--screens', '--yes'); Exit = 1; Errors = @('cli.query_conflict') }
+$cases += @{ Name = '--screens 与 --monitor 冲突：列屏不需要选屏'
+   A = @('--screens', '--monitor', '1'); Exit = 1; Errors = @('cli.query_conflict') }
+$cases += @{ Name = '三条环境查询同时给出 = 一条冲突，三个名字都列出来'
+   A = @('--capabilities', '--diagnostics', '--screens'); Exit = 1
+   Check = { param($o) ($o.errors[0].code -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -like '*--screens*' -and
+                        $o.errors[0].value -like '*--capabilities*' -and
+                        $o.errors[0].value -like '*--diagnostics*') } }
+$cases += @{ Name = '帮助里有 --screens 那一条'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--screens') }
 $cases += @{ Name = '帮助里有能力查询一节与两个查询选项'
    A = @('--help'); Exit = 3; Text = $true
    Has = @('--capabilities', '--diagnostics', 'cli.query_conflict') }
@@ -966,7 +1054,10 @@ foreach ($r in $results) {
         foreach ($frag in @($c.Has)) { if (-not $body.Contains($frag)) { $problems += "缺少片段: $frag" } }
         if ($c.Name -like '*帮助体积*') {
             $help = (Invoke-Ec @('--help')).Stdout
-            if ($help.Length -gt 6000) { $problems += "帮助文本 $($help.Length) 字符，超过 6000" }
+            $lim = Get-HelpLimit $Lang
+            if ($help.Length -gt $lim) {
+                $problems += "帮助文本 $($help.Length) 字符，超过 $Lang 的上限 $lim（上调要写清是哪一次改动加的行）"
+            }
         }
     } else {
         if (-not $looksJson) { $problems += '期望 JSON 输出，实际是文本' }
@@ -1133,6 +1224,71 @@ if ($r.Stdout.Trim() -eq '' -and $o -and $o.captured -eq 0 -and $r.Exit -eq 0) {
 
 
 # ---------------------------------------------------------------------------
+# 按 --screens 交回的标识点名叫屏（本机现场，不靠猜 DISPLAY1 一定存在）
+#   上面那批用例判的是**写法**（前缀、空取值、盘符不被吃掉、不存在的标识报错）。
+#   这里判的是"抄回来能不能用"：先从 --screens 取本机此刻的选择器，再原样写回 --monitor，
+#   两条各跑一次 --dry-run（不取帧、不弹框、不写文件），退出码必须是 0 且 monitorKind 对得上。
+#   一台机器都点不出名 = 这个功能对外没有意义，所以这条算失败而不是 SKIP。
+#   （多屏、负坐标、旋转、热插拔的现场由 tests\screens.ps1 判，本机造不出的记未验证。）
+# ---------------------------------------------------------------------------
+$screensBad = 0
+$sq = Invoke-Ec @('--screens')
+$sqJson = $null
+try { $sqJson = ($sq.Stdout | ConvertFrom-Json) } catch { }
+if (-not $sqJson -or @($sqJson.screens).Count -lt 1) {
+    $screensBad++
+    Write-Host '  FAIL  --screens 没能列出本机此刻的屏幕（后面的标识选屏判据无从对照）' -ForegroundColor Red
+} else {
+    $first = @($sqJson.screens)[0]
+    foreach ($pair in @(
+            @{ Kind = 'device'; Value = $first.selectors.device },
+            @{ Kind = 'id'; Value = $first.selectors.id })) {
+        if (-not $pair.Value) {
+            $screensBad++
+            Write-Host ("  FAIL  --screens 没交回 {0} 那条选择器" -f $pair.Kind) -ForegroundColor Red
+            continue
+        }
+        $r = Invoke-Ec @('--monitor', $pair.Value, '--dry-run', '-v', 'out.png')
+        $o = $null
+        # 截图那一路可能把 stdout 让给图片，所以按"哪条流有内容"取（与本文件其余处一致）。
+        $body = if ($r.Stdout.Trim()) { $r.Stdout } else { $r.Stderr }
+        try { $o = ($body | ConvertFrom-Json) } catch { }
+        if (-not $o -or $r.Exit -ne 0 -or $o.input.monitorKind -ne $pair.Kind -or
+            $o.input.target -ne 'screen' -or $o.input.monitor -ne $pair.Value) {
+            $screensBad++
+            Write-Host ("  FAIL  --monitor {0} 抄不回本机此刻那块屏（exit={1}，回显={2}/{3}）" -f `
+                        $pair.Value, $r.Exit, $(if ($o) { $o.input.monitorKind } else { 'NOT JSON' }), `
+                        $(if ($o) { $o.input.target } else { '' })) -ForegroundColor Red
+        } else {
+            Write-Host ("  PASS  --monitor {0}… 用 --screens 交回的标识点到了那块屏" -f $pair.Kind) -ForegroundColor DarkGreen
+        }
+        # 按屏过滤窗口那一路用的是同一份判据：--list 也得认这两条标识
+        $l = Invoke-Ec @('--list', '--monitor', $pair.Value)
+        $lj = $null
+        try { $lj = ($l.Stdout | ConvertFrom-Json) } catch { }
+        if (-not $lj -or $l.Exit -ne 0 -or $lj.contract -ne 'windowquery') {
+            $screensBad++
+            Write-Host ("  FAIL  --list --monitor {0} 没有走通（窗口查询与截图必须共用同一套选屏判据）" -f $pair.Kind) -ForegroundColor Red
+        } else {
+            Write-Host ("  PASS  --list 认得同一条标识（选屏判据只有一份）" -f $pair.Kind) -ForegroundColor DarkGreen
+        }
+    }
+    # 同一条标识在两次调用之间指同一块屏：这是"别再猜编号"这件事的全部依据。
+    $again = Invoke-Ec @('--screens')
+    $againJson = $null
+    try { $againJson = ($again.Stdout | ConvertFrom-Json) } catch { }
+    $idAgain = if ($againJson) { @($againJson.screens)[0].selectors.id } else { $null }
+    if ($idAgain -ne $first.selectors.id) {
+        $screensBad++
+        Write-Host '  FAIL  同一块屏在两次 --screens 之间交回了不同的跨会话标识' -ForegroundColor Red
+    } else {
+        Write-Host '  PASS  跨会话标识在两次调用之间逐字相同（本机能判的就这么多，跨重启未验证）' -ForegroundColor DarkGreen
+    }
+}
+if ($screensBad) { exit 1 }
+Write-Host '  PASS  屏幕标识选屏这一路整体成立' -ForegroundColor DarkGreen
+
+# ---------------------------------------------------------------------------
 # 多语言：换语言只能换文字，不能换契约
 #   1. 四种语言的 --help 各不相同（证明读的是四份资源，不是同一份兜底）
 #   2. 同一命令在各语言下退出码与 errors 的 code 集合必须完全一致
@@ -1171,7 +1327,12 @@ $PROBE = @(
     @{ Name = '窗口查询与取图方式/格式共存'; A = @('--list', '--format', 'png', '--capture', 'auto'); Exit = 1 },
     @{ Name = '窗口查询无匹配报 match.no_window'; A = @('--inspect', '--class', 'NoSuchWindowXyz'); Exit = 4 },
     @{ Name = '窗口查询的分页数字写坏'; A = @('--list', '--limit', '1e2'); Exit = 1 },
-    @{ Name = '窗口查询的 --offset 越界写法'; A = @('--list', '--offset', '9.5'); Exit = 1 }
+    @{ Name = '窗口查询的 --offset 越界写法'; A = @('--list', '--offset', '9.5'); Exit = 1 },
+    # 屏幕标识这一路的三条码：文字四种语言都要有，被拒的 code / stage / 退出码必须逐字一致
+    @{ Name = '屏幕标识不存在'; A = @('--monitor=device:NOSUCHSCREEN', '--dry-run', 'out.png'); Exit = 4 },
+    @{ Name = '屏幕标识前缀不认识'; A = @('--monitor=foo:1', 'out.png'); Exit = 1 },
+    @{ Name = '屏幕标识取值为空'; A = @('--monitor=id:', 'out.png'); Exit = 1 },
+    @{ Name = '屏幕查询与截图选项冲突'; A = @('--screens', '--yes'); Exit = 1 }
 )
 $bad = 0
 
@@ -1196,9 +1357,10 @@ foreach ($tag in $LANGS) {
         $bad++
         Write-Host ("  FAIL  {0} 有选项说明为空：{1}" -f $tag, ($blank[0].Trim())) -ForegroundColor Red
     }
-    if ($help.Length -gt 6000) {
+    $lim = Get-HelpLimit $tag
+    if ($help.Length -gt $lim) {
         $bad++
-        Write-Host ("  FAIL  {0} 帮助文本 {1} 字符，超过 6000" -f $tag, $help.Length) -ForegroundColor Red
+        Write-Host ("  FAIL  {0} 帮助文本 {1} 字符，超过 {0} 的上限 {2}" -f $tag, $help.Length, $lim) -ForegroundColor Red
     }
 }
 if (-not $bad) { Write-Host ("  PASS  四种语言的帮助各不相同，无未替换占位符") -ForegroundColor DarkGreen }

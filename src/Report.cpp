@@ -13,6 +13,8 @@
 #include "Capture.h"
 #include "EnvReport.h"
 #include "Lang.h"
+#include "ScreenIdentity.h"   // MonitorSelectorLabel / KindName：选择器的回显只写一处
+#include "ScreenQuery.h"
 #include "SystemCompat.h"
 #include "WindowQuery.h"
 #include "WindowQueryRun.h"
@@ -162,9 +164,14 @@ void WriteInputEcho(Json& j, const Options& opt) {
     j.Key(L"timeoutMs").Value(static_cast<long long>(opt.timeoutMs));
     j.Key(L"consentTimeoutMs").Value(static_cast<long long>(opt.consentTimeoutMs));
     if (opt.monitor.given) {
-        if (opt.monitor.all) j.Key(L"monitor").Value(L"all");
-        else if (opt.monitor.ordinal == 0) j.Key(L"monitor").Value(L"primary");
-        else j.Key(L"monitor").Value(opt.monitor.ordinal);
+        // 编号回显成数字（老契约不变），其余几种写法回显成它那条形如 `device:DISPLAY1` 的标签，
+        // 并且**另外**回显一条 monitorKind：调用方不必去猜"这个 monitor 字段到底是数还是串"。
+        if (opt.monitor.kind == MonitorSelector::Kind::kOrdinal) {
+            j.Key(L"monitor").Value(static_cast<long long>(opt.monitor.ordinal));
+        } else {
+            j.Key(L"monitor").Value(MonitorSelectorLabel(opt.monitor));
+        }
+        j.Key(L"monitorKind").Value(MonitorSelectorKindName(opt.monitor));
         j.Key(L"target").Value(opt.ScreenMode() ? L"screen" : L"window");
     }
     j.Key(L"format").Value(FormatName(opt.format));
@@ -284,8 +291,9 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     out->body.clear();
     out->toStderr = false;
 
-    // 查询命令（--capabilities / --diagnostics / --list / --inspect）与 --version / --help 是几个
-    // 不同的出口，而且互斥（解析层把同时给出判成 cli.query_conflict / cli.window_query_conflict）。
+    // 查询命令（--capabilities / --diagnostics / --screens / --list / --inspect）与
+    // --version / --help 是几个不同的出口，而且互斥（解析层把同时给出判成
+    // cli.query_conflict / cli.window_query_conflict）。
     // 所以这里必须**先**认查询这一路：参数不合查询契约时不能落到帮助那一段去，
     // 否则调用方永远看不到那条冲突。
     if (opt.WindowQueryMode()) {
@@ -329,6 +337,15 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         return EX_USAGE;
     } else if (opt.QueryMode()) {
         if (parse.ok) {
+            if (opt.screens) {
+                // 只读的屏幕枚举：一个像素都不取、不弹框、不写文件、不改显示设置
+                //（判据见 src/ScreenQuery.h，屏幕身份的问答见 src/ScreenIdentity.h）。
+                const ScreenQueryResult sq = RunScreenQuery();
+                out->body = RenderScreenQuery(sq, opt.verbose, opt.quiet);
+                out->exitCode = sq.exitCode;
+                out->toStderr = ResultGoesToStderr(opt);
+                return out->exitCode;
+            }
             const EnvQueryKind kind =
                 opt.diagnostics ? EnvQueryKind::kDiagnostics : EnvQueryKind::kCapabilities;
             const EnvReport report = BuildEnvReport(ProbeEnvFacts(), kind);

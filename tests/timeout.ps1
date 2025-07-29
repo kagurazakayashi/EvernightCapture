@@ -244,7 +244,10 @@ try {
     if ($o.captured -eq 0) {
         $e = First-Error $o
         Assert-Ec (@('capture.timeout', 'match.timeout') -contains $e.code) "该报期限耗尽，实际 $($e.code)"
-        Assert-Ec ($e.backend) "backend 要写清是哪条通道：$($e.backend)"
+        # Assert-Ec 的 Condition 是 [bool]，而诊断里的 backend 是一条字符串：非空字符串不会被
+        # 自动转成 $true，strict 模式下直接抛"Cannot process argument transformation"
+        #（实测在这台机器上就是这条把整层判据截断的）。所以显式比空串，不靠类型转换。
+        Assert-Ec ($e.backend -ne '') "backend 要写清是哪条通道：$($e.backend)"
         Assert-Ec (-not (Test-Path -LiteralPath $p4)) '超时的这一次落了文件'
     } else {
         Assert-Ec ($r.DurationMs -lt $stallMs) "这台机器上 PrintWindow 没等目标线程，但父命令也不该等满 $($stallMs) ms"

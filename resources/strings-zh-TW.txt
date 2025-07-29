@@ -40,7 +40,7 @@ grp.timeout	執行期限（自動處理那一段的總預算；人工確認另�
 grp.output	輸出
 grp.behavior	其他
 grp.query	查詢（唯讀：不截圖、不彈框、不寫檔案）
-opt.monitor	截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+opt.monitor	截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖；要點名叫螢幕請用 --screens 交回的身分：device:<裝置名>（本次桌面連線的名字）或 id:<螢幕裝置路徑>（跨工作階段那一條）。編號在拔插或改解析度之後可能指到另一張螢幕
 opt.hwnd	視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
 opt.pid	處理程序 ID，只認十進位且大於 0
 opt.process	映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
@@ -72,6 +72,7 @@ opt.help	輸出文字說明（本段）
 opt.version	輸出版本與階段
 opt.capabilities	輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
 opt.diagnostics	輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
+opt.screens	唯讀地列出本機每張螢幕：工具編號、裝置名、是否主螢幕、實體矩形、DPI 與旋轉（問得到的話）、歸屬配接器關聯，並標出這幾種身分各自穩到哪一層。不取一個影格、不彈框、不寫檔案，也不改任何顯示設定。交回的 device:<裝置名> 與 id:<螢幕裝置路徑> 可以直接寫進 --monitor。與截圖那一級的選項互斥（cli.query_conflict + 結束碼 1）；真去截整張螢幕仍然一定彈框，--yes 跳不過
 opt.list	唯讀地把滿足全部條件的頂層視窗列成 JSON（句柄 / PID / 類名 / 標題 / 映像名 / 矩形 / Z 序 / 身分約束欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。結果會過期，截圖時仍要複核身分
 opt.inspect	唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到的項寫欄位級 denied / failed，不建議改用管理員身分；不恢復或啟用任何視窗
 opt.offset	視窗查詢跳過開頭 n 個（0 起）
@@ -290,6 +291,8 @@ cap.dup.screen_changed	這塊螢幕的畫面在確認之後變了，交不出與
 cap.dup.screen_changed_hint	請求 %1x%2，實際只能取到 %3x%4，而該輸出現在是 %5x%6。解析度、旋轉或螢幕位置在確認之後被改過：重新選螢幕並再確認一次，本工具不會改用別的螢幕
 cap.monitor_changed	那塊螢幕在本次請求中已經不在這台機器的桌面裡
 cap.monitor_changed_hint	顯示器被拔除或停用了。請重新列舉（--monitor 的編號是本次列舉的順序）後再來一次
+cap.monitor_unverifiable	取影格之前沒能重新核對螢幕身分
+cap.monitor_unverifiable_hint	選定那一刻問到了這張螢幕的跨工作階段身分，而這次那一路問不出來。這時不按裝置名退回去截：那個名字可能已經發給了另一張螢幕，截到的是沒人批准過的畫面。請重新 --screens 並重新確認
 note.capture_clipped	目標沒有被完整截到：要截 %1x%2，只截到 %3x%4
 note.capture_clipped_hint	丟掉的部分：左 %1 上 %2 右 %3 下 %4 像素。這條通道取的是某一塊顯示器的合成分，跨螢幕或部分在螢幕外的目標只能截到與該螢幕重疊的那一片
 
@@ -309,11 +312,21 @@ enc.apartment	執行緒無法初始化 WinRT 套間（%1）
 # 螢幕目標（--monitor，src/ScreenMatch.cpp 與各通道的 CaptureScreenXxx）
 # ---------------------------------------------------------------------------
 cli.monitor_value	--monitor 需要 1 以上的十進位螢幕編號，或 primary / all
-cli.monitor_value_hint	例如 --monitor 1（第一張螢幕）/ --monitor primary（主螢幕）/ --monitor all（每張螢幕各一張）。編號只認十進位數字，不認負號、0x 或 1e3 這種寫法
+cli.monitor_value_hint	例如 --monitor 1（第一張螢幕）/ --monitor primary（主螢幕）/ --monitor all（每張螢幕各一張）。編號只認十進位數字，不認負號、0x 或 1e3 這種寫法。要精確點名一張螢幕請用 --screens 交回的 device:… 或 id:…
+cli.monitor_selector_empty	--monitor 的身分取值是空的
+cli.monitor_selector_empty_hint	寫法是 device:<裝置名> 或 id:<螢幕裝置路徑>，冒號後面要跟內容。先跑一次 --screens 把本機的身分列出來
+cli.monitor_selector_kind	--monitor 的身分前綴不認識
+cli.monitor_selector_kind_hint	只有兩種：device:<裝置名>（本次桌面連線裡的名字）與 id:<螢幕裝置路徑>（跨工作階段那一條）。其餘合法取值是編號（十進位、1 起）、primary、all。要列本機身分請跑 --screens
 cli.monitor_conflict	--monitor all 是「每張螢幕各截一張」，只能用在沒有視窗條件的整張螢幕截圖上
 cli.monitor_conflict_hint	按螢幕過濾視窗時請給單一編號，例如 --monitor 2
 match.monitor_out_of_range	--monitor 的螢幕編號不存在
 match.monitor_out_of_range_hint	本機共 %1 張螢幕：%2
+match.monitor_unknown_id	沒有螢幕匹配這個 --monitor 身分
+match.monitor_unknown_id_hint	本機此刻有 %1 張螢幕：%2。這種身分多半是上一次列舉留下的舊值（螢幕被拔除、停用，或裝置名被重新發給了另一張螢幕）。請重新跑 --screens 取一次；本工具不會改用主螢幕湊一張
+match.monitor_ambiguous_id	這個 --monitor 身分同時命中多張螢幕
+match.monitor_ambiguous_id_hint	命中 %1 張：%2。本工具不替你挑一張，請改用 --screens 裡更具體的一條身分（跨工作階段那條是 id:），或直接按編號點名
+match.monitor_id_unverifiable	螢幕身分沒能問出來，無法按身分點名一張螢幕
+match.monitor_id_unverifiable_hint	顯示配置那一路（QueryDisplayConfig）這次沒給出答案，本機此刻有 %1 張螢幕：%2。下一步是查這台機器的顯示拓撲（換一個問得出的工作階段再跑 --screens），不是換 --capture——這一路一個影格都沒取，沒有取圖通道可換
 match.no_window_monitor_hint	已按 --monitor %1 限縮範圍；確認視窗確實與那張螢幕有重疊
 cap.unsupported_for_screen	%1 通道擷取的是視窗自己的畫面，整張螢幕用不了
 cap.unsupported_for_screen_hint	整張螢幕請用 wgc / duplication / bitblt，或 auto
@@ -367,3 +380,5 @@ note.os_unverifiable	沒能問出本機 Windows 的內部版本，所以這一�
 # ---------------------------------------------------------------------------
 note.window_query_stale	視窗查詢交回的是此刻的快照，欄位會過期
 note.window_query_stale_hint	句柄會被複用、標題會變、處理程序會退出，所以這一份列表裡的 hwnd / pid / 類名不是一種可以長期持有的憑證。真去截圖時本工具仍要在取影格之前複核目標身分（capture.target_gone / capture.target_changed / capture.target_unverifiable），確認框也照舊依像素來源判，--yes 只免掉視窗內容那一級
+note.screen_query_stale	這份螢幕清單是此刻的快照，會過期
+note.screen_query_stale_hint	本機此刻 %1 張螢幕。編號只在本次列舉裡有意義，裝置名會被系統重新發出去，跨工作階段那一條是 id: 那個螢幕裝置路徑；真去截圖時仍要在取影格之前重新核對身分，確認框也照舊依像素來源判

@@ -92,58 +92,59 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
       ECAPTURE.EXE --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
 
 截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
-  --monitor, -m [<n|primary|all>] 截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖
+  --monitor, -m [<n|primary|all|device:|id:>] 截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖；要點名叫螢幕請用 --screens 交回的身分：device:<裝置名>（本次桌面連線的名字）或 id:<螢幕裝置路徑>（跨工作階段那一條）。編號在拔插或改解析度之後可能指到另一張螢幕
 
 視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
-  --hwnd <handle>                 視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
-  --pid <pid>                     處理程序 ID，只認十進位且大於 0
-  --process, -p <image-name>      映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
-  --exe <full-path>               映像完整路徑，忽略大小寫
-  --title, -t <exact-title>       視窗標題精確匹配
-  --title-contains, -T <text>     視窗標題包含子字串
-  --title-regex, -R <regex>       視窗標題正則匹配，ECMAScript 語法，解析期即校驗
-  --class, -c <class-name>        視窗類名，忽略大小寫，如 Notepad / CabinetWClass
+  --hwnd <handle>                             視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
+  --pid <pid>                                 處理程序 ID，只認十進位且大於 0
+  --process, -p <image-name>                  映像檔案名（不含路徑），忽略大小寫；無副檔名時按 .exe 處理
+  --exe <full-path>                           映像完整路徑，忽略大小寫
+  --title, -t <exact-title>                   視窗標題精確匹配
+  --title-contains, -T <text>                 視窗標題包含子字串
+  --title-regex, -R <regex>                   視窗標題正則匹配，ECMAScript 語法，解析期即校驗
+  --class, -c <class-name>                    視窗類名，忽略大小寫，如 Notepad / CabinetWClass
 
 匹配到多個視窗時（互斥）
-  --index, -i <n>                 取第 n 個視窗，從 1 開始（十進位），按可見性/疊放次序排序
-  --topmost-match                 取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
-  --bottommost-match              取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
-  --newest                        --topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
-  --oldest                        --bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
-  --all, -a                       每個匹配視窗各存一張
+  --index, -i <n>                             取第 n 個視窗，從 1 開始（十進位），按可見性/疊放次序排序
+  --topmost-match                             取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
+  --bottommost-match                          取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
+  --newest                                    --topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
+  --oldest                                    --bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
+  --all, -a                                   每個匹配視窗各存一張
 
 取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
-  --capture, -C <method>          wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+  --capture, -C <method>                      wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
 
 截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
-  --yes, -y                       跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
+  --yes, -y                                   跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 
 執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
-  --timeout-ms <ms>               自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
-  --consent-timeout-ms <ms>       確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
+  --timeout-ms <ms>                           自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
+  --consent-timeout-ms <ms>                   確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
 
 輸出
-  --out, -o <path|->              輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
-  --format, -f <name>             強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
-  --quality <1-100>               JPEG 品質，十進位 1..100，預設 100
-  --no-overwrite                  目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
+  --out, -o <path|->                          輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
+  --format, -f <name>                         強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
+  --quality <1-100>                           JPEG 品質，十進位 1..100，預設 100
+  --no-overwrite                              目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 
 查詢（唯讀：不截圖、不彈框、不寫檔案）
-  --capabilities                  輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
-  --diagnostics                   輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
-  --list [<all>]                  唯讀地把滿足全部條件的頂層視窗列成 JSON（句柄 / PID / 類名 / 標題 / 映像名 / 矩形 / Z 序 / 身分約束欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。結果會過期，截圖時仍要複核身分
-  --inspect [<path>]              唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到的項寫欄位級 denied / failed，不建議改用管理員身分；不恢復或啟用任何視窗
-  --offset <n>                    視窗查詢跳過開頭 n 個（0 起）
-  --limit <n>                     視窗查詢本批最多 n 個（預設 50）
+  --capabilities                              輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
+  --diagnostics                               輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
+  --screens                                   唯讀地列出本機每張螢幕：工具編號、裝置名、是否主螢幕、實體矩形、DPI 與旋轉（問得到的話）、歸屬配接器關聯，並標出這幾種身分各自穩到哪一層。不取一個影格、不彈框、不寫檔案，也不改任何顯示設定。交回的 device:<裝置名> 與 id:<螢幕裝置路徑> 可以直接寫進 --monitor。與截圖那一級的選項互斥（cli.query_conflict + 結束碼 1）；真去截整張螢幕仍然一定彈框，--yes 跳不過
+  --list [<all>]                              唯讀地把滿足全部條件的頂層視窗列成 JSON（句柄 / PID / 類名 / 標題 / 映像名 / 矩形 / Z 序 / 身分約束欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。結果會過期，截圖時仍要複核身分
+  --inspect [<path>]                          唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到的項寫欄位級 denied / failed，不建議改用管理員身分；不恢復或啟用任何視窗
+  --offset <n>                                視窗查詢跳過開頭 n 個（0 起）
+  --limit <n>                                 視窗查詢本批最多 n 個（預設 50）
 
 其他
-  --dry-run, -d                   只解析並列出候選視窗，不截圖不寫檔案
-  --json, -j                      已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
-  --verbose, -v                   JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
-  --quiet, -q                     省略 notes；errors 無論如何都會返回；與 --verbose 同時給出時按 --verbose 處理
-  --lang, -l <language>           文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
-  --help, -h                      輸出文字說明（本段）
-  --version                       輸出版本與階段
+  --dry-run, -d                               只解析並列出候選視窗，不截圖不寫檔案
+  --json, -j                                  已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
+  --verbose, -v                               JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
+  --quiet, -q                                 省略 notes；errors 無論如何都會返回；與 --verbose 同時給出時按 --verbose 處理
+  --lang, -l <language>                       文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
+  --help, -h                                  輸出文字說明（本段）
+  --version                                   輸出版本與階段
 
 寫法: --opt=value / -opt / /opt 都接受；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析。數字取值只認十進位（--hwnd 另可按 0x 寫十六進位）
 輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
@@ -213,7 +214,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 `--help`、`--version`、以及不給任何條件時是純文字。其餘一律 JSON，只裝擷取結果與錯誤。
 
-唯讀查詢那兩條是**另兩份契約**（`--capabilities` / `--diagnostics`，見[系統支援](#系統支援)）：
+唯讀查詢那三條是**另三份契約**（`--capabilities` / `--diagnostics` / `--screens`，見[系統支援](#系統支援)）：
 裝的是這台機器的環境與能力，而不是某一次截圖的結果，所以只有它們帶 `contract` 與 `contractVersion`。
 這一句**不**反過來說明截圖 JSON 該加頂層元資訊——那份照舊只有 `captured` / `images`（依需要再加
 `errors` / `notes` / `input`），也不會因為查詢裡有 `program.version` 就多寫一份。
@@ -364,7 +365,7 @@ present 記錄，且整幅只有一個顏色。
 「否」（或這個工作階段根本彈不出框），本次請求剩下的目標一律不再嘗試——不換後端、不重試、也不再問第二遍，
 之前已經完成的圖全部留在 `images` 裡。
 
-唯讀查詢那兩條（`--capabilities` / `--diagnostics`）只用 `0` 與 `1` 兩個編號：`0` = 這份文件出完了（哪怕裡面寫著
+唯讀查詢那三條（`--capabilities` / `--diagnostics` / `--screens`）只用 `0` 與 `1` 兩個編號：`0` = 這份文件出完了（哪怕裡面寫著
 「這台機器版本太低、哪幾條都不可用」——**查詢成功與截圖能成是兩件事**，呼叫端依 `status` 分支，而不是依退出碼猜環境）；
 `1` = 這次用法不合契約（`cli.query_conflict`，見[系統支援](#系統支援)）。它們不產生 `4`/`5`/`6`/`7`/`8`：
 一個視窗都沒列舉、一個框都沒彈、一個檔案都沒寫。
@@ -551,6 +552,62 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 與截圖完全�
 `--dry-run` 原樣保留，仍是那個兼容入口：它照舊把答案寫在 `note.dry_run` 裡，照舊不需要輸出路徑，也與
 `--list` / `--inspect` 互爲衝突 —— 而不是被這兩條悄悄替換掉。
 
+### 唯讀的螢幕列舉（`--screens`）
+
+在此之前，「要那一張螢幕」只有一種寫法：`--monitor <n>`，而那個 n 是**本次執行 `EnumDisplayMonitors` 列舉中的位置**。
+它不是「顯示設定」裡 Windows 寫的那個識別號，拔掉重插或改一次解析度之後可能指到另一張面板——而猜錯的結果是一張
+沒人批准過的畫面已經落盤。`--screens` 把這個問答成資料：
+
+```powershell
+ECAPTURE.EXE --screens                                  # 每張螢幕，連同它的幾種身分
+ECAPTURE.EXE --monitor device:DISPLAY1 --out shot.png   # 按本次桌面連線的裝置名
+ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # 按跨工作階段的螢幕裝置路徑
+```
+
+它與其他唯讀查詢一樣唯讀：不取一個影格、不彈確認框、不寫檔案、不連網，也不改任何顯示設定——為了搞清「這張螢幕
+轉了多少度」去呼叫 `SetDisplayConfig`，等於把考卷改了再答題。這份文件是第三份契約（`screens`，版本 1），與截圖
+那份精簡 JSON 各自獨立，就像 `capabilities` 與 `windowquery` 一樣。
+
+每張螢幕有四種身分，各自寫明它穩到哪一層（寫成欄位，不是正文）：
+
+| 欄位 | 是什麼 | 穩定範圍 | 選擇器 |
+| --- | --- | --- | --- |
+| `ordinal` | 本次列舉中的位置 | `this_invocation` | `--monitor <n>` |
+| `deviceName` | GDI 檢視裝置名 `\\.\DISPLAY1` | `this_desktop_attach` | `device:` |
+| `monitorDevicePath` | 螢幕 devnode 的裝置介面路徑 | `cross_session_expected` | `id:` |
+| `adapterLuid` | 配接器的本機唯一識別 | `this_session` | 無——只作關聯資訊 |
+
+`screens[].selectors` 直接給出可以原樣抄回去的那兩條（`device:DISPLAY1`、`id:\?\DISPLAY#…`），`identity.*` 寫明
+哪一種能當選擇器用。配接器 LUID 故意沒有選擇器寫法：它只在工作階段內唯一，拿它點名一張螢幕是下注而不是引用。
+`adapter.devicePath`（配接器自己的裝置介面路徑）、`adapter.outputTechnology`、`targetId`、`targetAvailable` 來自
+同一次問答，「這張螢幕掛在哪塊顯示卡上」就是這樣交回的。
+
+這一層守三條規矩：
+
+- **絕不換成另一張螢幕。** 識別在本機不存在 = `match.monitor_unknown_id`（結束碼 4）；同一識別命中多張 =
+  `match.monitor_ambiguous_id`（5，候選全部列出，工具不替你挑一張）；那一問沒給出答案 =
+  `match.monitor_id_unverifiable`（7，`hint` 明說換 `--capture` 不是下一步——這一路根本沒選過通道）。
+  三條都不會悄悄退化成「那就用主螢幕」：沒人批准的整張螢幕畫面正是確認框要擋住的東西。
+- **問不出來就說問不出來，不寫成空值。** `dpi`（有效值與原始值，走 `shcore!GetDpiForMonitor`，Win8.1 起）、
+  `rotation.degrees`（人看到的朝向，取目前 `DEVMODE`）與 `rotation.panel`（相對面板原生朝向，取顯示設定）
+  是各自獨立的問題，各有自己的 `readability`（`readable` / `denied` / `failed`）與那一條 API 自己的錯誤碼。
+  某個鍵不見了就只代表「沒答案」，原因寫在旁邊；這裡不建議改用管理員身分。
+- **是快照，不是憑證。** 每次成功的清單都帶 `note.screen_query_stale`，`caveats` 裡有
+  `device_names_are_not_persistent`、`cross_session_stability_not_tested`、`screen_capture_always_asks`。
+  點名一張螢幕不取代取影格之前的身分複核，也不取代授權：桌面像素一定要人點頭，`--yes` 也不例外
+  （見下面《截圖授權與 --yes》那一節）。
+
+按識別點名在一切「要選一張螢幕」的地方都成立：與視窗條件同用（`--monitor id:… --class …` 就是按那張螢幕過濾視窗）、
+與 `--list` / `--inspect` 同用（走的是同一個選擇函式），以及取影格之前的複核——它按**選定當時問得到的那條身分**核對，
+裝置名若已屬於另一張面板就以 `capture.monitor_changed` 停下，複核本身問不出來就以 `capture.monitor_unverifiable`
+停下，而不是退回去照名稱截。`--monitor <n>` 的語意一字未動，越界照舊是 `match.monitor_out_of_range` 並在 `hint`
+裡列出本機全部螢幕；兩種新寫法寫在 `--help` 與上面的取值寫法一節裡。
+
+`--screens` 屬於環境查詢那一家族：只接受 `--lang` / `-v` / `-q`，其餘（含 `--yes` 與 `--monitor`）都是
+`cli.query_conflict` + 結束碼 1，也不參加「零條件就出說明」那一條。`--quiet` 只去掉 `notes`：`identity`、
+`readability`、`authorization`、`caveats` 是判準而不是禮貌性提示。這份文件會列印裝置路徑，但不含檔案系統路徑與
+使用者名（`privacy.includesDevicePaths: true`、`includesFileSystemPaths: false`）。
+
 ## 取圖方式
 
 | 取值 | 通道 | 能截被遮擋視窗 | 硬體加速內容 | API 歷史下限 |
@@ -637,9 +694,14 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 與截圖完全�
 `--monitor`（省略取值）與 `--monitor primary` 是主螢幕，`--monitor 2` 是第 2 張螢幕，`--monitor all` 每張螢幕一張。
 編號是**本次執行 `EnumDisplayMonitors` 列舉中的位置**，從 1 起——它不是「顯示設定」裡 Windows 寫的那個識別號，
 而且拔掉一張螢幕或改一次解析度都可能把它重新排過，所以不要把編號存下來當作跨執行的螢幕識別。要再次認出同一張
-螢幕時，用 `images[].device`（`\\.\DISPLAY1` 那種形狀的裝置名）。越界報 `match.monitor_out_of_range`（退出碼 1），
-`hint` 裡列出本機全部螢幕。螢幕目標在截圖之前，工具會按名稱重新核對那張螢幕：它如果已經離開桌面，截圖以
-`capture.monitor_changed` 停止；它的矩形或位置如果變了，要人批准的是那個新矩形——一份舊確認絕不會被拿去用在
+螢幕時，跑一次 `--screens`，把它交回的識別原樣寫回來：`--monitor device:DISPLAY1`（本次桌面連線的
+裝置名）或 `--monitor "id:\\?\DISPLAY#…"`（螢幕的 devnode 裝置介面路徑，跨工作階段還成立的那一條）。
+識別在本機不存在報 `match.monitor_unknown_id`（結束碼 4），命中多張報 `match.monitor_ambiguous_id`（5，
+候選全部列出，工具不替你挑一張），那一問沒答案報 `match.monitor_id_unverifiable`（7）——三條都不會悄悄
+退化成「那就用主螢幕」。編號越界照舊報 `match.monitor_out_of_range`（退出碼 1），
+`hint` 裡列出本機全部螢幕。螢幕目標在截圖之前，工具會按**身分**重新核對那張螢幕（選定當時問得到跨工作階段
+識別就按它核，問不到才照舊按名稱核）：它如果已經離開桌面，或那個裝置名已經發給了另一張面板，截圖以
+`capture.monitor_changed` 停止（複核本身問不出答案時，報 `capture.monitor_unverifiable` 而不是照名稱續截）；它的矩形或位置如果變了，要人批准的是那個新矩形——一份舊確認絕不會被拿去用在
 一張變過大小或搬過位置的螢幕上。
 `--monitor <n>` 與視窗條件同時給出＝按螢幕過濾視窗（視窗矩形與該螢幕有重疊即命中，跨螢幕視窗在兩張螢幕上都算），
 出的仍是視窗圖，所以按上面視窗那兩行的規矩授權。`--monitor all` 與任何視窗**匹配**條件互斥
@@ -754,6 +816,11 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    省略它那條路與 `--out -` 報的是同樣的碼。常用的幾條：
    `match.no_window`（4，條件太窄或目標被最小化）、`match.ambiguous_window`（5，從 `hint` 的候選裡挑）、
    `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候選）、
+   `match.monitor_unknown_id`（4，`--screens` 之前交回的識別此刻不在桌面上）、
+   `match.monitor_ambiguous_id`（5，同一識別命中多張螢幕，工具不替你挑一張）、
+   `match.monitor_id_unverifiable`（7，螢幕身分這一問整條沒答案），另有 `cli.monitor_selector_empty` /
+   `cli.monitor_selector_kind`（1，`--monitor` 的識別寫法）與 `capture.monitor_unverifiable`（7，取影格之前的
+   身分複核問不出來，同樣不退回去照名稱截）。要按識別點名一張螢幕請先跑 `--screens`，別猜編號。
    `cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多個目標要共用
    同一條 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等影格逾時）、
    `capture.window_gone`（7，目標已經沒了，該重新列舉）、`capture.frame_invalid`（7，交回來的影格記憶體形狀不合法）、

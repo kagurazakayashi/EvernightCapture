@@ -31,6 +31,7 @@
 #include "Lang.h"
 #include "OutputPlan.h"
 #include "Report.h"
+#include "ScreenIdentity.h"   // 屏幕目标的选定与复核（身份只在这里判一次，见那个头文件）
 #include "ScreenMatch.h"
 #include "SystemCompat.h"
 #include "WindowIdentity.h"
@@ -58,10 +59,14 @@ struct Target {
     bool isScreen = false;
     WindowInfo window;
     // 选定那一刻的身份快照 + 复核要用的查询层。窗口目标在每一次真正读像素之前都要照它复核
-    //（WindowIdentity.h）；屏幕目标没有窗口身份，那边靠 ScreenMatch.h 的 CompareScreen 重新
-    // 核对那块屏，win 在这里留空、也永远不会被用到（CaptureScreenOneChannel 不收这个参数）。
+    //（WindowIdentity.h）；屏幕目标没有窗口身份，那边靠 ScreenIdentity.h 的
+    // CompareScreenIdentity 重新核对那块屏，win 在这里留空、也永远不会被用到
+    //（CaptureScreenOneChannel 不收这个参数）。
     WindowTarget win;
     ScreenInfo screen;
+    // 选定那一刻问到的屏幕身份（按标识选屏那一路才有答案）。取帧之前的复核靠它分辨
+    // "还是那块屏"与"这个设备名已经发给另一块面板了"—— 只看名字的话后者看不出来。
+    ScreenFacts screenFacts;
     RECT area{};  // 授权与 JSON 都用它：窗口 = 整窗外框矩形，屏幕 = 该屏矩形
 
     // %n 用的名字
@@ -510,11 +515,14 @@ CaptureOutcome RunCapture(const Options& opt) {
 
     std::vector<Target> targets;
     if (opt.ScreenMode()) {
-        for (const auto& s : SelectScreens(opt, &outcome.errors)) {
+        // 屏幕目标连身份一起选定：按标识选屏那一路问到的那条跨会话标识，下面每一次取帧之前
+        // 都要拿它再核一次（只按设备名核的话，"名字被系统重新发给另一块面板"这种现场看不出来）。
+        for (const ScreenCandidate& c : SelectScreenCandidatesOf(opt.monitor, &outcome.errors)) {
             Target t;
             t.isScreen = true;
-            t.screen = s;
-            t.area = s.bounds;
+            t.screen = c.screen;
+            t.screenFacts = c.facts;
+            t.area = c.screen.bounds;
             targets.push_back(std::move(t));
         }
     } else {
@@ -539,12 +547,18 @@ CaptureOutcome RunCapture(const Options& opt) {
         }
     }
     if (!outcome.errors.empty()) {
+        // 与窗口查询那一份同一张映射表（WindowQueryExitCodeFor 里也是这几条码这几个数）：
+        // "这个屏幕标识现在不在桌面上"与"没有窗口命中这批条件"同为 4，
+        // "同一个标识命中多块屏"与"多扇窗口没消歧"同为 5，"这一问没答案"归 7。
+        // 三条都不许被折叠成"那就用主屏吧"—— 那等于替用户挑一块他没点名的屏。
         const std::wstring& code = outcome.errors.front().code;
-        outcome.exitCode = code == codes::kAmbiguousWindow ? EX_AMBIGUOUS
+        outcome.exitCode = code == codes::kAmbiguousWindow || code == codes::kMonitorAmbiguousId
+                             ? EX_AMBIGUOUS
                          : code == codes::kIndexOutOfRange || code == codes::kMonitorOutOfRange ||
                                  code == codes::kInvalidRegex
                              ? EX_USAGE
-                         : code == codes::kMatchTimeout || code == codes::kCaptureTimeout
+                         : code == codes::kMatchTimeout || code == codes::kCaptureTimeout ||
+                                 code == codes::kMonitorIdUnverifiable
                              ? EX_CAPTURE_FAILED
                              : EX_NO_MATCH;
         return outcome;
@@ -665,14 +679,29 @@ CaptureOutcome RunCapture(const Options& opt) {
                 continue;   // 这一张一个像素都不读，也不替它另找一个"看起来一样"的目标
             }
         }
-        // 屏幕目标另外要按**设备名**重新核对一次（编号只是枚举位置，热插拔之后同一个编号可能
-        // 指到另一块屏上）：那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给
-        // 判定器 —— 屏幕拓扑一变，已给出的桌面授权自动作废，人会看到重新列出的具体范围，
-        // 旧授权不会被用在新显示器上。
+        // 屏幕目标另外要按**身份**重新核对一次：编号只是枚举位置，而设备名是系统按连接顺序发
+        // 出去的 —— 当初问得到那条跨会话标识（devnode 路径）就按它核，名字被重新发给另一块面板
+        // 时只有这条发现得了；当初问不到就照旧按名字核，不新增失败。
+        // 那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给判定器 —— 屏幕拓扑一变，
+        // 已给出的桌面授权自动作废，人会看到重新列出的具体范围，旧授权不会被用在新显示器上。
         if (t.isScreen) {
-            ScreenInfo fresh{};
-            const ScreenCheck check = CompareScreen(t.screen, EnumScreens(), &fresh);
-            if (check == ScreenCheck::kGone) {
+            ScreenCandidate fresh{};
+            ScreenCandidate wanted{};
+            wanted.screen = t.screen;
+            wanted.facts = t.screenFacts;
+            const ScreenIdentityCheck check =
+                CompareScreenIdentity(wanted, EnumScreenCandidates(wanted.facts.hasFacts), &fresh);
+            if (check == ScreenIdentityCheck::kUnverifiable) {
+                // 这一次那一路一个标识都没问出来。这时**不**退回按名字截：那个名字可能已经
+                // 发给别的面板了，照它截就是一张没人批准过的画面。
+                Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"),
+                             L"--monitor", t.screen.deviceName,
+                             Msg(L"cap.monitor_unverifiable_hint"), t.Tag()};
+                d.stage = stages::kCapture;
+                outcome.errors.push_back(std::move(d));
+                continue;   // 一个像素都不读，也不替它挑另一块屏
+            }
+            if (check == ScreenIdentityCheck::kGone) {
                 Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
                              L"--monitor", t.screen.deviceName,
                              Msg(L"cap.monitor_changed_hint"), t.Tag()};
@@ -680,9 +709,10 @@ CaptureOutcome RunCapture(const Options& opt) {
                 outcome.errors.push_back(std::move(d));
                 continue;   // 这一张不取帧，也不替它挑另一块屏
             }
-            if (check == ScreenCheck::kMoved) {
-                t.screen = fresh;
-                t.area = fresh.bounds;
+            if (check == ScreenIdentityCheck::kMoved) {
+                t.screen = fresh.screen;
+                t.screenFacts = fresh.facts;
+                t.area = fresh.screen.bounds;
             }
         }
         gate.SetTargetArea(t.Tag(), t.area);

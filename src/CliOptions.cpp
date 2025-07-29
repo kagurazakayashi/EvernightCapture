@@ -12,6 +12,8 @@
 #endif
 #include <windows.h>
 
+#include "ScreenMatch.h"   // 只要那条 inline 的 StripScreenDevicePrefix：设备名前缀的形状只写一处
+
 namespace ecapture {
 namespace {
 
@@ -206,10 +208,52 @@ bool LooksLikeNumberAttempt(const std::wstring& raw) {
     return hasDigit;
 }
 
+// ---------------------------------------------------------------------------
+// --monitor 的标识写法：device:<设备名> 与 id:<监视器 devnode 路径>
+// ---------------------------------------------------------------------------
+//
+// 为什么要这一层：在此之前调用方只能拿"本次枚举顺序里的第 n 块屏"来指定目标，而那个 n
+// 既不等于「显示设置」里的标识号、也不保证插拔或改分辨率之后还指同一块屏。让调用方（含 AI）
+// 去猜一个数字然后拍到另一块屏上，是这条链里最坏的失败形状 —— 它截到的画面没人批准过。
+// 于是把 --screens 交回的两种标识原样收回来做选择器，一次选屏不必再靠顺序号。
+//
+// 前缀只认这两个词（大小写不敏感），而且**只在这两个词之后有冒号时**才算这条选项的取值：
+// 冒号在 Windows 里还有别的用处（盘符 `D:\`、备用数据流），把任意 `x:y` 都当成标识会让
+// `--monitor D:\shots\a.png` 里的输出路径被吃掉。认不得的前缀照旧不是取值。
+// 取值本体只去首尾空白，内部一字不改 —— devnode 路径是要逐字符比对的。
+enum class MonitorIdKind { kNone, kDevice, kPath, kUnknownKind };
+
+MonitorIdKind SplitMonitorSelector(const std::wstring& raw, std::wstring* body) {
+    const size_t colon = raw.find(L':');
+    if (colon == std::wstring::npos) return MonitorIdKind::kNone;
+    const std::wstring prefix = ToLower(Trim(raw.substr(0, colon)));
+    const std::wstring rest = Trim(raw.substr(colon + 1));
+    if (prefix == L"device") {
+        if (body) *body = rest;
+        return MonitorIdKind::kDevice;
+    }
+    if (prefix == L"id") {
+        if (body) *body = rest;
+        return MonitorIdKind::kPath;
+    }
+    return MonitorIdKind::kUnknownKind;
+}
+
+// 裸设备名的前缀是 GDI 的视图设备名那一套（`\\.\DISPLAY1`）。写选择器的人多半从
+// --screens 里直接抄那一条，所以这里把前缀去掉，剩下的"DISPLAY1"才是标识本体。
+// 去掉前缀这一条与 %n、与比对那一路用的是同一个 inline 函数（ScreenMatch.h），
+// 不在三处各写一遍形状。判据只看写法，不看它真对应哪块屏：形状不合就原样交给
+// 选屏那一步去判"没匹配上"。
+
 // 取值可省略的选项要靠这个判断"下一个参数是不是我的取值"，否则会把输出路径吃掉。
-// 判据 = 关键字 + 合十进制语法的编号 + 写坏了的数字，三者都属于"这条选项的取值位"。
+// 判据 = 关键字 + 合十进制语法的编号 + 写坏了的数字 + 那两个标识前缀，四者都属于"这条选项的取值位"。
 bool LooksLikeMonitorValue(const std::wstring& raw) {
-    return MonitorKeyword(raw) || DecimalLiteral(raw, nullptr) || LooksLikeNumberAttempt(raw);
+    // kUnknownKind（认不得的前缀）这里**不**放行：那是别人的 token（盘符路径之类），
+    // 吃掉它就等于替用户改了一个输出路径。内联写法 --monitor=foo:1 才会走到报错那一条。
+    const MonitorIdKind kind = SplitMonitorSelector(raw, nullptr);
+    return MonitorKeyword(raw) || DecimalLiteral(raw, nullptr) ||
+           LooksLikeNumberAttempt(raw) || kind == MonitorIdKind::kDevice ||
+           kind == MonitorIdKind::kPath;
 }
 
 // --list / --inspect 的取值：各自只有一个关键字，写成内联形式（--list=all）。
@@ -274,7 +318,11 @@ constexpr OptionSpec kOptions[] = {
     // ---- 截图目标 ----
     // valueHint 用方括号表示"取值可省略"：省略时下一个参数不会被吞掉，
     // 所以 `ECAPTURE --monitor out.png` 里的 out.png 仍是输出路径。
-    {L"monitor", L"m", true, L"target", L"[<n|primary|all>]", nullptr, L"opt.monitor", true},
+    // 两条标识写法（device: / id:）的取值本体可能长达一百多字符，写在 valueHint 里会把
+    // 整张选项目录的列宽拉起来（每一行都要跟着补空格），所以这里只列前缀，
+    // 本体形状放在 --screens 那一条与 README 里。
+    {L"monitor", L"m", true, L"target", L"[<n|primary|all|device:|id:>]", nullptr, L"opt.monitor",
+     true},
     // ---- 窗口匹配条件（同类 OR，跨类 AND）----
     {L"hwnd", L"", true, L"match", L"<handle>", nullptr, L"opt.hwnd"},
     {L"pid", L"", true, L"match", L"<pid>", nullptr, L"opt.pid"},
@@ -323,6 +371,10 @@ constexpr OptionSpec kOptions[] = {
     // 一起给出时替用户挑一个执行，不如把这条用法当场说清楚。见 src/EnvReport.h。
     {L"capabilities", L"", false, L"query", L"", nullptr, L"opt.capabilities"},
     {L"diagnostics", L"", false, L"query", L"", nullptr, L"opt.diagnostics"},
+    // 只读的屏幕枚举：本机现在有哪几块屏、每块屏的三种身份各稳在哪一层。
+    // 与上面两条同一家族（不取像素、不弹框、不写文件），所以冲突与允许清单也走同一条判据。
+    // 判据与渲染在 src/ScreenQuery.h，屏幕身份的问答在 src/ScreenIdentity.h。
+    {L"screens", L"", false, L"query", L"", nullptr, L"opt.screens"},
     // ---- 只读的窗口发现与检查 ----
     // 与上面两条查询同样不截图、不弹框、不写文件，但走的是与截图同源的条件求值：
     // --list 把命中的窗口列成机器可读的列表（多匹配不是截图歧义），
@@ -697,7 +749,8 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // ---- 查询命令的互斥收集 ----
     // 两套只读查询各有各的允许清单，所以冲突也各收一份，扫完之后按「这一次到底是哪一类查询」
     // 取对应那一份报出来（与选择策略互斥同一做法：一次把用户写的所有冲突项列全，不修一个报一个）：
-    //   * 环境查询（--capabilities / --diagnostics）只接受 --lang / -v / -q —— 它连目标都不问。
+    //   * 环境查询（--capabilities / --diagnostics / --screens）只接受 --lang / -v / -q ——
+    //     它们连目标都不问，问的都是"这台机器现在是什么样子"。
     //   * 窗口查询（--list / --inspect）问的正是「哪些窗口命中这批条件」，所以窗口条件、
     //     --monitor 与 --timeout-ms 都在允许之列；而截图那一级的选项（输出路径 / 格式 / 覆盖 /
     //     --capture / --dry-run / 确认框期限）一条都不成立：它不出图，也就没有「截哪一扇、
@@ -714,7 +767,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     std::vector<std::wstring> pickFlags;
     const auto AllowedWithEnvQuery = [](const std::wstring& name) {
         return name == L"lang" || name == L"verbose" || name == L"quiet" ||
-               name == L"capabilities" || name == L"diagnostics";
+               name == L"capabilities" || name == L"diagnostics" || name == L"screens";
     };
     const auto AllowedWithWindowQuery = [](const std::wstring& name) {
         // 条件求值那一条线上的东西（与截图用的是同一套匹配语义）
@@ -753,12 +806,42 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // ---- 截图目标 ----
         if (name == L"monitor") {
             opt.monitor.given = true;
-            opt.monitor.all = false;
+            opt.monitor.kind = MonitorSelector::Kind::kPrimary;
             opt.monitor.ordinal = 0;
+            opt.monitor.id.clear();
+            opt.monitor.written = Trim(value);
             if (value.empty()) return;                                    // 省略取值 = 主屏
             if (MonitorKeyword(value)) {
-                if (ToLower(Trim(value)) == L"all") opt.monitor.all = true;
-                return;                                               // primary => ordinal 0
+                if (ToLower(Trim(value)) == L"all") opt.monitor.kind = MonitorSelector::Kind::kAll;
+                return;                                               // primary => 保持 kPrimary
+            }
+            // 两条标识写法：把 --screens 交回的标识原样收回来。这里只判**形状**
+            // （前缀认得、取值非空），"这台机器上有没有这么一块屏"由选屏那一步判 ——
+            // 在那儿判不了主屏兜底，因为兜底就等于替用户挑了一块他没点名的屏。
+            std::wstring body;
+            const MonitorIdKind idKind = SplitMonitorSelector(value, &body);
+            if (idKind == MonitorIdKind::kDevice || idKind == MonitorIdKind::kPath) {
+                if (body.empty()) {
+                    Err(codes::kMonitorSelectorEmpty, Msg(L"cli.monitor_selector_empty"),
+                        L"--monitor", value, Msg(L"cli.monitor_selector_empty_hint"));
+                    opt.monitor.given = false;
+                    return;
+                }
+                opt.monitor.kind = idKind == MonitorIdKind::kDevice ? MonitorSelector::Kind::kDevice
+                                                                    : MonitorSelector::Kind::kPath;
+                opt.monitor.id = idKind == MonitorIdKind::kDevice
+                                     ? StripScreenDevicePrefix(body)
+                                     : body;
+                return;
+            }
+            // 内联写法里出现冒号而前缀不是那两条之一（`--monitor=foo:1`）：这多半是想写标识
+            // 而写错了前缀。照实报一条说清楚有哪两种前缀，别退化成 cli.invalid_number ——
+            // 那句"屏幕编号只认十进制"会把人引向"那我换个数字试试"，而他本来要的就是标识。
+            if (value.find(L':') != std::wstring::npos) {
+                Err(codes::kMonitorSelectorKind, Msg(L"cli.monitor_selector_kind"), L"--monitor",
+                    value, Msg(L"cli.monitor_selector_kind_hint"));
+                opt.monitor.given = false;
+                return;
             }
             // 编号只认严格十进制，且从 1 起。ScanArgv 里"要不要吃下一个参数"用的就是
             // 这套语法（见 LooksLikeMonitorValue），所以像 1e3 这种写坏了的数字会走到这里
@@ -770,7 +853,8 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 opt.monitor.given = false;
                 return;
             }
-            opt.monitor.ordinal = static_cast<int>(n);
+            opt.monitor.kind = MonitorSelector::Kind::kOrdinal;
+            opt.monitor.ordinal = static_cast<uint32_t>(n);
             return;
         }
 
@@ -985,6 +1069,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // 所以这里不预判任何能力（也不该预判：那正是查询的用途）。
         if (name == L"capabilities") { opt.capabilities = true; return; }
         if (name == L"diagnostics") { opt.diagnostics = true; return; }
+        if (name == L"screens") { opt.screens = true; return; }
         // 窗口查询的两个入口。同时给出算冲突（一份是列表、一份是单窗口快照，两份文档说的
         // 不是同一件事），这里只落最后一个写法，冲突判定在扫完整条 argv 之后做。
         // 这两条查询的取舍写在取值里：--list=all 把最小化窗口也列进来，
@@ -1137,19 +1222,22 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         return joined;
     };
     if (opt.EnvQueryMode()) {
-        if (opt.capabilities && opt.diagnostics) {
-            // 两条环境查询同时给出：两份文档都由同一批判据算出，同时出两份只会让调用方
-            // 不知道读哪一份，所以这里也是一条冲突，而不是把两份拼起来。
-            NoteConflict(&envConflicts, L"--capabilities");
-            NoteConflict(&envConflicts, L"--diagnostics");
+        // 三条环境查询（--capabilities / --diagnostics / --screens）同时给出：每一份都是
+        // 一次独立的问答，同时出两份只会让调用方不知道读哪一份，所以这里是一条冲突，
+        // 而不是把两份拼起来。报错把用户写过的**每一条**都列上（不只是前两条）。
+        std::vector<std::wstring> given;
+        if (opt.capabilities) given.push_back(L"--capabilities");
+        if (opt.diagnostics) given.push_back(L"--diagnostics");
+        if (opt.screens) given.push_back(L"--screens");
+        if (given.size() > 1) {
+            for (const std::wstring& f : given) NoteConflict(&envConflicts, f);
         }
         // 位置参数就是输出路径：它不吃 spec，所以扫完之后单独登记。报错里写 --out 而不回显
         // 用户那条路径本身——查询这一路的规矩是不把路径带进输出。
         if (!positional.empty()) NoteConflict(&envConflicts, L"--out");
         if (!envConflicts.empty()) {
-            const std::wstring wanted = opt.capabilities ? L"--capabilities" : L"--diagnostics";
-            Err(codes::kQueryConflict, Msg(L"cli.query_conflict"), wanted, JoinFlags(envConflicts),
-                Msg(L"cli.query_conflict_hint"));
+            Err(codes::kQueryConflict, Msg(L"cli.query_conflict"), given.front(),
+                JoinFlags(envConflicts), Msg(L"cli.query_conflict_hint"));
         }
     }
     if (opt.WindowQueryMode()) {
@@ -1199,7 +1287,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // --monitor all 是"每块屏各一张"，与"按屏过滤窗口"没法同时成立；
         // dwm / printwindow 取的是窗口自己的画面，屏幕上没有这样一个窗口可取。
         if (opt.monitor.given) {
-            if (opt.monitor.all && opt.HasAnyCondition()) {
+            if (opt.monitor.kind == MonitorSelector::Kind::kAll && opt.HasAnyCondition()) {
                 Err(codes::kMonitorConflict, Msg(L"cli.monitor_conflict"), L"--monitor", L"all",
                     Msg(L"cli.monitor_conflict_hint"));
             }

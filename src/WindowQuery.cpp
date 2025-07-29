@@ -127,25 +127,22 @@ void WriteWindow(Json& j, const WindowRecord& r) {
 }  // namespace
 
 int WindowQueryExitCodeFor(const std::wstring& code) {
-    if (code == codes::kAmbiguousWindow) return EX_AMBIGUOUS;
+    if (code == codes::kAmbiguousWindow || code == codes::kMonitorAmbiguousId) {
+        return EX_AMBIGUOUS;
+    }
     if (code == codes::kIndexOutOfRange || code == codes::kMonitorOutOfRange ||
         code == codes::kInvalidRegex || code == codes::kInvalidNumber) {
         return EX_USAGE;
     }
     if (code == codes::kMatchTimeout || code == codes::kCaptureTimeout ||
-        code == codes::kWorkerFailed || code == codes::kCaptureFailed) {
+        code == codes::kWorkerFailed || code == codes::kCaptureFailed ||
+        code == codes::kMonitorIdUnverifiable) {
         return EX_CAPTURE_FAILED;
     }
-    return EX_NO_MATCH;   // match.no_window（以及任何没登记过的码，按「没对上目标」处理）
-}
-
-const wchar_t* ReadStateName(ReadState state) {
-    switch (state) {
-        case ReadState::kReadable: return L"readable";
-        case ReadState::kDenied: return L"denied";
-        case ReadState::kFailed: return L"failed";
-    }
-    return L"failed";   // 没登记过的取值不当成「能读」：宁可说问不出来
+    // match.no_window / match.monitor_unknown_id（以及任何没登记过的码，按「没对上目标」处理）：
+    // 屏那一侧的「这个标识现在不在桌面上」与窗口那一侧的「没有窗口命中这批条件」是同一类下一步 ——
+    // 重新问一遍本机，而不是换个编号或换个通道碰运气。
+    return EX_NO_MATCH;
 }
 
 void WindowIdentityOf(const WindowIdentity& id, std::wstring* hwndHex, std::wstring* className,

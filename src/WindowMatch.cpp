@@ -13,6 +13,7 @@
 
 #include <psapi.h>
 
+#include "ScreenIdentity.h"   // MonitorSelectorLabel：选择器标签只写一处
 #include "ScreenMatch.h"
 
 namespace ecapture {
@@ -350,9 +351,19 @@ MatchOutcome EnumerateMatches(const MatchRequest& req) {
 
 std::wstring MonitorLabelOf(const Options& opt) {
     if (!opt.monitor.given) return std::wstring();
-    if (opt.monitor.all) return L"all";
-    if (opt.monitor.ordinal == 0) return L"primary";
-    return std::to_wstring(opt.monitor.ordinal);
+    // 标签的写法只有一份（ScreenIdentity.h）：编号、主屏、all，外加两条标识写法
+    // （device:… / id:…）。hint 里、-v 的 input 段里、窗口查询那份回显里都读这一条，
+    // 免得"回显写的选择器"与"实际用的选择器"两处各拼一遍拼出两种形状。
+    return MonitorSelectorLabel(opt.monitor);
+}
+
+const wchar_t* ReadStateName(ReadState state) {
+    switch (state) {
+        case ReadState::kReadable: return L"readable";
+        case ReadState::kDenied: return L"denied";
+        case ReadState::kFailed: return L"failed";
+    }
+    return L"failed";   // 没登记过的取值不当成「能读」：宁可说问不出来
 }
 
 // ---------------------------------------------------------------------------

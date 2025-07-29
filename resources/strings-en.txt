@@ -40,7 +40,7 @@ grp.timeout	Deadlines (a total budget for the automatic stage; waiting for conse
 grp.output	Output
 grp.behavior	Miscellaneous
 grp.query	Capability queries (read-only: no capture, no dialog, no file)
-opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images
+opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images; to name a specific monitor use an identifier from --screens: device:<name> (this desktop attach) or id:<monitor device path> (the cross-session one) - a number can point at a different screen after a replug or a mode change
 opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
 opt.pid	Process id, decimal only and greater than 0
 opt.process	Image file name (no path), case-insensitive; without an extension .exe is assumed
@@ -72,6 +72,7 @@ opt.help	Print this text help
 opt.version	Print version and stage
 opt.capabilities	Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
 opt.diagnostics	Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
+opt.screens	Read-only list of every screen: tool number, device name, primary flag, physical rect, DPI and rotation where they can be read, and which adapter drives it - plus how far each of those identities stays true. It reads no pixel, shows no dialog, writes no file and changes no display setting. The device:<name> and id:<path> it returns go straight into --monitor. Mutually exclusive with capture options (cli.query_conflict + exit code 1); a real full-screen capture still always asks and --yes cannot skip it
 opt.list	List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
 opt.inspect	Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
 opt.offset	Skip the first n windows (decimal, from 0)
@@ -290,6 +291,8 @@ cap.dup.screen_changed	This monitor's picture changed after the confirmation, so
 cap.dup.screen_changed_hint	Requested %1x%2, only %3x%4 could be taken, and that output is now %5x%6. Resolution, rotation or monitor position changed after the confirmation: pick the monitor again and confirm once more - this tool does not move the request to another screen
 cap.monitor_changed	That monitor left this machine's desktop during this request
 cap.monitor_changed_hint	The monitor was unplugged or disabled. Enumerate again (--monitor numbers are the order of this enumeration) and retry
+cap.monitor_unverifiable	The monitor identity could not be re-checked before capturing
+cap.monitor_unverifiable_hint	The cross-session identifier of this screen was known when it was chosen, and this time that question returned no answer. The tool does not fall back to matching by device name: that name may have been re-issued to another panel, and capturing it would grab pixels nobody approved. Run --screens again and re-confirm
 note.capture_clipped	The target was not captured whole: asked for %1x%2, got %3x%4
 note.capture_clipped_hint	Missing on each side: left %1, top %2, right %3, bottom %4 pixels. This channel takes the composed output of one monitor, so a target that straddles screens or hangs off the edge can only be taken where it overlaps that monitor
 
@@ -309,11 +312,21 @@ enc.apartment	This thread could not initialize a WinRT apartment (%1)
 # Screen target (--monitor, src/ScreenMatch.cpp and the CaptureScreenXxx channels)
 # ---------------------------------------------------------------------------
 cli.monitor_value	--monitor needs a decimal monitor number starting at 1, or primary / all
-cli.monitor_value_hint	e.g. --monitor 1 (first monitor) / --monitor primary (main one) / --monitor all (one image per monitor). Numbers are decimal digits only: no sign, no 0x, no 1e3
+cli.monitor_value_hint	e.g. --monitor 1 (first monitor) / --monitor primary (main one) / --monitor all (one image per monitor). Numbers are decimal digits only: no sign, no 0x, no 1e3. To name a monitor precisely, use device:... or id:... from --screens
+cli.monitor_selector_empty	The --monitor identifier has nothing after the colon
+cli.monitor_selector_empty_hint	The forms are device:<name> and id:<monitor device path>; the colon needs a value after it. Run --screens first to list this machine's identifiers
+cli.monitor_selector_kind	Unknown identifier prefix for --monitor
+cli.monitor_selector_kind_hint	There are exactly two: device:<name> (the name in this desktop attach) and id:<monitor device path> (the cross-session one). Everything else is a decimal number from 1, primary or all. --screens lists what this machine has
 cli.monitor_conflict	--monitor all means "one image per monitor" and only works for a whole-screen capture with no window conditions
 cli.monitor_conflict_hint	To filter windows by monitor give a single number, e.g. --monitor 2
 match.monitor_out_of_range	No monitor has that --monitor number
 match.monitor_out_of_range_hint	This machine has %1 monitor(s): %2
+match.monitor_unknown_id	No monitor matches that --monitor identifier
+match.monitor_unknown_id_hint	This machine has %1 monitor(s): %2. Such an identifier is usually a leftover from an earlier enumeration - the screen was unplugged, disabled, or the name was re-issued to a different panel. Run --screens again; this tool will not quietly fall back to the primary monitor
+match.monitor_ambiguous_id	That --monitor identifier matches several monitors
+match.monitor_ambiguous_id_hint	It matches %1: %2. This tool will not pick one for you - use a more specific identifier from --screens (the cross-session one is id:), or name the screen by number
+match.monitor_id_unverifiable	The screen identity could not be read, so no monitor can be named by identifier
+match.monitor_id_unverifiable_hint	QueryDisplayConfig returned no answer this time; this machine has %1 monitor(s): %2. The next step is to check this machine's display topology (run --screens from a session where it can be answered), not to switch --capture - this path reads no pixel, so there is no channel to switch to
 match.no_window_monitor_hint	The search was limited to --monitor %1; check that the window really overlaps that monitor
 cap.unsupported_for_screen	The %1 channel captures a window's own surface, which a whole screen does not have
 cap.unsupported_for_screen_hint	For a whole screen use wgc / duplication / bitblt, or auto
@@ -369,3 +382,5 @@ note.os_unverifiable	This machine's Windows build could not be read, so no chann
 # ---------------------------------------------------------------------------
 note.window_query_stale	A window query returns a snapshot of this moment; its fields expire
 note.window_query_stale_hint	Handles get reused, titles change and processes exit, so the hwnd / pid / class in this list are not a credential you may hold on to. A later capture still re-checks the target identity before reading a pixel (capture.target_gone / capture.target_changed / capture.target_unverifiable), and consent is still decided by where the pixels come from - --yes only skips the window-content level
+note.screen_query_stale	This monitor list is a snapshot of this moment and expires
+note.screen_query_stale_hint	%1 monitor(s) right now. A number only means the position in this enumeration and device names get re-issued by the system; the cross-session one is the id: monitor device path. A later capture still re-checks the identity before reading a pixel, and consent is still decided by where the pixels come from
