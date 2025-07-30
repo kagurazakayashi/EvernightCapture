@@ -26,6 +26,13 @@ previously implemented `magnification` channel was removed (reasons in AGENTS.md
 - **Six capture channels**: capture a window that is covered by something else (`wgc` / `dwm` / `printwindow`), or
   deliberately copy only the pixels visible on screen (`bitblt` / `duplication`)
 - **Many windows at once**: `--all` saves one image per matched window, named with placeholders like `%i`
+- **Cropping inside the window**: `--roi x,y,w,h` keeps one rectangle of the delivered whole-window image, and
+  `--client-area` keeps only the client area. Those coordinates belong to **that image's own pixels** (top-left
+  corner = `(0,0)`, physical pixels, never scaled by DPI) — they are never re-read as desktop-absolute
+  coordinates — and a rectangle that does not fit is rejected instead of being slid inside, cropped to the
+  edge, or swapped for the uncropped window. The crop runs *after* the frame is captured, so it changes nothing
+  about authorization: desktop-pixel paths still always ask, and `--yes` does not start applying just because
+  only a small piece is kept
 - **Screenshot authorization**: any capture that really grabs a frame asks in a modal dialog first, reliable
   window paths included; `--yes` skips that ask **only** for paths whose frame is bound to the selected window
   itself — anything sampling desktop pixels always needs a person and no switch can skip it
@@ -131,6 +138,10 @@ When several windows match (mutually exclusive)
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
   --capture, -C <method>                      wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+
+Cropping inside the window (another crop of the delivered whole-window image, in that image's own pixel coordinates - not desktop coordinates; the two below are mutually exclusive)
+  --roi <x,y,w,h>                             Cut a w x h block starting at x,y out of the delivered whole-window image. The origin (0,0) is this image's own top-left pixel (the image is the visible window frame you actually see; the transparent DWM resize border is not in it), in physical pixels and not scaled by DPI (the process is per-monitor v2, so multiply the scale yourself for logical pixels) - which is why these four numbers are never read as desktop-absolute coordinates. Four decimal integers separated by commas; x and y may be 0, w and h are at least 1, none above 16384. If it does not fit, nothing is written: match.roi_out_of_range when that is already clear before the frame is taken (no dialog, no file) and capture.roi_invalid when it only turns out afterwards - the rectangle is never slid inside, never cropped to the edge, and the uncropped window is never handed over instead. The crop runs after the capture, so it changes nothing about authorization: channels that sample the screen still always ask, and --yes does not start applying because only a small piece is kept. In the result cropRect is in image pixels, cropScreenRect is the same rectangle in screen coordinates (written only when the image's screen origin can be established), fullWidth/fullHeight are the size before cropping and width/height after. Mutually exclusive with --client-area, and meaningless for a whole-screen target (capture.unsupported)
+  --client-area                               Keep only the window's client area: also drop the title bar and the three borders from the delivered whole-window image. That rectangle is measured from the target's geometry right now (GetClientRect plus ClientToScreen), so the coordinate system and units are exactly the --roi ones. A client area that cannot be measured reports capture.roi_unmeasurable, one that hangs outside the delivered image (off screen, or the window resized in between) reports capture.roi_invalid; neither falls back to the whole window. Mutually exclusive with --roi
 
 Capture authorization (a real capture asks first; --yes skips window-content paths)
   --yes, -y                                   Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
@@ -381,6 +392,100 @@ Rules:
    `note.frame_uniform` records the fact (which colour, which channel, which target). Only `duplication` refuses a
    frame on such grounds, and only when the API itself says there was nothing to show — no present record at all
    *and* the whole frame one colour.
+
+## Cropping inside the window (`--roi` / `--client-area`)
+
+Both options answer a single question: *which part of the delivered window image do you actually want*. They are
+mutually exclusive (`cli.crop_conflict` + exit code 1), they say nothing sensible about a whole-screen target
+(`capture.unsupported` + exit code 1 — a screen has no window whose top-left corner a crop could be relative to),
+and they are refused together with the read-only queries (`cli.query_conflict` / `cli.window_query_conflict`).
+
+### The coordinate system, and why it is never desktop coordinates
+
+The origin `(0,0)` is **the top-left pixel of the delivered whole-window image**, and the far edge is exclusive.
+That image is the visible window frame the user actually sees (`DWMWA_EXTENDED_FRAME_BOUNDS`): the transparent
+DWM resize border that `GetWindowRect` still counts is not part of it, and `--client-area` drops the title bar and
+the three borders from inside what is left.
+
+Units are **physical pixels, never scaled by DPI**. The process declares per-monitor DPI v2, so window rectangles,
+frame sizes and pixel buffers already live in physical pixels and there is no scaling step here: one and the same
+`--roi 0,0,200,120` takes 200×120 pixels whether the window sits on a 1x or a 2x display. A caller that thinks in
+logical pixels (DIP) multiplies that scale factor itself — the tool does not guess which monitor the window is on,
+and does not guess which DPI to apply.
+
+Because the rectangle is anchored to the image, **it is never re-read as a desktop-absolute position**. That is not
+a wording choice: taking desktop coordinates would let a caller ask for a region nobody approved.
+
+`--roi` wants exactly four decimal integers separated by commas (`[0-9]+` only: no sign, no spaces, no decimal
+point, no exponent, no underscores, no `0x`, no non-ASCII digits). `x` and `y` may be `0`; `w` and `h` are at least
+`1`; none of the four may exceed `16384` — the same ceiling as a frame's single side, which `--capabilities`
+reports as `limits.roiMaxValue` so help, parser and query read one number.
+
+### What does not fit is refused, never repaired
+
+| Situation | Code | Exit | Stage |
+| --- | --- | --- | --- |
+| Four fields that are not what was promised (sign, space, wrong field count, zero width or height, over the ceiling) | `cli.invalid_value` | 1 | parse |
+| The rectangle is already too large for the window as selected, so before any dialog and before any file is planned | `match.roi_out_of_range` | 1 | match |
+| The frame came back too small to hold it (the target resized in between, or part of it hangs off the screen) | `capture.roi_invalid` | 7 | capture |
+| The question needed to locate the rectangle gave no answer (client area unreadable, or this image cannot be tied to a region of the screen) | `capture.roi_unmeasurable` | 7 | capture |
+
+None of these clamps the rectangle to the edge, slides it inside, or falls back to "here is the whole window
+instead" — the last one would hand over an image the caller did not ask for. And none of them lands a pixel: the
+pre-capture check runs before the consent dialog, so a request that cannot be honoured never disturbs a person,
+and the post-capture one throws the frame away instead of writing it. A batch is a batch: if one of several
+matched windows cannot hold the rectangle, nothing in that batch is captured (same rule as
+`match.index_out_of_range`). `--dry-run` takes no frame, so it does not judge the geometry either — the requested
+crop is echoed under `-v` as `input.crop` either way.
+
+### The crop does not widen or narrow what a person approved
+
+The crop runs **after** the frame is captured, which is the whole reason it cannot be used to reach pixels that
+were never on the table: what a person saw in the dialog is the whole target, the tier the path belongs to is still
+decided by `images[].path` (see [Screenshot authorization](#screenshot-authorization-and---yes)), and a path that
+samples the screen still always asks. `--yes` does not start applying because only a small piece is kept in the end
+— a `--roi 0,0,8,8` on `bitblt` or `duplication` is refused exactly like a full-screen grab is. Window-content
+paths (`wgc`, `printwindow`, `dwm.thumbnail`) are the only ones `--yes` can silence, and that is unchanged here.
+
+### What the result says
+
+A cropped image carries one more group of fields, all of them locating judgements that `--quiet` must not hide:
+
+```json
+"width": 120, "height": 80,
+"cropMode": "roi",
+"cropRect":       { "x": 20, "y": 40, "width": 120, "height": 80 },
+"fullWidth": 486, "fullHeight": 293,
+"cropScreenRect": { "x": 227, "y": 240, "width": 120, "height": 80 }
+```
+
+`cropRect` is in image pixels, `width` / `height` are the final (cropped) size, `fullWidth` / `fullHeight` the size
+of the whole-window image before cropping, and `cropScreenRect` is that same rectangle in virtual-screen
+coordinates — the same frame of reference as `rect`, `requestedRect` and the rectangles listed in the dialog. The
+mapping closes: `cropScreenRect - cropRect` is the image's own screen origin, so a caller can verify it against
+`rect` instead of trusting it.
+
+That last line is written **only when the image's screen origin can actually be established**: either the channel
+reported the region it really sampled (`capturedRect`, which is what the desktop-crop routes do), or the window's
+visible rectangle measured at that moment is exactly the size of the delivered image. Otherwise the key is absent
+and `note.crop_mapping_unavailable` says so — an unanswerable question is never folded into a plausible number.
+`--client-area` needs that mapping to locate the client area inside the image at all, so when it cannot be
+established the capture fails with `capture.roi_unmeasurable` rather than returning the uncropped window.
+
+These fields sit alongside `requestedRect` / `capturedRect` / `clipped` / `rotation`, and the two groups do not
+overlap: the first says whether the *whole window* could be sampled from the desktop, the second says which part
+of the image that arrived is being handed over.
+
+### Not verified on this machine
+
+`.\tests\crop.ps1` judges the geometry against three independent questions it asks itself
+(`GetWindowRect`, `DWMWA_EXTENDED_FRAME_BOUNDS`, `GetClientRect` + `ClientToScreen`), against pixel content
+(a cropped image's corners must equal the whole-window image at the requested offset), against a window it really
+resized, and against the authorization tier (desktop paths still pop the dialog with a tiny `--roi` and `--yes` —
+the test only looks, it never answers). Two things this machine cannot stage are recorded as unverified instead of
+inferred: the same `--roi` across two monitors with different DPI (only one monitor is attached), and the race
+where the target shrinks between the pre-capture check and the returned frame (that window of time is exactly what
+cannot be scheduled — the offline suite `build\ecapture-crop-tests.exe` judges it instead).
 
 ## Omitting `--out` (compatibility note)
 
@@ -1025,7 +1130,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | Command | Purpose |
 | --- | --- |
 | `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | 518 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms, and the query-versus-capture conflict group included) + stream separation + "no `--out`" against `--out -` equivalence + multi-language checks (all `--dry-run`, no capture) |
+| `.\tests\cli.ps1` | 619 output-contract assertions (the `--yes` and `--no-overwrite` boolean forms, and the query-versus-capture conflict group included) + stream separation + "no `--out`" against `--out -` equivalence + multi-language checks (all `--dry-run`, no capture) |
 | `.\tests\capabilities.ps1` | Capability and diagnostics queries (`--capabilities` / `--diagnostics`): offline runs `build\ecapture-capabilities-tests.exe` (fake probes for "no screen at all", "just under a channel's floor", "the build number could not be read", "one encoder is missing", "the `--yes` scope matches the registry", "both queries come from one set of judgements"); the real-machine layer proves the query never blocks on a dialog (the timeout is itself the assertion), writes no file, agrees with WMI and with `--dry-run -v` on version / architecture / chain, is all-ASCII so it cannot change with `--lang`, and carries no user name or path. A session with no interactive desktop, older builds, a genuinely missing encoder, ARM64 / Server / Remote Desktop cannot be arranged here and are recorded as unverified |
 | `.\scripts\check-lang.ps1` | Verifies the four string tables align on keys/placeholders and that the exe really carries four resources |
 | `.\tests\invoker.ps1` | Offline checks for the shared test process invoker: argv quoting, both streams at once, binary output, hung child, per-run scratch dirs (no capture) |
@@ -1039,6 +1144,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\tests\consent.ps1` | Consent tiers: an offline layer runs the whole `ConsentGate` state machine against an injected fake prompt (`build\ecapture-consent-tests.exe`, from `tests\consent_state.cpp`), and the on-device layer answers every dialog "No" to check which paths must ask, what a refusal reports (`code` / `stage` / `target` / `value`), that nothing lands on disk, and that `images[].path` / `scope` / `rect` are right. Never answers "Yes" on a human's behalf |
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
 | `.\tests\identity.ps1` | Target identity and z-order selection. Offline layer (`build\ecapture-identity-tests.exe`, injected fake query layer): handle reused by another process, same PID but a different process, class changed, the selection condition no longer holding, every question that cannot be answered, and which questions each grade asks in what order. On-device layer (self-made windows only): healthy targets are never blocked, `capture.target_gone` when the target is destroyed mid-batch, `capture.target_changed` when a renamed window no longer satisfies the `--title` condition, a refreshed title that still satisfies it captures normally, and `--topmost-match` / `--bottommost-match` are judged against the current z-order (the window created first but living in the topmost band wins — exactly what a "most recently created" reading gets wrong). Handle and PID recycling cannot be staged on purpose without killing somebody's process, and the consent-dialog span needs `-SimulateConsent`; both are recorded as unverified, never faked |
+| `.\tests\crop.ps1` | Window-internal cropping (`--roi` / `--client-area`): the offline layer (`build\ecapture-crop-tests.exe`, from `tests\crop_state.cpp`) injects delivered-image sizes, whether the image's screen origin was answerable and whether the client area was measured, then judges edge alignment, one-pixel overflow, zero width or height, 64-bit wrap-around, the side ceiling, a client area hanging outside the image, and negative-coordinate monitors. The on-device layer uses its own bordered window (WS_OVERLAPPEDWINDOW, so the window / client / visible-frame rectangles differ), cross-checks `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight` against three independent Win32 questions, compares pixel content against an uncropped capture, proves an over-large rectangle is refused before any dialog or file, that a resized target invalidates the same rectangle, and that a desktop-pixel route with a tiny `--roi` still pops the dialog even with `--yes` (the test only looks and never answers). Mixed DPI across monitors and the shrink-between-check-and-frame race cannot be staged here and are recorded as unverified |
 | `.\tests\screen.ps1` | On-device whole-screen test: three screen channels (all desktop routes, so every one of them must ask) + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing; without it the judgements that need an answer are recorded as SKIP |
 | `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8, plus the no-`--out` / `--out -` equivalence across success, no match, ambiguity, bad arguments, a backend failure, a refusal and a broken stdout (only its own windows are captured, the desktop-route case again needs `-SimulateConsent`) |
 | `.\tests\window_shot.bat` | Human walkthrough: compile the test window helper → capture it with every channel (a person clicks the dialogs) → whole-screen step → open the screenshot folder → end just that PID |

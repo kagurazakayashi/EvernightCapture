@@ -22,6 +22,8 @@
 | `--newest` / `--oldest` | | 开关 | 上面两条的**旧名字**（兼容别名，行为完全相同）。它们选的一直是当下的 Z 序位置而不是创建时间 —— Windows 没有取窗口创建时间的公开 API，进程启动时间也不是窗口创建时间。写旧名字会多发一条 `note.deprecated_option`；同一条策略的新旧两种写法一起给（`--newest --topmost-match`）算一条策略，不是互斥冲突 |
 | `--all` | `-a` | 开关 | 每个命中窗口各存一张；与 `--monitor all` 互斥 |
 | `--capture` | `-C` | `wgc`（默认）/`dwm`/`printwindow`/`bitblt`/`duplication`/`auto` | 取图通道。取值写错解析期报 `cli.unknown_capture_method`，不会退化成默认值。**要不要问人，不看这里写的通道名，看实际走的那条内部路径**（`images[].path`，全表见「截图授权」一节）：`dwm` 的缩略图路径只取窗口画面，它那条"把宿主窗口盖到目标位置上再拷屏幕"的退路 `dwm.screen` 取的是桌面像素——这条退路只在缩略图那一步**真的失败**（PrintWindow 返回 FALSE、位图建不出来、宿主窗口量不出矩形）时才走，**不会因为画面正好是单色就走**（旧实现会，那等于把一扇本来就纯色的窗口升级到要另外授权的桌面取样）。`duplication` 取的是**某一块输出**的合成分：它会先枚举全部显卡适配器与输出定位目标、在该输出所属适配器上建设备（所以由第二块显卡驱动的屏也截得到，这条路上没有 WARP 兜底），并按该输出的显示方向把桌面帧顺时针转 0/90/180/270 度，交付图因此在虚拟屏幕坐标那一套系里（转了几度写在 `images[].rotation`）；一个目标只取与它重叠最多的那块输出，没截全时报 `capturedRect` / `clipped` 并发 `note.capture_clipped`，跨显卡拼图未实现。屏幕模式只支持 `wgc`/`duplication`/`bitblt`/`auto`，`dwm`/`printwindow` 报 `capture.unsupported`（整屏 `wgc` 也是桌面像素） |
+| `--roi` | | `<x,y,w,h>` | **窗口内部裁剪**：从交付的整窗图像里裁出 x,y 起点、w×h 大小的一块。原点 `(0,0)` 是**这张图像自己的左上角像素**（图像对应的是用户看到的可见边框，`GetWindowRect` 还算在内的 DWM 透明 resize 边框不在里面），单位物理像素且**不按 DPI 缩放**（本进程 per-monitor v2，要按逻辑像素指定就自己乘缩放） —— 所以这四个数永远不会被当成桌面绝对坐标。四段都只认 `[0-9]+`、逗号分隔、不认空白/正负号/小数点/指数/下划线/`0x`与非 ASCII 数字；`x`/`y` 可为 0，`w`/`h` 至少 1，四条都不超过 16384（= 帧的单边上限，`--capabilities` 报成 `limits.roiMaxValue`）。写法不合 = `cli.invalid_value`+1。放不下 = 拒绝，绝不往里挪、裁到边上为止、也不退回整窗交出：取帧之前就看得出放不下报 `match.roi_out_of_range`+1（在确认框与输出名规划之前，不弹框、不写文件），取到帧之后才发现报 `capture.roi_invalid`+7（目标改了尺寸或被屏幕边缘裁短）。与 `--client-area` 互斥（`cli.crop_conflict`+1），与整块屏幕的目标说不通（`capture.unsupported`+1，**不会**改按桌面坐标去截），与只读查询一起给也算冲突。`--dry-run` 不取帧所以不判这条几何。结果里多带 `cropMode` / `cropRect`（图像坐标）/ `fullWidth` / `fullHeight` / `cropScreenRect`（屏幕坐标，只在图像原点核实得出来时才写，否则整个键不出现并留 `note.crop_mapping_unavailable`） |
+| `--client-area` | | 开关 | 只交回窗口客户区那一块：在交付的整窗图像里再去掉标题栏与三边边框。这块矩形照目标此刻的几何量出来（`GetClientRect` + `ClientToScreen`），所以坐标系与单位跟 `--roi` 完全同一套。客户区问不出来 = `capture.roi_unmeasurable`+7，客户区有一边落在交付图像之外 = `capture.roi_invalid`+7（挂在屏外、或中途改了尺寸），两种都不退回整窗交出。`--client-area=false` 与普通开关同义 = 没写。与 `--roi` 互斥 |
 | `--yes` | `-y` | 开关，可写 `=true/false` | **截图授权**：只免掉"只取所选窗口画面"那几条路径（`wgc` / `printwindow` / `dwm.thumbnail`）的确认框。裸写与 `=true/1/yes/y/on` = 开，`=false/0/no/n/off` = 关（它虽是正向开关，写 `=false` 却**有意义**：明确要问），重复给出时最后一个生效，最终结果由 `-v` 的 `input.yes` 回显；写成两头都不沾的取值（`--yes=maybe`）解析期就报 `cli.switch_takes_no_value`+1，不会当成"开了"。**其它一概不保证**：不保证目标真交出有效帧、不越过权限、不解除受保护内容、不吞掉任何错误，也不影响覆盖保护。凡是从屏幕上取像素的路径（`bitblt`、`duplication`、任何整屏、`dwm` 的屏幕退路）一定会弹框，这个开关跳不过 |
 | `--timeout-ms` | | 毫秒，0–86400000 | **自动阶段的总预算**：从选定目标起，匹配（含 `--title-regex` 求值）、`auto` 的后端重试、等帧、编码、写文件 / 写 stdout 共用这一份剩余时间，整批只发一次，没有哪一步或哪个目标能另领一份。省略或 `0` = 不设总预算，此时被隔离进辅助进程执行的那几步（见「期限与阻塞隔离」）仍有内置 5000 ms 上限兜底，`--capture printwindow` / `dwm` 不再能无限期卡住。预算耗尽时受影响的那张图**不写**：按阶段报 `match.timeout`（`stage=match`）/ `capture.timeout`（`stage=capture`，编码超时也算它）/ `io.timeout`（`stage=write`/`stdout`，退出码 8）；剩下的目标不再开始，已经写好的图留着。等人工确认**不计入**这条预算。只认十进制 `[0-9]+`（`0x…`、负号、下划线、指数、空白与非 ASCII 数字一律拒收），重复给出最后一个生效，最终结果由 `-v` 的 `input.timeoutMs` 回显 |
 | `--consent-timeout-ms` | | 毫秒，0–86400000 | 确认框最多等人回答多久；省略或 `0` = 一直等。超时按**拒绝**处理而绝不当作同意：报 `capture.consent_timeout` + 退出码 6、`stage=consent`。这一段单独计时，**不消耗** `--timeout-ms` 的预算；点「是」之后那约 1 秒的关框动画缓冲属于人工阶段，不会为了赶预算被跳过。取值写法与回显同上（`input.consentTimeoutMs`） |
@@ -304,6 +306,45 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 （`privacy.includesDevicePaths: true`、`includesFileSystemPaths: false`、`includesUsernames: false`）。
 这与 `--capabilities` 那份"不含任何路径"的自述是两份不同的取舍，各写各的，不互相覆盖。
 
+## 窗口内部裁剪（`--roi` / `--client-area`）
+
+这两条回答的是同一件事：**这一次交付的窗口图里要留哪一块**。判据本体是纯算术（`src/CropGeometry.h/.cpp`），
+测量与落地在 `src/Capture.cpp`，离线判据在 `tests\crop_state.cpp` → `build\ecapture-crop-tests.exe`。
+
+- **坐标系只有一种**：`cropRect` 说的是交付图像自己的像素坐标，左上角 = `(0,0)`，右下边不含。那张图像是用户看到的
+  可见边框之内（`DWMWA_EXTENDED_FRAME_BOUNDS`）。**它永远不会被当成桌面绝对坐标** —— 那等于允许调用方用一个窗口之外的
+  位置去要一块谁都没批准过的画面。要截屏幕上某一块位置，用 `--monitor`（整屏）而不是 `--roi`。
+- **单位是物理像素，没有 DPI 换算**：进程声明 per-monitor DPI v2，窗口矩形与帧尺寸本来就都在物理像素那一套系里。
+  同一条 `--roi 0,0,200,120` 在缩放一倍与两倍的屏上取的都是 200×120 个像素。按逻辑像素（DIP）思考的调用方自己乘缩放；
+  本工具不猜窗口在哪块屏上，也不猜该用哪块的 DPI。
+- **`--client-area` 是"再往里一圈"**：在交付图像内去掉标题栏与三边边框；那块矩形由目标此刻的几何量出来，
+  与 `--roi` 共用同一套坐标与同一道越界判据。
+- **放不下就是拒绝，四种码各归一种下一步**：写法不合 `cli.invalid_value`(1) / 取帧之前就看得出放不下
+  `match.roi_out_of_range`(1，排在确认框与输出名规划之前) / 取到帧才发现放不下 `capture.roi_invalid`(7) /
+  定位所需的那一问没答案 `capture.roi_unmeasurable`(7)。四种都不落地，都不"往里挪一挪""裁到边上为止""那就整窗交出"。
+  一批里有一扇放不下就整批一张都不截（与 `match.index_out_of_range` 同一条规矩）。
+- **裁剪不改变授权**：它排在取帧之后，所以"这条路径的像素从哪来"这件事一点没变 —— 会从屏幕上取样的那几条
+  （`bitblt` / `duplication` / 任何整屏 / `dwm.screen`）即使 `--roi` 只要 8×8 也照样一定弹框，`--yes` 在这里不起作用。
+  只有窗口内容那三条（`wgc` / `printwindow` / `dwm.thumbnail`）是 `--yes` 管得着的。
+- **结果里的四个新字段**（都是定位判据，`--quiet` 不许藏）：`cropMode`（`roi` / `client-area`）、
+  `cropRect`（图像坐标）、`fullWidth` / `fullHeight`（裁之前的整窗图像尺寸；`width` / `height` 是裁之后的最终尺寸）、
+  `cropScreenRect`（同一块矩形的虚拟屏幕坐标，与 `rect` / `requestedRect` 同一套系）。映射是闭合的：
+  `cropScreenRect − cropRect` = 这块图像自己的屏幕原点，调用方可以拿 `rect` 核对它。`cropScreenRect` **只在图像原点
+  核实得出来时才写**（那条通道自己报了实际截到的那一块 = `capturedRect`；或者此刻量到的可见矩形尺寸与交付尺寸完全相同），
+  核实不出来就整个键不出现并留 `note.crop_mapping_unavailable` —— 问不出来不会被折成一个看起来合理的数。
+  `--client-area` 本来就要靠这条映射，所以映射问不出来时它直接失败（`capture.roi_unmeasurable`）。
+- **与 `requestedRect` / `capturedRect` / `clipped` / `rotation` 并存不重复**：前一组说整扇窗口在桌面上有没有被完整
+  截到，后一组说截回来的那张图里交出哪一块。
+
+```powershell
+# 只要标题栏以下、左边起 20 像素那块 120×80
+ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 20,40,120,80 --out D:\shots\part.png
+# 只要客户区（去掉标题栏与边框）
+ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --client-area --out D:\shots\client.png
+# 先看这次的裁剪请求被理解成什么，不截图也不弹框
+ECAPTURE.EXE --hwnd 0x001A0B4C --dry-run --roi 20,40,120,80 --verbose --out D:\shots\plan.png
+```
+
 ## 截图授权（两级：谁必须问人）
 
 **调用方规矩一句话：可靠窗口截图带 `--yes`；会拍到别家窗口时先向用户说明范围，启动后等用户本人点「是」；
@@ -442,7 +483,7 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 
 ### 窗口图（`images[]` 每一项）
 
-`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`requestedRect` / `capturedRect` / `clipped` / `rotation`（只有从整幅桌面帧裁目标的通道会写，见下面那段）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`
+`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`requestedRect` / `capturedRect` / `clipped` / `rotation`（只有从整幅桌面帧裁目标的通道会写，见下面那段）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`；给了 `--roi` / `--client-area` 时再多 `cropMode` `cropRect` `fullWidth` `fullHeight`（以及图像原点核实得出来时的 `cropScreenRect`），见「窗口内部裁剪」一节
 
 **取帧位置的四个键（定位判据，`--quiet` 也不许藏）**：`duplication`、以及 `bitblt` / `dwm` 的屏幕取样那几条，是从一整块
 输出的画面里把目标裁出来的，所以它们额外写 `requestedRect`（这条通道本来要截的那一块，虚拟屏幕坐标）与
@@ -505,13 +546,13 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 | 码 | 含义 |
 | --- | --- |
 | 0 | 成功 |
-| 1 | 参数错 |
+| 1 | 参数错（也含 `match.index_out_of_range` / `match.monitor_out_of_range` / `match.roi_out_of_range` 这些「编号或裁剪矩形对不上实际命中的目标」的越界用法） |
 | 2 | 未给条件（输出文本帮助） |
 | 3 | `--help` |
 | 4 | 无匹配窗口 |
 | 5 | 匹配多个窗口 |
 | 6 | 这次截图没拿到人的同意：人在确认框上答"否"或把框关掉（`capture.access_denied`），那个会话根本没有可交互的桌面、框弹不出来（`capture.consent_unavailable`），或在 `--consent-timeout-ms` 之内没有人回答（`capture.consent_timeout`）；也包括目标受保护 |
-| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`，含身份复核没过的 `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`） |
+| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`，含身份复核没过的 `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`，也含交付图像放不下请求的裁剪 `capture.roi_invalid` / 定位裁剪所需那一问答不出 `capture.roi_unmeasurable`） |
 | 8 | 写文件失败（也含结果 JSON 没送到约定那条流，以及预算耗尽落在写/stdout 阶段的 `io.timeout`） |
 | 9 | 内部异常 |
 
@@ -575,7 +616,7 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 **加大 `--timeout-ms` 没有用**，改写模式或换 `--title-contains`
 
 **`match.*`**
-`match.no_window`（4）`match.ambiguous_window`（5）`match.index_out_of_range`（1）`match.monitor_out_of_range`（1）
+`match.no_window`（4）`match.ambiguous_window`（5）`match.index_out_of_range`（1）`match.monitor_out_of_range`（1）`match.roi_out_of_range`（1，`--roi` 的矩形放不进选定那一刻那块窗口矩形；排在确认框与输出名规划之前，不弹框、不写文件，也不会被往里挪或裁到边上为止。一批里有一扇放不下就整批这张码，见「窗口内部裁剪」一节）
 `match.monitor_unknown_id`（4，`--monitor` 的标识此刻不在桌面上：拔掉了、禁用了，或者是上一次 `--screens` 的旧值。
 下一步是重新列一次，**不是**换编号碰碰运气，也不会被换成主屏）
 `match.monitor_ambiguous_id`（5，同一标识命中多块屏；候选全列在 `hint` 里，本工具不替你挑一块）
@@ -609,6 +650,8 @@ UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 没能跑完）= `capture.target_unverifiable`。调用方的下一步一律是**重新枚举、重新选目标**：这三条都不是"换一条通道
 再试"的理由，工具也不会拿旧许可去截一个新对象，更不会放宽条件替你另找一个长得一样的窗口。`machine` 细节以 ASCII
 形式写在 `message` 里（例如 `pid 1234 -> 5678 (handle reused)`），不随 `--lang` 变
+`capture.roi_invalid`（7，交付的整窗图像比请求的裁剪矩形小：目标在选定之后改了尺寸、或被屏幕边缘裁短。这一张一个像素都不落地，既不往里挪，也不退回整窗交出；`message` 给图像实际尺寸与请求矩形的右下边 + ASCII 原因名）
+`capture.roi_unmeasurable`（7，定位这块裁剪矩形所需要的那一问没有答案：客户区量不出来 （`client_unmeasurable`），或这块交付图像核实不出它对应屏幕上哪一块（`image_unmeasurable`）。与「放不下」分开给码：下一步是换一条窗口内容通道或整窗重取，而不是把请求往里挪挪）
 `capture.frame_invalid`（7，交回来的那帧像素自己说不通：宽高为 0、单边超过 16384 像素、行距装不下一行像素
 （`< width*4`）或超过两倍行长、缓冲区比 `行距×高` 还短、整帧超过 1 GiB。裁剪 / 行重排 / 单色判定 / 编码之前都先核
 这一道，所以坏帧不会被告知"成功"，也不会被读越界。上限与实际数字写在 `hint` 里，`stage` 是出问题那一步）
@@ -633,7 +676,7 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 `note.extension_appended` `note.exe_path_looks_like_name`（`--exe` 传的像文件名不像完整路径）
 `note.format_extension_mismatch` `note.format_defaulted_png` `note.output_defaulted_stdout`
 `note.output_extension_appended` `note.quality_ignored` `note.all_without_placeholder`
-`note.flag_overrides_quiet` `note.pipe_default_format` `note.json_flag_deprecated` `note.frame_uniform`（这一张整幅只有一个颜色：质量提示，图片照常交付）`note.capture_clipped`（目标没被完整截下来：`message` 给"要截多大 / 只截到多大"，`hint` 给四边各少了几像素。图照常交付、退出码不变，配 `capturedRect` / `clipped` 一起看）
+`note.flag_overrides_quiet` `note.pipe_default_format` `note.json_flag_deprecated` `note.frame_uniform`（这一张整幅只有一个颜色：质量提示，图片照常交付）`note.crop_mapping_unavailable`（已按请求裁好，但这张交付图像核实不出它对应屏幕上哪一块，所以少了 `cropScreenRect` 那一行：`cropRect` 仍是图像自己的像素坐标，别拿它当桌面坐标用）`note.capture_clipped`（目标没被完整截下来：`message` 给"要截多大 / 只截到多大"，`hint` 给四边各少了几像素。图照常交付、退出码不变，配 `capturedRect` / `clipped` 一起看）
 `note.channel_unavailable`（`auto` 链里那一条被本机版本挡下、已从链中去掉：`message` 给通道名与两个 build
 数字；图仍可能由别的那几条截到）`note.os_unverifiable`（本机 build 没问出来，所以这一次没有按版本筛通道 ——
 问不出来不等于不支持，也不等于支持）
@@ -740,6 +783,12 @@ ECAPTURE.EXE --monitor 2 --process chrome.exe --all --yes --out "D:\shots\m2_%i.
 
 # 8) 只要屏幕上此刻的样子（连遮挡物一起要）：bitblt 整条都是桌面路径，一定弹框，--yes 在这里不起作用
 ECAPTURE.EXE --class CabinetWClass --index 1 --capture bitblt --out D:\shots\visible.png
+
+# 8b) 只要窗口图里的一块：--roi 的坐标是这张图像自己的像素（左上角 = (0,0)、物理像素），不是桌面坐标；
+#     放不下的矩形是拒绝（match.roi_out_of_range+1 / capture.roi_invalid+7），不往里挪也不退回整窗交出。
+#     它在取帧之后，所以桌面通道即使只截 8×8 也照样一定弹框，--yes 在这里不起作用。
+ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 20,40,120,80 --out D:\shots\part.png
+ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --client-area --out D:\shots\client.png
 
 # 9) auto 带 --yes：窗口内容那三条不问，一旦要迈进桌面路径照样弹框；拿到图看 images[].path / scope 才知道走了哪条
 ECAPTURE.EXE --class CabinetWClass --index 1 --capture auto --yes --out D:\shots\auto.png

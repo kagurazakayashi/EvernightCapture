@@ -192,6 +192,8 @@ namespace EcTestHelper
         public int Windows = 1;           // --windows N：同一进程建几扇自有窗口（%p 撞名要有这个才造得出来）
         public int BlockPrintMs;        // >0：WM_PRINT / WM_PRINTCLIENT 到了就堵在这条消息里
         public bool NoRedirect;         // WS_EX_NOREDIRECTIONBITMAP：没有 DWM 缓存面，取图只能走 WM_PRINT
+        public bool Bordered;           // --bordered：WS_OVERLAPPEDWINDOW（标题栏 + 可拖动边框），
+                                        // 于是窗口矩形、客户区矩形、DWM 可见边框矩形三者各不相同
         public int StallMs;             // >0：收到 WM_USER+7 之后把这条消息线程堵住这么久
         public int DestroyAfterMs;      // >0：N 毫秒之后把第一扇窗口 DestroyWindow 掉，进程照旧活着
         public bool Minimize;           // 第一扇建好就最小化：结构化窗口查询要判「最小化窗口默认被排除、
@@ -208,6 +210,12 @@ namespace EcTestHelper
         private const uint WS_POPUP = 0x80000000u;
         private const uint WS_VISIBLE = 0x10000000u;
         private const uint WS_SYSMENU = 0x00080000u;
+        // WS_OVERLAPPEDWINDOW = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
+        //                        | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+        // --bordered 用它：有标题栏与可拖动边框，于是"窗口矩形"与"客户区矩形"真的不重合，
+        // 而且 DWM 的可见边框矩形（EXTENDED_FRAME_BOUNDS）也比 GetWindowRect 小一圈。
+        // 窗口内部裁剪那两条判据（cropRect 的偏移、--client-area 去掉的那圈边框）只能在这种窗口上现场判。
+        private const uint WS_OVERLAPPEDWINDOW = 0x00CF0000u;
         private const uint WS_EX_TOPMOST = 0x00000008u;
         private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000u;
         private const uint SWP_NOSIZE = 0x0001u;
@@ -290,6 +298,7 @@ namespace EcTestHelper
                     case "--seed": o.Seed = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
                     case "--color": o.Color = uint.Parse(Need(args, ref i, key), NumberStyles.HexNumber, CultureInfo.InvariantCulture); break;
                     case "--topmost": o.TopMost = true; break;
+                    case "--bordered": o.Bordered = true; break;
                     case "--minimize": o.Minimize = true; break;
                     case "--watch-pid": o.WatchPid = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
                     case "--max-life": o.MaxLifeSeconds = int.Parse(Need(args, ref i, key), CultureInfo.InvariantCulture); break;
@@ -373,7 +382,11 @@ namespace EcTestHelper
                 // 只能把 WM_PRINT 发给窗口自己 —— 于是"目标应用卡住"这件事真的会卡住调用方。
                 exStyle |= WS_EX_NOREDIRECTIONBITMAP;
             }
-            uint style = WS_POPUP | WS_VISIBLE | WS_SYSMENU;
+            // --bordered：有标题栏与可拖动边框。窗口内部裁剪的三条判据（cropRect 的偏移、
+            // --client-area 去掉的那一圈、DWM 可见边框与 GetWindowRect 那 7 像素之差）
+            // 只有在"三种矩形各不相同"的窗口上才判得出来，WS_POPUP 那种全都重合。
+            uint style = (opt.Bordered ? WS_OVERLAPPEDWINDOW : WS_POPUP | WS_SYSMENU)
+                       | WS_VISIBLE;
 
             // --windows N：同一个进程建好几扇自有窗口（类名 <class>、<class>-2 …，标题全都一样）。
             // 「同一个进程的两个目标」只能这么造，而 %p / %n 的撞名检测非要它不可。

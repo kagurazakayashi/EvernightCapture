@@ -250,6 +250,10 @@ struct EnvReport {
     std::vector<ConsentPathReport> consentPaths;   // --yes 的适用范围（CaptureScope 登记表那一整份）
 
     struct Limits {
+        // 不变量：下面每一条都必须**直接**取实现自己那一个常量（EnvReport.cpp 里就是这么赋值的），
+        // 任何一条都不许在这份结构里或渲染里另写一个数 —— 这份查询存在的意义就是让调用方
+        // 不必读源码也能核对"帮助说的、解析判的、这里报的是同一件事"。
+        // 判据在 tests\capabilities_state.cpp 的「limits 与实现同源」那一段逐条现场核对。
         uint64_t maxFrameSide = 0;
         uint64_t maxFrameBytes = 0;
         uint64_t maxTimeoutMs = 0;
@@ -260,6 +264,7 @@ struct EnvReport {
         uint64_t stdoutTargetsMax = 0;   // 标准输出一次只交付一张图
         uint64_t jpegQualityMin = 0;
         uint64_t jpegQualityMax = 0;
+        uint64_t roiMaxValue = 0;        // --roi 四条数各自的上限（= 帧的单边上限那条线）
     } limits;
 
     // 隐私自述：这几条是真的这么实现的，写出来让调用方不必读源码就能判。

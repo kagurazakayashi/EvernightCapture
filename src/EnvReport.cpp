@@ -369,6 +369,8 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     r.limits.stdoutTargetsMax = 1;   // 标准输出一次只交付一张图（见「输出契约」第 6 条）
     r.limits.jpegQualityMin = cli_limits::kJpegQualityMin;
     r.limits.jpegQualityMax = cli_limits::kJpegQualityMax;
+    // --roi 的上限与解析层同一份数字（EnvReport.h 的注释就钉着这条不变量）
+    r.limits.roiMaxValue = cli_limits::kRoiMaxValue;
 
     // ---- 后端 ----
     const bool topologyAbsent = probe.displayTopology == Tri::kNo;
@@ -731,6 +733,7 @@ std::wstring RenderEnvJson(const EnvReport& r, bool verbose, bool quiet) {
     j.Key(L"stdoutTargetsMax").Value(static_cast<long long>(r.limits.stdoutTargetsMax));
     j.Key(L"jpegQualityMin").Value(static_cast<long long>(r.limits.jpegQualityMin));
     j.Key(L"jpegQualityMax").Value(static_cast<long long>(r.limits.jpegQualityMax));
+    j.Key(L"roiMaxValue").Value(static_cast<long long>(r.limits.roiMaxValue));
     j.End();
 
     // 隐私自述：这几条是本查询真实遵守的规矩，写出来让调用方不必读源码就能核对；

@@ -147,6 +147,13 @@ RECT WindowFullRect(HWND hwnd);
 // 用户实际看到的矩形：优先 DWMWA_EXTENDED_FRAME_BOUNDS，否则退回完整矩形
 RECT WindowScreenRect(HWND hwnd);
 
+// 客户区在**虚拟屏幕坐标**里的那一块（GetClientRect + ClientToScreen，左上含、右下不含）。
+// --client-area 那条裁剪要它，所以这里把"问没问出来"与"问出来是一块空的客户区"分开交回来：
+// 返回 false = 这一问没有答案（句柄已经无效 / 两个 API 有一个失败 / 加出来的坐标不在 LONG
+// 里），调用方按无法测量处理，**不**写成零尺寸那块矩形 —— 后者是一扇本来就还没有客户区的窗口，
+// 是一条事实而不是一次失败（WindowIdentity 那一条"问不出来 ≠ 相同"同源）。
+bool ClientScreenRect(HWND hwnd, RECT* out);
+
 // 从屏幕 DC 取一块矩形（超出虚拟屏幕的部分被丢掉）。
 // permit 是必需参数：这张凭证只能由授权判定器发出，所以任何"从屏幕上拿像素"的代码都绕不过
 // 那次人工确认 —— 包括通道自己在内部临时改走屏幕取图的那条退路。

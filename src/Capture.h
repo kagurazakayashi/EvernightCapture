@@ -11,6 +11,7 @@
 #include <windows.h>   // RECT（images[].rect 用的是屏幕矩形）
 
 #include "CliOptions.h"
+#include "CropGeometry.h"   // ImageRect：images[].cropRect 用的那个图像像素坐标矩形
 
 namespace ecapture {
 
@@ -37,6 +38,20 @@ struct CapturedImage {
     RECT capturedRect{};
     bool clipped = false;
     uint32_t rotation = 0;     // reportsCrop 为真时有效：交付前对桌面帧顺时针转的度数
+    // 窗口内部裁剪（--roi / --client-area）：只有这一次真的裁了才写这一组字段。
+    // cropRect 是**这张交付图像自己的像素坐标**（左上角 = (0,0)，物理像素），不是桌面坐标；
+    // cropScreenRect 是同一块矩形在虚拟屏幕坐标里的那一块 —— 它和 rect / capturedRect 同一套系，
+    // 所以调用方能直接对上号。只有在能核实这块图像的屏幕原点时才写（核实不出来就整个键不出现，
+    // 并留一条 note.crop_mapping_unavailable）。
+    // 于是坐标映射这一层是闭合的：图像原点 = cropScreenRect 左上角 − cropRect 左上角，
+    // 而裁之前的整窗图像尺寸在 fullWidth / fullHeight，裁之后的最终尺寸就是 width / height。
+    bool cropped = false;
+    std::wstring cropMode;   // "roi" / "client-area"
+    ImageRect crop{};
+    uint32_t fullWidth = 0;  // 裁之前那张整窗图像的尺寸
+    uint32_t fullHeight = 0;
+    bool hasCropScreen = false;
+    RECT cropScreen{};
     std::wstring hwndHex;
     uint32_t pid = 0;
     std::wstring title;

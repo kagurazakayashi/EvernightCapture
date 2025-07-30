@@ -40,6 +40,7 @@ add_executable(ecapture
   src/EnvReport.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
+  src/CropGeometry.cpp
   src/Deadline.cpp
   src/Worker.cpp
   src/WorkerProtocol.cpp
@@ -439,4 +440,28 @@ target_link_libraries(ecapture-screens-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-screens-tests PROPERTIES OUTPUT_NAME "ecapture-screens-tests")
 set_property(TARGET ecapture-screens-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 窗口内部裁剪（--roi / --client-area）的离线判据（由 tests\crop.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的现场是"一张比请求小的交付图像"与"客户区落在图像之外"
+# —— 真机上要么得把窗口正好改到某个尺寸、要么得把窗口挂出屏幕边缘某条线上，而且都要在
+# "选定之后、取帧之前"那几毫秒里发生（identity 复核与授权复核都拦在前面）。所以把判据本体
+#（src/CropGeometry.cpp 的 RoiFitsTarget / DescribeDeliveredImage / ResolveWindowCrop）单独编一个
+# 测试程序，交付图像的尺寸、它的屏幕矩形问没问到、客户区那块矩形问没问到，全部注入进来逐条判：
+# 负值、相加绕回、越界一条边、零尺寸、图像原点核实不出来、复制模式下客户区整块在外面。
+# 纯算术，不链任何图形库，也不链 Lang（这一层不产生文案）。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-crop-tests
+  tests/crop_state.cpp
+  src/CropGeometry.cpp)
+
+target_include_directories(ecapture-crop-tests PRIVATE src)
+target_compile_features(ecapture-crop-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-crop-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-crop-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-crop-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+set_target_properties(ecapture-crop-tests PROPERTIES OUTPUT_NAME "ecapture-crop-tests")
+set_property(TARGET ecapture-crop-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

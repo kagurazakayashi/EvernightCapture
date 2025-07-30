@@ -227,6 +227,44 @@ data, and two of them can be written straight into `--monitor`:
    final rename refuse an existing target (`io.file_exists` + exit 8); `--no-overwrite=false` / `0` / `no` /
    `n` / `off` cancels the prohibition. Repeated occurrences: the last one wins.
 
+## Cropping inside the window (`--roi` / `--client-area`)
+
+Both options say which part of the delivered window image to keep. They are mutually exclusive
+(`cli.crop_conflict` + 1), they cannot be used for a whole-screen target (`capture.unsupported` + 1 - the four
+numbers are **never** re-read as desktop-absolute coordinates; use `--monitor` for a position on the screen), and
+they conflict with every read-only query.
+
+- **The rectangle is in the image's own pixels**: `(0,0)` is the top-left pixel of the delivered whole-window
+  image (that image is the visible window frame, `DWMWA_EXTENDED_FRAME_BOUNDS`), far edge exclusive.
+  `--client-area` is one step further in: the title bar and the three borders are dropped as well.
+- **Physical pixels, no DPI maths.** The tool is per-monitor v2 aware, so nothing here is scaled: the same
+  `--roi 0,0,200,120` takes 200x120 *pixels* on a 1x and on a 2x display. Convert DIP yourself if that is how you
+  measure; the tool does not guess which monitor the window is on.
+- **Four decimal integers, comma separated** (`[0-9]+` only - no sign, no spaces, no dot, no exponent, no
+  underscores, no `0x`, no non-ASCII digits), exactly four fields. `x`/`y` may be 0, `w`/`h` are at least 1, and
+  none may exceed 16384 (`--capabilities` reports that ceiling as `limits.roiMaxValue`).
+- **Anything that does not fit is refused, never repaired**: `cli.invalid_value` (1) for bad syntax,
+  `match.roi_out_of_range` (1) when it is already too large for the window as selected - that runs *before* the
+  consent dialog and before output-name planning, so a doomed request never disturbs a person and never writes a
+  file - `capture.roi_invalid` (7) when the frame that came back is too small (the target resized, or part of it
+  hangs off the screen), and `capture.roi_unmeasurable` (7) when the question needed to locate the rectangle gave
+  no answer. None of them slides the rectangle inside, crops to the edge, or hands back the uncropped window, and
+  one window in a batch that cannot hold it stops the whole batch.
+- **The crop does not change authorization.** It runs after the frame is captured, so the tier still depends on
+  `images[].path`: a desktop-pixel channel with `--roi 0,0,8,8` still always asks, and `--yes` does not start
+  applying because only a small piece is kept.
+- **Read these fields to know what you got**: `cropMode`, `cropRect` (image pixels), `fullWidth` / `fullHeight`
+  (before cropping; `width` / `height` are after), and `cropScreenRect` - the same rectangle in virtual-screen
+  coordinates, which closes the mapping (`cropScreenRect - cropRect` is the image's own screen origin). That last
+  key appears only when the origin can actually be established; otherwise it is absent together with a
+  `note.crop_mapping_unavailable`, which is a missing locating field, not a failure.
+
+```powershell
+& "$PSScriptRoot\ECAPTURE.EXE" --hwnd 0x001A0B4C --capture wgc --yes --roi 20,40,120,80 --out D:\shots\part.png
+& "$PSScriptRoot\ECAPTURE.EXE" --hwnd 0x001A0B4C --capture wgc --yes --client-area --out D:\shots\client.png
+```
+
+
 ## Writing option values
 
 - **Numbers are decimal.** `--pid` (1..4294967295), `--index` (1..65535), `--monitor <n>` (1..65535),
@@ -236,6 +274,11 @@ data, and two of them can be written straight into `--monitor`:
   `0x` prefix or non-ASCII digits is `cli.invalid_number` + exit 1. Nothing is cast, wrapped or re-read in
   another base: `--pid 1e3` is not 483, `--quality 1e` is not 30, `--hwnd -1` is not `UINT64_MAX`. Timeout
   `0` is a real value ("no budget for this"); whitespace is not `0`.
+- **`--roi` is four decimals, comma separated, all in one token.** `--roi x,y,w,h` takes exactly four
+  `[0-9]+` fields - no sign, no whitespace, no dot, no exponent, no underscores, no `0x`, no non-ASCII digits -
+  with `x`/`y` allowed to be 0, `w`/`h` at least 1, and none above 16384 (the frame's single-side ceiling, echoed
+  by `--capabilities` as `limits.roiMaxValue`). Anything else is `cli.invalid_value` + exit 1 with the offending
+  token echoed verbatim in `value`; nothing is re-read in another base or clamped into range.
 - **Value-taking switches: `--list` and `--inspect`.** Both may be written bare and then swallow nothing
   (`--list out.png` keeps `out.png` as a positional, which is a conflict - the query has no output path).
   `--list=all` merges minimised windows into the same Z axis; `--inspect=path` adds the full image path.
@@ -384,6 +427,10 @@ request was phrased.
 - `--capture auto` with `--yes` may walk the window-content channels without asking, but it asks before
   entering any desktop channel. Approving window content is never approval of the desktop; a scope upgrade
   asks again.
+- **A crop does not move this line.** `--roi` / `--client-area` run *after* the frame is captured, so the tier is
+  still decided by `images[].path`: `bitblt` or `duplication` with `--roi 0,0,8,8` and `--yes` still opens the
+  dialog exactly like a full-screen grab, and `--yes` does not start applying because only a small piece is kept.
+  The dialog lists the whole target, not the cropped result, so what a person approves always covers the image.
 - Refusal (clicking "No", closing the dialog) => `capture.access_denied` + exit 6. A dialog that cannot be
   shown at all (service session, no interactive desktop) => `capture.consent_unavailable` + exit 6, which is
   *not* a human saying no: change the session, do not re-ask. Both carry `stage=consent`, `target`,
@@ -514,6 +561,9 @@ Floors, the declared support range and what has actually been measured are in
 | `match.no_window` | 4 | Conditions too narrow, or the target is minimised (minimised windows cannot be captured); relax with `--title-contains` |
 | `match.ambiguous_window` | 5 | Disambiguate as described above |
 | `match.index_out_of_range` / `match.monitor_out_of_range` | 1 | `--index` / `--monitor` out of range; `hint` lists everything on this machine |
+| `match.roi_out_of_range` | 1 | The `--roi` rectangle does not fit the window as selected (`option` / `value` / `target` are all filled, and it fires before the consent dialog and before any output plan). Re-measure the window (`--list` / `--dry-run -v` gives its rectangle) and ask for a rectangle that lies inside it - nothing is slid inside, cropped to the edge, or swapped for the whole window |
+| `capture.roi_invalid` | 7 | The frame that came back is smaller than the requested crop (the target resized in between, or part of it hangs off the screen): that image is not written at all, the other targets in the batch are unaffected. Judge against `fullWidth` / `fullHeight` in an earlier result, then re-request |
+| `capture.roi_unmeasurable` | 7 | The question needed to locate the crop gave no answer (`client_unmeasurable` = the client area could not be measured; `image_unmeasurable` = this delivered image could not be tied to a region of the screen). Different next step from "does not fit": retry with `--capture wgc`, or drop `--client-area` for an `--roi` that lies inside the image |
 | `match.monitor_unknown_id` | 4 | The `--monitor device:…` / `id:…` identifier is not on the desktop right now (unplugged, disabled, or a stale value from an earlier `--screens`). Run `--screens` again; **the tool does not fall back to the primary monitor** |
 | `match.monitor_ambiguous_id` | 5 | One identifier matches several monitors; every candidate is in `hint`. Pick a more specific identifier (the cross-session `id:` one) or a number - the tool never chooses for you |
 | `match.monitor_id_unverifiable` | 7 | The screen identity could not be read at all (QueryDisplayConfig gave no answer), so naming a monitor by identifier is impossible. Check this machine's display topology - switching `--capture` is not the next step, since no pixel was read and no channel was chosen |

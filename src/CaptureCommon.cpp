@@ -357,6 +357,31 @@ RECT WindowScreenRect(HWND hwnd) {
     return full;
 }
 
+bool ClientScreenRect(HWND hwnd, RECT* out) {
+    if (!hwnd || !out) return false;
+    RECT client{};
+    if (!GetClientRect(hwnd, &client)) return false;
+    // 客户区是空的（还没客户区、或者正被销毁）是一条事实：照原样交回，由调用方判"放不下"
+    if (client.right <= client.left || client.bottom <= client.top) {
+        *out = client;
+        return true;
+    }
+    POINT origin{0, 0};
+    if (!ClientToScreen(hwnd, &origin)) return false;
+    // 相加在 64 位里判：落在 LONG 之外就是这一问给不出可信答案，不写一个绕回来的矩形
+    const int64_t left = static_cast<int64_t>(origin.x) + client.left;
+    const int64_t top = static_cast<int64_t>(origin.y) + client.top;
+    const int64_t right = static_cast<int64_t>(origin.x) + client.right;
+    const int64_t bottom = static_cast<int64_t>(origin.y) + client.bottom;
+    if (left < static_cast<int64_t>(LONG_MIN) || right > static_cast<int64_t>(LONG_MAX) ||
+        top < static_cast<int64_t>(LONG_MIN) || bottom > static_cast<int64_t>(LONG_MAX)) {
+        return false;
+    }
+    *out = RECT{static_cast<LONG>(left), static_cast<LONG>(top), static_cast<LONG>(right),
+                static_cast<LONG>(bottom)};
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // 屏幕取图、消息泵与 z 序验证
 // ---------------------------------------------------------------------------

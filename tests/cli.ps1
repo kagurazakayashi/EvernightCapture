@@ -47,7 +47,10 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 # 天然比中文长得多（en 大约是 zh 的 1.7 倍），拿一个数去卡四种语言会把"这个语言的
 # 说明本来就更啰嗦"判成"帮助膨胀"，所以按语言分别给。
 # 上调这条数字只应该发生在**新增一条选项或新增一段说明**的时候，并且要说得出是哪一次改动。
-$HELP_LIMITS = @{ 'zh-CN' = 7000; 'zh-TW' = 7000; 'en' = 12000; 'ja' = 7600 }
+# 上一次上调：窗口内部裁剪那一组（grp.crop 一行分组标题 + --roi 与 --client-area 两行说明）。
+# 四种语言各加约 800～2100 字符（英文那份天然最长），所以下面四个数按各自实际增量分别抬起，
+# 并把余量留在"再加一条短选项"还能装下的位置上。
+$HELP_LIMITS = @{ 'zh-CN' = 8000; 'zh-TW' = 8100; 'en' = 14500; 'ja' = 8900 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']
@@ -730,6 +733,137 @@ $cases += @{ Name = '帮助里写了 -v 与 -q 同时给出按 -v 处理'
    A = @('--help'); Exit = 3; Text = $true; Has = @('与 --verbose 同时给出时按 --verbose 处理') }
 $cases += @{ Name = '帮助里写了数字取值只认十进制'
    A = @('--help'); Exit = 3; Text = $true; Has = @('数字取值只认十进制') }
+
+# ---------------------------------------------------------------------------
+# 窗口内部裁剪（--roi / --client-area）：这一节只判**解析层**（写法、取值域、互斥、回显）。
+# 几何那一条（放得下放不进、resize 之后失效、坐标映射）要拿真窗口判，在 tests\crop.ps1；
+# 纯算术那一条（越界、绕回、图像原点问不出来、客户区落在图外）在 tests\crop_state.cpp。
+# 这里全部配 --dry-run：不取帧，所以既不弹框也不落地，更不会因为本机 Windows 版本而变绿变红。
+# ---------------------------------------------------------------------------
+$ROI_BAD = @(
+    '-1,0,10,10',            # 负号：不是这条选项认过的写法（也不许被强转成一个大数）
+    '0,0,0,10',              # 空矩形（零宽）
+    '0,0,10,0',              # 空矩形（零高）
+    '0, 0,10,10',            # 空白：带个空格就是写坏了，不是"宽容读成 0"
+    '1e3,0,10,10',           # 指数写法
+    '0x1,0,10,10',           # 0x 前缀只在 --hwnd 那一条上有定义
+    '1_0,0,10,10',           # 下划线分隔
+    '1.5,0,10,10',           # 小数点
+    '１,0,10,10',            # 全角数字：不是 ASCII 数字
+    '0,0,10',                # 少一段
+    '0,0,10,10,',            # 多一个逗号（第五段是空的）
+    '0,0,10,10,10',          # 多一段
+    '16385,0,10,10',         # 超过单边上限
+    '0,0,16385,10',          # 宽度那条也判上限
+    '99999999999999999999,0,10,10'   # 装不进 64 位：溢出就是拒绝，不回绕
+)
+foreach ($bad in $ROI_BAD) {
+    $cases += @{ Name = ('--roi 的写法不合（{0}）' -f $bad)
+       A = ($ANCHOR + @('--roi', $bad, 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                            $o.errors[0].option -eq '--roi' -and
+                            $o.errors[0].value -eq $bad }.GetNewClosure() }
+}
+# 四段全合语法就放行，且 -v 回显的是规范化后的四个数（不是用户那一条字符串）。
+$cases += @{ Name = '--roi 合法写法：--dry-run 放行并回显规范化后的四个数'
+   A = ($ANCHOR + @('--roi', '12,8,100,50', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.crop.mode -eq 'roi' -and $o.input.crop.x -eq 12 -and
+                        $o.input.crop.y -eq 8 -and $o.input.crop.width -eq 100 -and
+                        $o.input.crop.height -eq 50 -and
+                        ((Codes $o.notes) -join ',') -match 'note.dry_run' } }
+foreach ($edge in @('0,0,1,1', '0,0,16384,16384', '16384,16384,1,1')) {
+    $cases += @{ Name = ('--roi 的合法边界写法（{0}）' -f $edge)
+       A = ($ANCHOR + @('--roi', $edge, '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.crop.mode -eq 'roi' } }
+}
+# 重复给出与 --monitor 那一条同源：最后一个写法生效，不各算一条冲突。
+$cases += @{ Name = '--roi 写两次：最后一个生效（与数字选项的顺序语义一致）'
+   A = ($ANCHOR + @('--roi', '1,1,2,2', '--roi', '5,6,7,8', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.crop.x -eq 5 -and $o.input.crop.y -eq 6 -and
+                        $o.input.crop.width -eq 7 -and $o.input.crop.height -eq 8 -and
+                        (-not ((Codes $o.errors) -contains 'cli.conflicting_options')) } }
+# --client-area 是开关：没有数要回显，只有 mode。
+$cases += @{ Name = '--client-area 开关：回显 mode 而不带四个数'
+   A = ($ANCHOR + @('--client-area', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.crop.mode -eq 'client-area' -and
+                        -not $o.input.crop.PSObject.Properties.Name.Contains('width') } }
+# 普通开关写 =false 等于没写（仓库里既有的那一条规矩），=true 与裸写同义。
+foreach ($form in @('--client-area=false', '--client-area=0', '--client-area=no')) {
+    $cases += @{ Name = ('--client-area 写 {0} 等于没写' -f $form)
+       A = ($ANCHOR + @($form, '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) -not $o.input.PSObject.Properties.Name.Contains('crop') }.GetNewClosure() }
+}
+foreach ($form in @('--client-area', '--client-area=true', '--client-area=1', '--client-area=on')) {
+    $cases += @{ Name = ('{0} 都是只要客户区' -f $form)
+       A = ($ANCHOR + @($form, '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.crop.mode -eq 'client-area' } }
+}
+# 两条互斥：一次只留一种裁剪。这条码与 cli.conflicting_options（选择策略那一组）分开给，
+# 因为那句文案会把人引向"删掉 --index"这种与本次无关的下一步。
+foreach ($combo in @(
+        @('--roi', '0,0,10,10', '--client-area'),
+        @('--client-area', '--roi', '0,0,10,10'))) {
+    $cases += @{ Name = ('--roi 与 --client-area 同时给出（{0}）' -f ($combo -join ' '))
+       A = ($ANCHOR + $combo + @('out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.crop_conflict' -and
+                            $o.errors[0].value -eq '--client-area, --roi' } }
+}
+# 整块屏幕的目标上没有"一扇窗口"可以让坐标相对它的左上角去算 —— 这条在解析期就报，
+# 而且**绝不**把 --roi 当成桌面绝对坐标偷偷用掉。
+foreach ($m in @(@('--monitor'), @('--monitor', 'primary'), @('--monitor', 'all'),
+                 @('--monitor', '2'))) {
+    $cases += @{ Name = ('屏幕模式配 --roi 在解析期就说不通（{0}）' -f ($m -join ' '))
+       A = ($m + @('--roi', '0,0,10,10', 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -match 'capture.unsupported' -and
+                            (@($o.errors | Where-Object { $_.code -eq 'capture.unsupported' }))[0].option -eq '--roi' } }
+}
+$cases += @{ Name = '屏幕模式配 --client-area 同一条码'
+   A = @('--monitor', '--client-area', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -match 'capture.unsupported' -and
+                        (@($o.errors | Where-Object { $_.code -eq 'capture.unsupported' }))[0].option -eq '--client-area' } }
+# --monitor 配窗口条件出的是窗口图，所以裁剪在那一路上是成立的（不回显冲突）。
+$cases += @{ Name = '--monitor 配窗口条件（按屏过滤）时 --roi 成立'
+   A = @('--monitor', '--class', 'Shell_TrayWnd', '--dry-run', '--roi', '0,0,5,5', '--verbose', 'out.png')
+   Exit = 0
+   Check = { param($o) $o.input.crop.mode -eq 'roi' -and $o.input.target -eq 'window' } }
+# 两条只读查询都不产图，所以截图那一级的选项一条都不成立。
+$cases += @{ Name = '环境查询与 --roi 冲突（cli.query_conflict）'
+   A = @('--capabilities', '--roi', '0,0,10,10'); Exit = 1; Query = $false
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -match '--roi' } }
+$cases += @{ Name = '环境查询与 --client-area 冲突'
+   A = @('--screens', '--client-area'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -match '--client-area' } }
+$cases += @{ Name = '窗口查询与 --roi 冲突（cli.window_query_conflict）'
+   A = @('--list', '--roi', '0,0,10,10'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -match '--roi' } }
+$cases += @{ Name = '窗口查询与 --client-area 冲突'
+   A = @('--inspect', '--hwnd', '0x1', '--client-area'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.window_query_conflict' } }
+# 一个条件都没给时，--roi 不算条件（漏写条件的调用方不该在无意间拍到东西）。
+$cases += @{ Name = '只给 --roi 而不给任何条件：仍是文本帮助 + 退出码 2'
+   A = @('--roi', '0,0,10,10'); Exit = 2; Text = $true; Has = @('未指定任何匹配条件') }
+$cases += @{ Name = '只给 --client-area 而不给任何条件：同上'
+   A = @('--client-area'); Exit = 2; Text = $true; Has = @('未指定任何匹配条件') }
+# 写错的近似名要给出具体的那条建议（与 --title 那一组同一条判据）。
+$cases += @{ Name = '--roi 写坏了名字时建议指向 --roi'
+   A = @('--roia', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unknown_option' -and
+                        $o.errors[0].hint -eq '--roi' } }
+$cases += @{ Name = '--client-area 写坏了名字时给出去掉错误字母的建议'
+   A = @('--client-are', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unknown_option' -and
+                        $o.errors[0].hint -eq '--client-area' } }
+# 帮助里必须看得见这一组（选项目录是 CLI 契约的唯一来源，选项名不随语言变）。
+$cases += @{ Name = '--help 含窗口内部裁剪那两条选项'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--roi <x,y,w,h>', '--client-area') }
+# --dry-run 不取帧，所以裁剪几何那一关不替它下结论（与 env.* 那条同一个道理）。
+$cases += @{ Name = '--dry-run 时不判裁剪几何（一条大得放不进的 --roi 照样返回 0）'
+   A = @('--class', 'Shell_TrayWnd', '--dry-run', '--roi', '16000,16000,10,10', 'out.png'); Exit = 0
+   Check = { param($o) (-not $o.PSObject.Properties.Name.Contains('errors')) -and
+                        ((Codes $o.notes) -join ',') -match 'note.dry_run' } }
 
 # ---------- 只读查询（--capabilities / --diagnostics）----------
 # 这两份文档不是截图结果：没有 captured / images，也没有 notes / input。用例要标 Query，

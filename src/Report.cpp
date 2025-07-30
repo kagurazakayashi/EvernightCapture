@@ -113,6 +113,26 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
             if (img.clipped) j.Key(L"clipped").Value(true);
             if (img.rotation != 0) j.Key(L"rotation").Value(static_cast<long long>(img.rotation));
         }
+        // 窗口内部裁剪（--roi / --client-area）：只有这一次真裁了才写这一组。上面那几个键说的
+        // 还是"整窗那一块从桌面上截得全不全"，这一组说的是在这张整窗图像之内又留下了哪一块，
+        // 两层各管各的，所以同时出现时并不矛盾。
+        //   cropRect      图像自己的像素坐标（左上角 = (0,0)，物理像素，不是桌面坐标）
+        //   fullWidth/fullHeight  裁之前的整窗图像尺寸；width/height 是裁之后的最终尺寸
+        //   cropScreenRect        同一块矩形在虚拟屏幕坐标里的那一块 —— 只在核实得出图像原点
+        //                 时才写（缺这一行另有 note.crop_mapping_unavailable，不是"没查"）
+        // 这一组与 requestedRect 同样是定位判据，--quiet 不许藏（images 段本来就不被抑制）。
+        if (img.cropped) {
+            j.Key(L"cropMode").Value(img.cropMode);
+            j.Key(L"cropRect").Obj()
+                .Key(L"x").Value(static_cast<long long>(img.crop.x))
+                .Key(L"y").Value(static_cast<long long>(img.crop.y))
+                .Key(L"width").Value(static_cast<long long>(img.crop.width))
+                .Key(L"height").Value(static_cast<long long>(img.crop.height))
+                .End();
+            j.Key(L"fullWidth").Value(static_cast<long long>(img.fullWidth));
+            j.Key(L"fullHeight").Value(static_cast<long long>(img.fullHeight));
+            if (img.hasCropScreen) WriteRect(j, L"cropScreenRect", img.cropScreen);
+        }
         if (img.screen) {
             // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
             j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
@@ -178,6 +198,20 @@ void WriteInputEcho(Json& j, const Options& opt) {
     j.Key(L"formatGiven").Value(opt.formatExplicit);
     j.Key(L"capture").Value(CaptureMethodName(opt.capture));
     j.Key(L"captureGiven").Value(opt.captureExplicit);
+    // 窗口内部裁剪这一层也回显：这次是哪种裁剪、--roi 那四个数规范化成了什么。
+    // 断言"参数最终落到什么值"不必真的去截一张图（与 input.overwrite / input.yes 同一个理由）。
+    // 没给裁剪时整个键不出现 —— 与 input.monitor 那条"给了才写"一致。
+    if (opt.crop.mode != CropMode::kNone) {
+        j.Key(L"crop").Obj();
+        j.Key(L"mode").Value(CropModeName(opt.crop.mode));
+        if (opt.crop.mode == CropMode::kRoi) {
+            j.Key(L"x").Value(static_cast<long long>(opt.crop.x));
+            j.Key(L"y").Value(static_cast<long long>(opt.crop.y));
+            j.Key(L"width").Value(static_cast<long long>(opt.crop.width));
+            j.Key(L"height").Value(static_cast<long long>(opt.crop.height));
+        }
+        j.End();
+    }
     // 运行环境这两项是"这台机器能走哪几条通道"的答案，与 --capture 请求了什么无关：
     //   osBuild       本机 Windows 内部版本；整个键不出现 = 这一问没成功（问不出来不等于支持，
     //                 也不等于不支持，所以下面那条链这时没有被版本筛过）
@@ -203,6 +237,7 @@ const wchar_t* GroupTitle(const std::wstring& group) {
     if (group == L"match") return L"grp.match";
     if (group == L"pick") return L"grp.pick";
     if (group == L"capture") return L"grp.capture";
+    if (group == L"crop") return L"grp.crop";
     if (group == L"consent") return L"grp.consent";
     if (group == L"timeout") return L"grp.timeout";
     if (group == L"output") return L"grp.output";
@@ -233,8 +268,8 @@ std::wstring HelpText() {
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
-    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"consent", L"timeout",
-                               L"output", L"query", L"behavior"};
+    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"crop", L"consent",
+                               L"timeout", L"output", L"query", L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);

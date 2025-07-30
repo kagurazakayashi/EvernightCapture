@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cwctype>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -24,6 +25,7 @@
 #include "CaptureDuplication.h"
 #include "CapturePrintWindow.h"
 #include "Consent.h"
+#include "CropGeometry.h"
 #include "Deadline.h"
 #include "Encoder.h"
 #include "FileSave.h"
@@ -384,6 +386,111 @@ void TagTarget(Diagnostic* d, const Target& t, const wchar_t* stage) {
     if (d->stage.empty()) d->stage = stage;
 }
 
+// 一条矩形边的长度，非正数一律当 0（量不出来的矩形就是"什么都没有"，不是"负数个像素"）。
+uint32_t SpanOf(LONG from, LONG to) {
+    return to > from ? static_cast<uint32_t>(static_cast<int64_t>(to) - from) : 0u;
+}
+
+// 这次裁剪没成时的诊断。两条码分开给：「放不下」与「那一问没答案」的下一步不同
+//（前者照当下的尺寸改请求，后者换一条窗口内容通道或整窗重取），与 capture.target_unverifiable
+// 和 capture.target_changed 分家同一道理。ASCII 的原因名（CropFailName）写进 message 末尾，
+// 因为 message 会随 --lang 变，而调用方排障要能拿到一条不变的标识。
+Diagnostic CropDiagnostic(const CropRequest& request, const CropResolution& res,
+                          const wchar_t* backend) {
+    const bool unmeasurable = res.fail == CropFail::kClientUnmeasurable ||
+                              res.fail == CropFail::kImageUnmeasurable;
+    const std::wstring failName = [&]() {
+        std::wstring s;
+        for (const char* p = CropFailName(res.fail); p && *p; ++p)
+            s.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+        return s;
+    }();
+    Diagnostic d;
+    d.code = unmeasurable ? codes::kRoiUnmeasurable : codes::kRoiInvalid;
+    d.message = unmeasurable
+                    ? Msgf(L"cap.roi_unmeasurable", static_cast<uint64_t>(res.imageWidth),
+                           static_cast<uint64_t>(res.imageHeight), failName)
+                    : Msgf(L"cap.roi_invalid", static_cast<uint64_t>(res.imageWidth),
+                           static_cast<uint64_t>(res.imageHeight), res.requestRight,
+                           res.requestBottom, failName);
+    d.option = request.mode == CropMode::kClientArea ? L"--client-area" : L"--roi";
+    d.value = request.mode == CropMode::kClientArea ? std::wstring() : request.written;
+    d.hint = Msg(unmeasurable ? L"cap.roi_unmeasurable_hint" : L"cap.roi_invalid_hint");
+    d.backend = backend ? std::wstring(backend) : std::wstring();
+    d.stage = stages::kCapture;
+    return d;
+}
+
+// 把一次裁剪请求落到已经拿到手的那张整窗图像上。判据全在 src/CropGeometry.cpp（纯算术，
+// 离线逐条注入），这里只负责**量出那三件事**再交给它：
+//   1. 交付图像的尺寸（就是这张帧的 width / height，物理像素）；
+//   2. 这块图像对应虚拟屏幕坐标里的哪一块 —— 能不能核实。桌面裁切那几条自己就把实际截到的
+//      那块矩形报在 capturedRect 里，那是事实；窗口内容那几条只能拿"此刻量到的可见矩形尺寸
+//      与交付尺寸完全相同"这一条证据承认，尺寸不同就不承认（宁可少写一个字段）。
+//   3. --client-area 要的：客户区在屏幕坐标里的那一块，问得到问不到。
+// 判不下来就是**这一张不落地**：既不"往里挪一挪"，也不"那就整窗交出"。
+// 裁剪发生在取帧之后，所以它一丝一毫都没有改变授权判断 —— 确认框上列出的是整个目标区域，
+// 会读桌面像素的那几条照样一定问人，--yes 也不会因为"最后只留一小块"而开始生效。
+bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
+                     CapturedImage* img, std::optional<Diagnostic>* mappingNote, Diagnostic* err) {
+    if (opt.crop.mode == CropMode::kNone) return true;
+    const HWND hwnd = reinterpret_cast<HWND>(t.window.hwnd);
+    const RECT visible = WindowScreenRect(hwnd);
+    const DeliveredImage image = DescribeDeliveredImage(
+        frame->width, frame->height, visible,
+        visible.right > visible.left && visible.bottom > visible.top, frame->capturedRect,
+        frame->reportsCrop);
+
+    ClientAreaProbe client;
+    if (opt.crop.mode == CropMode::kClientArea) {
+        RECT area{};
+        client.readable = ClientScreenRect(hwnd, &area);
+        client.screenRect = area;
+    }
+
+    const CropResolution res = ResolveWindowCrop(opt.crop, image, client);
+    // backend 写的是**真实出了这一帧的那条通道**（--capture auto 回退之后与请求值不同），
+    // 所以读帧里那份来源，而不是 opt.capture 那个请求值。
+    const wchar_t* backend =
+        frame->source.empty() ? CaptureMethodName(opt.capture) : frame->source.c_str();
+    if (res.status != CropStatus::kCropped) {
+        *err = CropDiagnostic(opt.crop, res, backend);
+        return false;
+    }
+
+    const uint32_t widthBefore = frame->width;
+    const uint32_t heightBefore = frame->height;
+    if (!CropFrame(frame, res.crop.x, res.crop.y, res.crop.width, res.crop.height)) {
+        // 判据说过放得下、裁不下来：唯一剩下的可能是这一帧的内存形状自己说不通（那是
+        // capture.frame_invalid 那条线的职责，退出码同为 7），所以这里照实报那条码而不硬交半张图。
+        CaptureError(err, backend, Msg(L"cap.crop_apply_failed"),
+                     Msg(L"cap.crop_apply_failed_hint"), codes::kFrameInvalid);
+        return false;
+    }
+
+    img->cropped = true;
+    img->cropMode = CropModeName(opt.crop.mode);
+    img->crop = res.crop;
+    img->fullWidth = widthBefore;
+    img->fullHeight = heightBefore;
+    img->hasCropScreen = res.hasCropScreen;
+    img->cropScreen = res.cropScreen;
+    // 图像原点核实不出来：裁剪本身是确定的（它只需要图像尺寸），但 cropScreenRect 那一行交不出
+    // 来 —— 这是一个"少了一个定位字段"的事实，要让人看见，所以留一条提示（--quiet 可抑制，
+    // 但缺失的那个键本身就是同一个判据）。
+    if (!res.hasCropScreen && mappingNote) {
+        *mappingNote = Diagnostic{codes::kCropMappingUnavailable,
+                                  Msgf(L"note.crop_mapping_unavailable",
+                                       static_cast<uint64_t>(widthBefore),
+                                       static_cast<uint64_t>(heightBefore)),
+                                  opt.crop.mode == CropMode::kClientArea ? L"--client-area"
+                                                                         : L"--roi",
+                                  opt.crop.written, Msg(L"note.crop_mapping_unavailable_hint"),
+                                  t.Tag(), std::wstring(backend), stages::kCapture};
+    }
+    return true;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -576,6 +683,36 @@ CaptureOutcome RunCapture(const Options& opt) {
         return outcome;
     }
 
+    // 取帧之前先把 --roi 核一遍（--client-area 是照目标自己的几何算的，没有"用户写越界"
+    // 这一种形状，所以它只在取到帧之后由 ApplyWindowCrop 判）。这条线在输出名规划与确认框
+    // **之前**，两个理由：一条注定裁不出来的请求不该先去打扰人一次，也不该留下半批已经
+    // 写好的文件。判据用的是当初准备交付的那块可见矩形 —— 裁剪坐标就锚在它的左上角，
+    // 所以落在它之内的 ROI 必然也落在人批准过的那块目标之内；越界的照实拒绝，
+    // 既不"那就裁到边上为止"，也**绝不**当成桌面绝对坐标去截别的位置。
+    // 一批里有一扇窗口放不下就整批不开工（与 match.index_out_of_range 同一条规矩：
+    // 不放宽条件去凑，也不交付"那一扇我没法裁所以干脆不裁"的混和结果）。
+    if (opt.crop.mode == CropMode::kRoi) {
+        for (const Target& t : targets) {
+            if (t.isScreen) continue;   // 屏幕模式在解析期就被 capture.unsupported 挡掉了
+            const RECT visible = WindowScreenRect(reinterpret_cast<HWND>(t.window.hwnd));
+            if (RoiFitsTarget(opt.crop, SpanOf(visible.left, visible.right),
+                              SpanOf(visible.top, visible.bottom))) {
+                continue;
+            }
+            Diagnostic d{codes::kRoiOutOfRange,
+                         Msgf(L"match.roi_out_of_range", opt.crop.written,
+                              static_cast<uint64_t>(opt.crop.x) + opt.crop.width,
+                              static_cast<uint64_t>(opt.crop.y) + opt.crop.height,
+                              static_cast<uint64_t>(SpanOf(visible.left, visible.right)),
+                              static_cast<uint64_t>(SpanOf(visible.top, visible.bottom))),
+                         L"--roi", opt.crop.written, Msg(L"match.roi_out_of_range_hint"), t.Tag(),
+                         std::wstring(), stages::kMatch};
+            outcome.errors.push_back(std::move(d));
+            outcome.exitCode = EX_USAGE;
+            return outcome;
+        }
+    }
+
     // 标准输出与文件路径是两条不同的路：stdout 一次只能交付一张图，多张 PNG 首尾拼在
     // 同一条流上不是一幅可解码的图像，而旧实现把 "-" 当文件名前缀算出 "-_1.png" 这种
     // 本地文件更是凭空造路径。所以这里在规划名字、问人、取帧之前就用实际目标数判掉，
@@ -742,6 +879,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         bool recorded = false;   // stdout 那条纹路里结果条目已提前入列，末尾不再重复入列
         std::optional<Diagnostic> uniformNote;   // 单色质量提示：等这张图真交出去了再送
         std::optional<Diagnostic> clippedNote;   // 区域丢失提示：同上，没交出去就不提示
+        std::optional<Diagnostic> cropMappingNote;   // 屏幕原点核实不出来：同上
         std::vector<uint8_t> encoded;
         try {
             CapturedFrame frame;
@@ -759,6 +897,16 @@ CaptureOutcome RunCapture(const Options& opt) {
                                                                 &targetErr, &outcome.notes, &fatal);
                              },
                              &targetErr, &fatal);
+            // 窗口内部裁剪在质量提示与编码**之前**：交出去的就是裁过的那一块，所以
+            // "整幅是不是只有一个颜色"判的也必须是它，而不是裁之前那一整张。
+            // 它在授权之后：这一层不改变"这条路径的像素从哪来"，桌面路径照样一定问人。
+            if (ok) {
+                Diagnostic cropErr;
+                if (!ApplyWindowCrop(opt, t, &frame, &img, &cropMappingNote, &cropErr)) {
+                    ok = false;
+                    targetErr = std::move(cropErr);
+                }
+            }
             if (ok) {
                 img.width = frame.width;
                 img.height = frame.height;
@@ -891,11 +1039,13 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         if (recorded) {   // stdout 那条路已经入过列
             if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
+            if (cropMappingNote) outcome.notes.push_back(std::move(*cropMappingNote));
             if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
             continue;
         }
         // 到这里这一张是真交出去了（文件已提交，或字节已达标准输出），质量提示这时才有意义
         if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
+        if (cropMappingNote) outcome.notes.push_back(std::move(*cropMappingNote));
         if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
         img.bytes = encoded.size();
         img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);

@@ -58,6 +58,13 @@ public static class EcHarnessWin {
   [DllImport("user32")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
   [DllImport("user32")] public static extern bool SetProcessDPIAware();
   [DllImport("user32")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  [StructLayout(LayoutKind.Sequential)]
+  public struct POINT { public int X, Y; }
+  [DllImport("user32")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
+  // DWMWA_EXTENDED_FRAME_BOUNDS = 9：用户真正看到的那圈矩形（工具交付的整窗图像按它对齐）。
+  // 窗口内部裁剪的判据要拿它做**另一条独立问答**，不能只信工具自己报的 rect。
+  [DllImport("dwmapi")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
 }
 '@
 }
@@ -587,7 +594,12 @@ function Start-EcWindow {
     .PARAMETER Mode
         window = 多色内容（截图目标）；solid = 单色（遮挡物或屏幕标记）。
     .PARAMETER Rect
-        物理像素的 'L,T,R,B'。窗口是 WS_POPUP，所以请求矩形就是它真正占的位置。
+        物理像素的 'L,T,R,B'。默认 WS_POPUP 没有边框，所以请求矩形就是它真正占的位置；
+        给了 -Bordered 时请求的是**窗口矩形**（含标题栏与边框），客户区在里面更小一圈。
+    .PARAMETER Bordered
+        用 WS_OVERLAPPEDWINDOW 建窗口（标题栏 + 可拖动边框）。窗口内部裁剪那几条判据要的是
+        "窗口矩形 / 客户区矩形 / DWM 可见边框矩形三者各不相同"这一现场，WS_POPUP 上三者重合，
+        所以 --client-area 与 cropRect 的偏移只能在这种窗口上现场判。
     .PARAMETER Windows
         同一个进程建几扇窗口（默认 1）。多扇时类名是 <class>、<class>-2 …，标题全都一样，
         用来造「同一个 PID 的两个目标」—— %p / %n 的撞名检测只有这么造才验得到。
@@ -604,6 +616,7 @@ function Start-EcWindow {
         [int]$Seed = 1,
         [string]$Color = 'FF0000',   # RRGGBB：遮挡物/标记默认纯红
         [switch]$TopMost,
+        [switch]$Bordered,
         [int]$MaxLifeSeconds = 300,
         [string]$PidFile = '',
         [int]$Windows = 1,
@@ -619,6 +632,7 @@ function Start-EcWindow {
                   '--watch-pid', [string]$PID)
     if ($PidFile) { $arguments += @('--pid-file', $PidFile) }
     if ($TopMost) { $arguments += '--topmost' }
+    if ($Bordered) { $arguments += '--bordered' }
     if ($Windows -gt 1) { $arguments += @('--windows', [string]$Windows) }
     # 模式自己的开关（例如 --block-print-ms：故意把 WM_PRINT 堵住，用来造"目标线程卡死"）
     if ($ExtraArgs) { $arguments += @($ExtraArgs) }
@@ -728,6 +742,34 @@ function Get-EcWindowRect {
     param([IntPtr]$Hwnd)
     $r = New-Object EcHarnessWin+RECT
     if (-not [EcHarnessWin]::GetWindowRect($Hwnd, [ref]$r)) { return $null }
+    return [pscustomobject]@{ Left = $r.Left; Top = $r.Top; Right = $r.Right; Bottom = $r.Bottom }
+}
+
+function Get-EcClientScreenRect {
+    <#
+        客户区在虚拟屏幕坐标里的那一块 —— 与工具那条问答**独立**（这里自己调 GetClientRect +
+        ClientToScreen），用来核对 --client-area 交回的 cropRect / cropScreenRect 对不对得上。
+        问不到就返回 $null：判据不许把"问不到"当成"零尺寸那块矩形"。
+    #>
+    param([Parameter(Mandatory)][IntPtr]$Hwnd)
+    $c = New-Object EcHarnessWin+RECT
+    if (-not [EcHarnessWin]::GetClientRect($Hwnd, [ref]$c)) { return $null }
+    $p = New-Object EcHarnessWin+POINT
+    $p.X = 0; $p.Y = 0
+    if (-not [EcHarnessWin]::ClientToScreen($Hwnd, [ref]$p)) { return $null }
+    return [pscustomobject]@{
+        Left = $p.X + $c.Left; Top = $p.Y + $c.Top
+        Right = $p.X + $c.Right; Bottom = $p.Y + $c.Bottom
+        Width = $c.Right - $c.Left; Height = $c.Bottom - $c.Top
+    }
+}
+
+function Get-EcExtendedFrameBounds {
+    <# DWMWA_EXTENDED_FRAME_BOUNDS（用户看到的那圈矩形）。问不到返回 $null，不退回 GetWindowRect。 #>
+    param([Parameter(Mandatory)][IntPtr]$Hwnd)
+    $r = New-Object EcHarnessWin+RECT
+    $hr = [EcHarnessWin]::DwmGetWindowAttribute($Hwnd, 9, [ref]$r, [System.Runtime.InteropServices.Marshal]::SizeOf($r))
+    if ($hr -ne 0 -or $r.Right -le $r.Left -or $r.Bottom -le $r.Top) { return $null }
     return [pscustomobject]@{ Left = $r.Left; Top = $r.Top; Right = $r.Right; Bottom = $r.Bottom }
 }
 

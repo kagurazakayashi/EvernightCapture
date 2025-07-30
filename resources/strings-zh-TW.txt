@@ -35,6 +35,7 @@ grp.target	截圖目標（不給 --monitor 就只按下面的視窗條件尋找�
 grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
 grp.pick	匹配到多個視窗時（互斥）
 grp.capture	取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
+grp.crop	視窗內部裁剪（對交付的整張視窗畫面，依畫面自己的像素座標再裁一次；不是桌面絕對座標；下面兩條互斥）
 grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
 grp.timeout	執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
 grp.output	輸出
@@ -56,6 +57,8 @@ opt.newest	--topmost-match 的舊名字。它選的一直是當下的 Z 序位�
 opt.oldest	--bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
 opt.all	每個匹配視窗各存一張
 opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+opt.roi	從交付的整張視窗畫面裡裁出以 x,y 為起點、w×h 大小的一塊。原點 (0,0) 是這張畫面自己的左上角像素（畫面對應的是使用者看到的那圈可見邊框，DWM 那圈透明 resize 邊框不在裡面），單位是物理像素且不依 DPI 縮放（本程序是 per-monitor v2，要按邏輯像素指定就自己乘那道縮放），所以這四個數永遠不會被當成桌面絕對座標。四個數只認十進位、逗號分隔；x 與 y 可為 0，w 與 h 至少 1，都不超過 16384。放不下就整張不落地：取影格之前就看得出放不下報 match.roi_out_of_range（不彈框、不寫檔案），取到影格之後才發現的報 capture.roi_invalid —— 不往裡挪、不裁到邊上為止、也不退回整張交出。裁剪排在取影格之後，所以它不改變授權：會從螢幕上取樣的那幾條照樣一定問人，--yes 不會因為「最後只留一小塊」而生效。結果裡 cropRect 是畫面像素座標，cropScreenRect 是同一個矩形的螢幕座標（核實得出畫面原點時才寫），裁前尺寸在 fullWidth/fullHeight、裁後就是 width/height。與 --client-area 互斥，配整張螢幕的目標說不通（capture.unsupported）
+opt.client-area	只交回視窗客戶區那一塊：在交付的整張視窗畫面裡再去掉標題列與三邊邊框。這個矩形照目標此刻的幾何量出來（GetClientRect 加 ClientToScreen），座標系與單位跟 --roi 完全同一套。量不出客戶區報 capture.roi_unmeasurable，有一邊落在交付畫面之外（掛在螢幕外、或中途改了尺寸）報 capture.roi_invalid，兩種都不退回整張交出。與 --roi 互斥
 opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
 opt.timeout-ms	自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時那一張不落地，依階段報 match.timeout / capture.timeout / io.timeout
 opt.consent-timeout-ms	確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
@@ -94,6 +97,10 @@ cli.regex_too_complex	正則的回溯複雜度超過本機正則庫的上限，�
 cli.regex_too_complex_hint	語法本身沒問題。改分子串比對 --title-contains，或把模式裡能確定的部分前移、拿掉巢狀量詞（例如 (a+)+ 換成 a+）。庫的上限擋下來時加大 --timeout-ms 不會有幫助：%1
 cli.regex_late	正則運算式在該階段重新編譯失敗
 cli.index_value	--index 是從 1 開始的十進位序號
+cli.roi_value	--roi 要寫 x,y,w,h 四個十進位數，用逗號分隔
+cli.roi_value_hint	四條都只認 0-9：不要空白、正負號、小數點、指數（1e3）、底線與 0x 前綴。x 與 y 可以是 0，w 與 h 至少 1，每一條都不超過 16384。例：--roi 0,0,200,120（段數也要正好四段，少一段或多寫一個逗號都算這一條）
+cli.crop_conflict	--roi 與 --client-area 互斥，一次只能選一種裁剪
+cli.crop_conflict_hint	兩者說的都是「這張視窗畫面裡留哪一塊」：要麼給一條 --roi x,y,w,h，要麼用 --client-area 只要客戶區。這條與選擇策略（--index / --topmost-match 那一組）無關，刪掉那邊不解決問題
 cli.unknown_capture_method	--capture 取值不在允許清單內
 cli.unknown_language	--lang 取值不在支援清單內
 cli.duplicate_output	重複的 --out，輸出路徑只能有一個
@@ -156,6 +163,8 @@ match.no_window	沒有視窗滿足全部條件
 match.no_window_hint	確認視窗已顯示且沒被別的處理程序獨佔；最小化的視窗無法擷取
 match.iconic_hint	有 %1 個視窗命中條件但處於最小化，無法擷取：%2
 match.index_out_of_range	--index 超出匹配視窗數量
+match.roi_out_of_range	--roi %1 的矩形放進不了目標視窗：它的右下邊到 %2×%3，而這張視窗畫面是 %4×%5
+match.roi_out_of_range_hint	原點 (0,0) 是交付畫面的左上角像素（物理像素，不按 DPI 縮放），這四個數不會被當成桌面絕對座標；放不進的矩形也不會被往裡挪、裁到邊上為止、或退回整張交出。先跑一次 --dry-run -v 看清視窗此刻的尺寸，再重新給一條落在視窗內的 --roi（視窗之間尺寸不同，--all 這一批裡有一扇放不下就整批不開工）
 match.index_hint	共 %1 個候選：%2
 match.ambiguous	匹配到多個視窗，需要消歧
 match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或補充條件。候選（按 Z 序）：%1
@@ -293,8 +302,18 @@ cap.monitor_changed	那塊螢幕在本次請求中已經不在這台機器的桌
 cap.monitor_changed_hint	顯示器被拔除或停用了。請重新列舉（--monitor 的編號是本次列舉的順序）後再來一次
 cap.monitor_unverifiable	取影格之前沒能重新核對螢幕身分
 cap.monitor_unverifiable_hint	選定那一刻問到了這張螢幕的跨工作階段身分，而這次那一路問不出來。這時不按裝置名退回去截：那個名字可能已經發給了另一張螢幕，截到的是沒人批准過的畫面。請重新 --screens 並重新確認
+cap.crop_unsupported_for_screen	整張螢幕的目標上沒有一扇視窗，可以讓裁剪座標相對它的左上角去算
+cap.crop_unsupported_for_screen_hint	--roi 與 --client-area 說的是「這張視窗畫面裡留哪一塊」，這四個數不會被當成桌面絕對座標來用。要截某個視窗的某一塊請補視窗條件（--hwnd / --process / --title…）；要整張螢幕就去掉這兩條，改用 --monitor
+cap.roi_invalid	這次交付的視窗畫面是 %1×%2，裁剪矩形放不進去（它的右下邊到 %3×%4，原因 %5）
+cap.roi_invalid_hint	目標在選定之後改了尺寸、或有一邊掛在螢幕之外，都會讓當初那個矩形落到畫面之外。照結果裡的 rect / fullWidth / fullHeight 重新給一條落在畫面內的 --roi；本工具不往裡挪、不裁到邊上為止，也不退回整張交出。這張圖一個像素都沒落地，同批其餘目標不受影響
+cap.roi_unmeasurable	定位這次裁剪矩形所需要的某一問沒有答案（畫面 %1×%2，原因 %3）
+cap.roi_unmeasurable_hint	client_unmeasurable = 客戶區沒量出來（這個視窗的 GetClientRect 或 ClientToScreen 沒給出答案）；image_unmeasurable = 這張交付畫面核實不出它對應螢幕上的哪一塊（視窗在中間改了尺寸，或這條通道把 DWM 那圈透明邊框一起交了）。問不出來不等於放不進，也不等於「那就整張交出」：換 --capture wgc 重取一次，或去掉 --client-area 改用一條落在畫面內的 --roi。這一張一個像素都沒落地
+cap.crop_apply_failed	按判據放得下的裁剪沒有裁下來：這一影格的記憶體形狀自己說不通
+cap.crop_apply_failed_hint	與 capture.frame_invalid 同一條下一步：這一影格不該往下走，換一條通道或重新截一次，並把這份尺寸報給工具維護者
 note.capture_clipped	目標沒有被完整截到：要截 %1x%2，只截到 %3x%4
 note.capture_clipped_hint	丟掉的部分：左 %1 上 %2 右 %3 下 %4 像素。這條通道取的是某一塊顯示器的合成分，跨螢幕或部分在螢幕外的目標只能截到與該螢幕重疊的那一片
+note.crop_mapping_unavailable	已按請求裁好，但這張 %1×%2 的視窗畫面核實不出它對應螢幕上的哪一塊，所以結果裡沒有 cropScreenRect 那一行
+note.crop_mapping_unavailable_hint	裁剪本身沒有不確定（cropRect 只需要的畫面尺寸就能算），少的一個是定位欄位：請把 cropRect 當成畫面自己的像素座標（左上角 = (0,0)），照 images[].rect 與 fullWidth / fullHeight 核對，別拿它當桌面座標去用。視窗在中間改了尺寸、或這條通道把 DWM 透明邊框一起交了，都會是這個結果
 
 # ---------------------------------------------------------------------------
 # 編碼（src/Encoder.cpp）

@@ -508,6 +508,8 @@ void TestLimitsAreSingleSourced() {
     Check(r.limits.stdoutTargetsMax == 1, "stdout really is one image at a time");
     Check(r.limits.jpegQualityMin == static_cast<uint64_t>(cli_limits::kJpegQualityMin), "quality floor");
     Check(r.limits.jpegQualityMax == static_cast<uint64_t>(cli_limits::kJpegQualityMax), "quality ceiling");
+    // --roi 的上限也必须是解析层那一个数（帮助、解析、查询三处读同一份，不在这里另写一个）
+    Check(r.limits.roiMaxValue == cli_limits::kRoiMaxValue, "roi bound is the parse bound");
     Check(r.declaredMinBuild == os_floor::kSupportedMinBuild, "declared floor is SystemCompat's own");
     Check(r.verifiedOsBuild == verified_env::kOsBuild && r.verifiedArch == verified_env::kArch,
           "the recorded tested environment is one place only");

@@ -100,6 +100,38 @@ struct MonitorSelector {
 // 取值只增不改名。kNone = 这一次不是窗口查询（截图或环境查询）。
 enum class WindowAction { kNone, kList, kInspect };
 
+// ---------------------------------------------------------------------------
+// 窗口内部裁剪（--roi / --client-area）
+// ---------------------------------------------------------------------------
+//
+// 交付的整窗图像拿到之后，再按**这张图像自己的像素坐标**裁一次。坐标系、DPI 与边框那三条
+// 规矩的判据本体在 src/CropGeometry.h，这里只落"用户要求的是哪一种裁剪"。
+// 两条互斥（同时给出是 cli.conflicting_options，不是"挑一条执行"），而它与 --monitor 那种
+// "整块屏幕"的目标说不通：屏幕上没有这么一个窗口可以让坐标相对它的左上角去算，
+// 所以屏幕模式在解析期就报 capture.unsupported，而不是悄悄按桌面绝对坐标去截。
+enum class CropMode {
+    kNone,        // 没给裁剪：整窗图像原样交付
+    kRoi,         // --roi x,y,w,h
+    kClientArea,  // --client-area：只留客户区
+};
+
+struct CropRequest {
+    CropMode mode = CropMode::kNone;
+    // --roi 那四个数：只认十进制 [0-9]+，逗号分隔，不认空白、正负号与任何前缀。
+    // x / y 可以是 0，width / height 至少 1，四条都不超过 cli_limits::kRoiMaxValue。
+    // 这里是**已经规范化过的值**，用户原样写的那一条在 written（诊断的 value 用它）。
+    uint32_t x = 0;
+    uint32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::wstring written;
+    // 这两条各自记"有没有被写出过"：mode 只留最后一个写法（与其它取值选项的顺序语义一致），
+    // 而 --roi 与 --client-area 同时给出的那条冲突要看得见用户到底写了哪两个名字。
+    bool roiGiven = false;
+    bool clientAreaGiven = false;
+};
+
+
 struct Options {
     MatchOptions match;
     MonitorSelector monitor;    // --monitor / -m
@@ -116,6 +148,11 @@ struct Options {
 
     CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
     bool captureExplicit = false;                  // 是否显式指定过 --capture
+
+    // --roi / --client-area：取到整窗图像之后再按图像像素坐标裁一次。
+    // 这件事**不改变**授权判断：确认框上列出的是整个目标，会读桌面像素的那几条照样一定问人，
+    // --yes 也不因为"最后只留一小块"而开始生效（判据见 src/CaptureScope.cpp 那张登记表）。
+    CropRequest crop;
 
     // --timeout-ms：自动处理阶段的**总**预算（匹配、后端重试、取帧等待、编码、提交共用这一份，
     // 每一步只拿"还剩多少"）。0 = 不设总预算，此时各隔离调用仍受内置上限约束（Worker.h）。
@@ -196,6 +233,10 @@ inline constexpr const wchar_t* kUnexpectedPositional = L"cli.unexpected_positio
 inline constexpr const wchar_t* kMissingOutput = L"cli.missing_output";
 inline constexpr const wchar_t* kDuplicateOutput = L"cli.duplicate_output";
 inline constexpr const wchar_t* kConflictingOptions = L"cli.conflicting_options";
+// --roi 与 --client-area 同时给出。与上面那条分开给码，是因为那句文案说的是"选择策略"
+//（--index / --topmost-match 那一组），拿它去解释一次裁剪请求会把人引向"那我删掉 --index"
+// 这种根本无关的下一步。退出码同为 1，两个名字一次列全。
+inline constexpr const wchar_t* kCropConflict = L"cli.crop_conflict";
 inline constexpr const wchar_t* kUnknownCaptureMethod = L"cli.unknown_capture_method";
 inline constexpr const wchar_t* kUnknownLanguage = L"cli.unknown_language";
 inline constexpr const wchar_t* kMonitorConflict = L"cli.monitor_conflict";
@@ -266,11 +307,22 @@ inline constexpr const wchar_t* kFrameUniform = L"note.frame_uniform";
 // 那块输出重叠的部分（窗口跨屏、一部分在屏幕外）。图里是可见的那一块，尺寸比目标小。
 // 只报事实与两边矩形，不断言"为什么没截全"，也不拿它升级授权。
 inline constexpr const wchar_t* kCaptureClipped = L"note.capture_clipped";
+// 提示（不是错误，图片照常交付）：这一次按 --roi 裁了，但**没能核实**这块交付图像对应屏幕上
+// 的哪一块，所以结果里少了 cropScreenRect 那一行（图像坐标里的 cropRect 照写，裁剪本身没有
+// 任何不确定）。什么时候会这样：窗口内容那条通道交回的尺寸与此刻量到的可见窗口矩形对不上
+// （窗口在这中间改了大小、或这条通道把 DWM 那圈透明边框一起交了）。下一步是重取一次并核对
+// images[].rect / fullWidth / fullHeight，而不是把 cropRect 当成屏幕坐标去用。
+inline constexpr const wchar_t* kCropMappingUnavailable = L"note.crop_mapping_unavailable";
 // 后续阶段
 inline constexpr const wchar_t* kNoWindow = L"match.no_window";
 inline constexpr const wchar_t* kAmbiguousWindow = L"match.ambiguous_window";
 inline constexpr const wchar_t* kIndexOutOfRange = L"match.index_out_of_range";
 inline constexpr const wchar_t* kMonitorOutOfRange = L"match.monitor_out_of_range";
+// --roi 的矩形放不进选定那一刻那块窗口矩形之内（越界，或者那块矩形本身量不出来 = 零尺寸）。
+// 与 match.index_out_of_range 同一条规矩：不放宽条件去凑，也不"那就裁到边上为止"，
+// 而且在弹确认框与取帧**之前**给出 —— 一条注定裁不出来的请求不该先打扰人一次。
+// 下一步是照 --dry-run / -v 回显的窗口尺寸重新给一条落在窗口内的 --roi。退出码 1。
+inline constexpr const wchar_t* kRoiOutOfRange = L"match.roi_out_of_range";
 // 按标识选屏（--monitor=device:… / --monitor=id:…）的三种下场，各给一条码：
 // 它们的下一步动作不一样，而"没对上"绝不允许被折叠成"那就用主屏吧"——
 // 用户批准的是当初列给他看的那一块屏，换一块屏截到的是谁都没批准过的画面。
@@ -328,6 +380,19 @@ inline constexpr const wchar_t* kWindowGone = L"capture.window_gone";
 // 行距×高还短）。它与 capture.failed 分开给码：调用方的下一步是换通道或报告实现缺陷，
 // 而不是"再试一次这个窗口"。退出码仍是 7。
 inline constexpr const wchar_t* kFrameInvalid = L"capture.frame_invalid";
+// 交付的整窗图像拿不到了当初要求的那一块裁剪：窗口在选定之后改了尺寸所以 --roi 落在了图像
+// 之外、目标被屏幕边缘裁短、客户区那一问没能给出答案、或者交付的那块图像核实不出它对应屏幕上
+// 的哪一块（于是客户区在图里落在哪儿无从确定）。与 match.roi_out_of_range 分别是
+// "取帧之前就看得出放不下"与"取到帧之后才发现放不下"，下一步也不同：后者要先重新量一次窗口
+// 现在的尺寸。两种都**一个像素都不落地**，也不退回"那就整窗交出"。退出码 7。
+inline constexpr const wchar_t* kRoiInvalid = L"capture.roi_invalid";
+// 与 capture.roi_invalid 分开给码，因为"放不下"与"没能问出来"是这个仓库里始终分开的两件事
+// （同 capture.target_unverifiable 与 capture.target_changed、capture.monitor_unverifiable 与
+// capture.monitor_changed）：前者是请求的矩形本身超出这块图像，下一步是照当下的尺寸改请求；
+// 后者是定位这块矩形所需要的那一问没有答案（客户区量不出来、或这块交付图像核实不出它对应
+// 屏幕上哪一块），下一步是换一条窗口内容通道或整窗重取一次，而**不是**把请求往里挪一挪。
+// 两条都在一个像素都没落地之前给出，都不许被当成"那就整窗交出"的理由。退出码 7。
+inline constexpr const wchar_t* kRoiUnmeasurable = L"capture.roi_unmeasurable";
 // 运行环境（这一台机器上的 Windows 版本）提供不了所要求的东西，与"这个目标截不到"是两回事。
 // 判据与三条下限各写在哪儿见 src/SystemCompat.h；两条都在枚举目标、弹确认框、读像素**之前**
 // 给出，一个像素都不读，退出码 7。分开给码的理由就是调用方的下一步不同：
@@ -374,6 +439,12 @@ inline constexpr uint64_t kMaxWindowListItems = 8192ull;
 // 默认条数是另一件事：调用方（含 AI）第一次列窗口时不该一口气拿到整机所有标题，所以要分页。
 // 判「到底命中多少个」看结果里的 pagination.matched，不是看本批交回几条。
 inline constexpr uint64_t kDefaultWindowListLimit = 50ull;
+// ---- --roi 的四条数上限 ----
+// 与帧的单边上限 kFrameMaxSide（src/CaptureCommon.h）**同一个数**：一条比交付图像还能宽的
+// 裁剪矩形本来就不成立，而 kFrameMaxSide 那条"16384 是 D3D11 纹理边长上限"的理由在这里同样
+// 成立。两份数字不许各写一套 —— 相等那条判据写在 tests\crop_state.cpp 里现场核对
+//（CliOptions.h 不去 include 取帧公共件，那会把 Consent / ScreenMatch 全拖进解析层）。
+inline constexpr uint64_t kRoiMaxValue = 16384ull;
 }  // namespace cli_limits
 
 // 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。
@@ -460,5 +531,9 @@ const wchar_t* MultiKey(MultiMatch m);  // "ask" / "index" / "topmost" / "bottom
 
 // 取图方式的机器名（--capture 的取值）。能力差别写在 --capture 的选项说明里。
 const wchar_t* CaptureMethodName(CaptureMethod m);
+
+// 裁剪方式的机器名（-v 的 input.crop.mode 与 images[].cropMode 都写它）：
+// "none" / "roi" / "client-area"。与 codes 一样只增不改名，调用方按它分支。
+const wchar_t* CropModeName(CropMode m);
 
 }  // namespace ecapture

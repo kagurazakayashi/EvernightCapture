@@ -180,6 +180,41 @@ bool ParseBool(const std::wstring& raw, bool* out) {
 }
 
 // ---------------------------------------------------------------------------
+// --roi 的取值：x,y,w,h 四个十进制数，逗号分隔
+// ---------------------------------------------------------------------------
+//
+// 每一段都走 DecimalLiteral 那同一套语法：不认空白、正负号、小数点、指数、下划线、0x 前缀，
+// 也不认非 ASCII 数字。所以 "1, 2,3,4" 是**写坏了**，而不是被宽容地读成 1/2/3/4 ——
+// 与仓库里每一条数字选项同一条规矩（"这段带个空格"与"这条数写成了十六进制"都不该被静默接受）。
+// 四个数各自不超过 kRoiMaxValue（= 帧的单边上限），x/y 允许 0，w/h 至少 1：
+// 空矩形在解析期就拒，不留到取帧之后才说"这块什么都没裁到"。
+// 段数也要正好四条：三段（少写一条）与五段（多写了逗号）都是这一条错，不猜第第四个是什么。
+bool ParseRoiValue(const std::wstring& raw, CropRequest* out) {
+    uint32_t parts[4] = {0, 0, 0, 0};
+    size_t index = 0;
+    size_t pos = 0;
+    for (;;) {
+        const size_t comma = raw.find(L',', pos);
+        const std::wstring field =
+            comma == std::wstring::npos ? raw.substr(pos) : raw.substr(pos, comma - pos);
+        if (index >= 4) return false;   // 第四个逗号之后还剩东西 = 多写了一段
+        uint64_t v = 0;
+        // 前两条是偏移（0 合法），后两条是宽高（至少 1）
+        if (!ParseDecimal(field, index < 2 ? 0 : 1, cli_limits::kRoiMaxValue, &v)) return false;
+        parts[index] = static_cast<uint32_t>(v);
+        ++index;
+        if (comma == std::wstring::npos) break;
+        pos = comma + 1;
+    }
+    if (index != 4) return false;
+    out->x = parts[0];
+    out->y = parts[1];
+    out->width = parts[2];
+    out->height = parts[3];
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // --monitor 的取值语法（取值可省略，所以"要不要吃掉下一个参数"必须与实际解析同源）
 // ---------------------------------------------------------------------------
 
@@ -344,6 +379,12 @@ constexpr OptionSpec kOptions[] = {
     {L"all", L"a", false, L"pick", L"", nullptr, L"opt.all"},
     // ---- 取图方式 ----
     {L"capture", L"C", true, L"capture", L"<method>", kCaptureValues, L"opt.capture"},
+    // ---- 窗口内部裁剪（--roi 与 --client-area 互斥）----
+    // 坐标系写在说明里（判据本体在 src/CropGeometry.h）：那四个数是**交付的整窗图像自己的像素
+    // 坐标**，不是桌面绝对坐标；单位是物理像素，不按窗口所在屏的 DPI 缩放。
+    // valueHint 保持 ASCII，不翻译（与其它选项同一做法）；数字上限见 cli_limits::kRoiMaxValue。
+    {L"roi", L"", true, L"crop", L"<x,y,w,h>", nullptr, L"opt.roi"},
+    {L"client-area", L"", false, L"crop", L"", nullptr, L"opt.client-area"},
     // ---- 截图授权 ----
     // --yes 只免掉窗口内容路径的确认框；会拍到桌面像素的那几条永远问人（见 src/Consent.h）。
     {L"yes", L"y", false, L"consent", L"", nullptr, L"opt.yes", false, false, true},
@@ -633,6 +674,15 @@ const wchar_t* CaptureMethodName(CaptureMethod m) {
         case CaptureMethod::kBitBlt: return L"bitblt";
         case CaptureMethod::kDuplication: return L"duplication";
         case CaptureMethod::kAuto: return L"auto";
+    }
+    return L"?";
+}
+
+const wchar_t* CropModeName(CropMode m) {
+    switch (m) {
+        case CropMode::kNone: return L"none";
+        case CropMode::kRoi: return L"roi";
+        case CropMode::kClientArea: return L"client-area";
     }
     return L"?";
 }
@@ -980,6 +1030,31 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             return;
         }
 
+        // ---- 窗口内部裁剪 ----
+        // 两条互斥，但**先各自落到结构体上**再由扫完之后的那一段报冲突：报错要把用户实际写的
+        // 那两个名字一起列出来，而 mode 只留最后一个写法（与其它取值选项的顺序语义一致）。
+        if (name == L"roi") {
+            CropRequest parsed;
+            if (!ParseRoiValue(value, &parsed)) {
+                Err(codes::kInvalidValue, Msg(L"cli.roi_value"), L"--roi", value,
+                    Msg(L"cli.roi_value_hint"));
+                return;
+            }
+            opt.crop.x = parsed.x;
+            opt.crop.y = parsed.y;
+            opt.crop.width = parsed.width;
+            opt.crop.height = parsed.height;
+            opt.crop.mode = CropMode::kRoi;
+            opt.crop.roiGiven = true;
+            opt.crop.written = value;
+            return;
+        }
+        if (name == L"client-area") {
+            opt.crop.mode = CropMode::kClientArea;
+            opt.crop.clientAreaGiven = true;
+            return;
+        }
+
         // ---- 期限 ----
         // 只认十进制毫秒数：0x 前缀、下划线这种"句柄写法"放到时长上只会让人算错。
         // 0 有含义（= 不设这项期限），所以它下界是 0；空值仍然不算 0。
@@ -1209,6 +1284,16 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     }
     opt.multi = distinctPick.empty() ? MultiMatch::kAsk : multiFlag;
 
+    // ---- 裁剪方式互斥 ----
+    // --roi 与 --client-area 说的是同一件事的两种写法（这一次交回来的图留哪一块），
+    // 同时给出就不知道该听哪一条 —— 与选择策略那一组同一条规矩：不替用户挑一种执行。
+    // 但这条码与 cli.conflicting_options 分开：那句文案说的是"选择策略"（--index 那一组），
+    // 拿它回答一次裁剪请求会把人引向"删掉 --index"这种与本次毫无关系的下一步。
+    if (opt.crop.roiGiven && opt.crop.clientAreaGiven) {
+        Err(codes::kCropConflict, Msg(L"cli.crop_conflict"), L"",
+            L"--client-area, --roi", Msg(L"cli.crop_conflict_hint"));
+    }
+
     // ---- 查询命令的互斥判定 ----
     // 判据是「这一次是哪一类查询」，不是「有没有某个选项本身写坏了」：写在查询后面的 --title 就算
     // 值法不对，这里也先报冲突（一次只报说不通的那一处，免得调用方修完一个又一个）。
@@ -1296,6 +1381,16 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 Err(codes::kUnsupported, Msgf(L"cap.unsupported_for_screen", CaptureMethodName(opt.capture)),
                     L"--capture", CaptureMethodName(opt.capture),
                     Msg(L"cap.unsupported_for_screen_hint"));
+            }
+            // 整块屏幕的目标上没有"一扇窗口"可以让裁剪坐标相对它的左上角去算。这时候**绝不**
+            // 把 --roi 当成桌面绝对坐标来用：那等于允许一个调用方用一个窗口之外的位置去要一块
+            // 谁都没批准过的画面，也与"相对于目标窗口"这条承诺打脸。照实在解析期报错，
+            // 一个像素都不取、一个文件都不写，也不弹框。
+            if (opt.ScreenMode() && opt.crop.mode != CropMode::kNone) {
+                const bool clientArea = opt.crop.mode == CropMode::kClientArea;
+                Err(codes::kUnsupported, Msg(L"cap.crop_unsupported_for_screen"),
+                    clientArea ? L"--client-area" : L"--roi", clientArea ? L"" : opt.crop.written,
+                    Msg(L"cap.crop_unsupported_for_screen_hint"));
             }
         }
 
