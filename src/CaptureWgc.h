@@ -11,11 +11,19 @@ namespace ecapture {
 // 抓取指定窗口。失败时填 *err（code 以 capture. 开头）并返回 false。
 // 这条路径的采集项是由 HWND 建出来的窗口自己那份合成面，屏幕上别的东西不会进图，
 // 所以它属于窗口内容路径，不需要桌面凭证。
-bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err);
+//
+// cursor 是这一次的光标要求（--cursor）。wgc 是**唯一**有一条真能设进去、也能读回来核实的
+// 光标开关的通道（IGraphicsCaptureSession2::IsCursorCaptureEnabled），所以这条参数是必需的：
+// 明确要求过而开关问不到 / 设不下去 / 读回来不是那一件事时，这里在 StartCapture **之前**就交回
+// capture.cursor_unverifiable，一个像素都不读 —— 通道手里没有"那就照默认交一张"的余地。
+// 没写 --cursor 时（given=false）这里一个字节都不改，也不去读那个属性。
+bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, const CursorRequest& cursor,
+                      CapturedFrame* out, Diagnostic* err);
 
 // 抓取整块屏幕（--monitor 的屏幕目标）：同一个会话机制，只是采集项由 HMONITOR 建出来。
 // 整屏 WGC 取的就是那块屏上此刻的全部画面，和其它桌面路径同级 —— 必须带桌面凭证。
-bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const DesktopPermit& permit,
-                      CapturedFrame* out, Diagnostic* err);
+// 光标那一条开关与窗口路径共用同一条会话接口，所以整屏也照样设得进去（要不要设照上面同一条规矩）。
+bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const CursorRequest& cursor,
+                      const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err);
 
 }  // namespace ecapture

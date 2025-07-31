@@ -13,6 +13,7 @@
 #include "CaptureCommon.h"   // kFrameMaxSide / kFrameMaxBytes
 #include "CaptureScope.h"
 #include "CliOptions.h"
+#include "CursorControl.h"   // 光标能力登记表（cursor.paths 那一段逐条写它，不另判一次）
 #include "Deadline.h"        // kIsolatedCallMs
 #include "Json.h"
 #include "WgcGeometry.h"     // kMaxWgcRecreates
@@ -401,6 +402,52 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
         r.backends.push_back(std::move(b));
     }
 
+    // ---- 光标（--cursor）----
+    // 这一段回答的是"这台机器上，把光标画进画面 / 不画进画面这件事，各条路线能不能说准"。
+    // 三种取值从选项目录里读那一份（同一处数字与形状，这里不抄第二份表），默认值明确写出来。
+    for (const auto& info : OptionCatalog()) {
+        if (info.name == L"cursor") r.cursor.values = info.allowedValues;
+    }
+    const Capability cursorControl = AssessWgcCursorControl(probe.os);
+    r.cursor.control.api = L"IGraphicsCaptureSession2::IsCursorCaptureEnabled";
+    // compiled 说的是"这个构建里真的在用这条接口"（src/CaptureWgc.cpp 的 ApplyCursorControl），
+    // 与"这台机器让不让用"（下面那条 status）是两件事，各自一个字段。
+    r.cursor.control.compiled = true;
+    r.cursor.control.minBuild = cursorControl.minBuild;
+    r.cursor.control.status = StatusOfSupport(cursorControl.support, &r.cursor.control.reason);
+    r.cursor.control.verifiedOnThisMachine = r.matchesVerifiedEnv;
+    for (const auto& e : RegisteredCursorPaths()) {
+        CursorPathReport p;
+        p.path = e.path;
+        p.capability = CursorCapabilityName(e.capability);
+        p.reason = e.reason;
+        // 两个要求各自的**三值**下场。这里不重算任何判据，只是把那张表的三种登记翻译成
+        // yes / no / unknown：问不出来就是 unknown，绝不折成任何一边。
+        switch (e.capability) {
+            case CursorCapability::kSettable: {
+                // 有开关：能不能兑现全看这台机器的版本给不给得了那个开关。
+                const Tri t = cursorControl.support == Support::kOk   ? Tri::kYes
+                                : cursorControl.support == Support::kBelow ? Tri::kNo
+                                                                        : Tri::kUnknown;
+                p.includeState = TriName(t);
+                p.excludeState = TriName(t);
+                break;
+            }
+            case CursorCapability::kExcludesCursor:
+                // 来源像素里没有光标：exclude 因此照实成立，include 因此是**做不到**
+                //（本工具不画光标，也不拿桌面像素那条高风险路线去"碰运气"）。
+                p.includeState = TriName(Tri::kNo);
+                p.excludeState = TriName(Tri::kYes);
+                break;
+            case CursorCapability::kUnregistered:
+                // 没登记：两条都不敢声称。新增一条通道忘了登记就在这里现形，而不是被当成默认符合。
+                p.includeState = TriName(Tri::kUnknown);
+                p.excludeState = TriName(Tri::kUnknown);
+                break;
+        }
+        r.cursor.paths.push_back(std::move(p));
+    }
+
     // auto 的两条链：与真去截图时用的同一个 GateChannels，所以"查询里给的链"与
     // "那次实际会试的链"不可能各写一份顺序而互相打脸。
     for (const bool screenMode : {false, true}) {
@@ -449,6 +496,10 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     r.caveats.push_back(caveat::kDeviceNotPredicted);
     r.caveats.push_back(caveat::kEncoderUnprobed);
     r.caveats.push_back(caveat::kSessionInferred);
+    // 光标那两条边界恒在：cursor 那一段说的是"设置与来源"这两层，不是像素；而本工具
+    // 从不动指针形状、也从不事后抹光标。写在这里是为了调用方不必读源码就看得见边界。
+    r.caveats.push_back(caveat::kCursorSettingNotPixels);
+    r.caveats.push_back(caveat::kPointerNeverComposited);
     if (!probe.buildIdKnown) r.caveats.push_back(caveat::kBuildIdUnavailable);
     if (r.matchesVerifiedEnv == Tri::kNo) r.caveats.push_back(caveat::kNotTestedHere);
     if (r.matchesVerifiedEnv == Tri::kUnknown) r.caveats.push_back(caveat::kTestedEnvUnknown);
@@ -506,6 +557,48 @@ void WriteBackends(Json& j, const std::vector<BackendReport>& backends) {
         WriteConsentPaths(j, b.paths);
         j.End();
     }
+    j.End();
+}
+
+// 字符串数组那段在本文件更靠后的位置定义，这里先声明（WriteCursor 要写 values 那三条取值）。
+// WriteStringArray 在本文件更靠后的位置定义，这里先声明一次（WriteCursor 要写 values 那三条取值）。
+void WriteStringArray(Json& j, const wchar_t* key, const std::vector<std::wstring>& items);
+
+// --cursor 那一段：默认值、三种取值、那条开关在本机的三态、以及每条路径各能做到什么。
+// 三个字段各说一件事（compiled / status / verifiedOnThisMachine），与 backends 那一段同一种写法；
+// includeState / excludeState 是三值的，问不出来就写 unknown，不折成 yes 也不折成 no。
+void WriteCursor(Json& j, const EnvCursorReport& cursor) {
+    j.Obj();
+    j.Key(L"option").Value(cursor.option);
+    // 默认值明确写在这里：不给这条选项 = default = 本工具对光标一个字都不改，
+    // 而显式写 --cursor default 是"照通道默认交回，但把读到的状态报给我"。
+    j.Key(L"default").Value(cursor.defaultValue);
+    WriteStringArray(j, L"values", cursor.values);
+    j.Key(L"switch").Obj();
+    j.Key(L"api").Value(cursor.control.api);
+    j.Key(L"compiled").Value(cursor.control.compiled);
+    j.Key(L"status").Value(CapStatusName(cursor.control.status));
+    j.Key(L"reason").Value(cursor.control.reason);
+    j.Key(L"minBuild").Value(static_cast<long long>(cursor.control.minBuild));
+    j.Key(L"verifiedOnThisMachine").Value(TriOrNull(cursor.control.verifiedOnThisMachine));
+    j.End();
+    j.Key(L"paths");
+    j.Arr();
+    for (const auto& p : cursor.paths) {
+        j.Obj();
+        j.Key(L"path").Value(p.path);
+        j.Key(L"capability").Value(p.capability);
+        j.Key(L"reason").Value(p.reason);
+        j.Key(L"include").Value(p.includeState);
+        j.Key(L"exclude").Value(p.excludeState);
+        j.End();
+    }
+    j.End();
+    // 本工具对指针动手的两问恒为 never：既不把桌面复制那份独立指针元数据合成进帧，
+    // 也不事后抹掉已经画进帧里的光标。这两条与 cursor.paths 一起读才完整：
+    // "排除"在各条路径上说的都是**来源**，不是修过的图。
+    j.Key(L"pointerShapeCompositing").Value(cursor.pointerCompositing);
+    j.Key(L"pixelRetouching").Value(cursor.pixelRetouching);
     j.End();
 }
 
@@ -717,6 +810,11 @@ std::wstring RenderEnvJson(const EnvReport& r, bool verbose, bool quiet) {
 
     j.Key(L"backends");
     WriteBackends(j, r.backends);
+    // 光标这一段紧跟 backends：它说的就是"这几条路线各自对光标这件事说得到哪一层"，
+    // 与 autoChain 那两条一起读，调用方在决定 --capture / --cursor 之前就能问清楚，
+    // 不必先截一张再去猜"怎么图里没光标 / 怎么多了光标"。
+    j.Key(L"cursor");
+    WriteCursor(j, r.cursor);
     j.Key(L"formats");
     WriteFormats(j, r.formats);
     WriteStringArray(j, L"autoChainWindow", r.autoChainWindow);

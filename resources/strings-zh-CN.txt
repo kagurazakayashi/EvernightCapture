@@ -407,3 +407,17 @@ note.window_query_stale	窗口查询交回的是此刻的快照，字段会过�
 note.window_query_stale_hint	句柄会被复用、标题会变、进程会退出，所以这一份列表里的 hwnd / pid / 类名不是一种可以长期持有的凭证。真去截图时本工具仍要在取帧之前复核目标身份（capture.target_gone / capture.target_changed / capture.target_unverifiable），确认框也照旧按像素来源判，--yes 只免掉窗口内容那一级
 note.screen_query_stale	这份屏幕列表是此刻的快照，会过期
 note.screen_query_stale_hint	本机此刻 %1 块屏幕。编号只在本次枚举里有意义，设备名会被系统重新发出去，跨会话那一条是 id: 那个监视器设备路径；真去截图时仍要在取帧之前重新核对身份，确认框也照旧按像素来源判
+
+# ---- 光标包含与排除（--cursor，判据本体在 src/CursorControl.h）----
+# 三种下场各说一件事，谁也不冒充谁：cap.cursor_unsupported 说的是"这条通道的来源里根本没有
+# 光标可画"（解析期，1），env.cursor_unsupported 说的是"这台机器的版本给不了那个开关"（7），
+# cap.cursor_unverifiable 说的是"设过之后读回来不是那一件事 / 那一问没答案"（7）。
+opt.cursor	画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。只有 wgc 有一条能设进去也读得回来的开关（要内部版本 19041 起），其余几条交回的画面本来就没有光标，所以 include 配 printwindow / dwm / bitblt / duplication 报 capture.cursor_unsupported，绝不改走会读桌面像素的通道；auto 时做不到的那几条从链里摘掉并各留一条 note.cursor_channel_skipped。这一条不改变授权；requested / effective / basis 三件事的判据见 README
+cli.cursor_value	--cursor 只能写 default / include / exclude
+cap.cursor_unsupported	%1 光标做不到：--capture %2 这条路径的来源像素里没有光标可画；做得到的是 %3
+cap.cursor_unsupported_hint	"画面里要有光标"只有那条真有开关的通道能兑现。本工具不画光标，也不会因为这一条就改走去读桌面像素的那几条（它们同样没有光标，换来的只是一份没人批准过的画面）。改用 --capture wgc，或者把这条要求去掉（--cursor default 照通道默认、--cursor exclude 要没有光标）
+cap.cursor_unverifiable	%1 光标没能核实（原因 %2，实际 %3）
+cap.cursor_unverifiable_hint	那条会话对"要不要把光标画进帧里"这一问没给出与要求一致的答案：接口问不到、设不下去，或设完读回来是相反的那一件。问不出来不等于照要求办了，所以这一张在开始采集之前就被作废，一个像素都没落地。加大 --timeout-ms 或换一条 --capture 再来一次；反复出现请把 message 里那三段原样报给工具维护者
+env.cursor_unsupported	%1 光标在这台机器上兑现不了：本来要试的是 %2，原因 %3
+env.cursor_unsupported_hint	这一条说的是这台机器，与目标窗口无关：那个开关要更高的 Windows 内部版本，而其余通道要么没有这个开关、要么来源本来就没有光标。换 --capture 不会把它变出来，重试同一个目标也是同样下场。想知道本机现在哪几条说得准，跑 --capabilities 看 cursor 那一段
+note.cursor_channel_skipped	auto 链里的 %1 兑现不了 %2 光标，已摘掉（%3），剩下的照顺序试

@@ -401,3 +401,14 @@ note.window_query_stale	視窗查詢交回的是此刻的快照，欄位會過�
 note.window_query_stale_hint	句柄會被複用、標題會變、處理程序會退出，所以這一份列表裡的 hwnd / pid / 類名不是一種可以長期持有的憑證。真去截圖時本工具仍要在取影格之前複核目標身分（capture.target_gone / capture.target_changed / capture.target_unverifiable），確認框也照舊依像素來源判，--yes 只免掉視窗內容那一級
 note.screen_query_stale	這份螢幕清單是此刻的快照，會過期
 note.screen_query_stale_hint	本機此刻 %1 張螢幕。編號只在本次列舉裡有意義，裝置名會被系統重新發出去，跨工作階段那一條是 id: 那個螢幕裝置路徑；真去截圖時仍要在取影格之前重新核對身分，確認框也照舊依像素來源判
+
+# ---- 滑鼠指標包含與排除（--cursor，判據本體在 src/CursorControl.h）----
+opt.cursor	畫面裡要不要滑鼠指標：default(預設，本工具一個字都不改，結果裡也不出現滑鼠指標那三個鍵) / include(要) / exclude(不要)。只有 wgc 有一個能設進去也讀回來的開關（要內部版本 19041 起），其餘幾條交回的畫面本來就沒有指標，所以 include 配 printwindow / dwm / bitblt / duplication 報 capture.cursor_unsupported，絕不改用會從螢幕上取樣的通道；auto 時做不到的那幾條從鏈裡摘除並各留一條 note.cursor_channel_skipped。這一個不改變授權；requested / effective / basis 三件事的判據見 README
+cli.cursor_value	--cursor 只能寫 default / include / exclude
+cap.cursor_unsupported	%1 滑鼠指標做不到：--capture %2 這條路徑的來源像素裡沒有指標可畫；做得到的是 %3
+cap.cursor_unsupported_hint	「畫面裡要有滑鼠指標」只有那條真有開關的通道能兌現。本工具不畫指標，也不會因為這一條就改走去讀螢幕像素的那幾條（它們同樣沒有指標，換來的只是一份沒人批准過的畫面）。改用 --capture wgc，或者把這個要求去掉（--cursor default 照通道預設、--cursor exclude 要沒有指標）
+cap.cursor_unverifiable	%1 滑鼠指標沒能核實（原因 %2，實際 %3）
+cap.cursor_unverifiable_hint	那條工作階段對「要不要把滑鼠指標畫進影格裡」這一問沒給出與要求一致的答案：介面問不到、設不下去，或設完讀回來是相反的那一件事。問不出來不等於照要求辦了，所以這一個影格在開始採集之前就被作廢，一個像素都沒落地。加大 --timeout-ms 或換一條 --capture 再來一次；反覆出現請把 message 裡那三段原樣報給工具維護者
+env.cursor_unsupported	%1 滑鼠指標在這台機器上兌現不了：本來要試的是 %2，原因 %3
+env.cursor_unsupported_hint	這一條說的是這台機器，與目標視窗無關：那個開關要更高的 Windows 內部版本，而其餘通道不是沒有這個開關，就是來源本來就沒有指標。換 --capture 不會把它變出來，重試同一個目標也是同樣下場。想知道本機現在哪幾條說得準，跑 --capabilities 看 cursor 那一段
+note.cursor_channel_skipped	auto 鏈裡的 %1 兌現不了 %2 滑鼠指標，已摘除（%3），剩下的照順序試

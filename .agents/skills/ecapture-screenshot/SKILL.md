@@ -51,6 +51,11 @@ this layer, and the `caveats` array at the end lists exactly what the report doe
 `authorization.paths` is the machine-readable version of the consent table: `consentWithYes: true` means
 `--yes` cannot skip that dialog. `autoChainWindow` / `autoChainScreen` are produced by the same judgement as a
 real run's `-v` `input.captureChain`, so the chain you read here is the chain you would get there.
+`cursor` answers the `--cursor` question per internal path (`capability` / `reason` / `include` / `exclude`, each of
+the last two `yes` / `no` / `unknown`, and `unknown` when a question gave no answer), plus the single switch with its
+`minBuild` of 19041, and `pointerShapeCompositing: "never"` / `pixelRetouching: "never"`. Note that
+`verifiedOnThisMachine` covers the route, not a pixel-level claim about the pointer: this layer never inspects
+whether a pointer is visible in an image.
 
 Both documents are pure ASCII, so they do not change with `--lang` and you may diff them between runs. They are
 the only JSON that carries `contract` / `contractVersion`; the capture result stays as lean as the section below
@@ -323,6 +328,7 @@ they conflict with every read-only query.
 - Keys: `captured` / `images[]` / `errors[]` / `notes[]` / `input` (only with `--verbose`).
   `--quiet` drops `notes` but **never suppresses `errors`**. **Empty fields are omitted entirely**, so
   `option`, `value` and `hint` may simply be absent - never assume a key is there.
+- When `--cursor` was given, each image also carries `cursorRequested` / `cursorEffective` / `cursorBasis` (what was asked, what this path actually delivered, and on what evidence). Without that option none of the three appears, and `--quiet` never suppresses them when they are there - see the `--cursor` section below.
   The read-only queries use their **own** key sets (`contract` / `contractVersion` / `query` / `authorization` /
   `policy` / `pagination` / `windows[]` or `window` / `caveats` for `--list` / `--inspect`; see Step 0b) -
   they never add top-level metadata to the capture document above, and the capture rules for `captured` /
@@ -488,6 +494,45 @@ caller must do:
   no cancellation point (the atomic file write, a blocked stdout pipe, a WinRT encoder ignoring the cancel
   request) are checked before they start and timed after they finish - not preempted mid-call.
 
+## Whether the pointer is in the image (`--cursor`)
+
+`--cursor default|include|exclude` asks for the mouse pointer to be in the image or not. The **default value
+changes nothing at all**: the tool touches no channel's cursor setting and the result carries none of the three
+cursor fields, so output without this option is byte-for-byte what it was before the option existed. Writing
+`--cursor default` on purpose is different - still no change, but the result reports what that path really gave.
+
+What is possible is decided by **where the pixels of that path come from**, not by the channel name:
+
+- `wgc` and `screen.wgc` have a switch that is really set and read back (`IsCursorCaptureEnabled`), and it needs
+  **build 19041** - higher than `wgc`'s own 18362, so a 1903 machine can capture fine and still be unable to say
+  anything about the pointer.
+- `printwindow`, `dwm.thumbnail`, `dwm.screen`, `bitblt.screen`, `screen.bitblt`, `duplication.frame` and
+  `screen.duplication` contain **no pointer in their source pixels** (a window painting itself, the DWM
+  redirection surface, a screen DC, and desktop duplication whose pointer arrives as separate metadata).
+  `exclude` is therefore true of them as a fact about the source; `include` is not something they can do.
+
+So, as an AI caller:
+
+- `--cursor include` + `--capture printwindow|dwm|bitblt|duplication` fails while parsing
+  (`capture.cursor_unsupported` + exit 1) and the tool will **not** switch channels for you. If you need the
+  pointer in the image, use `--capture wgc` (or `auto`, whose chain narrows to `wgc` alone); if you do not, ask
+  for `exclude` or leave the option out.
+- The tool never retouches pixels: it does not fetch and draw the pointer shape, does not draw a cursor into the
+  frame, and does not erase a pointer that is already there. So `cursorEffective` reaches only as far as "this
+  session was set to draw it" or "this source holds none" - it never claims the pointer is or is not visible in
+  these pixels (this SDK's session has no read-only `IsCursorVisible`). Do not read `cursorEffective` as a pixel
+  assertion, and do not "fix" the pointer afterwards by editing the image.
+- Each delivered image carries three fields, and only when `--cursor` was written: `cursorRequested`
+  (`default` / `include` / `exclude`), `cursorEffective` (`include` / `exclude` / `unverified`) and `cursorBasis`
+  (`wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` /
+  `wgc_cursor_property_unavailable`). If an explicit request cannot be confirmed on `wgc`, the capture fails with
+  `capture.cursor_unverifiable` before the frame is taken rather than delivering the wrong thing.
+- Asking about the pointer **does not change authorization**: `--cursor exclude` on `bitblt`, `duplication` or any
+  whole-screen target still shows the consent dialog and `--yes` still does not cover it.
+- `--capabilities` answers this without capturing anything, in its `cursor` section (`default`, the three values,
+  that one switch's `compiled` / `status` / `minBuild`, one row per registered path with `capability` / `reason` /
+  `include` / `exclude` as `yes` / `no` / `unknown`, and `pointerShapeCompositing: "never"`).
+
 ## Choosing a capture channel (`--capture`)
 
 **Ask first, do not probe by capturing:** `--capabilities` already lists each channel's `status`, its
@@ -590,6 +635,10 @@ Floors, the declared support range and what has actually been measured are in
 | `capture.frame_invalid` | 7 | The frame that came back does not describe its own memory correctly (zero size, a side over 16384 px, a row pitch that cannot hold one row, a buffer shorter than pitch x height, more than 1 GiB). Detected before allocating anything; a target-side problem on that channel - re-check the size, or `--capture wgc` |
 | `capture.monitor_changed` | 7 | That monitor left this machine's desktop during the request, or its picture (resolution / rotation / position) changed after the confirmation - so nothing was sampled and **no other monitor was substituted**. Re-enumerate with `--screens` and confirm again |
 | `capture.monitor_unverifiable` | 7 | The pre-capture identity re-check got no answer this time while the target had been named by a cross-session identifier. It does **not** fall back to matching by device name (that name may already belong to another panel), so nothing is captured. Re-run `--screens`, then confirm again |
+| `capture.cursor_unsupported` | 1 | The requested cursor state cannot be delivered by the channel you asked for (`--cursor include` with `printwindow` / `dwm` / `bitblt` / `duplication`, or with a screen target on a route that has no cursor switch). Nothing was captured, no dialog shown, and **no channel was substituted** - use `--capture wgc` for `include`, ask for `exclude`, or drop the option |
+| `capture.cursor_unverifiable` | 7 | An explicit `include` / `exclude` request could not be confirmed on the `wgc` session (interface unavailable, set failed, or the value read back is the opposite one - the ASCII reason and the actual value are in `message`). Raised before `StartCapture`, so nothing contradicts the request; retry, raise `--timeout-ms`, or report the three parts of that message |
+| `env.cursor_unsupported` | 7 | This machine cannot provide the requested cursor state at all (the cursor switch needs build 19041 and the machine is older, or nothing survived the cursor filter). Raised before enumerating targets, before any dialog, before any pixel; check the `cursor` section of `--capabilities` instead of retrying the same target |
+| `note.cursor_channel_skipped` | - | Not an error: a route in the `auto` chain cannot honour this cursor request and was dropped from it (`backend` names it, `message` carries the ASCII reason such as `screen_dc_has_no_pointer` or `os_below_min_build:19041`). Distinct from `note.channel_unavailable`, which means the OS build blocked the channel itself. Read `images[].source` plus these notes to know what actually ran |
 | `io.write_failed` | 8 | Output directory does not exist, the file name is invalid, or the finished temporary file could not be renamed onto the target (it is held open elsewhere, the target name is a directory, …) |
 | `io.file_exists` | 8 | `--no-overwrite` (or `=true`) was given and the target already exists; decided by the final rename, not by a pre-check |
 | `io.output_collision` | 8 | Two targets expand to the same output name; the whole batch is refused before any frame is taken, so nothing is written - put `%i` / `%h` into `--out` |

@@ -47,10 +47,10 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 # 天然比中文长得多（en 大约是 zh 的 1.7 倍），拿一个数去卡四种语言会把"这个语言的
 # 说明本来就更啰嗦"判成"帮助膨胀"，所以按语言分别给。
 # 上调这条数字只应该发生在**新增一条选项或新增一段说明**的时候，并且要说得出是哪一次改动。
-# 上一次上调：窗口内部裁剪那一组（grp.crop 一行分组标题 + --roi 与 --client-area 两行说明）。
-# 四种语言各加约 800～2100 字符（英文那份天然最长），所以下面四个数按各自实际增量分别抬起，
-# 并把余量留在"再加一条短选项"还能装下的位置上。
-$HELP_LIMITS = @{ 'zh-CN' = 8000; 'zh-TW' = 8100; 'en' = 14500; 'ja' = 8900 }
+# 上一次上调：光标包含与排除那一条（--cursor 一行目录 + 一句说明；没有新增分组标题）。
+# 四种语言各加约 380～660 字符（英文那份天然最长，实测 +654），所以下面四个数按各自实际
+# 增量分别抬起，并把余量留在"再加一条短选项"还能装下的位置上。
+$HELP_LIMITS = @{ 'zh-CN' = 8200; 'zh-TW' = 8300; 'en' = 14900; 'ja' = 9100 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']
@@ -865,6 +865,119 @@ $cases += @{ Name = '--dry-run 时不判裁剪几何（一条大得放不进的 
    Check = { param($o) (-not $o.PSObject.Properties.Name.Contains('errors')) -and
                         ((Codes $o.notes) -join ',') -match 'note.dry_run' } }
 
+# ---------------------------------------------------------------------------
+# 光标包含与排除（--cursor）：这一节同样只判**解析层**（写法、取值域、与通道能力的组合、回显）。
+# 真去设那个开关、以及"设完读回来是不是那一件事"在 tests\cursor.ps1；
+# 通道链按光标要求收窄、两份登记表一致性与三个键的合成在 tests\cursor_state.cpp。
+# 这里全部配 --dry-run：不取帧，所以既不弹框也不落地，也不会因为本机 Windows 版本而变绿变红
+#（--cursor include 配做不到的那条通道是**结构性**说不通，与本机版本无关，dry-run 照样判）。
+# ---------------------------------------------------------------------------
+foreach ($bad in @('in', 'on', 'yes', 'true', '1', 'both', 'auto', 'Include!', 'include,exclude',
+                   'デフォルト')) {
+    $cases += @{ Name = ('--cursor 的写法不合（[{0}]）' -f $bad)
+       A = ($ANCHOR + @('--cursor', $bad, 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                            $o.errors[0].option -eq '--cursor' -and
+                            $o.errors[0].value -eq $bad }.GetNewClosure() }
+}
+# --cursor 必带取值（不是可选取值那一类），所以 argv 到头就是 cli.missing_value；
+# 而它也要吃值：--cursor out.png 里的 out.png 被当取值并当场报错，不会悄悄变成输出文件名。
+$cases += @{ Name = '--cursor 放在末尾没有取值：cli.missing_value'
+   A = @('--class', 'Shell_TrayWnd', '--dry-run', 'out.png', '--cursor'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.missing_value' -and
+                        $o.errors[0].option -eq '--cursor' } }
+$cases += @{ Name = '--cursor 吃掉后面的输出路径写法并当场报错（不变成文件名）'
+   A = ($ANCHOR + @('--cursor', 'out.png')); Exit = 1; ToStderr = $true
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                        $o.errors[0].value -eq 'out.png' -and
+                        (@($o.notes | ForEach-Object { $_.code }) -join ',') -match 'note.output_defaulted_stdout' } }
+# 三种写法都认（忽略大小写与首尾空白，与 --capture / --format 同一套），且最后一个写法生效。
+foreach ($w in @(@('include', 'include'), @('INCLUDE', 'include'), @(' exclude ', 'exclude'),
+                 @('default', 'default'), @('Exclude', 'exclude'))) {
+    $cases += @{ Name = ('--cursor 认得的写法（{0}）' -f $w[0])
+       A = ($ANCHOR + @('--cursor', $w[0], '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.cursor -eq $w[1] -and $o.input.cursorGiven -eq $true }.GetNewClosure() }
+}
+# 内联写法（--cursor=取值）与分开写法是同一件事：这两个 token 只有一条 --cursor 被消费。
+foreach ($w in @(@('--cursor=include', 'include'), @('--cursor=EXCLUDE', 'exclude'),
+                 @('--cursor=default', 'default'))) {
+    $cases += @{ Name = ('--cursor 的内联写法（{0}）' -f $w[0])
+       A = ($ANCHOR + @($w[0], '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.cursor -eq $w[1] -and $o.input.cursorGiven -eq $true }.GetNewClosure() }
+}
+$cases += @{ Name = '--cursor 写两次：最后一个生效（与 --capture 那条顺序语义一致）'
+   A = ($ANCHOR + @('--cursor', 'include', '--cursor', 'exclude', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.cursor -eq 'exclude' -and $o.input.cursorGiven -eq $true } }
+$cases += @{ Name = '-v 恒回显最终光标要求与"有没有写过这条选项"（默认值问得出来）'
+   A = ($ANCHOR + @('--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.cursor -eq 'default' -and $o.input.cursorGiven -eq $false } }
+# include 这一条要求只有那条真有开关的通道能兑现：显式指定做不到的那几条就在解析期说不通，
+# 而且**绝不**是"那就换一条通道试试"（换到会读桌面像素的那几条既没把光标加回来，
+# 又多拍一份没人批准过的画面）。屏幕目标那一路同理。
+foreach ($m in @('dwm', 'printwindow', 'bitblt', 'duplication')) {
+    $cases += @{ Name = ('--cursor include 配 --capture {0}：解析期就拒，不换后端' -f $m)
+       A = ($ANCHOR + @('--cursor', 'include', '--capture', $m, 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'capture.cursor_unsupported' -and
+                            $o.errors[0].option -eq '--cursor' -and
+                            $o.errors[0].value -eq 'include' -and
+                            $o.errors[0].message -match $m -and
+                            $o.errors[0].message -match 'wgc' -and
+                            $o.errors[0].stage -ne 'capture' }.GetNewClosure() }
+    $cases += @{ Name = ('屏幕目标上 --cursor include 配 --capture {0} 同一条码' -f $m)
+       A = @('--monitor', 'primary', '--cursor', 'include', '--capture', $m, 'out.png'); Exit = 1
+       Check = { param($o) (Codes $o.errors) -contains 'capture.cursor_unsupported' }.GetNewClosure() }
+}
+foreach ($m in @('wgc', 'auto', 'dwm', 'printwindow', 'bitblt', 'duplication')) {
+    $cases += @{ Name = ('--cursor exclude 配 --capture {0} 在解析期放行（差别在结果里那三个键）' -f $m)
+       A = ($ANCHOR + @('--cursor', 'exclude', '--capture', $m, '--dry-run', 'out.png')); Exit = 0
+       Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') }.GetNewClosure() }
+}
+$cases += @{ Name = '--cursor include 配 --capture wgc / auto 放行（这两条兑现得了）'
+   A = ($ANCHOR + @('--cursor', 'include', '--capture', 'wgc', '--dry-run', 'out.png')); Exit = 0
+   Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') } }
+# -v 的 captureChain 与真去截图那一次同一个判据：要求 include 时链里只剩设得进开关的那一条。
+# 这里判的是"回显与执行不各写一套"，note 那几条只在真取帧时才发（--dry-run 不判运行时闸门）。
+$cases += @{ Name = '-v 的 input.captureChain 按光标要求收窄（auto + include 只剩 wgc）'
+   A = ($ANCHOR + @('--cursor', 'include', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' } }
+$cases += @{ Name = 'exclude 不收窄链（那几条本来就没有光标，wgc 那条去设开关）'
+   A = ($ANCHOR + @('--cursor', 'exclude', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' } }
+$cases += @{ Name = '没写 --cursor 时链与这条选项存在之前逐字相同'
+   A = ($ANCHOR + @('--capture', 'auto', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' } }
+$cases += @{ Name = '屏幕模式的 auto 链同样按 include 收窄'
+   A = @('--monitor', '--class', 'Shell_TrayWnd', '--dry-run', '--cursor', 'include',
+         '--capture', 'auto', '--verbose', 'out.png'); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' -and
+                        $o.input.target -eq 'window' } }
+# 一条选项写坏了名字要给出具体的那条建议；帮助里必须看得见这条选项（目录是契约的唯一来源）。
+$cases += @{ Name = '--curso 写坏时建议指向 --cursor'
+   A = @('--curso', 'out.png'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.unknown_option' -and
+                        $o.errors[0].hint -eq '--cursor' } }
+$cases += @{ Name = '--help 含光标那一条选项与其三种取值'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--cursor <default|include|exclude>') }
+# 光标不是匹配条件，也不是屏幕目标：只给 --cursor 仍是"零条件"，帮人别在无意间拍到东西。
+$cases += @{ Name = '只给 --cursor 而不给任何条件：仍是文本帮助 + 退出码 2'
+   A = @('--cursor', 'exclude'); Exit = 2; Text = $true; Has = @('未指定任何匹配条件') }
+# 两类查询都不产图，所以截图那一级的选项一条都不成立（光标属于取帧那一级）。
+$cases += @{ Name = '环境查询与 --cursor 冲突（cli.query_conflict）'
+   A = @('--capabilities', '--cursor', 'include'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -match '--cursor' } }
+$cases += @{ Name = '屏幕查询与 --cursor 冲突'
+   A = @('--screens', '--cursor', 'exclude'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' } }
+$cases += @{ Name = '窗口查询与 --cursor 冲突（cli.window_query_conflict）'
+   A = @('--list', '--cursor', 'exclude'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -match '--cursor' } }
+# 与裁剪那一条同源：--cursor 与 --roi 各管各的（一个是留哪一块，一个是有没有指针），不算冲突。
+$cases += @{ Name = '--cursor 与 --roi 同时给出不算冲突（两件事各说各的）'
+   A = ($ANCHOR + @('--cursor', 'exclude', '--roi', '0,0,5,5', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.cursor -eq 'exclude' -and $o.input.crop.mode -eq 'roi' } }
+
 # ---------- 只读查询（--capabilities / --diagnostics）----------
 # 这两份文档不是截图结果：没有 captured / images，也没有 notes / input。用例要标 Query，
 # 跑批那一段才按查询契约判（判据本体在 tests\capabilities.ps1 与离线层）。
@@ -1466,7 +1579,13 @@ $PROBE = @(
     @{ Name = '屏幕标识不存在'; A = @('--monitor=device:NOSUCHSCREEN', '--dry-run', 'out.png'); Exit = 4 },
     @{ Name = '屏幕标识前缀不认识'; A = @('--monitor=foo:1', 'out.png'); Exit = 1 },
     @{ Name = '屏幕标识取值为空'; A = @('--monitor=id:', 'out.png'); Exit = 1 },
-    @{ Name = '屏幕查询与截图选项冲突'; A = @('--screens', '--yes'); Exit = 1 }
+    @{ Name = '屏幕查询与截图选项冲突'; A = @('--screens', '--yes'); Exit = 1 },
+    # 光标那两条解析期就出结果的码：文字四种语言都要有，而 code / stage / 退出码逐字一致。
+    # （env.cursor_unsupported 与 capture.cursor_unverifiable 要到运行期才出得来，
+    #   它们的四语一致性由 tests\cursor.ps1 与离线层判，这里不为了凑现场去截一张图。）
+    @{ Name = '光标取值非法'; A = @('--cursor', 'watery', '--pid', '1', 'out.png'); Exit = 1 },
+    @{ Name = '光标要求配做不到的通道'; A = @('--cursor', 'include', '--capture', 'bitblt', '--pid', '1', 'out.png'); Exit = 1 },
+    @{ Name = '光标要求与环境查询冲突'; A = @('--capabilities', '--cursor', 'exclude'); Exit = 1 }
 )
 $bad = 0
 

@@ -26,6 +26,7 @@
 #include "CapturePrintWindow.h"
 #include "Consent.h"
 #include "CropGeometry.h"
+#include "CursorControl.h"   // 光标能力的闸门与 requested/effective/basis 那三个键的合成（判据在那个头文件）
 #include "Deadline.h"
 #include "Encoder.h"
 #include "FileSave.h"
@@ -182,7 +183,8 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
 // 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
 bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
                        const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
-                       const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
+                       const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
+                       Diagnostic* err) {
     if (!win.Recheck(IdentityScope::kCheap, err)) return false;
 
     const wchar_t* path = WindowPathOf(method);
@@ -200,7 +202,9 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
 
     switch (method) {
         case CaptureMethod::kWgc:
-            return CaptureWindowWgc(hwnd, wait, out, err);
+            // 光标这件事只有这一条通道有一个真设得进去、也读得回来的开关，所以要求原样交给它；
+            // 兑现不了时它在开始采集**之前**就停下（capture.cursor_unverifiable）。
+            return CaptureWindowWgc(hwnd, wait, cursor, out, err);
         case CaptureMethod::kDwmThumbnail:
             // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去；
             // 身份也一并交给它 —— 那条退路读的是桌面像素，升级之前要按 kFull 再复核一次。
@@ -226,7 +230,8 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
 // 剩下的三条（wgc / duplication / bitblt）拍的都是那块屏上此刻的一切，全部是桌面路径。
 bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
                              const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
-                             const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
+                             const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
+                             Diagnostic* err) {
     const wchar_t* path = ScreenPathOf(method);
     AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, screen.bounds, err);
     if (!auth.ok) {
@@ -237,7 +242,8 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
 
     switch (method) {
         case CaptureMethod::kWgc:
-            return CaptureScreenWgc(screen, wait, *auth.permit, out, err);
+            // 整屏那条与窗口那条共用同一条会话接口，所以光标开关同样设得进去
+            return CaptureScreenWgc(screen, wait, cursor, *auth.permit, out, err);
         case CaptureMethod::kBitBlt:
             return CaptureScreenBitBlt(screen, wait, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
@@ -332,40 +338,40 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, 
 bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
                        const WindowTarget& win, CaptureMethod method,
                        const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
-                       const Deadline& dl, CapturedFrame* out, Diagnostic* err,
-                       std::vector<Diagnostic>* notes, bool* fatal) {
+                       const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
+                       Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureOneChannel(gate, targetKey, area, win, method,
-                                                        timeoutMs, dl, out, err);
+                                                        timeoutMs, dl, cursor, out, err);
                            },
                            err, fatal);
     }
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl,
-                                                      frame, e);
+                                                      cursor, frame, e);
                          });
 }
 
 bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
                              const ScreenInfo& screen, CaptureMethod method,
                              const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
-                             const Deadline& dl, CapturedFrame* out, Diagnostic* err,
-                             std::vector<Diagnostic>* notes, bool* fatal) {
+                             const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
+                             Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureScreenOneChannel(gate, targetKey, screen, method,
-                                                              timeoutMs, dl, out, err);
+                                                              timeoutMs, dl, cursor, out, err);
                            },
                            err, fatal);
     }
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureScreenOneChannel(gate, targetKey, screen, m, timeoutMs,
-                                                            dl, frame, e);
+                                                            dl, cursor, frame, e);
                          });
 }
 
@@ -606,7 +612,10 @@ CaptureOutcome RunCapture(const Options& opt) {
     // --dry-run 不取帧，所以这一关不替它下结论（它那条"这次会挑到哪几条通道"的答案在 -v 的
     // input.captureChain 与 input.osBuild 里，问能力不必等到要截图的时候）。
     const OsVersion os = ProbeOsVersion();
-    const ChannelGate caps = GateChannels(opt.capture, opt.ScreenMode(), os);
+    // 两条闸门串成一份（GateChannels 按本机版本筛，FilterChainForCursor 按这次的光标要求筛）：
+    // --capture auto 时做不到的那几条在这里就摘掉并各留一条 note，显式指定的那条做不到时
+    // 一条错误、链为空 —— **绝不**替用户换成另一条通道（尤其不会换成会读桌面像素的那几条）。
+    const ChannelGate caps = GateCaptureChain(opt.capture, opt.ScreenMode(), os, opt.cursor);
     if (!opt.dryRun) {
         if (!caps.error.code.empty()) {
             outcome.errors.push_back(caps.error);
@@ -888,12 +897,14 @@ CaptureOutcome RunCapture(const Options& opt) {
                                  return t.isScreen
                                             ? CaptureScreenWithMethod(gate, t.Tag(), t.screen,
                                                                       opt.capture, caps.chain,
-                                                                      kFrameTimeoutMs, dl, &frame,
+                                                                      kFrameTimeoutMs, dl,
+                                                                      opt.cursor, &frame,
                                                                       &targetErr, &outcome.notes,
                                                                       &fatal)
                                             : CaptureWithMethod(gate, t.Tag(), t.area, t.win,
                                                                 opt.capture, caps.chain,
-                                                                kFrameTimeoutMs, dl, &frame,
+                                                                kFrameTimeoutMs, dl, opt.cursor,
+                                                                &frame,
                                                                 &targetErr, &outcome.notes, &fatal);
                              },
                              &targetErr, &fatal);
@@ -915,6 +926,13 @@ CaptureOutcome RunCapture(const Options& opt) {
                 // 调用方要靠它判断自己拿到了什么，--quiet 也不许把它藏起来。
                 img.path = frame.path.empty() ? std::wstring(paths::kUnknown) : frame.path;
                 img.scope = ScopeName(ScopeOf(img.path));
+                // 光标那三个键在这里合成，一次算完（判据与取值都在 src/CursorControl.h）：
+                // requested 是用户要的那一种，effective 是**这条路径实际**交回的那一种，
+                // basis 说这个结论凭什么。frame 里那两个值是 wgc 设完再读回来的答复；
+                // 其余通道留 false/false，它们的"这一帧里没有光标"来自登记表而不是那次问答，
+                // 所以不会在这里冒充"我读过开关"。没写 --cursor 时 written=false，三个键都不出现。
+                img.cursor = MakeCursorReport(opt.cursor, img.path, frame.cursorStateKnown,
+                                              frame.cursorInFrame);
                 // 从整幅桌面帧里裁出目标的通道（duplication / 拷屏幕的 bitblt）会报告实际截到的
                 // 那块矩形：请求的矩形没被完整截到时，图照常交付但要说清楚，绝不能默认"这就是
                 // 整个窗口"。窗口内容路径不报，等于"没有丢区域"。

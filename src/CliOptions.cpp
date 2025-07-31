@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include "ScreenMatch.h"   // 只要那条 inline 的 StripScreenDevicePrefix：设备名前缀的形状只写一处
+#include "CursorControl.h"  // 只要 inline 的那张光标登记表：解析期判"这条通道做不做得到"
 
 namespace ecapture {
 namespace {
@@ -327,6 +328,10 @@ using cli_limits::kMaxWindowListItems;
 constexpr const wchar_t* kCaptureValues[] = {
     L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
 
+// --cursor 的取值。default 是这条选项的默认值，含义是"本工具对光标这件事一个字都不改"
+// （不调任何通道的开关，结果里也不出现那三个键）；判据本体在 src/CursorControl.h。
+constexpr const wchar_t* kCursorValues[] = {L"default", L"include", L"exclude", nullptr};
+
 // --lang 的规范写法。宽容输入（zh_TW / zh-Hant / cht / jp）由 LanguageFromTag 负责，
 // 这里只列推荐值，用于 --help 与取值非法时的提示。
 constexpr const wchar_t* kLangValues[] = {
@@ -379,6 +384,9 @@ constexpr OptionSpec kOptions[] = {
     {L"all", L"a", false, L"pick", L"", nullptr, L"opt.all"},
     // ---- 取图方式 ----
     {L"capture", L"C", true, L"capture", L"<method>", kCaptureValues, L"opt.capture"},
+    // 光标要不要画进画面。取值写在 valueHint 里（这三个字本身就是判据），说明只写行为差别：
+    // 判据本体在 src/CursorControl.h 那张按路径登记的表，不在文案里另写一份"哪条通道支持"。
+    {L"cursor", L"", true, L"capture", L"<default|include|exclude>", kCursorValues, L"opt.cursor"},
     // ---- 窗口内部裁剪（--roi 与 --client-area 互斥）----
     // 坐标系写在说明里（判据本体在 src/CropGeometry.h）：那四个数是**交付的整窗图像自己的像素
     // 坐标**，不是桌面绝对坐标；单位是物理像素，不按窗口所在屏的 DPI 缩放。
@@ -683,6 +691,15 @@ const wchar_t* CropModeName(CropMode m) {
         case CropMode::kNone: return L"none";
         case CropMode::kRoi: return L"roi";
         case CropMode::kClientArea: return L"client-area";
+    }
+    return L"?";
+}
+
+const wchar_t* CursorModeName(CursorMode m) {
+    switch (m) {
+        case CursorMode::kDefault: return L"default";
+        case CursorMode::kInclude: return L"include";
+        case CursorMode::kExclude: return L"exclude";
     }
     return L"?";
 }
@@ -1027,6 +1044,32 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             else if (v == L"duplication") opt.capture = CaptureMethod::kDuplication;
             else opt.capture = CaptureMethod::kAuto;  // 取值已在上面按 kCaptureValues 校验过
             opt.captureExplicit = true;
+            return;
+        }
+
+        // ---- 光标 ----
+        // 取值只认那三个词（忽略大小写与首尾空白，与 --capture / --format 同一套写法）。
+        // 认不了就整条不认，不退化成 default：那等于把一次写错的"要不要光标"变成一个没人要的决定。
+        // 重复给出时最后一个生效（与其它取值选项的顺序语义一致），而 written 留的是**最后一个有效**
+        // 的那个原样写法，报错与 -v 回显都按它。
+        if (name == L"cursor") {
+            const std::wstring v = ToLower(Trim(value));
+            CursorMode mode = CursorMode::kDefault;
+            bool known = false;
+            if (v == L"default") { mode = CursorMode::kDefault; known = true; }
+            else if (v == L"include") { mode = CursorMode::kInclude; known = true; }
+            else if (v == L"exclude") { mode = CursorMode::kExclude; known = true; }
+            if (!known) {
+                std::wstring list;
+                for (const wchar_t* const* p = kCursorValues; *p; ++p) {
+                    if (p != kCursorValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kInvalidValue, Msg(L"cli.cursor_value"), L"--cursor", value, list);
+                return;
+            }
+            opt.cursor.mode = mode;
+            opt.cursor.given = true;
             return;
         }
 
@@ -1392,6 +1435,32 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                     clientArea ? L"--client-area" : L"--roi", clientArea ? L"" : opt.crop.written,
                     Msg(L"cap.crop_unsupported_for_screen_hint"));
             }
+        }
+
+        // ---- 光标要求与这条通道能不能兑现 ----
+        // 这件事由那条路径的**来源像素**决定，不是一件可以事后商量的装饰：那几条通道交回的
+        // 画面里根本没有光标可画（printwindow 是窗口自绘到 DC、dwm 读重定向位图、bitblt 拷屏幕 DC、
+        // duplication 的桌面帧把指针当独立元数据交回而本工具从不合成它）。所以 --cursor include
+        // 配它们就在解析期说做不到：退出码 1，一个像素都不取、不弹框、也不"那就换一条会读桌面的
+        // 通道试试"（换过去既没把光标加回来，又多拍一份没人批准过的画面）。
+        // --capture auto 不在这里判：做不到的那几条由闸门从链里摘掉并各留一条 note，
+        // 摘到空了才报错（见 src/CursorControl.cpp）。
+        // exclude 这一路各条通道都成立（有开关的去设，没开关的靠来源本来就没有光标），
+        // 差别只在结果里那个 basis 说的是哪一件事。
+        if (opt.cursor.given && !CursorRequestPossible(opt.capture, opt.cursor.mode)) {
+            const CaptureMethod kChannels[] = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
+                                               CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt,
+                                               CaptureMethod::kDuplication};
+            std::wstring canDo;
+            for (const CaptureMethod m : kChannels) {
+                if (!CursorRequestPossible(m, opt.cursor.mode)) continue;
+                if (!canDo.empty()) canDo += L", ";
+                canDo += CaptureMethodName(m);
+            }
+            Err(codes::kCursorUnsupported,
+                Msgf(L"cap.cursor_unsupported", CursorModeName(opt.cursor.mode),
+                     CaptureMethodName(opt.capture), canDo),
+                L"--cursor", CursorModeName(opt.cursor.mode), Msg(L"cap.cursor_unsupported_hint"));
         }
 
         // 没给输出路径不再算错：按 "--out -" 处理，图片走 stdout，JSON 走 stderr

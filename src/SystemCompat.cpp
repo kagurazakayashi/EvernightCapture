@@ -88,6 +88,10 @@ Capability AssessChannel(CaptureMethod method, bool screenMode, const OsVersion&
     return {Judge(os, minBuild), minBuild};
 }
 
+Capability AssessWgcCursorControl(const OsVersion& os) {
+    return {Judge(os, os_floor::kWgcCursor), os_floor::kWgcCursor};
+}
+
 const std::vector<CaptureMethod>& AutoChain(bool screenMode) {
     // 屏幕目标没有"某个窗口自己的画面"可截，所以链与窗口模式不同（见 --capture 的说明）。
     static const std::vector<CaptureMethod> kWindow = {

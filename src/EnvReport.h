@@ -92,6 +92,16 @@ inline constexpr const wchar_t* kDesktopNeedsDialog = L"desktop_paths_need_answe
 // 本进程没被提升过，而更高完整性级别的目标窗口本来就不一定会响应跨进程的绘制请求。
 // 只报这个事实，不断言"截不到"（那一条要看具体目标）。
 inline constexpr const wchar_t* kNotElevated = L"unelevated_process_may_miss_elevated_targets";
+// 光标（--cursor）那一段的边界：结果里 cursorEffective 断言到的是"这条会话被设置成画 / 不画
+// 光标"与"这条路径的来源像素里本来就没有光标"这两层，**不是**"这一张图里看得见或看不见指针"。
+// 本 SDK 的会话接口没有 IsCursorVisible 那个只读属性，像素级的事这一层一条都不声称，
+// 也不去用像素反推（那需要真的截一次，而这一份查询的规矩是一个像素都不取）。
+inline constexpr const wchar_t* kCursorSettingNotPixels =
+    L"cursor_effective_is_a_setting_not_a_pixel_check";
+// 桌面复制那两条的指针形状是**独立元数据**，本工具从不取它、也从不动手把它画进帧里，
+// 反过来也不抹。所以"排除"这件事在那些路径上说的是来源本来就没有，而不是事后修过图。
+inline constexpr const wchar_t* kPointerNeverComposited =
+    L"pointer_shape_never_composited_nor_erased";
 }  // namespace caveat
 
 // 本项目**唯一实测过**这套工具的环境。README《系统支持》与 AGENTS.md 里"已实测"记的就是它，
@@ -198,6 +208,43 @@ struct BackendReport {
     std::vector<ConsentPathReport> paths;
 };
 
+// 一条取帧路径对"光标在不在画面里"能做到什么（判据与 capability / reason 两套 token 的唯一
+// 出处在 src/CursorControl.h，这一份只是把它写成机器可读的一行，不再判第二次）。
+// 那两个状态是三值的（yes / no / unknown），因为"这台机器上做不到"与"这一问没答案"是两件事：
+// 开关那条的版本门槛问不出来时只能写 unknown，绝不折成 yes 或 no（与三值判据那一条同源）。
+struct CursorPathReport {
+    std::wstring path;           // images[].path 里那个机器名
+    std::wstring capability;     // settable / excludes_cursor / unregistered
+    std::wstring reason;         // cursor_reason:: 那一个 token（这条路径的根据）
+    std::wstring includeState;   // 这条路径兑现得了 --cursor include 吗：yes / no / unknown
+    std::wstring excludeState;   // 这条路径**敢不敢声称**兑现了 --cursor exclude：同上三值
+};
+
+struct CursorControlReport {
+    std::wstring api;                    // 那条会话接口的名字（要能对着微软文档查到同一条）
+    bool compiled = true;                // 这个构建里有没有用它
+    CapStatus status = CapStatus::kUnverified;
+    std::wstring reason = cap_reason::kNone;
+    uint32_t minBuild = 0;               // 这个开关自己的版本门槛（os_floor::kWgcCursor）
+    Tri verifiedOnThisMachine = Tri::kUnknown;
+};
+
+// --cursor 这一段：默认值、三种取值、那条唯一的开关在本机的状态、以及每条路径各能做到什么。
+// 三件事照旧分开写：compiled（这个构建里有没有）/ status（本机现在让不让走）/
+// verifiedOnThisMachine（本项目有没有在这种系统上实测过）。
+struct EnvCursorReport {
+    std::wstring option = L"--cursor";
+    std::wstring defaultValue = L"default";   // 明确记录默认值：不给 = default = 一个字都不改
+    std::vector<std::wstring> values;         // default / include / exclude
+    CursorControlReport control;              // JSON 里那一段叫 "switch"（switch 是 C++ 关键字）
+    std::vector<CursorPathReport> paths;
+    // 本工具对指针形状与像素动手的那两问，答案恒是"没有"：既不把独立元数据合成进帧，
+    // 也不事后抹掉已经画进去的光标。这两条写出来，是让调用方不必读源码就知道 effective
+    // 那个结论**不是**靠图像修补得来的。
+    std::wstring pointerCompositing = L"never";
+    std::wstring pixelRetouching = L"never";
+};
+
 struct FormatReport {
     std::wstring name;               // png / jpeg / ...
     bool compiled = true;
@@ -241,6 +288,8 @@ struct EnvReport {
     uint32_t consoleSessionId = 0;
 
     std::vector<BackendReport> backends;
+    // 光标这件事（--cursor）：默认值 + 那条开关在本机的状态 + 每条路径各能做到什么。
+    EnvCursorReport cursor;
     std::vector<FormatReport> formats;
     // 本机现在能试的 auto 链（两种目标各一份，被版本挡掉的那几条不在里面）。
     // 与 GateChannels 同源：查询里给的那一份和真去截图时用的那一份必须是同一个判据算的。

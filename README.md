@@ -138,6 +138,7 @@ When several windows match (mutually exclusive)
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
   --capture, -C <method>                      wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
+  --cursor <default|include|exclude>          Whether the mouse pointer belongs in the image: default (nothing is changed and the three cursor keys stay out of the result) / include / exclude. Only wgc has a cursor switch that can really be set and read back (needs build 19041+); the other paths never contain a pointer, so include with printwindow / dwm / bitblt / duplication is refused as capture.cursor_unsupported and the tool never falls back to a screen-pixel channel; with auto those are dropped from the chain, each leaving a note.cursor_channel_skipped. This does not change consent; the requested / effective / basis rules are in the README
 
 Cropping inside the window (another crop of the delivered whole-window image, in that image's own pixel coordinates - not desktop coordinates; the two below are mutually exclusive)
   --roi <x,y,w,h>                             Cut a w x h block starting at x,y out of the delivered whole-window image. The origin (0,0) is this image's own top-left pixel (the image is the visible window frame you actually see; the transparent DWM resize border is not in it), in physical pixels and not scaled by DPI (the process is per-monitor v2, so multiply the scale yourself for logical pixels) - which is why these four numbers are never read as desktop-absolute coordinates. Four decimal integers separated by commas; x and y may be 0, w and h are at least 1, none above 16384. If it does not fit, nothing is written: match.roi_out_of_range when that is already clear before the frame is taken (no dialog, no file) and capture.roi_invalid when it only turns out afterwards - the rectangle is never slid inside, never cropped to the edge, and the uncropped window is never handed over instead. The crop runs after the capture, so it changes nothing about authorization: channels that sample the screen still always ask, and --yes does not start applying because only a small piece is kept. In the result cropRect is in image pixels, cropScreenRect is the same rectangle in screen coordinates (written only when the image's screen origin can be established), fullWidth/fullHeight are the size before cropping and width/height after. Mutually exclusive with --client-area, and meaningless for a whole-screen target (capture.unsupported)
@@ -295,6 +296,11 @@ A screen image (`--monitor` with no window conditions) has no window to attribut
 tell the two kinds apart by checking whether `monitor` exists. Both kinds carry `path` / `scope` / `rect`: a whole
 screen is `screen.wgc` / `screen.bitblt` / `screen.duplication` with `scope` `desktop`, while `--monitor <n>`
 together with window conditions still produces window images with `scope` `window`.
+
+When `--cursor` was given, each image also carries `cursorRequested` / `cursorEffective` / `cursorBasis` - what was
+asked, what this path actually delivered, and on what evidence. Without that option none of the three appears, which
+is what keeps the default (no request at all) byte-for-byte the older output shape; see
+[The mouse pointer in the image](#the-mouse-pointer-in-the-image---cursor).
 
 The channels that read the screen and cut the target out of a whole desktop frame (`duplication`, and `bitblt` /
 `dwm`'s screen route) additionally report *where* in the desktop they actually got those pixels:
@@ -625,10 +631,11 @@ Three rules:
 | `authorization` | `yesSkips: "window-content"`, `desktopPixelsAlwaysAsk: true`, unregistered paths treated as `desktop`, plus the whole internal-path registry with `scope` and `consentWithoutYes` / `consentWithYes` per row - the machine-readable form of the table in 《Screenshot authorization and \`--yes\`》 |
 | `backends` | per route: `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`, plus which internal path it takes for window and for screen targets (`dwm`'s screen fallback included, so `--yes` cannot be read as covering more than it does) |
 | `formats` | per format: `compiled` / `status` / `reason` / `minBuild` / `registered`. `registered` is always `unknown` because this layer does not exercise encoders (doing so would be probing capability by producing an image, the same reason we never probe by capturing). `webp` / `ico`, once advertised and then removed for lack of an encoder, stay here as `compiled: false` + `reason: "not_compiled"` so a caller gets a definite answer |
+| `cursor` | the `--cursor` story: `default` (what happens when the option is absent), the three values, that one switch as `compiled` / `status` / `reason` / `minBuild` (19041) / `verifiedOnThisMachine`, then one row per registered internal path with `capability` (`settable` / `excludes_cursor` / `unregistered`), `reason` and `include` / `exclude` each as `yes` / `no` / `unknown`, plus `pointerShapeCompositing: "never"` and `pixelRetouching: "never"`. Nothing is probed by capturing, so a path that is not in the registry reads `unknown` rather than a guessed answer |
 | `autoChainWindow` / `autoChainScreen` | the `auto` chain this machine can take now. Computed by the **same** `GateChannels` call that fills `input.captureChain` for a real run, and `tests\capabilities.ps1` compares the two |
 | `limits` | maximum frame side and bytes, `--timeout-ms` ceiling, built-in isolated-call ceiling, WGC frame-pool rebuild count, ordinal and PID ceilings, `stdoutTargetsMax: 1`, JPEG quality range |
 | `privacy` | what this query declares it did not do: no screen captured, no dialog shown, nothing uploaded, no user files enumerated, no environment variables read, no usernames, no paths |
-| `caveats` | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+| `caveats` | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer") |
 
 Both documents come out of **one** judgement function (`BuildEnvReport` in `src/EnvReport.cpp`) and differ only
 in which sections they print: `--diagnostics` always includes the `build` section (PE link timestamp, machine
@@ -825,14 +832,14 @@ courtesy. The document prints device paths and neither a filesystem path nor a u
 
 ## Capture channels
 
-| Value | Channel | Covered window | Hardware-accelerated content | API history floor |
-| --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | yes (DWM cache) | normal | Win10 1903 (18362) — the `CreateForWindow` / `CreateForMonitor` interop, not the 1803 namespace |
-| `dwm` | DwmRegisterThumbnail | yes | mostly normal, protected windows black | Win8.1 (9600) — registering is older, but the read-back is `PrintWindow(PW_RENDERFULLCONTENT)` |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | yes (window self-draw) | often fully black | Win8.1 (9600) for that flag |
-| `bitblt` | BitBlt from a screen DC | no, visible pixels only | partly black | no floor of its own |
-| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal | Win8 (9200); RDP / virtual GPUs often yield nothing |
-| `auto` | falls back wgc → dwm → printwindow → bitblt | best effort | best effort | the chain minus whatever this build gates out |
+| Value | Channel | Covered window | Hardware-accelerated content | Pointer (`--cursor`) | API history floor |
+| --- | --- | --- | --- | --- | --- |
+| `wgc` | Windows.Graphics.Capture | yes (DWM cache) | normal | a real switch, set and read back (19041+) | Win10 1903 (18362) — the `CreateForWindow` / `CreateForMonitor` interop, not the 1803 namespace |
+| `dwm` | DwmRegisterThumbnail | yes | mostly normal, protected windows black | never in the source pixels | Win8.1 (9600) — registering is older, but the read-back is `PrintWindow(PW_RENDERFULLCONTENT)` |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | yes (window self-draw) | often fully black | never in the source pixels | Win8.1 (9600) for that flag |
+| `bitblt` | BitBlt from a screen DC | no, visible pixels only | partly black | never in the source pixels | no floor of its own |
+| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal | the pointer arrives as separate metadata | Win8 (9200); RDP / virtual GPUs often yield nothing |
+| `auto` | falls back wgc → dwm → printwindow → bitblt | best effort | best effort | `include` narrows it to `wgc` | the chain minus whatever this build gates out |
 
 Those are the **API history floors**, each checked against the Microsoft documentation for the exact call
 that route makes. They are not what this program claims to run on, and they are not measured either: see
@@ -879,6 +886,75 @@ reports instead of a vague failure.
 - If the target monitor leaves the desktop or changes shape after the confirmation, the capture stops with
   `capture.monitor_changed` (exit code 7) — the tool never substitutes another monitor, and the authorization stays
   bound to the one a person looked at.
+
+## The mouse pointer in the image (`--cursor`)
+
+`--cursor default|include|exclude` says whether the mouse pointer belongs in the image. The default value,
+`default`, means this tool changes **nothing**: it touches no channel's cursor setting and the result carries none of
+the three cursor fields, so the output is exactly what it was before this option existed. Writing
+`--cursor default` on purpose is a different thing - still no change, but the result reports what that path really
+delivered.
+
+What each route can promise is decided by **where its pixels come from**, not by the channel name, and the registry
+for that is `src/CursorControl.h`: one row per internal `images[].path`, the same shape as the authorization
+registry, and a path that is not registered is treated strictly (neither request is claimed).
+
+- `wgc` and `screen.wgc` are the only paths with a switch that can really be set and read back -
+  `IGraphicsCaptureSession2::IsCursorCaptureEnabled`, introduced in Windows build 19041. That is a *higher* floor
+  than the `wgc` channel's own 18362: a 1903 machine can capture with `wgc` and still be unable to say anything
+  about the pointer.
+- `printwindow` (a window painting itself into a DC), `dwm.thumbnail` (the DWM redirection surface),
+  `dwm.screen` / `bitblt.screen` / `screen.bitblt` (a screen DC, where the system cursor is drawn outside the DC's
+  content) and `duplication.frame` / `screen.duplication` (the desktop image, from which the pointer is delivered
+  as *separate metadata*) contain no pointer at all. So `exclude` is true of them as a fact about the source, and
+  `include` is simply not something they can do.
+
+Two rules follow, and both exist so that "I asked for it" can never be read as "I got it":
+
+- **A request a route cannot deliver is refused, not re-routed.** `--cursor include` with `printwindow`, `dwm`,
+  `bitblt` or `duplication` is `capture.cursor_unsupported` (exit `1`) at parse time - before any dialog, before any
+  output name is planned, before a pixel. Switching to a channel that reads the screen would neither add a pointer
+  (those sources hold none) nor be a frame anybody approved. With `--capture auto` the routes that cannot honour the
+  request are dropped from the chain and each leaves a `note.cursor_channel_skipped`; when nothing is left, or when
+  this machine's Windows build is below 19041 and the request was explicit, the code is `env.cursor_unsupported`
+  (exit `7`) and nothing is captured. `--verbose` echoes the surviving chain as `input.captureChain`, computed by the
+  same function the run uses, so `--cursor include` + `auto` shows `["wgc"]`.
+- **No pixel retouching.** The tool does not fetch the duplication pointer shape to draw it, never `DrawIcon`s a
+  cursor into a frame, and never tries to erase a pointer that is already there - those are image patching and none
+  of them is verifiable. `tests\cursor.ps1` fails if such a call ever appears anywhere in `src/`.
+
+For every delivered image, and only when `--cursor` was written at all, three fields say what happened:
+
+| Field | Values | Meaning |
+| --- | --- | --- |
+| `cursorRequested` | `default` / `include` / `exclude` | what was asked for |
+| `cursorEffective` | `include` / `exclude` / `unverified` | what this path actually delivered |
+| `cursorBasis` | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `wgc_cursor_property_unavailable` | on what evidence |
+
+`wgc_session_property_set` means the switch was set for this request and the value read back matched it;
+`wgc_session_property_read` means nothing was set (`--cursor default`) and only the current value was read;
+`path_excludes_cursor` means this path's source pixels contain no pointer; `wgc_cursor_property_unavailable` means
+that question gave no answer, and then `cursorEffective` is `unverified` rather than either answer.
+
+`cursorEffective` stops at exactly that evidence. It says this session was set to draw the pointer, or that this
+source holds none - it does **not** claim a pointer happened to be sitting over the target in these pixels. This
+SDK's session interface has no read-only `IsCursorVisible`, so the tool makes no pixel-level assertion, and
+`--capabilities` states that boundary as the `cursor_effective_is_a_setting_not_a_pixel_check` caveat. If an explicit
+`include` / `exclude` request cannot be confirmed on a `wgc` capture (the interface cannot be obtained, the set call
+fails, or the value read back is the opposite one), the code is `capture.cursor_unverifiable` (exit `7`) *before*
+`StartCapture`, so a frame that contradicts the request is never delivered; under `--cursor default` the same
+situation is reported as `unverified` instead of being folded into either answer.
+
+Asking about the pointer changes nothing about authorization. The tier is still decided by where the pixels come
+from, so `--cursor exclude` on `bitblt`, `duplication` or any whole-screen target still shows the dialog and `--yes`
+still does not cover it; `wgc` without `--yes` still asks. Those three cases are checked on a real window in
+`tests\cursor.ps1`. Like `path` / `scope` / `rect` and the crop fields, these three are locating evidence and
+`--quiet` does not suppress them.
+
+`--capabilities` answers all of the above without capturing anything, in its `cursor` section: the default value, the
+three values, that single switch as `compiled` / `status` / `minBuild` / `verifiedOnThisMachine`, one row per
+registered path with `capability` / `reason` / `include` / `exclude` (each of the last two `yes` / `no` / `unknown`),
+and `pointerShapeCompositing: "never"` plus `pixelRetouching: "never"`.
 
 ## Screenshot authorization and `--yes`
 
@@ -1144,6 +1220,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 | `.\tests\consent.ps1` | Consent tiers: an offline layer runs the whole `ConsentGate` state machine against an injected fake prompt (`build\ecapture-consent-tests.exe`, from `tests\consent_state.cpp`), and the on-device layer answers every dialog "No" to check which paths must ask, what a refusal reports (`code` / `stage` / `target` / `value`), that nothing lands on disk, and that `images[].path` / `scope` / `rect` are right. Never answers "Yes" on a human's behalf |
 | `.\tests\isolation.ps1` | On-device resource isolation: a same-named process it did not start stays alive and is never the target, two concurrent runs don't cross, an aborted run cleans up only itself |
 | `.\tests\identity.ps1` | Target identity and z-order selection. Offline layer (`build\ecapture-identity-tests.exe`, injected fake query layer): handle reused by another process, same PID but a different process, class changed, the selection condition no longer holding, every question that cannot be answered, and which questions each grade asks in what order. On-device layer (self-made windows only): healthy targets are never blocked, `capture.target_gone` when the target is destroyed mid-batch, `capture.target_changed` when a renamed window no longer satisfies the `--title` condition, a refreshed title that still satisfies it captures normally, and `--topmost-match` / `--bottommost-match` are judged against the current z-order (the window created first but living in the topmost band wins — exactly what a "most recently created" reading gets wrong). Handle and PID recycling cannot be staged on purpose without killing somebody's process, and the consent-dialog span needs `-SimulateConsent`; both are recorded as unverified, never faked |
+| `.\tests\cursor.ps1` | Mouse pointer (`--cursor`): an offline layer (`build\ecapture-cursor-tests.exe`, from `tests\cursor_state.cpp`) feeds fake Windows builds and fake channel chains into the production judgements - the per-path capability registry, the two registries describing the same set of paths, how the chain narrows under a cursor request (both sides of the 19041 line, and structure-only filtering when the build cannot be read), how `requested` / `effective` / `basis` are composed, and the parser called directly so "include with a route that cannot deliver it" is refused without capturing anything. A second offline guard reads `src/` and fails if any pointer-shape fetching, cursor drawing or pointer-moving call ever appears. The on-device layer only uses windows it created itself: the `wgc` switch really gets set and read back, all three requests produce a frame that is still this window (size plus signature colour), the three fields stay absent when `--cursor` was never written, `--quiet` does not suppress them, `auto` + `include` delivers from `wgc` and nothing else, refused combinations neither land nor ask a person, and asking about the pointer did not loosen authorization (the two screen-sampling routes still show the dialog, probed but never answered). Pixel-level "the pointer is or is not visible here", machines below 19041, and any desktop capture that needs a human to answer Yes are recorded as not verified |
 | `.\tests\crop.ps1` | Window-internal cropping (`--roi` / `--client-area`): the offline layer (`build\ecapture-crop-tests.exe`, from `tests\crop_state.cpp`) injects delivered-image sizes, whether the image's screen origin was answerable and whether the client area was measured, then judges edge alignment, one-pixel overflow, zero width or height, 64-bit wrap-around, the side ceiling, a client area hanging outside the image, and negative-coordinate monitors. The on-device layer uses its own bordered window (WS_OVERLAPPEDWINDOW, so the window / client / visible-frame rectangles differ), cross-checks `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight` against three independent Win32 questions, compares pixel content against an uncropped capture, proves an over-large rectangle is refused before any dialog or file, that a resized target invalidates the same rectangle, and that a desktop-pixel route with a tiny `--roi` still pops the dialog even with `--yes` (the test only looks and never answers). Mixed DPI across monitors and the shrink-between-check-and-frame race cannot be staged here and are recorded as unverified |
 | `.\tests\screen.ps1` | On-device whole-screen test: three screen channels (all desktop routes, so every one of them must ask) + red-block placement + negative control. Only `-SimulateConsent` answers the consent dialog, and only for a desktop dedicated to testing; without it the judgements that need an answer are recorded as SKIP |
 | `.\tests\streams.ps1` | On-device stream and structured-result reliability: one image on stdout for a single target, a batch that resolves to several targets is refused, the judgement uses the number of targets actually hit, `--monitor all` to stdout is refused with no dialog shown, the diagnostic locator fields, images already captured when a batch fails halfway are kept, and a result that cannot reach the agreed stream gives exit code 8, plus the no-`--out` / `--out -` equivalence across success, no match, ambiguity, bad arguments, a backend failure, a refusal and a broken stdout (only its own windows are captured, the desktop-route case again needs `-SimulateConsent`) |

@@ -115,6 +115,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
 
 取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
   --capture, -C <method>                      wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能截) / printwindow(視窗自繪) / bitblt(拷螢幕可見像素) / duplication(桌面複製後按矩形裁，會依顯示器的旋轉校正方向；只取與該目標重疊最多的一塊螢幕，沒截全時結果裡帶 capturedRect/clipped) / auto(依 wgc-dwm-printwindow-bitblt 復原；整張螢幕只用 wgc-duplication-bitblt)。只取視窗自己的畫面：wgc / printwindow / dwm 縮圖；會從螢幕上取樣：bitblt / duplication 與 dwm 的螢幕退路
+  --cursor <default|include|exclude>          畫面裡要不要滑鼠指標：default(預設，本工具一個字都不改，結果裡也不出現滑鼠指標那三個鍵) / include(要) / exclude(不要)。只有 wgc 有一個能設進去也讀回來的開關（要內部版本 19041 起），其餘幾條交回的畫面本來就沒有指標，所以 include 配 printwindow / dwm / bitblt / duplication 報 capture.cursor_unsupported，絕不改用會從螢幕上取樣的通道；auto 時做不到的那幾條從鏈裡摘除並各留一條 note.cursor_channel_skipped。這一個不改變授權；requested / effective / basis 三件事的判據見 README
 
 視窗內部裁剪（對交付的整張視窗畫面，依畫面自己的像素座標再裁一次；不是桌面絕對座標；下面兩條互斥）
   --roi <x,y,w,h>                             從交付的整張視窗畫面裡裁出以 x,y 為起點、w×h 大小的一塊。原點 (0,0) 是這張畫面自己的左上角像素（畫面對應的是使用者看到的那圈可見邊框，DWM 那圈透明 resize 邊框不在裡面），單位是物理像素且不依 DPI 縮放（本程序是 per-monitor v2，要按邏輯像素指定就自己乘那道縮放），所以這四個數永遠不會被當成桌面絕對座標。四個數只認十進位、逗號分隔；x 與 y 可為 0，w 與 h 至少 1，都不超過 16384。放不下就整張不落地：取影格之前就看得出放不下報 match.roi_out_of_range（不彈框、不寫檔案），取到影格之後才發現的報 capture.roi_invalid —— 不往裡挪、不裁到邊上為止、也不退回整張交出。裁剪排在取影格之後，所以它不改變授權：會從螢幕上取樣的那幾條照樣一定問人，--yes 不會因為「最後只留一小塊」而生效。結果裡 cropRect 是畫面像素座標，cropScreenRect 是同一個矩形的螢幕座標（核實得出畫面原點時才寫），裁前尺寸在 fullWidth/fullHeight、裁後就是 width/height。與 --client-area 互斥，配整張螢幕的目標說不通（capture.unsupported）
@@ -258,6 +259,9 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 螢幕圖（`--monitor` 且沒有視窗條件時）沒有視窗可歸屬，換成 `monitor` / `device` / `primary` 三個欄位，
 `hwnd` / `pid` / `title` / `class` / `image` 整個不出現——呼叫端依 `monitor` 是否存在區分兩種圖。
+寫出 `--cursor` 時，每張圖另外帶 `cursorRequested` / `cursorEffective` / `cursorBasis`——要的是哪一種、
+這條路徑實際交回的是哪一種、這個結論憑什麼。沒寫這條選項時三個鍵一個都不出現，這正是「預設不要求」
+與這條選項存在之前逐位元組相同的那條保證，判據見[畫面裡的滑鼠指標](#畫面裡的滑鼠指標cursor)。
 兩種圖都帶 `path` / `scope` / `rect`：整張螢幕那種是 `screen.wgc` / `screen.bitblt` / `screen.duplication`，
 `scope` 是 `desktop`；而 `--monitor` 配視窗條件出的仍是視窗圖，`scope` 是 `window`。
 
@@ -529,10 +533,11 @@ ECAPTURE.EXE --capabilities -v           # 另加 probes 段：每一問的原�
 | `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登記的路徑按 `desktop` 處理，外加整份內部路徑登記表（每條帶 `scope` 與 `consentWithoutYes` / `consentWithYes`）——就是《截圖授權與 --yes》那張表的機器可讀版本 |
 | `backends` | 每條路線：`compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`，以及它在視窗目標與螢幕目標上各走哪條內部路徑（`dwm` 那條螢幕退路也在，所以 `--yes` 的適用範圍不會被人讀大） |
 | `formats` | 每種格式：`compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` 恆為 `unknown`，因為這層不去實測編碼器（實測就是「用一次編碼來探能力」，與「不靠截屏探測」是同條理由）；曾經列過但沒有編碼器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在這裡，好讓呼叫方拿到確定答案 |
+| `cursor` | `--cursor` 這一條的故事：`default`（不給這條選項時的下場）、三種取值、那唯一一條開關寫成 `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine`，然後每條已登記的內部路徑一行（`capability` 是 `settable` / `excludes_cursor` / `unregistered`，加 `reason` 與 `include` / `exclude` 各三值 `yes` / `no` / `unknown`），末尾 `pointerShapeCompositing: "never"` 與 `pixelRetouching: "never"`。沒登記的路徑讀 `unknown` 而不是猜一個答案 |
 | `autoChainWindow` / `autoChainScreen` | 本機現在能試的 `auto` 鏈。與截圖那次 `-v` 回顯的 `input.captureChain` 由**同一個** `GateChannels` 算出，`tests\capabilities.ps1` 逐條比對這兩處 |
 | `limits` | 單邊像素上限、整影格位元組上限、`--timeout-ms` 上限、隔離開呼叫內建上限、WGC 影格池重建次數、編號與 PID 上限、`stdoutTargetsMax: 1`、JPEG 品質區間 |
 | `privacy` | 自述這份查詢沒做的事：不擷取畫面、不彈框、不上傳、不列舉使用者檔案、不讀環境變數、不含使用者名、不含路徑 |
-| `caveats` | 穩定的 ASCII token，列「這份報告沒有斷言什麼」：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及依本機情況追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+| `caveats` | 穩定的 ASCII token，列「這份報告沒有斷言什麼」：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及依本機情況追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恆有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（滑鼠指標那幾個欄位只說得到設定與來源那一層，說不到「這一個圖裡看得見或看不見指標」） |
 
 兩份文件由**同一個**判準函式（`src/EnvReport.cpp` 的 `BuildEnvReport`）算出，只差段落取捨：`--diagnostics` 固定帶 `build` 那一段（PE 連結時間戳、機器類型、映像大小、子系統），`--capabilities` 只在 `--verbose` 時展開它。版本號、`status`、後端清單、`limits` 都是同一份，所以不存在「兩份會互相打臉的環境資訊」。
 
@@ -694,14 +699,14 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 
 ## 取圖方式
 
-| 取值 | 通道 | 能截被遮擋視窗 | 硬體加速內容 | API 歷史下限 |
-| --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | 能（DWM 快取） | 正常 | Win10 1903（18362）——是 `CreateForWindow` / `CreateForMonitor` 那條互通操作介面，不是 1803 那個命名空間 |
-| `dwm` | DwmRegisterThumbnail | 能 | 多數正常，受保護視窗是黑的 | Win8.1（9600）——註冊縮圖更早，但讀回靠 `PrintWindow(PW_RENDERFULLCONTENT)` |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 能（視窗自繪） | 常常全黑 | Win8.1（9600），指那個 flag |
-| `bitblt` | BitBlt 螢幕 DC | 不能，只拷可見像素 | 部分黑 | 本身沒有版本門檻 |
-| `duplication` | DXGI 桌面複製取整幅螢幕影格後按矩形裁切 | 不能，只拷可見像素 | 正常 | Win8（9200），遠端桌面/虛擬顯示卡常拿不到內容 |
-| `auto` | 按 wgc → dwm → printwindow → bitblt 退回 | 盡量 | 盡量 | 這條鏈減去本機版本擋掉的那幾條 |
+| 取值 | 通道 | 能截被遮擋視窗 | 硬體加速內容 | 滑鼠指標（`--cursor`） | API 歷史下限 |
+| --- | --- | --- | --- | --- | --- |
+| `wgc` | Windows.Graphics.Capture | 能（DWM 快取） | 正常 | 有一條真能設進去、也讀得回來的開關（要 19041 起） | Win10 1903（18362）——是 `CreateForWindow` / `CreateForMonitor` 那條互通操作介面，不是 1803 那個命名空間 |
+| `dwm` | DwmRegisterThumbnail | 能 | 多數正常，受保護視窗是黑的 | 來源像素裡沒有滑鼠指標 | Win8.1（9600）——註冊縮圖更早，但讀回靠 `PrintWindow(PW_RENDERFULLCONTENT)` |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 能（視窗自繪） | 常常全黑 | 來源像素裡沒有滑鼠指標 | Win8.1（9600），指那個 flag |
+| `bitblt` | BitBlt 螢幕 DC | 不能，只拷可見像素 | 部分黑 | 來源像素裡沒有滑鼠指標 | 本身沒有版本門檻 |
+| `duplication` | DXGI 桌面複製取整幅螢幕影格後按矩形裁切 | 不能，只拷可見像素 | 正常 | 指標形狀是獨立中繼資料 | Win8（9200），遠端桌面/虛擬顯示卡常拿不到內容 |
+| `auto` | 按 wgc → dwm → printwindow → bitblt 退回 | 盡量 | 盡量 | `include` 會把鏈收窄成只剩 `wgc` | 這條鏈減去本機版本擋掉的那幾條 |
 
 那一列是**各條路徑的 API 歷史下限**，逐條對到微軟為該路徑實際呼叫的那個介面所寫的文件。它們既不是這個程式
 宣告能跑的版本，也不是實測過的版本：宣告下限（Win10 1903，x64）、六條通道共用的那道編碼器下限、真正實測過的
@@ -733,6 +738,67 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
     而不會靜默地看起來像整個視窗。把一個視窗跨配接器拼成一張圖這件事沒有實作。
 - 目標螢幕在確認之後離開了桌面或變了形狀，截圖以 `capture.monitor_changed`（退出碼 7）停止——工具絕不會拿
   另一張螢幕頂替，授權也始終綁在那個人親眼看過的那張上。
+
+## 畫面裡的滑鼠指標（`--cursor`）
+
+`--cursor default|include|exclude` 說的是畫面裡要不要滑鼠指標。預設值 `default` 的含義是本工具對這件事
+**一個字都不改**：不碰任何通道的滑鼠指標設定，結果裡也不出現滑鼠指標那三個鍵 —— 輸出與這條選項存在之前
+逐位元組相同。刻意寫 `--cursor default` 是另一件事：同樣不要求改動，但結果要報這條路徑實際交回的是什麼。
+
+各條路徑能承諾到哪一層，判據是**它的像素從哪裡來**，不是通道名字。那份登記表在 `src/CursorControl.h`：
+按 `images[].path` 那個內部路徑名一行一條，與授權那張登記表同一種形狀；沒登記的路徑按嚴格處理
+（兩種要求都不敢聲稱）。
+
+- `wgc` 與 `screen.wgc` 是僅有兩條真有可設進去、也能讀回來核實的開關的路徑 ——
+  `IGraphicsCaptureSession2::IsCursorCaptureEnabled`，Windows 內部版本 19041 引入。這道門檻**比 `wgc`
+  通道自己的 18362 還高**：1903 的機器能用 `wgc` 截到圖，卻仍然對滑鼠指標這件事說不出任何保證。
+- `printwindow`（讓視窗自己畫進 DC）、`dwm.thumbnail`（DWM 重新導向點陣圖）、`dwm.screen` /
+  `bitblt.screen` / `screen.bitblt`（螢幕 DC，系統指標畫在 DC 內容之外）、`duplication.frame` /
+  `screen.duplication`（桌面合成分，指標作為**獨立中繼資料**交回）這幾類的畫面裡根本沒有滑鼠指標。
+  所以對它們來說 `exclude` 是來源那一層的事實，而 `include` 就是做不到。
+
+由這張表推出兩條規矩，兩條都是為了不讓「我要求過」被讀成「已經辦到了」：
+
+- **做不到的那條就拒絕，不偷偷改道。** `--cursor include` 配 `printwindow` / `dwm` / `bitblt` /
+  `duplication` 在解析期就是 `capture.cursor_unsupported`（退出碼 `1`）—— 在彈框之前、在算輸出名之前、
+  在讀任何一個像素之前。換成會讀桌面像素的通道既加不回滑鼠指標（那些來源裡根本沒有），交回的也是一份
+  沒人批准過的畫面。`--capture auto` 時兌現不了的那幾條從鏈裡摘掉，各留一條
+  `note.cursor_channel_skipped`；摘到一條不剩，或者本機版本低於 19041 而要求是明確寫出來的那一種，
+  就是 `env.cursor_unsupported`（退出碼 `7`），一個像素都不取。`-v` 回顯的 `input.captureChain` 與真去
+  截圖時用的是同一個函式，所以 `--cursor include` + `auto` 那裡看到的就只剩 `["wgc"]`。
+- **不拿影像修補冒充能力。** 本工具不去取桌面複製那份指標形狀來畫，不會把滑鼠指標畫進影格裡，
+  也不試圖把已經畫進去的滑鼠指標抹掉 —— 那些都是影像修補，也都沒有一樣能核實。`src/` 裡一旦出現這種呼叫，
+  `tests\cursor.ps1` 就紅。
+
+只要寫過 `--cursor`，每張交出的圖就帶這三個欄位（沒寫過時一個都不出現）：
+
+| 欄位 | 取值 | 說的是哪件事 |
+| --- | --- | --- |
+| `cursorRequested` | `default` / `include` / `exclude` | 要求的是哪一種 |
+| `cursorEffective` | `include` / `exclude` / `unverified` | 這條路徑實際交回的是哪一種 |
+| `cursorBasis` | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `wgc_cursor_property_unavailable` | 這個結論憑什麼 |
+
+`wgc_session_property_set` 是按這一次的請求設過、再把讀回來的值核對了；`wgc_session_property_read`
+是沒設過（`--cursor default`）只讀目前值；`path_excludes_cursor` 是這條路徑的來源像素裡沒有滑鼠指標；
+`wgc_cursor_property_unavailable` 是那一問沒答案，此時 `cursorEffective` 寫 `unverified`，不折成任何一種。
+
+`cursorEffective` 就斷言到這一層為止。它說的是「這條工作階段被設成畫/不畫滑鼠指標」，或者「這塊來源裡沒有滑鼠指標」，
+**不是**「這一個圖裡此刻看得見或看不見指標」。本 SDK 的工作階段介面沒有 `IsCursorVisible` 那個唯讀屬性，
+所以像素級的事本工具一條都不聲稱，而 `--capabilities` 把這條界線寫成
+`cursor_effective_is_a_setting_not_a_pixel_check` 那條 caveat。明確要求過（`include` / `exclude`）而在 `wgc`
+那一次核實不了（介面取不到、設不下去、或讀回來是相反的那一件）時，程式碼是 `capture.cursor_unverifiable`
+（退出碼 `7`），且發生在 `StartCapture` **之前** —— 與要求相反的那一個根本不會交出去；
+`--cursor default` 遇到同一情況就報 `unverified`，而不是折成任何一個答案。
+
+滑鼠指標這件事不改變授權。判據仍然是「這條路徑的像素從哪裡來」，所以 `--cursor exclude` 配 `bitblt`、
+`duplication` 或任何整張螢幕目標照樣一定彈框，`--yes` 照樣管不著；`wgc` 不帶 `--yes` 照樣要問。那三種現場
+在 `tests\cursor.ps1` 裡用自建視窗判。這三個欄位與 `path` / `scope` / `rect` 以及裁剪那幾項一樣是定位判據，
+`--quiet` 不許抑制。
+
+`--capabilities` 不截任何一個像素就能回答上面這些，那一段叫 `cursor`：預設值、三種取值、那唯一一條開關的
+`compiled` / `status` / `minBuild` / `verifiedOnThisMachine`，每條已登記路徑一行
+（`capability` / `reason` / `include` / `exclude`，後兩者各是 `yes` / `no` / `unknown`），
+以及 `pointerShapeCompositing: "never"` 與 `pixelRetouching: "never"`。
 
 ## 截圖授權與 --yes
 
@@ -961,6 +1027,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `.\tests\consent.ps1` | 截圖授權分級：離線那層用注入的假應答器與假螢幕佈局把 `ConsentGate` 整台狀態機跑完（`build\ecapture-consent-tests.exe`，原始碼 `tests\consent_state.cpp`）；實機那層把所有確認框一律代答「否」，判哪些路徑必須彈、被拒之後報什麼（`code` / `stage` / `target` / `value`）、有沒有落地，以及 `images[].path` / `scope` / `rect` 對不對。絕不代人答「是」 |
 | `.\tests\isolation.ps1` | 實機資源隔離：同名的既有處理程序保持存活且不會被當成目標、並發兩輪互不串、異常退出只清理自身 |
 | `.\tests\identity.ps1` | 目標身份與 Z 序選擇判據。離線層（`build\ecapture-identity-tests.exe`，注入假查詢層）：句柄被另一個處理程序佔用、PID 相同但那是另一個處理程序、類別名換了、當初的條件不再成立、每一問各自問不出來，以及兩檔覆核各問哪幾問與短路順序。實機層（只用自建視窗）：健康目標一次都不誤傷、批次中途目標被銷毀確實報 `capture.target_gone`、改了名而 `--title` 條件不再成立確實報 `capture.target_changed`、改名而條件仍成立就照常出圖、`--topmost-match` / `--bottommost-match` 對著當下的 Z 序判（先建但置頂的那扇贏，正是「最後建立」那種讀法會挑錯的情形）。句柄與 PID 何時被回收沒辦法安排現場（那要結束別人的處理程序），確認框那一段又要代人點「是」，兩者一律記未驗證而不偽造通過 |
+| `.\tests\cursor.ps1` | 滑鼠指標包含與排除（`--cursor`）：離線一層（`build\ecapture-cursor-tests.exe`，原始碼 `tests\cursor_state.cpp`）按假版本與假通道鏈判那張按路徑登記的能力表、兩份表說的是同一批路徑、鏈按滑鼠指標要求收窄（19041 那道門檻兩側各判一次、版本問不出來時只按結構篩）、requested/effective/basis 的合成，以及直接呼叫解析層判「include 配做不到的通道在解析期就拒」；另有一條原始碼層級的守衛（`src/` 裡出現取指標形狀、把滑鼠指標畫進影格裡、動使用者滑鼠那類呼叫就紅）。真機一層只用自建視窗：判 wgc 那條開關真的設進去也讀回來、三種要求各截一張且畫面仍是本次那扇視窗（尺寸 + 簽名色）、沒寫 `--cursor` 時那三個鍵一個都不出現、`--quiet` 抑制不掉它們、`auto` + `include` 收窄後實際出圖那條確實是 `wgc`、被拒的那幾種不落地也不彈框，以及要求滑鼠指標沒把授權鬆動（桌面那兩條照樣彈框、只探測不代答）。像素級「看得見/看不見指標」、低於 19041 的機器、要人點頭的桌面實截一律記未驗證 |
 | `.\tests\crop.ps1` | 視窗內部裁剪（`--roi` / `--client-area`）：離線層（`build\ecapture-crop-tests.exe`，原始碼 `tests\crop_state.cpp`）把交付畫面的尺寸、它的螢幕原點問沒問到、客戶區量沒量到註入生產判據本體，逐條判貼邊、越界一條像素、零寬零高、相加繞回、單邊上限、客戶區整塊落在畫面之外，以及負座標的螢幕；真機層用自建的帶框視窗（WS_OVERLAPPEDWINDOW，於是視窗矩形 / 客戶區矩形 / 可見框矩形三者各不相同），拿三條獨立的 Win32 問答對照 `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight`，與一張不裁剪的圖逐點比像素，判「越界的請求在彈框與寫檔案之前就被擋掉」「目標被改小之後同一個矩形失效」「桌面像素那條即使 `--roi` 只要一小塊、給了 `--yes` 也照樣彈框」（測試一側只看、不點）。跨螢幕混合 DPI 與「預檢通過之後、影格交回來之前那一瞬被改小」本機造不出，一律記未驗證 |
 | `.\tests\screen.ps1` | 實機整張螢幕測試：三條螢幕通道（都屬於桌面路徑，每一條都必須彈框）+ 紅塊定位 + 陰性對照。只有加上 `-SimulateConsent` 才會代答確認框，且只該在專門騰給測試的桌面上這麼用；不加時凡是要答框的判據一律記 SKIP（未驗證） |
 | `.\tests\streams.ps1` | 實機標準串流與結構化結果可靠性：單個目標寫 stdout、多個目標被拒、判據是實際命中的目標數、多螢幕被拒而且確認框根本不彈、診斷的定位欄位、批次中途失敗時保留前面已經成功的圖、結果送不到約定的那條串流時報 8，以及省略 `--out` 與顯式 `--out -` 在成功 / 無匹配 / 歧義 / 非法參數 / 後端失敗 / 被拒絕 / 寫入斷管七個場景上的機器語義對拍（只截自己建的視窗） |

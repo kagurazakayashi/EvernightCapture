@@ -66,6 +66,12 @@ inline constexpr uint32_t kDwmThumbnail = 9600;
 // 直接按 HWND / HMONITOR 建捕获项**是 1903（10.0.18362）才有的那条互操作接口 ——
 // 本工具没有"让用户点一下选择器"这条路，所以按 18362 算。
 inline constexpr uint32_t kWgc = 18362;
+// WGC 那条会话上的光标开关 `IGraphicsCaptureSession2::IsCursorCaptureEnabled`（--cursor 唯一
+// 真设得进去的地方）。判据两处对照过：本机 SDK 的 windows.graphics.capture.idl 里这条接口写在
+// `[contract(Windows.Foundation.UniversalApiContract, 10.0)]`，而微软那份文档把它标在
+// 10.0.19041.0（Windows 10 版本 2004）引入 —— 与上面那条 18362 是两道不同的门槛，
+// 所以必须分开：18362 能建会话、能取帧，但那条会话问不出也设不进光标开关。
+inline constexpr uint32_t kWgcCursor = 19041;
 
 // 本工具**对外声明**的最低运行环境：64 位 Windows，内部版本 18362（Windows 10 版本 1903）。
 // 取的是"默认那条路线真能截到窗口"所要求的最高的那一道门槛，而不是各条路线里最老的那一道 ——
@@ -92,6 +98,12 @@ Capability AssessRuntime(const OsVersion& os);
 // 单条通道（屏幕模式与窗口模式分开判：同一通道在两种模式下走的是不同的 API）。
 // 显式指定的通道与 auto 链里的每一条都用它，所以"哪一条能试"这个决定只有一份判据。
 Capability AssessChannel(CaptureMethod method, bool screenMode, const OsVersion& os);
+
+// WGC 会话上那个**光标开关**（IGraphicsCaptureSession2::IsCursorCaptureEnabled）在本机问不问得到。
+// 与 AssessChannel 分开：那条判的是"这条通道能不能取帧"，这一条判的是"取到帧之后光标这件事
+// 说不说得准"。18362 的机器上通道本身能用（--cursor default 照旧出图），但 include / exclude
+// 这两种明确要求都兑现不了 —— 见 src/CursorControl.h。
+Capability AssessWgcCursorControl(const OsVersion& os);
 
 // 一次调用的通道闸门结果。
 struct ChannelGate {

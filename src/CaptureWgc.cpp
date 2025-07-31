@@ -23,6 +23,7 @@
 
 #include "D3dDevice.h"
 #include "CaptureCommon.h"   // CaptureError：backend / stage / hresult 由它统一填
+#include "CursorControl.h"   // cursor_effective:: 那两个机器名（读回不符时写进 message）
 #include "WgcGeometry.h"     // 每帧的几何判据与"要不要重建帧池 / 还来不来得及"这两条纯函数
 #include "WgcGeometry.h"     // 每帧的实际内容尺寸与纹理尺寸对不对得上，由它判
 
@@ -94,6 +95,9 @@ wgc::GraphicsCaptureItem CreateItem(uint64_t hwnd, HMONITOR monitor, HRESULT* hr
 void ResetFrame(CapturedFrame* out) {
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
+    // 光标那两个读数一起清掉：上一条会话的答复不能冒充这一条（调用点里 out 可能被复用）。
+    out->cursorStateKnown = false;
+    out->cursorInFrame = false;
 }
 
 // 把帧的 GPU 纹理复制到 CPU 可读的 staging 纹理，再按行搬进帧。这一段与桌面复制通道共用
@@ -133,20 +137,92 @@ struct SessionGuard {
     }
 };
 
-// 开一条会话：建帧池 -> 从采集项开会话 -> 去边框 -> 开始采集。pool/session 必须是空的
-//（重建那条路先经 SessionGuard::Close 把它们关干净再进来）。抛出的 hresult_error 由调用方
-// 换成"这一步失败"的诊断。整条链共用一个绝对期限，重建不重新领预算（见 GrabFrame）。
-void OpenSession(const wdx11::IDirect3DDevice& winrtDevice,
+// 光标要不要画进帧里（--cursor）。这条会话接口是本工具唯一**设得进去也读得回来**的一处：
+// IGraphicsCaptureSession2::IsCursorCaptureEnabled（本机 SDK 的 windows.graphics.capture.idl 里
+// 这条接口写在 contract UniversalApiContract 10.0，文档标 10.0.19041.0）。
+// 必须在 StartCapture **之前**设：开始采集之后再改，这一帧要不要画已经定了。
+// 三种下场：
+//   * 没写 --cursor（given=false）—— 一个字节都不改，也不去读那个属性；帧里两个值留 false/false，
+//     于是结果里那三个键一个都不出现（与这条选项存在之前逐字节相同）。
+//   * 写成 default —— 只 get 不 put：读到的值进 effective，读不到就留"不知道"，不作任何断言。
+//   * 写成 include / exclude —— put 之后必须 get 回来核对；问不到接口、设不下去、或读回来不是
+//     那一件事，都交回 capture.cursor_unverifiable 而**不开始采集**：一个像素都不读，
+//     也绝不"那就照默认交一张"（那等于把"我要求过"当成"已经办到了"）。
+// effective 断言到的边界写在 src/CursorControl.h：它说的是这条会话被设置成画 / 不画，
+// 而不是"此刻光标正停在目标上所以图里一定看得见"—— 本 SDK 的会话接口没有 IsCursorVisible
+// 那个只读属性，所以像素级的事这里一条都不声称。
+bool ApplyCursorControl(const wgc::GraphicsCaptureSession& session, const CursorRequest& cursor,
+                        CapturedFrame* out, Diagnostic* err) {
+    if (!cursor.given) return true;
+
+    const bool wantIncluded = cursor.mode == CursorMode::kInclude;
+    const std::wstring wanted = CursorModeName(cursor.mode);
+
+    auto Reject = [&](const wchar_t* reason, const std::wstring& detail, HRESULT hr) {
+        CaptureError(err, L"wgc",
+                     Msgf(L"cap.cursor_unverifiable", wanted, reason, detail),
+                     Msg(L"cap.cursor_unverifiable_hint"), codes::kCursorUnverifiable, 0, hr);
+        return false;
+    };
+
+    auto s2 = session.try_as<ABI::Windows::Graphics::Capture::IGraphicsCaptureSession2>();
+    if (!s2) {
+        // 接口问不到：这一条会话对光标说不出任何东西。
+        if (cursor.mode == CursorMode::kDefault) return true;   // 没要求就不打扰这一次截图
+        // E_NOINTERFACE 在这里不是顶掉真码的占位符：这一问的下场**就是**"这个接口没实现"。
+        return Reject(L"interface_unavailable", HResultText(E_NOINTERFACE), E_NOINTERFACE);
+    }
+
+    if (cursor.mode != CursorMode::kDefault) {
+        const HRESULT putHr = s2->put_IsCursorCaptureEnabled(wantIncluded ? TRUE : FALSE);
+        if (FAILED(putHr)) return Reject(L"set_failed", HResultText(putHr), putHr);
+    }
+
+    BOOLEAN actual = FALSE;
+    const HRESULT getHr = s2->get_IsCursorCaptureEnabled(&actual);
+    if (FAILED(getHr)) {
+        if (cursor.mode != CursorMode::kDefault)
+            return Reject(L"read_failed", HResultText(getHr), getHr);
+        return true;   // default 那一路读不到 = effective 留 unverified，这一次截图照旧
+    }
+
+    out->cursorStateKnown = true;
+    out->cursorInFrame = actual != FALSE;
+    if (cursor.mode != CursorMode::kDefault && out->cursorInFrame != wantIncluded) {
+        // 设下去之后读回来不是那一件事：这条会话对光标的答复与要求相反，
+        // 交出去的图就在光标这件事上不是用户要的那一种。宁可这一张不截。
+        return Reject(L"read_back_mismatch",
+                      out->cursorInFrame ? cursor_effective::kInclude : cursor_effective::kExclude,
+                      S_OK);
+    }
+    return true;
+}
+
+// 建帧池 -> 开会话 -> 去边框 -> 把光标这件事办妥 -> 开始采集。pool/session 必须是空的
+//（重建那条路先经 SessionGuard::Close 把它们关干净再进来）。返回 false 有两条出口，都在
+// 这里合成一条诊断：WinRT 那几步抛出的 hresult_error 换成"这一步失败"（原来由调用方 catch，
+// 现在两处调用点不再各写一份 try），光标那一条是 capture.cursor_unverifiable。
+// 重建帧池时这里会被再走一遍，所以光标设置在**每一条**新会话上都重新应用并重新读回一次：
+// 旧会话上设过的值不会跟着新会话过来，而"窗口在取帧之间被放大"恰恰是新池那一条出图。
+bool OpenSession(const wdx11::IDirect3DDevice& winrtDevice,
                  const wgc::GraphicsCaptureItem& item, wg::SizeInt32 newSize,
-                 wgc::Direct3D11CaptureFramePool& pool, wgc::GraphicsCaptureSession& session) {
-    pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
-        winrtDevice, wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, newSize);
-    session = pool.CreateCaptureSession(item);
-    // 隐藏窗口边框需要 Win11 的会话接口；本 SDK 没有暴露光标可见性属性，
-    // 因此截图中可能出现鼠标指针。
-    if (auto s3 = session.try_as<ABI::Windows::Graphics::Capture::IGraphicsCaptureSession3>())
-        s3->put_IsBorderRequired(FALSE);
-    session.StartCapture();
+                 const CursorRequest& cursor, const wchar_t* stepKey,
+                 wgc::Direct3D11CaptureFramePool& pool,
+                 wgc::GraphicsCaptureSession& session, CapturedFrame* out, Diagnostic* err) {
+    try {
+        pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
+            winrtDevice, wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, newSize);
+        session = pool.CreateCaptureSession(item);
+        // 隐藏窗口边框需要 Win11 的会话接口；拿不到这个接口就不去边框，与本工具无关。
+        if (auto s3 =
+                session.try_as<ABI::Windows::Graphics::Capture::IGraphicsCaptureSession3>())
+            s3->put_IsBorderRequired(FALSE);
+        if (!ApplyCursorControl(session, cursor, out, err)) return false;
+        session.StartCapture();
+    } catch (const winrt::hresult_error& e) {
+        return Fail(err, stepKey, e.code());
+    }
+    return true;
 }
 
 // 在 deadline 之前轮询等一帧；拿到返回该帧，超时返回空对象。一次性截图用事件反而麻烦，
@@ -171,8 +247,8 @@ wgc::Direct3D11CaptureFrame WaitForFrame(const wgc::Direct3D11CaptureFramePool& 
 // 交回的纹理仍是帧池当初那份较大的尺寸，多出来的边缘是没定义的像素，却被当成整幅画面交了出去；
 // 窗口被放大超过帧池，那一帧本身就是残缺的，也被当成完整尺寸宣称。现在每帧都按 frame.ContentSize
 // 与纹理尺寸重新判（WgcGeometry），并且只在预算之内重建帧池追放大的目标。
-bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, CapturedFrame* out,
-               Diagnostic* err) {
+bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs,
+               const CursorRequest& cursor, CapturedFrame* out, Diagnostic* err) {
     HRESULT deviceHr = S_OK;
     ComPtr<ID3D11Device> device = CreateDevice(&deviceHr);
     if (!device) return Fail(err, L"cap.wgc.step.device", deviceHr);
@@ -198,11 +274,10 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, Capture
     wgc::Direct3D11CaptureFramePool pool{nullptr};
     wgc::GraphicsCaptureSession session{nullptr};
     SessionGuard guard{&session, &pool};
-    try {
-        OpenSession(winrtDevice, item, poolSize, pool, session);
-    } catch (const winrt::hresult_error& e) {
-        return Fail(err, L"cap.wgc.step.session", e.code());
-    }
+    // 开始采集之前这一关：光标那一条要求兑现不了就是 false，一个像素都不读。
+    if (!OpenSession(winrtDevice, item, poolSize, cursor, L"cap.wgc.step.session", pool, session,
+                    out, err))
+        return false;
 
     uint32_t recreates = 0;
     for (;;) {
@@ -303,18 +378,19 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs, Capture
         }  // frame 与 texture 在这里释放，旧池再没有"在用的帧"
 
         // 重建帧池：关掉这一轮的会话与池（守卫把指针置空），再用更大的尺寸开一条新的。
+        // 新会话上光标要**重新设一次并重新读回**（旧会话的设置在 Close 之后不跟着过来），
+        // 所以这里走的是同一个 OpenSession，兑现不了同样在开始采集之前就停下。
         guard.Close();
-        try {
-            OpenSession(winrtDevice, item, poolSize, pool, session);
-        } catch (const winrt::hresult_error& e) {
-            return Fail(err, L"cap.wgc.step.recreate", e.code());
-        }
+        if (!OpenSession(winrtDevice, item, poolSize, cursor, L"cap.wgc.step.recreate", pool,
+                        session, out, err))
+            return false;
     }
 }
 
 }  // namespace
 
-bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err) {
+bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, const CursorRequest& cursor,
+                      CapturedFrame* out, Diagnostic* err) {
     HRESULT aptHr = S_OK;
     // 套间是按线程的：不能拿"进程里初始化过一次"当凭证（见 WinrtApartment.h）
     if (!EnsureWinrtOnThisThread(&aptHr)) return Fail(err, L"cap.wgc.step.apartment", aptHr);
@@ -323,13 +399,13 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, CapturedFrame* out, Dia
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(hwnd, nullptr, &itemHr);
     if (!item) return Fail(err, L"cap.wgc.step.item", itemHr);
-    if (!GrabFrame(item, timeoutMs, out, err)) return false;
+    if (!GrabFrame(item, timeoutMs, cursor, out, err)) return false;
     out->path = paths::kWgc;  // 采集项就是这个窗口自己，帧里没有桌面像素
     return true;
 }
 
-bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const DesktopPermit& permit,
-                      CapturedFrame* out, Diagnostic* err) {
+bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const CursorRequest& cursor,
+                      const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err) {
     HRESULT aptHr = S_OK;
     // 套间是按线程的：不能拿"进程里初始化过一次"当凭证（见 WinrtApartment.h）
     if (!EnsureWinrtOnThisThread(&aptHr)) return Fail(err, L"cap.wgc.step.apartment", aptHr);
@@ -342,7 +418,7 @@ bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const Deskto
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(0, reinterpret_cast<HMONITOR>(screen.monitor), &itemHr);
     if (!item) return Fail(err, L"cap.wgc.step.item_monitor", itemHr);
-    if (!GrabFrame(item, timeoutMs, out, err)) return false;
+    if (!GrabFrame(item, timeoutMs, cursor, out, err)) return false;
     out->path = paths::kScreenWgc;
     return true;
 }

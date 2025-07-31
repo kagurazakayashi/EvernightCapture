@@ -121,6 +121,7 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
 
 画面取得方式（既定 wgc；OS のバージョンやウィンドウの性質で失敗することがある）
   --capture, -C <method>                      wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し。モニタの回転に合わせて向きを補正し、対象と最も重なる 1 台の出力だけを取ります。切り足りないときは capturedRect/clipped が付きます) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
+  --cursor <default|include|exclude>          画像にマウス ポインターを含めるか：default(既定。何も変更せず、結果にポインター関連の 3 つのキーも現れません) / include(入れる) / exclude(入れない)。実際に設定できて読み戻せるスイッチを持つのは wgc だけ（ビルド 19041 以上が必要）で、その他の経路が返す画像にはそもそもポインターがありません。だから include を printwindow / dwm / bitblt / duplication と組み合わせると capture.cursor_unsupported で拒否され、画面の画素を読む経路にこっそり乗り換えもしません；auto のときは実現できない経路を列から外し、それぞれに note.cursor_channel_skipped を残します。認可は変わりません；requested / effective / basis の判拠は README に
 
 ウィンドウ内の切り抜き（納品されたウィンドウ全体画像を、その画像自身のピクセル座標でもう一度切り抜きます。デスクトップ絶対座標ではありません。以下の 2 つは排他）
   --roi <x,y,w,h>                             納品されたウィンドウ全体画像から、x,y を開始点とする w×h を切り抜きます。原点 (0,0) はこの画像自身の左上ピクセルです（画像はユーザーが見えている見えているウィンドウ枠に対応し、DWM の透明なリサイズ枠は含まれません）。単位は物理ピクセルで、DPI スケーリングは行いません（本プロセスは per-monitor v2 です。論理ピクセルで指定する呼び出し側が拡大率を掛けてください）。したがってこの 4 つの値がデスクトップ絶対座標として扱われることはありません。4 つは 10 進数・カンマ区切り。x と y は 0 可、w と h は 1 以上、いずれも 16384 まで。収まらないときは画像を書き出しません：フレーム取得前に分かるときは match.roi_out_of_range（ダイアログもファイルもなし）、取得後に初めて分かるときは capture.roi_invalid。内側にずらす、縁で打ち切る、ウィンドウ全体を返すことはしません。切り抜きはフレーム取得の後ろにあるので、認可の判断は変わりません：画面からサンプルする経路は必ず人に聞き、--yes は「最後に小さな一部だけ残す」から有効にはなりません。結果の cropRect は画像ピクセル座標、cropScreenRect は同じ矩形の画面座標（画像の原点を確認できたときだけ書きます）、切り抜き前のサイズが fullWidth/fullHeight、後が width/height です。--client-area と排他、画面全体の対象では成り立ちません（capture.unsupported）
@@ -267,6 +268,11 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 モニタの画像（`--monitor` かつウィンドウ条件が無いとき）は帰属するウィンドウが無いので、
 `monitor` / `device` / `primary` の 3 フィールドに置き換わり、`hwnd` / `pid` / `title` / `class` / `image` は
 まるごと現れない。呼び出し側は `monitor` の有無で 2 種類の画像を区別する。`path` / `scope` / `rect` はどちらの形にも付く：`path` は実際に通った内部経路の名前、`scope` はそこから導いた `window` / `desktop`、そして `rect` はその経路が承諾された取得領域（モニタ画像ならそのモニタの矩形なので、常に `scope=desktop`）。
+
+`--cursor` を書いたときは、画像ごとに `cursorRequested` / `cursorEffective` / `cursorBasis` が加わります ——
+何を要求したか、この経路が実際に何を渡したか、その結論の根拠が何か。そのオプションを書かなかったときはこの
+3 つのキーは一つも現れません。だから既定（要求を一切出さない）は以前の出力の形とバイト単位で同じままに
+なります。判拠は [画像の中のマウス ポインター](#画像の中のマウス-ポインター--cursor) を参照。
 
 デスクトップ全体のフレームから対象を切り出して読むチャネル（`duplication`、および `bitblt` / `dwm` の
 画面経路）は、さらに、そのピクセルをデスクトップの**どこ**から実際に得たかも報告する：`requestedRect` は
@@ -570,10 +576,11 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
 | `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登録パスは `desktop` 扱い、加えて内部経路登録表の全行（各行に `scope` と `consentWithoutYes` / `consentWithYes`）。《撮影の承諾と --yes》の表の機械可読版 |
 | `backends` | 各経路の `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`、そしてウィンドウ対象・画面対象でそれぞれどの内部経路を通るか（`dwm` のデスクトップ退路も含む。だから `--yes` の適用範囲を読み広げられない） |
 | `formats` | 各形式の `compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` は常に `unknown` —— この層はエンコーダを実際に試さない（試すと「1 枚符号化して能力を探る」になり、撮影で探らないのと同じ理由に触れる）。かつて挙げたがエンコーダが無い `webp` / `ico` は `compiled: false` + `reason: "not_compiled"` に残し、推測ではなく確定した答えを渡す |
+| `cursor` | `--cursor` の話：`default`（このオプションを付けないときの扱い）、3 つの値、ただ 1 つのスイッチを `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine` で書き、続いて登録済みの内部経路 1 行ごとに `capability`（`settable` / `excludes_cursor` / `unregistered`）、`reason`、`include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、加えて `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。撮って能力を探ることはしないので、登録表に無い経路は推測の答えではなく `unknown` を読む |
 | `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる |
 | `limits` | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲 |
 | `privacy` | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし |
-| `caveats` | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown` |
+| `caveats` | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない） |
 
 両方の文書は**同一の**判定関数（`src/EnvReport.cpp` の `BuildEnvReport`）から出る。違いは段落の取捨だけで、
 `--diagnostics` は `build` 段（PE のリンク時刻・機械種別・イメージサイズ・subsystem）を常に載せ、
@@ -764,14 +771,14 @@ GPU についているか」はこうして返る。
 
 ## 画面取得方式
 
-| 値 | チャネル | 隠れたウィンドウを撮れるか | ハードウェアアクセラレーション描画 | API 上の下限 |
-| --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | 撮れる（DWM のキャッシュ） | 正常 | Win10 1903（18362）—— `CreateForWindow` / `CreateForMonitor` の側で、1803 の名前空間側ではない |
-| `dwm` | DwmRegisterThumbnail | 撮れる | 大半は正常、保護されたウィンドウは黒 | Win8.1（9600）—— サムネイル登録自体は古いが、読み戻しが `PrintWindow(PW_RENDERFULLCONTENT)` |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 撮れる（ウィンドウ自身の描画） | 多くの場合まっ黒 | Win8.1（9600）、その flag の話 |
-| `bitblt` | 画面 DC からの BitBlt | 撮れない、見えるピクセルだけをコピー | 一部が黒 | それ自体にバージョン下限なし |
-| `duplication` | DXGI デスクトップ複製でモニタ全体のフレームを取り矩形で crop | 撮れない、見えるピクセルだけをコピー | 正常 | Win8（9200）、リモートデスクトップ/仮想 GPU は内容を得られないことが多い |
-| `auto` | wgc → dwm → printwindow → bitblt の順にフォールバック | 尽力 | 尽力 | この列から、本機のバージョンでは足りない経路を引いたもの |
+| 値 | チャネル | 隠れたウィンドウを撮れるか | ハードウェアアクセラレーション描画 | ポインター（`--cursor`） | API 上の下限 |
+| --- | --- | --- | --- | --- | --- |
+| `wgc` | Windows.Graphics.Capture | 撮れる（DWM のキャッシュ） | 正常 | 実際に設定できて読み戻せるスイッチがある（19041 以上） | Win10 1903（18362）—— `CreateForWindow` / `CreateForMonitor` の側で、1803 の名前空間側ではない |
+| `dwm` | DwmRegisterThumbnail | 撮れる | 大半は正常、保護されたウィンドウは黒 | 出所の画素にポインターは無い | Win8.1（9600）—— サムネイル登録自体は古いが、読み戻しが `PrintWindow(PW_RENDERFULLCONTENT)` |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 撮れる（ウィンドウ自身の描画） | 多くの場合まっ黒 | 出所の画素にポインターは無い | Win8.1（9600）、その flag の話 |
+| `bitblt` | 画面 DC からの BitBlt | 撮れない、見えるピクセルだけをコピー | 一部が黒 | 出所の画素にポインターは無い | それ自体にバージョン下限なし |
+| `duplication` | DXGI デスクトップ複製でモニタ全体のフレームを取り矩形で crop | 撮れない、見えるピクセルだけをコピー | 正常 | ポインターは別個のメタデータとして届く | Win8（9200）、リモートデスクトップ/仮想 GPU は内容を得られないことが多い |
+| `auto` | wgc → dwm → printwindow → bitblt の順にフォールバック | 尽力 | 尽力 | `include` は列を `wgc` の 1 本に狭める | この列から、本機のバージョンでは足りない経路を引いたもの |
 
 この列は**各経路の API 上の下限**で、その経路が実際に呼ぶ API について Microsoft が書いた文書に対応させてある。
 このプログラムが動作を宣言するバージョンでも、実測したバージョンでもない：宣言下限（Win10 1903、x64）、
@@ -810,6 +817,76 @@ GPU についているか」はこうして返る。
     1 つのウィンドウをアダプタまたぎで継ぎ合わせることは実装していない。
 - 確認のあとに対象モニタがデスクトップから外れたり形状が変わったりしたら、取得は `capture.monitor_changed`
   （終了コード 7）で止まる——このツールは決して別のモニタで代用せず、承諾は人が見たあの 1 台に結び付いたまま。
+
+## 画像の中のマウス ポインター（`--cursor`）
+
+`--cursor default|include|exclude` は、画像にマウス ポインターを含めるかどうかを指定します。既定値の `default`
+の意味は、このツールが**何も変えない**ことです：どのチャネルのポインター設定にも触れず、結果にはポインター関連の
+3 つのキーが 1 つも現れないので、出力はこのオプションが存在する前とまったく同じになります。あえて
+`--cursor default` と書くのは別の話で、やはり何も変わりませんが、結果はその経路が実際に何を渡したかを報告します。
+
+各経路がどこまで約束できるかを決めるのは**その画素がどこから来るか**で、チャネル名ではありません。その登録表が
+`src/CursorControl.h` です。内部経路名である `images[].path` 1 つにつき 1 行で、承諾側の登録表と同じ形をしており、
+未登録のパスは厳しく扱われます（どちらの要求も成立したことにしない）。
+
+- `wgc` と `screen.wgc` だけが、実際に設定して読み戻せるスイッチを持つ経路です ——
+  `IGraphicsCaptureSession2::IsCursorCaptureEnabled`、Windows ビルド 19041 で導入されました。これは `wgc`
+  チャネル自身の 18362 よりも*高い*下限です：1903 のマシンでは `wgc` で撮れるのに、ポインターについては
+  何も言えない。
+- `printwindow`（ウィンドウ自身に DC へ描画させる）、`dwm.thumbnail`（DWM のリダイレクション面）、
+  `dwm.screen` / `bitblt.screen` / `screen.bitblt`（画面 DC。システム ポインターは DC の内容の外に描かれる）、
+  `duplication.frame` / `screen.duplication`（デスクトップの画像で、ポインターは*別個のメタデータ*として
+  渡される）—— これらの出所にポインターは元からありません。だから `exclude` は出所についての事実として
+  成り立ち、`include` はそもそもこの経路たちにできることではありません。
+
+ここから 2 つの規則が出ます。どちらも「頼んだ」が「できた」と読まれないためにあります：
+
+- **ある経路が渡せない要求は、経路を乗り換えるのではなく拒否します。** `--cursor include` を `printwindow`、
+  `dwm`、`bitblt`、`duplication` のいずれかと組み合わせると、解析時に `capture.cursor_unsupported`
+  （終了コード `1`）です —— ダイアログを出す前、出力名を計画する前、画素を 1 つ読む前。画面の画素を読む
+  チャネルへ乗り換えてもポインターは加わりません（それらの出所にポインターは無い）し、誰も承諾していない
+  フレームを渡すだけになります。`--capture auto` のときは、要求に応えられない経路を列から外し、それぞれに
+  `note.cursor_channel_skipped` を残します。1 本も残らないとき、または本機の Windows ビルドが 19041 未満で
+  要求を書き明かしているときは `env.cursor_unsupported`（終了コード `7`）で、画素は一切取りません。
+  `--verbose` が `input.captureChain` にエコーするのは生き残った列で、実際の撮影と同じ関数が算出するので、
+  `--cursor include` + `auto` では `["wgc"]` だけが表示されます。
+- **画素の塗り替えはしません。** このツールはデスクトップ複製のポインター形状を取りに行って描くことをせず、
+  `DrawIcon` でフレームへポインターを描き込むことも、すでに描かれているポインターを消そうとすることも絶対に
+  しません —— これらはいずれも画像の塗り替えで、一つとして検証できるものではありません。`src/` のどこかに
+  そんな呼び出しが現れたら `tests\cursor.ps1` が失敗します。
+
+渡す画像 1 枚ごとに、そして `--cursor` を一度でも書いたときだけ、3 つのキーが何が起きたかを語ります：
+
+| フィールド | 値 | 何を言うか |
+| --- | --- | --- |
+| `cursorRequested` | `default` / `include` / `exclude` | 何を要求したか |
+| `cursorEffective` | `include` / `exclude` / `unverified` | この経路が実際に渡したのはどれか |
+| `cursorBasis` | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `wgc_cursor_property_unavailable` | その結論の根拠 |
+
+`wgc_session_property_set` は今回の要求どおりにスイッチを設定し、読み戻した値がそれと一致したことです。
+`wgc_session_property_read` は設定を一切していない（`--cursor default`）現在の値を読んだだけ、
+`path_excludes_cursor` はこの経路の出所の画素にポインターがないこと、`wgc_cursor_property_unavailable` は
+その問いが答えを出さなかったことで、このときは `cursorEffective` にどちらの答えも折らず `unverified` を書きます。
+
+`cursorEffective` はその根拠までしか言いません。言うのは「このセッションがポインターを描く設定だった」か
+「この出所にポインターは無い」かで —— 今回のこれらの画素の上にポインターが載っていたとは**主張しません**。
+本 SDK のセッションのインターフェースには読み取り専用の `IsCursorVisible` がないので、このツールは画素レベルの主張を
+一切せず、`--capabilities` はその境界を `cursor_effective_is_a_setting_not_a_pixel_check` という caveat に
+書いています。書き明かした `include` / `exclude` の要求を `wgc` の撮影で確認できないとき（インターフェースが
+取れない、設定の呼び出しが失敗する、読み戻しが反対の値である）は、コードが `capture.cursor_unverifiable`
+（終了コード `7`）で、しかも `StartCapture` **前**に出ます —— 要求と矛盾するフレームは渡されないからです。
+`--cursor default` で同じ状況になったときは、どちらかの答えに折らず `unverified` として報告します。
+
+ポインターを尋ねても承諾は何も変わりません。どの段階で人に聞くかを決めるのは今も画素の出所なので、
+`bitblt`、`duplication`、またはモニタ全体取得のいずれかに `--cursor exclude` を付けても確認ダイアログは必ず
+出ます。`--yes` はやはり及びません。`--yes` なしの `wgc` もやはり聞きます。この 3 つの現場は
+`tests\cursor.ps1` が実機の自作ウィンドウで判定します。`path` / `scope` / `rect` や切り抜き関連の欄と同じく、
+この 3 つも位置決めの判拠なので `--quiet` でも隠せません。
+
+`--capabilities` は、画素を一切撮らずに上のすべてに答えます。その `cursor` 段落です：既定値、3 つの値、
+ただ 1 つのスイッチの `compiled` / `status` / `minBuild` / `verifiedOnThisMachine`、登録済み経路 1 つにつき
+1 行の `capability` / `reason` / `include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、
+そして `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。
 
 ## 撮影の承諾と --yes
 
@@ -1079,6 +1156,7 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 | `.\tests\consent.ps1` | 撮影の承諾と `--yes`：まず離線の状態機械 `build\ecapture-consent-tests.exe`（偽の応答器と偽のモニタ構成を注入）を走らせ、次に実機で「ダイアログが出るか」を判定する。テスト側が代打するのは常に「いいえ」だけ |
 | `.\tests\isolation.ps1` | 実機のリソース分離：同名の既存プロセスは生存したまま対象にならない、2 回の並行実行が混ざらない、異常終了時は自分だけを後始末する |
 | `.\tests\identity.ps1` | 対象の身元と Z 順の選択の判拠。オフライン層（`build\ecapture-identity-tests.exe`、偽の問い合わせ層を注入）：ハンドルが別プロセスに再利用された、PID は同じだが別プロセス、クラス名が変わった、当初の条件を満たさない、各問いが答えられない、そして 2 段階の確認がそれぞれ何をどの順で聞くか。実機層（自分で作ったウィンドウだけ）：健康な対象を一度も止めない、バルクの途中で対象が破棄されれば `capture.target_gone`、改名して `--title` の条件を満たさなくなれば `capture.target_changed`、改名しても条件が成立ならそのまま撮れる、`--topmost-match` / `--bottommost-match` は現在の Z 順で判定する（先に作ったが最上位帯のウィンドウが勝つ —— 「最後に作成された」の読み違いはまさにここ）。ハンドルと PID の回収は意図的に現場を作れない（他人のプロセスを終了することになる）し、確認ダイアログの区間は `-SimulateConsent` が要るので、どちらも未検証として記録し、通ったことにしない |
+| `.\tests\cursor.ps1` | マウス ポインター（`--cursor`）：オフライン層（`build\ecapture-cursor-tests.exe`、出所は `tests\cursor_state.cpp`）では偽の Windows ビルドと偽のチャネル列を実製品の判定本体に注入し、経路ごとの能力登録表、2 つの登録表が同じ経路の集合を述べていること、ポインター要求による列の狭め方（19041 の下限の両側で 1 回ずつ、ビルド番号が取れないときは形だけによる絞り込み）、`requested` / `effective` / `basis` の合成、そして解析層を直接呼んで「渡せない経路に include を組み合わせた要求が、画面取得をせずに拒否される」を判定します。もう 1 本のオフライン見張りが `src/` を読み、ポインター形状の取得、フレームへのポインター描画、マウスを動かす呼び出しがどこかに現れたら失敗します。実機層は自分で作ったウィンドウだけを使う：wgc のスイッチが本当に設定され読み戻せること、3 種類の要求各 1 枚のフレームが撮れて、その画面がやはり今回のあのウィンドウのものであること（サイズと、自作ウィンドウが描くと決めている色）、`--cursor` を一度も書かなかったときは 3 つのキーが一つも現れないこと、`--quiet` で抑制されないこと、`auto` + `include` で実際に画像を出すのが `wgc` だけであること、拒否される組み合わせは書き出さず人に聞かないこと、そしてポインターを尋ねても承諾が緩まないこと（画面からサンプルする 2 経路はやはりダイアログを出す。見るだけで代打はしない）を判定します。「画素レベルでポインターが見える／見えない」、19041 未満のマシン、人が頷く必要のあるデスクトップの実撮影は本機では作れないので未検証として記録します |
 | `.\tests\crop.ps1` | ウィンドウ内の切り抜き（`--roi` / `--client-area`）：オフライン層 （`build\ecapture-crop-tests.exe`、元は `tests\crop_state.cpp`）では納品画像のサイズ、画面原点が答えられたか、クライアント領域が測れたかを生産判定本体に注入し、縁に接する case、1 ピクセルの越境、幅または高さ 0、64 ビットの周回、片辺の上限、クライアント領域が画像の外に出る場合、負座標のモニタを一本ずつ判定します。実機層は自前の罫線付きウィンドウ（WS_OVERLAPPEDWINDOW、つまりウィンドウ矩形 / クライアント矩形 / 見えている矩形が三者三様に異なる）を使い、三つの独立した Win32 照会と `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight` を突き合わせ、切り抜かない画像と画素を座標対応で比べ、大きすぎる矩形がダイアログもファイルの前に断られること、対象が縮小した後に同じ矩形が無効になること、画面像素の経路では `--roi` が極小で `--yes` があっても必ず確認框が出ること（テスト側は見るだけで押さない）を判定します。画面をまたいだ混合 DPI と「事前検査を通った後、フレームが返る前に縮まれる」競合状態は本機では作れないので未検証として記録します |
 | `.\tests\screen.ps1` | 実機のモニタ全体テスト：確認ダイアログの挙動 + 3 本のモニタチャネル + 赤い塊の位置 + 陰性対照。`-SimulateConsent` を付けたときだけ確認ダイアログを代行クリックするので、テスト専用デスクトップでのみ使う |
 | `.\tests\streams.ps1` | 実機の標準ストリームと構造化結果の信頼性：単一ターゲットの stdout 出力、複数ターゲット一括分の拒否、判定が実際のターゲット数に基づくこと、複数モニタの拒否と確認ダイアログが一切出ないこと、診断の位置特定フィールド、一括の途中で失敗しても先に成功した画像は残ること、結果が取り決めたストリームへ届けられないと 8 になること、そして `--out` 省略と `--out -` が成功 / 一致なし / 歧義 / 不正な引数 / バックエンド失敗 / 拒否 / stdout 断管の七場景で同じ機械語義を返すこと（自作ウィンドウだけを画面取得） |

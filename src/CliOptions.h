@@ -131,6 +131,32 @@ struct CropRequest {
     bool clientAreaGiven = false;
 };
 
+// ---------------------------------------------------------------------------
+// 光标包含与排除（--cursor）
+// ---------------------------------------------------------------------------
+//
+// "画面里有没有鼠标指针"这件事，各条取图通道的**来源像素**本来就不一样：有的通道有一个
+// 可设的开关，有的通道交回的那块像素里根本没有光标可去（详见 src/CursorControl.h 那张登记表）。
+// 所以这一条不允许写成"我要求过就等于我拿到了"：结果里 requested 是用户要的那一种，
+// effective 是这条路径**实际**交回的那一种，basis 说这个结论是从哪一条事实来的。
+//
+// 默认值是 kDefault，而且它的含义是"本工具对这件事一个字都不改"：不给 --cursor 时既不调
+// 任何通道的光标开关，结果里也不出现那三个键 —— 与这条选项存在之前的行为逐字节相同。
+// 显式写 --cursor default 才是"照通道默认交回，但把读到的状态报给我"。
+enum class CursorMode {
+    kDefault,  // 不改动任何通道的默认行为（--cursor 不给就是这一种）
+    kInclude,  // 要求画面里有光标：只有那个开关设得进去的通道能做到
+    kExclude,  // 要求画面里没有光标：设得进去的通道去设，来源本来就没光标的通道照实报
+};
+
+struct CursorRequest {
+    CursorMode mode = CursorMode::kDefault;
+    // 与 --roi 那条同一做法：mode 只留最后一个写法，而"到底写没写过这条选项"要单独记 ——
+    // 没写过 = 结果里三个键都不出现（兼容），写过 = 报 requested/effective/basis。
+    // 报错与回显都用**规范化后**的那个取值（与 `--capture` 一条规矩），所以这里不另存原样写法。
+    bool given = false;
+};
+
 
 struct Options {
     MatchOptions match;
@@ -148,6 +174,10 @@ struct Options {
 
     CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
     bool captureExplicit = false;                  // 是否显式指定过 --capture
+
+    // --cursor：画面里要不要鼠标指针。判据在 src/CursorControl.h（按"这条路径的来源像素里
+    // 本来有没有光标"登记，不按通道名字猜），实现与核实只在 wgc 那一条走真正的开关。
+    CursorRequest cursor;
 
     // --roi / --client-area：取到整窗图像之后再按图像像素坐标裁一次。
     // 这件事**不改变**授权判断：确认框上列出的是整个目标，会读桌面像素的那几条照样一定问人，
@@ -289,6 +319,14 @@ inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
 //   note.os_unverifiable      本机版本没能问出来，所以这一次没有按版本筛通道（不等于支持）
 inline constexpr const wchar_t* kNoteChannelUnavailable = L"note.channel_unavailable";
 inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
+// auto 回退链里那一条**做不到这次要求的光标状态**，已经从链里摘掉了（原因 token 在 message 末尾，
+// ASCII、不随 --lang 变：`os_below_min_build:19041` = 这台机器的版本给不了那个开关，
+// `window_self_drawn` / `dwm_redirection_surface` / `screen_dc_has_no_pointer` = 这条路径的来源
+// 里根本没有光标，`pointer_shape_is_separate_metadata` = 桌面复制那条的指针是独立元数据而本工具
+// 从不合成它，`not_registered` = 新增通道忘了在光标登记表里加一行）。
+// 与 note.channel_unavailable 分开：那一条说的是"本机版本用不了这条通道"，这一条说的是
+// "这条通道能用，但它兑现不了这次的光标要求"，而剩下的那几条仍会照顺序试。
+inline constexpr const wchar_t* kNoteCursorChannelSkipped = L"note.cursor_channel_skipped";
 // 窗口查询（--list / --inspect）交回的是一份**当时的快照**：句柄会复用、标题会变、进程会退出，
 // 所以列表里的 hwnd / pid / 类名不是一种可以长期持有的凭证。真去截图时仍要按
 // 《窗口选择与身份一致性》那一节复核，这一条提示随每一次成功的窗口查询发出（--quiet 可抑制，
@@ -393,6 +431,22 @@ inline constexpr const wchar_t* kRoiInvalid = L"capture.roi_invalid";
 // 屏幕上哪一块），下一步是换一条窗口内容通道或整窗重取一次，而**不是**把请求往里挪一挪。
 // 两条都在一个像素都没落地之前给出，都不许被当成"那就整窗交出"的理由。退出码 7。
 inline constexpr const wchar_t* kRoiUnmeasurable = L"capture.roi_unmeasurable";
+// 光标（--cursor）。三条码各自的下一步不同，而共同点是**绝不"那就先交出再说"**：
+//   capture.cursor_unsupported   要的那种光标状态由所要求的这条通道结构上做不到（例如
+//                                --cursor include 配 printwindow / bitblt / duplication：
+//                                那几条的来源像素里根本没有光标可画）。解析期给出，退出码 1，
+//                                **不换后端**（换一条高风险的桌面通道既没把光标加回来，
+//                                还多拍了没人批准过的画面）。
+//   env.cursor_unsupported       结构上能做到，但这台机器的 Windows 版本给不了那个开关
+//                                （wgc 的 IsCursorCaptureEnabled 要内部版本 19041 起）。
+//                                取帧、弹框之前就给出，退出码 7，与 env.channel_unsupported
+//                                同一族：说的是这一台机器，不是这个目标。
+//   capture.cursor_unverifiable  开关问不到、设不下去，或者设完读回来跟所要求的不是同一件事。
+//                                问不出来不等于"照我要的办了"，这一张一个像素都不落地，退出码 7。
+//                                与 capture.roi_unmeasurable 同源（放不下 vs 问不出来）。
+inline constexpr const wchar_t* kCursorUnsupported = L"capture.cursor_unsupported";
+inline constexpr const wchar_t* kEnvCursorUnsupported = L"env.cursor_unsupported";
+inline constexpr const wchar_t* kCursorUnverifiable = L"capture.cursor_unverifiable";
 // 运行环境（这一台机器上的 Windows 版本）提供不了所要求的东西，与"这个目标截不到"是两回事。
 // 判据与三条下限各写在哪儿见 src/SystemCompat.h；两条都在枚举目标、弹确认框、读像素**之前**
 // 给出，一个像素都不读，退出码 7。分开给码的理由就是调用方的下一步不同：
@@ -535,5 +589,10 @@ const wchar_t* CaptureMethodName(CaptureMethod m);
 // 裁剪方式的机器名（-v 的 input.crop.mode 与 images[].cropMode 都写它）：
 // "none" / "roi" / "client-area"。与 codes 一样只增不改名，调用方按它分支。
 const wchar_t* CropModeName(CropMode m);
+
+// 光标要求的机器名（-v 的 input.cursor 与 images[].cursorRequested 都写它）：
+// "default" / "include" / "exclude"。只增不改名；实际交回的那一种在 cursorEffective，
+// 这个结论的根据在 cursorBasis（两套取值在 src/CursorControl.h，各一个出处）。
+const wchar_t* CursorModeName(CursorMode m);
 
 }  // namespace ecapture

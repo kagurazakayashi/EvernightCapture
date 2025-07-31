@@ -41,6 +41,7 @@ add_executable(ecapture
   src/Capture.cpp
   src/CaptureScope.cpp
   src/CropGeometry.cpp
+  src/CursorControl.cpp
   src/Deadline.cpp
   src/Worker.cpp
   src/WorkerProtocol.cpp
@@ -464,4 +465,35 @@ target_compile_options(ecapture-crop-tests PRIVATE /utf-8 /W4 /permissive- /Zc:_
 target_compile_definitions(ecapture-crop-tests PRIVATE UNICODE _UNICODE NOMINMAX)
 set_target_properties(ecapture-crop-tests PROPERTIES OUTPUT_NAME "ecapture-crop-tests")
 set_property(TARGET ecapture-crop-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 光标包含与排除（--cursor）的离线判据（由 tests\cursor.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的现场是"这台机器的 Windows 版本正好卡在那道门槛两侧"
+# "某条路径没登记进光标表""设完读回来是相反的那一件" —— 本机只有一台 19045 的开发机，降不了级，
+# 也不许为了看"没有开关时会怎样"去动真机的 WGC。判据本体（src/CursorControl.cpp 的
+# FilterChainForCursor / GateCaptureChain 与 src/CursorControl.h 那张按路径登记的表）是纯函数：
+# 假版本与假通道链注进来就能逐条判。文案那一段要读 .rc 里编进的四份资源，所以连着
+# CliOptions/Lang 一起编进来；另外链上 CaptureScope.cpp，用来现场核对"两条表说的是同一批路径"。
+# 这里不碰 WinRT / D3D / 窗口 / 弹框，链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-cursor-tests
+  tests/cursor_state.cpp
+  src/CursorControl.cpp
+  src/CaptureScope.cpp
+  src/SystemCompat.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-cursor-tests PRIVATE resources src)
+target_compile_features(ecapture-cursor-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-cursor-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-cursor-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-cursor-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-cursor-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib)
+set_target_properties(ecapture-cursor-tests PROPERTIES OUTPUT_NAME "ecapture-cursor-tests")
+set_property(TARGET ecapture-cursor-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

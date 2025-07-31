@@ -46,6 +46,14 @@ struct CapturedFrame {
     RECT capturedRect{};   // reportsCrop 为真时有效：实际截到的那一块，同样虚拟屏幕坐标
     bool clipped = false;  // requestedRect 是否没有被完整截到
     uint32_t rotation = 0; // reportsCrop 为真时有效：交付前对桌面帧顺时针转的度数（0/90/180/270）
+
+    // 光标（--cursor）：这一条只有"真的有一个可设开关"的那条通道会填 —— 填的是**设完再读回来**
+    // 的那两个答案（cursorStateKnown = 那一问有没有答案，cursorInFrame = 这条会话现在画不画光标）。
+    // 其余通道一律留 false/false：它们的"这一帧里没有光标"来自 src/CursorControl.h 那张按路径
+    // 登记的表（说的是来源像素这件事），不是一次 API 问答，所以不该在这里冒充"我读过开关"。
+    // 两个值怎么合成结果里的 requested/effective/basis 三个键，只有一份判据（MakeCursorReport）。
+    bool cursorStateKnown = false;
+    bool cursorInFrame = false;
 };
 
 // 帧的内存不变量与资源上限。这两条数字都是能说明白的，不是随手挑的：

@@ -133,6 +133,19 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
             j.Key(L"fullHeight").Value(static_cast<long long>(img.fullHeight));
             if (img.hasCropScreen) WriteRect(j, L"cropScreenRect", img.cropScreen);
         }
+        // 光标（--cursor）：这一次真写过这条选项才写这三个键，没写过时一个都不出现
+        // （与这条选项存在之前的输出逐字节相同）。三个键各说一件事、谁也不冒充谁：
+        //   cursorRequested  用户要的那一种：default / include / exclude
+        //   cursorEffective  这条路径**实际**交回的那一种：include / exclude / unverified
+        //   cursorBasis      这个结论凭什么：设过并读回（wgc 那条会话的开关）/ 只读了当前值 /
+        //                    这条路径的来源像素本来就没有光标 / 那一问没答案
+        // 与 rect / capturedRect / cropRect 同一性质：这是定位与内容判据，--quiet 不许藏
+        //（images 段本来就不被抑制）。取值全是 ASCII 机器名，不随 --lang 变。
+        if (img.cursor.written) {
+            j.Key(L"cursorRequested").Value(img.cursor.requested);
+            j.Key(L"cursorEffective").Value(img.cursor.effective);
+            j.Key(L"cursorBasis").Value(img.cursor.basis);
+        }
         if (img.screen) {
             // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
             j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
@@ -198,6 +211,12 @@ void WriteInputEcho(Json& j, const Options& opt) {
     j.Key(L"formatGiven").Value(opt.formatExplicit);
     j.Key(L"capture").Value(CaptureMethodName(opt.capture));
     j.Key(L"captureGiven").Value(opt.captureExplicit);
+    // 光标这一条与 capture 同一做法：规范化取值 + "这次写没写过这条选项"各一个键，恒写。
+    // 默认值因此是问得出来的（cursorGiven=false / cursor="default"），而"实际交回的那一种"
+    // 在每一张图的 cursorEffective / cursorBasis 里 —— 那是按路径算的事，不在这里。
+    // 断言"这次到底要求了什么"不必真的去截一张图（与 input.overwrite / input.yes 同一个理由）。
+    j.Key(L"cursor").Value(CursorModeName(opt.cursor.mode));
+    j.Key(L"cursorGiven").Value(opt.cursor.given);
     // 窗口内部裁剪这一层也回显：这次是哪种裁剪、--roi 那四个数规范化成了什么。
     // 断言"参数最终落到什么值"不必真的去截一张图（与 input.overwrite / input.yes 同一个理由）。
     // 没给裁剪时整个键不出现 —— 与 input.monitor 那条"给了才写"一致。
@@ -222,7 +241,11 @@ void WriteInputEcho(Json& j, const Options& opt) {
     const OsVersion os = ProbeOsVersion();
     if (os.known) j.Key(L"osBuild").Value(static_cast<long long>(os.build));
     j.Key(L"captureChain").Arr();
-    for (const CaptureMethod usable : GateChannels(opt.capture, opt.ScreenMode(), os).chain) {
+    // 与真去截图那一次同一个判据、同一条顺序：版本筛完之后还要按这一次的光标要求筛
+    //（--cursor include 配 auto 时链里只剩设得进开关的那一条）。回显与执行不是两套答案。
+    for (const CaptureMethod usable : GateCaptureChain(opt.capture, opt.ScreenMode(), os,
+                                                       opt.cursor)
+                                             .chain) {
         j.Value(CaptureMethodName(usable));
     }
     j.End();
