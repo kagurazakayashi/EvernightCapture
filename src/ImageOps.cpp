@@ -6,7 +6,9 @@
 namespace ecapture {
 namespace {
 
-uint64_t RowBytesOf(uint64_t width) { return width * 4ull; }
+uint64_t RowBytesOf(uint64_t width, uint32_t bytesPerPixel = 4) {
+    return width * static_cast<uint64_t>(bytesPerPixel == 0 ? 4u : bytesPerPixel);
+}
 
 }  // namespace
 
@@ -14,8 +16,9 @@ FrameShape CheckFrameShape(const FrameShapeInfo& info) {
     if (info.width == 0 || info.height == 0) return FrameShape::kEmpty;
     if (info.width > kFrameMaxSide || info.height > kFrameMaxSide) return FrameShape::kSideTooLarge;
 
-    // 到这一步 width 已经在 uint32 里，乘以 4 只会溢出在 32 位上，所以全程用 64 位算
-    const uint64_t rowBytes = RowBytesOf(info.width);
+    // 到这一步 width 已经在 uint32 里，乘以每像素字节数只会溢出在 32 位上，所以全程用 64 位算。
+    // bytesPerPixel 默认 4（BGRA8 那一条，也是既有全部调用点），只有广色域帧那条传 8。
+    const uint64_t rowBytes = RowBytesOf(info.width, info.bytesPerPixel);
     if (info.stride < rowBytes) return FrameShape::kStrideTooSmall;
     if (info.stride > rowBytes * 2ull) return FrameShape::kStrideTooLarge;
 

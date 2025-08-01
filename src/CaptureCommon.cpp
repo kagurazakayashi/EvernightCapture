@@ -65,22 +65,53 @@ bool RejectShape(const FrameShapeInfo& intent, const wchar_t* channel, Diagnosti
 // fullBox 之外一律按源矩形判形状与上限，分配之前先算清楚。
 bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t x, uint32_t y,
                            uint32_t width, uint32_t height, bool fullBox, const wchar_t* channel,
-                           CapturedFrame* out, Diagnostic* err) {
+                           const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+                           Diagnostic* err) {
     if (!device || !src || !out) {
         CaptureError(err, channel, Msg(L"cap.no_detail"), std::wstring());
         return false;
     }
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
+    out->sourceColorSpace = FrameColorSpace::kSrgbBgra8;
+    out->toneMapped = false;
 
     D3D11_TEXTURE2D_DESC desc{};
     src->GetDesc(&desc);
-    // 这两条通道只按 BGRA8 解释像素。HDR / 10 位显示模式下帧格式不是它（旧实现里 duplication
-    // 就是靠这句话把"为什么截不到"说清楚的），继续按 4 字节一行搬会得到错色或错位。
-    if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM) {
-        CaptureError(err, channel, Msgf(L"cap.frame_format", static_cast<uint64_t>(desc.Format)),
-                    Msg(L"cap.frame_format_hint"));
-        return false;
+    // 默认（没写 --hdr 或 --hdr auto）只按 BGRA8 解释像素：非 BGRA8 就照旧交回 cap.frame_format，
+    // 与这条选项存在之前逐字节相同。显式要过 HDR 处理（tonemap / refuse）时才认得广色域来源，
+    // 而且无论哪一条，出了这道门的帧永远是 8 位 BGRA —— 下游的旋转 / 裁剪 / 单色判定 / 编码一行都不改。
+    const bool isBgra8 = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM;
+    uint32_t bpp = 4u;
+    DXGI_FORMAT stagingFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (!isBgra8) {
+        if (!hdr.given || hdr.policy == HdrPolicy::kAuto) {
+            CaptureError(err, channel, Msgf(L"cap.frame_format", static_cast<uint64_t>(desc.Format)),
+                         Msg(L"cap.frame_format_hint"));
+            return false;
+        }
+        const FrameColorSpace srcCs = FrameColorSpaceFromDxgiFormat(static_cast<uint32_t>(desc.Format));
+        if (hdr.policy == HdrPolicy::kRefuse) {
+            // refuse 要的就是"别给我一张被硬压成 BGRA8 的发白图"：确凿是 HDR 就停在这里，
+            // 认不出的广色域格式也停在这里（猜一个映射与硬按 BGRA8 解释是同一类错误）。
+            if (FrameColorSpaceIsHdr(srcCs)) {
+                CaptureError(err, channel, Msgf(L"cap.hdr_refused", FrameColorSpaceName(srcCs)),
+                             Msg(L"cap.hdr_refused_hint"), codes::kHdrRefused);
+            } else {
+                CaptureError(err, channel, Msgf(L"cap.hdr_unverifiable", static_cast<uint64_t>(desc.Format)),
+                             Msg(L"cap.hdr_unverifiable_hint"), codes::kHdrUnverifiable);
+            }
+            return false;
+        }
+        // tonemap：认得出来的广色域格式才继续，认不出的一律 hdr_unverifiable（不硬解释）。
+        if (srcCs == FrameColorSpace::kUnknown) {
+            CaptureError(err, channel, Msgf(L"cap.hdr_unverifiable", static_cast<uint64_t>(desc.Format)),
+                         Msg(L"cap.hdr_unverifiable_hint"), codes::kHdrUnverifiable);
+            return false;
+        }
+        out->sourceColorSpace = srcCs;
+        bpp = FrameColorSpaceBytesPerPixel(srcCs);
+        stagingFormat = desc.Format;   // CopyResource / CopySubresourceRegion 要求源与目标同格式
     }
 
     // fullBox 那条沿用"整幅纹理就是画面"的旧语义；带源矩形那条由调用方给出它确认有效的区域。
@@ -97,10 +128,10 @@ bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t 
     if (copyW == 0 || copyH == 0 ||
         static_cast<uint64_t>(x) + copyW > desc.Width ||
         static_cast<uint64_t>(y) + copyH > desc.Height) {
-        return RejectShape(FrameShapeInfo{copyW, copyH, copyW * 4u, 0ull}, channel, err);
+        return RejectShape(FrameShapeInfo{copyW, copyH, copyW * bpp, 0ull, bpp}, channel, err);
     }
     if (copyW > kFrameMaxSide || copyH > kFrameMaxSide) {
-        return RejectShape(FrameShapeInfo{copyW, copyH, copyW * 4u, 0ull}, channel, err);
+        return RejectShape(FrameShapeInfo{copyW, copyH, copyW * bpp, 0ull, bpp}, channel, err);
     }
 
     D3D11_TEXTURE2D_DESC stagingDesc{};
@@ -108,7 +139,7 @@ bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t 
     stagingDesc.Height = copyH;
     stagingDesc.MipLevels = 1;
     stagingDesc.ArraySize = 1;
-    stagingDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    stagingDesc.Format = stagingFormat;
     stagingDesc.SampleDesc.Count = 1;
     stagingDesc.SampleDesc.Quality = 0;
     stagingDesc.Usage = D3D11_USAGE_STAGING;
@@ -152,16 +183,16 @@ bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t 
                      codes::kCaptureFailed, 0, mapHr);
         return false;
     }
-    const uint64_t rowBytes = static_cast<uint64_t>(copyW) * 4ull;
+    const uint64_t rowBytes = static_cast<uint64_t>(copyW) * bpp;
     // 行距由驱动给，先核对它装不装得下一行像素，再决定搬多少字节 —— 旧的写法是直接把
     // RowPitch 当 stride 用，RowPitch 比行长小时就是读越界。
     if (mapped.RowPitch() < rowBytes) {
-        return RejectShape(FrameShapeInfo{copyW, copyH, mapped.RowPitch(), 0ull}, channel, err);
+        return RejectShape(FrameShapeInfo{copyW, copyH, mapped.RowPitch(), 0ull, bpp}, channel, err);
     }
     // 分配之前判完字节数：这大小是要 resize 的，判据不能用"分配失败"来发现
     const uint64_t bytes = static_cast<uint64_t>(mapped.RowPitch()) * copyH;
     if (bytes > kFrameMaxBytes) {
-        return RejectShape(FrameShapeInfo{copyW, copyH, mapped.RowPitch(), bytes}, channel, err);
+        return RejectShape(FrameShapeInfo{copyW, copyH, mapped.RowPitch(), bytes, bpp}, channel, err);
     }
 
     out->width = copyW;
@@ -175,7 +206,18 @@ bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t 
                     from + static_cast<size_t>(row) * mapped.RowPitch(), static_cast<size_t>(rowBytes));
     }
     out->source = channel;
-    // 搬完再核一次形状（这次带真实缓冲区大小），不合格就是这里自己写坏了
+
+    // 广色域来源：搬进 CPU 的这块像素此刻还是 FP16 / 10 位，就地映射成 8 位 BGRA sRGB 再交出，
+    // 于是下游永远只看见 BGRA8。转换失败（预算用尽 / 形状不合法）时这一张不落地。
+    if (out->sourceColorSpace != FrameColorSpace::kSrgbBgra8) {
+        if (!ConvertWideFrameToSdrBgra8(out, &dl, err)) {
+            out->pixels.clear();
+            out->width = out->height = out->stride = 0;
+            return false;
+        }
+        return true;   // 转换里已经重核过 BGRA8 的形状
+    }
+    // BGRA8 那条：搬完再核一次形状（这次带真实缓冲区大小），不合格就是这里自己写坏了
     return FrameShapeOk(*out, channel, stages::kCapture, err);
 }
 
@@ -186,15 +228,17 @@ bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t 
 // ---------------------------------------------------------------------------
 
 bool CopyTextureToFrame(ID3D11Device* device, ID3D11Texture2D* src, const wchar_t* channel,
-                        CapturedFrame* out, Diagnostic* err) {
-    return CopyTextureBoxToFrame(device, src, 0, 0, 0, 0, /*fullBox=*/true, channel, out, err);
+                        const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
+    return CopyTextureBoxToFrame(device, src, 0, 0, 0, 0, /*fullBox=*/true, channel, hdr, dl, out,
+                                 err);
 }
 
 bool CopyTextureRectToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t x, uint32_t y,
                             uint32_t width, uint32_t height, const wchar_t* channel,
-                            CapturedFrame* out, Diagnostic* err) {
-    return CopyTextureBoxToFrame(device, src, x, y, width, height, /*fullBox=*/false, channel, out,
-                                 err);
+                            const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+                            Diagnostic* err) {
+    return CopyTextureBoxToFrame(device, src, x, y, width, height, /*fullBox=*/false, channel, hdr,
+                                 dl, out, err);
 }
 
 

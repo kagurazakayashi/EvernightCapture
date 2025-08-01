@@ -122,6 +122,7 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
 画面取得方式（既定 wgc；OS のバージョンやウィンドウの性質で失敗することがある）
   --capture, -C <method>                      wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し。モニタの回転に合わせて向きを補正し、対象と最も重なる 1 台の出力だけを取ります。切り足りないときは capturedRect/clipped が付きます) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
   --cursor <default|include|exclude>          画像にマウス ポインターを含めるか：default(既定。何も変更せず、結果にポインター関連の 3 つのキーも現れません) / include(入れる) / exclude(入れない)。実際に設定できて読み戻せるスイッチを持つのは wgc だけ（ビルド 19041 以上が必要）で、その他の経路が返す画像にはそもそもポインターがありません。だから include を printwindow / dwm / bitblt / duplication と組み合わせると capture.cursor_unsupported で拒否され、画面の画素を読む経路にこっそり乗り換えもしません；auto のときは実現できない経路を列から外し、それぞれに note.cursor_channel_skipped を残します。認可は変わりません；requested / effective / basis の判拠は README に
+  --hdr <auto|tonemap|refuse>                 HDR 由来の映像をどう扱うか：auto（既定、本ツールは何も変えず、結果にも色のキー群を出さない） / tonemap（HDR フレームを固定のトーンカーブで 8 ビット SDR に変換してから納品） / refuse（由来が HDR と確認できたらエラーにし、BGRA8 に強制変換した色あせ画像を決して出さない）。広色域フレームを運べるのは wgc と duplication の 2 系統のみなので、tonemap/refuse を printwindow / dwm / bitblt と合わせると解析時に capture.hdr_unsupported を返し、デスクトップ画素を読む系統へ回し直すことはしません。これは認可を変えません。由来の色空間・ビット深度・実際に行った処理を結果に書き込みます。判定は README と --capabilities の color 節を参照
 
 ウィンドウ内の切り抜き（納品されたウィンドウ全体画像を、その画像自身のピクセル座標でもう一度切り抜きます。デスクトップ絶対座標ではありません。以下の 2 つは排他）
   --roi <x,y,w,h>                             納品されたウィンドウ全体画像から、x,y を開始点とする w×h を切り抜きます。原点 (0,0) はこの画像自身の左上ピクセルです（画像はユーザーが見えている見えているウィンドウ枠に対応し、DWM の透明なリサイズ枠は含まれません）。単位は物理ピクセルで、DPI スケーリングは行いません（本プロセスは per-monitor v2 です。論理ピクセルで指定する呼び出し側が拡大率を掛けてください）。したがってこの 4 つの値がデスクトップ絶対座標として扱われることはありません。4 つは 10 進数・カンマ区切り。x と y は 0 可、w と h は 1 以上、いずれも 16384 まで。収まらないときは画像を書き出しません：フレーム取得前に分かるときは match.roi_out_of_range（ダイアログもファイルもなし）、取得後に初めて分かるときは capture.roi_invalid。内側にずらす、縁で打ち切る、ウィンドウ全体を返すことはしません。切り抜きはフレーム取得の後ろにあるので、認可の判断は変わりません：画面からサンプルする経路は必ず人に聞き、--yes は「最後に小さな一部だけ残す」から有効にはなりません。結果の cropRect は画像ピクセル座標、cropScreenRect は同じ矩形の画面座標（画像の原点を確認できたときだけ書きます）、切り抜き前のサイズが fullWidth/fullHeight、後が width/height です。--client-area と排他、画面全体の対象では成り立ちません（capture.unsupported）
@@ -577,10 +578,11 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
 | `backends` | 各経路の `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`、そしてウィンドウ対象・画面対象でそれぞれどの内部経路を通るか（`dwm` のデスクトップ退路も含む。だから `--yes` の適用範囲を読み広げられない） |
 | `formats` | 各形式の `compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` は常に `unknown` —— この層はエンコーダを実際に試さない（試すと「1 枚符号化して能力を探る」になり、撮影で探らないのと同じ理由に触れる）。かつて挙げたがエンコーダが無い `webp` / `ico` は `compiled: false` + `reason: "not_compiled"` に残し、推測ではなく確定した答えを渡す |
 | `cursor` | `--cursor` の話：`default`（このオプションを付けないときの扱い）、3 つの値、ただ 1 つのスイッチを `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine` で書き、続いて登録済みの内部経路 1 行ごとに `capability`（`settable` / `excludes_cursor` / `unregistered`）、`reason`、`include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、加えて `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。撮って能力を探ることはしないので、登録表に無い経路は推測の答えではなく `unknown` を読む |
+| `color` | `--hdr` の話：`default`（このオプションを付けないときの扱い）、3 つの値（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` は「このビルドが広色域フレームを運べるか + どう変換するか」を言い、その画面が今 HDR モードかどうかは聞かない（reason は `hdr_display_mode_not_probed`）。`verifiedOnThisMachine` は常に `no`（本プロジェクトに HDR ディスプレイが無いので色彩の受け入れ合格を主張しない）。登録済みの内部経路 1 行ごとに `capability`（`wide_gamut_capable` / `sdr_source_only` / `unregistered`）、加えて `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR は常に 8 ビット SDR へ変換して納品し、HDR ネイティブ画像は出さない） |
 | `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる |
 | `limits` | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲 |
 | `privacy` | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし |
-| `caveats` | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない） |
+| `caveats` | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品する） |
 
 両方の文書は**同一の**判定関数（`src/EnvReport.cpp` の `BuildEnvReport`）から出る。違いは段落の取捨だけで、
 `--diagnostics` は `build` 段（PE のリンク時刻・機械種別・イメージサイズ・subsystem）を常に載せ、
@@ -888,6 +890,42 @@ GPU についているか」はこうして返る。
 1 行の `capability` / `reason` / `include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、
 そして `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。
 
+## HDR 色処理（`--hdr`）
+
+ディスプレイが HDR モードのとき、取得したフレームは SDR を超える輝度レンジと別の伝達関数を含み得ます。それを 8 ビット BGRA として無理やり解釈すると、色が抜け、ハイライトが飛んだ「普通にに見えるが間違っている」画像になります。本ツールはこの結果を正しいものとしては扱いません。`--hdr auto|tonemap|refuse` はこの件を明示的に決めるためのものです。既定値 `auto` は色について**何も変えない**ことを意味します。ディスプレイ状態を調べず、取得フォーマットも変えず、変換もしないので、結果にも色に関するキーは現れません。出力はこのオプションが存在する前と 1 バイト違わない状態のままです。
+
+どの経路が広色域フレームを運べるかは、他と同じく**ピクセルの出所**で判定し、チャネル名では判定しません。その登録表は `src/HdrColor.h` にあり、`images[].path` ごとに 1 行です。
+
+- `wgc` / `screen.wgc` / `duplication.frame` / `screen.duplication` は運べる（出所がディスプレイモードに追随する。WGC は FP16 scRGB 線形で返せて、デスクトップ複製のテクスチャは FP16 scRGB、または 10 ビットの ST.2084 (PQ) / HLG BT.2020 の可能性がある）。
+- `printwindow`（ウィンドウが 8 ビット DC へ自分で描く）、`dwm.thumbnail` / `dwm.screen`、`bitblt.screen` / `screen.bitblt` は構造上 8 ビット SDR しか運ばないので、これらに対して HDR 処理は作用対象を持たず、「できないから乗り換える」のではなく恒等です。
+
+3 つの値：
+
+- `tonemap` … HDR フレームを SDR に変換して納品する。エンコード前に**画素ごとの浮動小数中間値**を作る（フレーム全体の浮動小数バッファは確保しない。1 GiB のフレーム予算を 4 倍に押し広げるため）。手順は固定の曲線：伝達関数の復号（scRGB 線形 / PQ→絶対輝度→相対線形 / HLG 逆 OETF）→ BT.2020 から BT.709 への原色行列 → 輝度に対する**拡張 Reinhard** トーンマップ（確定的・単調で、`white=1` のときは恒等に変化）→ sRGB 符号化 → 不透明の alpha はそのまま通す。元々 SDR のときは恒等パススルー。
+- `refuse` … 出所が HDR と確認できた時点でエラーにし、ピクセルを書き込まない。BGRA8 に押し潰した色あせ画像を渡すことは絶対にしない。
+- `auto`（既定） … 上の変換パスは使わず、このフレームが実際にどんな色空間で返ってきたかを実況するだけ。
+
+この表から 2 つの規則が導かれ、どちらも `--cursor` と同じ原則です。
+
+- **できない経路は拒否し、裏で乗り換えない。** `--hdr tonemap` / `refuse` を `printwindow` / `dwm` / `bitblt` と組み合わせると解析時に `capture.hdr_unsupported`（終了コード `1`）。チャネルを切り替えない（デスクトップ画素を読む側に変えても HDR は増えず、誰も承認していない画面を撮るだけ）。`--capture auto` は解析時には判定しない（どのチャネルになるかは実行時まで分からず、広色域を運べる 2 経路はどちらも列に入っている）。
+- **認識できないものは認識できない。** このビルドが名前の付けられない広色域ピクセル形式が返ってきたら `capture.hdr_unverifiable`（終了コード `7`）。BGRA8 として解釈もしなければ、変換を推測もしない。`--hdr refuse` で出所が HDR と確認できたら `capture.hdr_refused`（終了コード `7`）。3 つともエンコード前に返り、何も書き込まない。
+
+`--hdr` を一度でも書くと、納品する画像ごとにこの列のキーが付きます（未指定なら一つも現れず、このオプションが存在する前と 1 バイト違わない）。
+
+| フィールド | 取りうる値 | 言っていること |
+| --- | --- | --- |
+| `hdrRequested` | `auto` / `tonemap` / `refuse` | 要求した戦略 |
+| `hdrEffective` | `sdr_passthrough` / `tone_mapped` / `unverified` | このフレームが実際に受けた処理 |
+| `hdrBasis` | `delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized` | その結論の根拠 |
+| `sourceColorSpace` | `srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `unknown` | エンコード前の出所 |
+| `sourceBitDepth` | `8` / `10` / `16`（認識できないときはキーごと省略） | 出所のチャネルビット数 |
+
+明示的に処理を要求した（`tonemap` / `refuse`）のにこのフレームの出所が 8 ビット SDR と確認できた場合、画像はそのまま納品され（SDR に対する変換は恒等）、`note.hdr_source_sdr` が 1 件残ります。「HDR 処理を頼んだ」と「そもそも HDR が無かった」を並べて見せるためで、静かな通過を「HDR が正しく変換された」と取り違えさせません。`--hdr auto` はこの通知を出しません（あくまで実況のみ）。
+
+HDR 色処理は認可を変えません。この処理全体はフレーム取得の後・エンコードの前に走り、判定は相変わらず「この経路のピクセルがどこから来るか」です。デスクトップ画素を読む経路は必ず人に聞き、`--yes` は及ばず、「変換したから無確認」という迂回も作りません。
+
+**この開発機のディスプレイは HDR を有効にできない**ため、「本物の HDR フレームを 1 枚取って変換する」エンドツーエンドの現場はここでは作れません。トーンマップの数学は既知の色ブロックと輝度グラデーションでオフラインに 1 点ずつ判定し（`tests\hdr_state.cpp`）、`--capabilities` の `color.verifiedOnThisMachine` はそのため常に `no`（`hdr_tone_mapping_not_verified_on_hdr_display` の caveat）、`tests\hdr.ps1` で HDR デバイスを要する判定はすべて未検証として記録します。HDR ディスプレイで再確認するまで、本ツールは色彩の受け入れ合格を主張しません。
+
 ## 撮影の承諾と --yes
 
 実際にフレームを取得する撮影は、**信頼できるウィンドウ用チャネルを含めて**、必ずモーダルの確認ダイアログを
@@ -1156,6 +1194,7 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 | `.\tests\consent.ps1` | 撮影の承諾と `--yes`：まず離線の状態機械 `build\ecapture-consent-tests.exe`（偽の応答器と偽のモニタ構成を注入）を走らせ、次に実機で「ダイアログが出るか」を判定する。テスト側が代打するのは常に「いいえ」だけ |
 | `.\tests\isolation.ps1` | 実機のリソース分離：同名の既存プロセスは生存したまま対象にならない、2 回の並行実行が混ざらない、異常終了時は自分だけを後始末する |
 | `.\tests\identity.ps1` | 対象の身元と Z 順の選択の判拠。オフライン層（`build\ecapture-identity-tests.exe`、偽の問い合わせ層を注入）：ハンドルが別プロセスに再利用された、PID は同じだが別プロセス、クラス名が変わった、当初の条件を満たさない、各問いが答えられない、そして 2 段階の確認がそれぞれ何をどの順で聞くか。実機層（自分で作ったウィンドウだけ）：健康な対象を一度も止めない、バルクの途中で対象が破棄されれば `capture.target_gone`、改名して `--title` の条件を満たさなくなれば `capture.target_changed`、改名しても条件が成立ならそのまま撮れる、`--topmost-match` / `--bottommost-match` は現在の Z 順で判定する（先に作ったが最上位帯のウィンドウが勝つ —— 「最後に作成された」の読み違いはまさにここ）。ハンドルと PID の回収は意図的に現場を作れない（他人のプロセスを終了することになる）し、確認ダイアログの区間は `-SimulateConsent` が要るので、どちらも未検証として記録し、通ったことにしない |
+| `.\tests\hdr.ps1` | HDR 色処理（`--hdr`）：オフライン層（`build\ecapture-hdr-tests.exe`、出所は `tests\hdr_state.cpp`）は 2 つの登録表が同じ経路の集合を述べていること、DXGI 形式と表示 color space の分類（認識できないものは `unknown`、推測しない）、half 復号・伝達関数・トーン曲線の性質（黒は黒へ、単調、`white=1` で恒等、1 を超えない）、`ConvertWideFrameToSdrBgra8` を既知の色ブロックと輝度グラデーションで 1 点ずつの検証、出所と形状のガード、結果キー群の合成と `HdrRequestPossible` を判定します。実機層は自分で作ったウィンドウと `--yes` のウィンドウ内容レベルだけ（本機は非 HDR）：`--hdr` を書かなければ色のキーが一つも出ないこと、`--hdr auto` が出所を `srgb_bgra8` / `sdr_passthrough` と正直に実況し通知を出さないこと、`tonemap` / `refuse` が SDR 由来では恒等パススルーで各自 `note.hdr_source_sdr` を 1 件残すこと、`--quiet` がそのキー群を抑制しないこと、そして各画像のサイズ／主色／色数が `--hdr` を書かなかった場合と一致すること（HDR 処理が SDR 画像を歪めていない）を判定します。`--capabilities` の `color` 段は `verifiedOnThisMachine` が常に `no`、経路ごとの広色域到達可否、2 つの照会が同源であることを確認します。本物の HDR フレームでの実写対照、HDR 上の `refuse` 拒否、FP16 フレームプールの実写、HLG の実機の下場は本機では作れないので未検証として記録します |
 | `.\tests\cursor.ps1` | マウス ポインター（`--cursor`）：オフライン層（`build\ecapture-cursor-tests.exe`、出所は `tests\cursor_state.cpp`）では偽の Windows ビルドと偽のチャネル列を実製品の判定本体に注入し、経路ごとの能力登録表、2 つの登録表が同じ経路の集合を述べていること、ポインター要求による列の狭め方（19041 の下限の両側で 1 回ずつ、ビルド番号が取れないときは形だけによる絞り込み）、`requested` / `effective` / `basis` の合成、そして解析層を直接呼んで「渡せない経路に include を組み合わせた要求が、画面取得をせずに拒否される」を判定します。もう 1 本のオフライン見張りが `src/` を読み、ポインター形状の取得、フレームへのポインター描画、マウスを動かす呼び出しがどこかに現れたら失敗します。実機層は自分で作ったウィンドウだけを使う：wgc のスイッチが本当に設定され読み戻せること、3 種類の要求各 1 枚のフレームが撮れて、その画面がやはり今回のあのウィンドウのものであること（サイズと、自作ウィンドウが描くと決めている色）、`--cursor` を一度も書かなかったときは 3 つのキーが一つも現れないこと、`--quiet` で抑制されないこと、`auto` + `include` で実際に画像を出すのが `wgc` だけであること、拒否される組み合わせは書き出さず人に聞かないこと、そしてポインターを尋ねても承諾が緩まないこと（画面からサンプルする 2 経路はやはりダイアログを出す。見るだけで代打はしない）を判定します。「画素レベルでポインターが見える／見えない」、19041 未満のマシン、人が頷く必要のあるデスクトップの実撮影は本機では作れないので未検証として記録します |
 | `.\tests\crop.ps1` | ウィンドウ内の切り抜き（`--roi` / `--client-area`）：オフライン層 （`build\ecapture-crop-tests.exe`、元は `tests\crop_state.cpp`）では納品画像のサイズ、画面原点が答えられたか、クライアント領域が測れたかを生産判定本体に注入し、縁に接する case、1 ピクセルの越境、幅または高さ 0、64 ビットの周回、片辺の上限、クライアント領域が画像の外に出る場合、負座標のモニタを一本ずつ判定します。実機層は自前の罫線付きウィンドウ（WS_OVERLAPPEDWINDOW、つまりウィンドウ矩形 / クライアント矩形 / 見えている矩形が三者三様に異なる）を使い、三つの独立した Win32 照会と `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight` を突き合わせ、切り抜かない画像と画素を座標対応で比べ、大きすぎる矩形がダイアログもファイルの前に断られること、対象が縮小した後に同じ矩形が無効になること、画面像素の経路では `--roi` が極小で `--yes` があっても必ず確認框が出ること（テスト側は見るだけで押さない）を判定します。画面をまたいだ混合 DPI と「事前検査を通った後、フレームが返る前に縮まれる」競合状態は本機では作れないので未検証として記録します |
 | `.\tests\screen.ps1` | 実機のモニタ全体テスト：確認ダイアログの挙動 + 3 本のモニタチャネル + 赤い塊の位置 + 陰性対照。`-SimulateConsent` を付けたときだけ確認ダイアログを代行クリックするので、テスト専用デスクトップでのみ使う |

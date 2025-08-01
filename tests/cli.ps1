@@ -47,10 +47,10 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 # 天然比中文长得多（en 大约是 zh 的 1.7 倍），拿一个数去卡四种语言会把"这个语言的
 # 说明本来就更啰嗦"判成"帮助膨胀"，所以按语言分别给。
 # 上调这条数字只应该发生在**新增一条选项或新增一段说明**的时候，并且要说得出是哪一次改动。
-# 上一次上调：光标包含与排除那一条（--cursor 一行目录 + 一句说明；没有新增分组标题）。
-# 四种语言各加约 380～660 字符（英文那份天然最长，实测 +654），所以下面四个数按各自实际
-# 增量分别抬起，并把余量留在"再加一条短选项"还能装下的位置上。
-$HELP_LIMITS = @{ 'zh-CN' = 8200; 'zh-TW' = 8300; 'en' = 14900; 'ja' = 9100 }
+# 上一次上调：HDR 色彩处理那一条（--hdr 一行目录 + 一句说明；没有新增分组标题，接在 --cursor 后面）。
+# 四种语言各加约 380～520 字符（英文那份天然最长），实测 zh-CN 8374 / zh-TW 8414 / en 15258 / ja 9328，
+# 所以下面四个数按各自实际增量分别抬起，并把余量留在"再加一条短选项"还能装下的位置上。
+$HELP_LIMITS = @{ 'zh-CN' = 8600; 'zh-TW' = 8700; 'en' = 15650; 'ja' = 9700 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']
@@ -977,6 +977,101 @@ $cases += @{ Name = '窗口查询与 --cursor 冲突（cli.window_query_conflict
 $cases += @{ Name = '--cursor 与 --roi 同时给出不算冲突（两件事各说各的）'
    A = ($ANCHOR + @('--cursor', 'exclude', '--roi', '0,0,5,5', '--verbose', 'out.png')); Exit = 0
    Check = { param($o) $o.input.cursor -eq 'exclude' -and $o.input.crop.mode -eq 'roi' } }
+
+# ---------------------------------------------------------------------------
+# HDR 色彩处理（--hdr）：这一节同样只判**解析层**（写法、取值域、与通道能力的组合、回显，
+# 以及"不摘链"）。真去带回广色域帧、映射与三个键的合成在 tests\hdr_state.cpp（离线）与
+# tests\hdr.ps1（真机：本机没 HDR 显示器，凡是要真的 HDR 帧才能判的项一律记未验证）。
+# 这里全部配 --dry-run：不取帧，所以既不弹框也不落地；--hdr tonemap/refuse 配做不到的那条通道
+# 是**结构性**说不通（那条只带得回 8 位 SDR），与本机版本无关，dry-run 照样判。
+# ---------------------------------------------------------------------------
+foreach ($bad in @('hdr', 'yes', 'true', '1', 'map', 'passthrough', 'Auto!', 'tonemap,refuse',
+                   '默认')) {
+    $cases += @{ Name = ('--hdr 的写法不合（[{0}]）' -f $bad)
+       A = ($ANCHOR + @('--hdr', $bad, 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                            $o.errors[0].option -eq '--hdr' -and
+                            $o.errors[0].value -eq $bad }.GetNewClosure() }
+}
+# --hdr 必带取值（不是可选取值那一类），argv 到头就是 cli.missing_value；
+# 且它要吃值：--hdr out.png 里的 out.png 被当取值并当场报错，不会悄悄变成输出文件名。
+$cases += @{ Name = '--hdr 放在末尾没有取值：cli.missing_value'
+   A = @('--class', 'Shell_TrayWnd', '--dry-run', 'out.png', '--hdr'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.missing_value' -and
+                        $o.errors[0].option -eq '--hdr' } }
+$cases += @{ Name = '--hdr 吃掉后面的输出路径写法并当场报错（不变成文件名）'
+   A = ($ANCHOR + @('--hdr', 'out.png')); Exit = 1; ToStderr = $true
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                        $o.errors[0].value -eq 'out.png' } }
+# 三种写法都认（忽略大小写与首尾空白），最后一个生效，且 -v 回显最终策略与"有没有写过"。
+foreach ($w in @(@('tonemap', 'tonemap'), @('REFUSE', 'refuse'), @(' auto ', 'auto'),
+                 @('Auto', 'auto'), @('ToneMap', 'tonemap'))) {
+    $cases += @{ Name = ('--hdr 认得的写法（{0}）' -f $w[0])
+       A = ($ANCHOR + @('--hdr', $w[0], '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.hdr -eq $w[1] -and $o.input.hdrGiven -eq $true }.GetNewClosure() }
+}
+foreach ($w in @(@('--hdr=tonemap', 'tonemap'), @('--hdr=REFUSE', 'refuse'), @('--hdr=auto', 'auto'))) {
+    $cases += @{ Name = ('--hdr 的内联写法（{0}）' -f $w[0])
+       A = ($ANCHOR + @($w[0], '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.hdr -eq $w[1] -and $o.input.hdrGiven -eq $true }.GetNewClosure() }
+}
+$cases += @{ Name = '--hdr 写两次：最后一个生效（与 --capture 那条顺序语义一致）'
+   A = ($ANCHOR + @('--hdr', 'tonemap', '--hdr', 'refuse', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.hdr -eq 'refuse' -and $o.input.hdrGiven -eq $true } }
+$cases += @{ Name = '-v 恒回显最终 HDR 策略与"有没有写过这条选项"（默认值问得出来）'
+   A = ($ANCHOR + @('--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.hdr -eq 'auto' -and $o.input.hdrGiven -eq $false } }
+# tonemap / refuse 这两种明确要求只有真带得回广色域帧的通道（wgc / duplication）才谈得上：
+# 显式指定做不到的那几条（printwindow / dwm / bitblt）在解析期说不通，而且绝不换后端。
+foreach ($m in @('dwm', 'printwindow', 'bitblt')) {
+    foreach ($pol in @('tonemap', 'refuse')) {
+        $cases += @{ Name = ('--hdr {0} 配 --capture {1}：解析期就拒，不换后端' -f $pol, $m)
+           A = ($ANCHOR + @('--hdr', $pol, '--capture', $m, 'out.png')); Exit = 1
+           Check = { param($o) ((Codes $o.errors) -join ',') -eq 'capture.hdr_unsupported' -and
+                                $o.errors[0].option -eq '--hdr' -and
+                                $o.errors[0].value -eq $pol -and
+                                $o.errors[0].message -match $m -and
+                                $o.errors[0].message -match 'wgc' -and
+                                $o.errors[0].stage -ne 'capture' }.GetNewClosure() }
+        $cases += @{ Name = ('屏幕目标上 --hdr {0} 配 --capture {1} 同一条码' -f $pol, $m)
+           A = @('--monitor', 'primary', '--hdr', $pol, '--capture', $m, 'out.png'); Exit = 1
+           Check = { param($o) (Codes $o.errors) -contains 'capture.hdr_unsupported' }.GetNewClosure() }
+    }
+}
+# 带得回广色域帧的两条（wgc / duplication）配任一策略都放行；auto 链也放行（落到哪条要到运行期才知道）。
+foreach ($m in @('wgc', 'duplication', 'auto')) {
+    $cases += @{ Name = ('--hdr tonemap 配 --capture {0} 在解析期放行（差别要到运行期才看得见）' -f $m)
+       A = ($ANCHOR + @('--hdr', 'tonemap', '--capture', $m, '--dry-run', 'out.png')); Exit = 0
+       Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') }.GetNewClosure() }
+}
+# --hdr 不摘链：HDR 处理是"带得回的通道去做、带不回的通道恒等透传"，不是"做不到就换一条"。
+# 所以 input.captureChain 不因 --hdr 而收窄（与 --cursor include 会收窄链是相反的一条判据）。
+$cases += @{ Name = '-v 的 input.captureChain 不因 --hdr tonemap 收窄（不摘链）'
+   A = ($ANCHOR + @('--hdr', 'tonemap', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' } }
+# 一条选项写坏了名字要能对着契约找到；帮助里必须看得见这条选项（目录是契约的唯一来源）。
+$cases += @{ Name = '--help 含 HDR 那一条选项与其三种取值'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--hdr <auto|tonemap|refuse>') }
+# HDR 不是匹配条件，也不是屏幕目标：只给 --hdr 仍是"零条件"。
+$cases += @{ Name = '只给 --hdr 而不给任何条件：仍是文本帮助 + 退出码 2'
+   A = @('--hdr', 'tonemap'); Exit = 2; Text = $true; Has = @('未指定任何匹配条件') }
+# 两类查询都不产图，所以截图那一级的选项一条都不成立（HDR 属于取帧那一级）。
+$cases += @{ Name = '环境查询与 --hdr 冲突（cli.query_conflict）'
+   A = @('--capabilities', '--hdr', 'tonemap'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -match '--hdr' } }
+$cases += @{ Name = '屏幕查询与 --hdr 冲突'
+   A = @('--screens', '--hdr', 'refuse'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' } }
+$cases += @{ Name = '窗口查询与 --hdr 冲突（cli.window_query_conflict）'
+   A = @('--list', '--hdr', 'tonemap'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -match '--hdr' } }
+# --hdr 与 --cursor / --roi 各管各的（一个色彩、一个指针、一块区域），不算冲突。
+$cases += @{ Name = '--hdr 与 --cursor、--roi 同时给出不算冲突'
+   A = ($ANCHOR + @('--hdr', 'tonemap', '--cursor', 'exclude', '--roi', '0,0,5,5', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.hdr -eq 'tonemap' -and $o.input.cursor -eq 'exclude' -and
+                        $o.input.crop.mode -eq 'roi' } }
 
 # ---------- 只读查询（--capabilities / --diagnostics）----------
 # 这两份文档不是截图结果：没有 captured / images，也没有 notes / input。用例要标 Query，

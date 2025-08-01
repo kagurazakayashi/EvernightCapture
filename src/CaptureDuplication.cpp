@@ -162,9 +162,11 @@ uint32_t DesktopHeightOf(const RECT& r) {
 
 // 把 GPU 上的桌面帧拷进 CPU 可读的 staging 纹理，再按行搬进帧。
 // 拷贝那一段与 wgc 通道共用（CaptureCommon.h 的 CopyTextureToFrame）：形状、行距与上限都在
-// 分配之前判完，Map 之后抛异常也要 Unmap，像素格式不是 BGRA8 就在这里拦下。
-bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFrame* out,
-                      Diagnostic* err) {
+// 分配之前判完，Map 之后抛异常也要 Unmap。桌面纹理跟随该输出的显示模式：HDR 时它可能不是
+// B8G8R8A8；hdr 决定这一步认不认广色域来源、以及认回来之后是映射（tonemap）还是拒绝（refuse），
+// dl 守映射那趟扫描的预算。没写 --hdr 时照旧只认 B8G8R8A8（非它就报 cap.frame_format）。
+bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, const HdrRequest& hdr,
+                      const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
     // 桌面复制给的资源本身就是 D3D11 纹理，直接 QueryInterface 到 ID3D11Texture2D 即可
     ComPtr<ID3D11Texture2D> desktop;
     HRESULT hr = resource->QueryInterface(IID_PPV_ARGS(&desktop));
@@ -173,7 +175,7 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, CapturedFra
                      codes::kCaptureFailed, 0, hr);
         return false;
     }
-    return CopyTextureToFrame(device, desktop.Get(), kChannel, out, err);
+    return CopyTextureToFrame(device, desktop.Get(), kChannel, hdr, dl, out, err);
 }
 
 // 一次整幅桌面帧的采集结果：纹理朝向的那份像素 + 该输出的桌面矩形 + 驱动报回的旋转。
@@ -186,7 +188,7 @@ struct DesktopGrab {
 // 取该输出的整幅桌面帧：等一次真实 present、拷进 CPU、把"这一帧根本没有画面"判掉。
 // 单色只在调用方那侧留一条质量提示（note.frame_uniform），不在这儿拒绝图片。
 bool GrabOutputFrame(ID3D11Device* device, const LiveOutput& picked, uint32_t timeoutMs,
-                     DesktopGrab* out, Diagnostic* err) {
+                     const HdrRequest& hdr, const Deadline& dl, DesktopGrab* out, Diagnostic* err) {
     ComPtr<IDXGIOutputDuplication> dup;
     const HRESULT hr = picked.output1->DuplicateOutput(device, &dup);
     if (FAILED(hr)) {
@@ -242,7 +244,7 @@ bool GrabOutputFrame(ID3D11Device* device, const LiveOutput& picked, uint32_t ti
     bool copied = false;
     {
         AcquiredFrame guard(dup.Get(), info, resource.Get());
-        copied = CopyDesktopToCpu(device, guard.resource(), &out->frame, err);
+        copied = CopyDesktopToCpu(device, guard.resource(), hdr, dl, &out->frame, err);
     }  // 这里 ReleaseFrame，之后才能安全地只用 CPU 副本
     if (!copied) return false;
 
@@ -352,7 +354,8 @@ bool ExtractWholeScreen(const DesktopGrab& grab, const RECT& bounds, CapturedFra
 
 // 公共路线：定位输出 -> 在该输出的适配器上建设备 -> 取整幅桌面帧 -> 按旋转换算 -> 取出目标矩形
 bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, const wchar_t* path,
-                           uint32_t timeoutMs, CapturedFrame* out, Diagnostic* err) {
+                            uint32_t timeoutMs, const HdrRequest& hdr, const Deadline& dl,
+                            CapturedFrame* out, Diagnostic* err) {
     std::vector<LiveOutput> table;
     if (!BuildOutputTable(&table, err)) return false;
 
@@ -397,7 +400,7 @@ bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, const wc
     }
 
     DesktopGrab grab;
-    if (!GrabOutputFrame(device.Get(), *live, timeoutMs, &grab, err)) return false;
+    if (!GrabOutputFrame(device.Get(), *live, timeoutMs, hdr, dl, &grab, err)) return false;
     if (screen) {
         if (!ExtractWholeScreen(grab, screen->bounds, out, err)) return false;
     } else {
@@ -421,12 +424,15 @@ void ResetFrameGeometry(CapturedFrame* out) {
     out->capturedRect = RECT{};
     out->clipped = false;
     out->rotation = 0;
+    out->sourceColorSpace = FrameColorSpace::kSrgbBgra8;
+    out->toneMapped = false;
 }
 
 }  // namespace
 
 bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, const DesktopPermit& permit,
-                             CapturedFrame* out, Diagnostic* err) {
+                              const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+                              Diagnostic* err) {
     const HWND hwnd = reinterpret_cast<HWND>(hwndValue);
     ResetFrameGeometry(out);
 
@@ -436,11 +442,13 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, const Desk
         return false;
     }
     if (!PermitCovers(permit, ext, kChannel, err)) return false;
-    return CaptureRectDuplication(ext, nullptr, paths::kDuplicationFrame, timeoutMs, out, err);
+    return CaptureRectDuplication(ext, nullptr, paths::kDuplicationFrame, timeoutMs, hdr, dl, out,
+                                  err);
 }
 
 bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs,
-                             const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err) {
+                              const DesktopPermit& permit, const HdrRequest& hdr, const Deadline& dl,
+                              CapturedFrame* out, Diagnostic* err) {
     ResetFrameGeometry(out);
 
     if (screen.bounds.right <= screen.bounds.left || screen.bounds.bottom <= screen.bounds.top) {
@@ -449,8 +457,8 @@ bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs,
     }
     if (!PermitCovers(permit, screen.bounds, kChannel, err)) return false;
     // 屏幕目标取的是整块屏，本来就该与授权矩形一模一样；任何裁剪都在上面判成"拓扑变了"
-    return CaptureRectDuplication(screen.bounds, &screen, paths::kScreenDuplication, timeoutMs, out,
-                                 err);
+    return CaptureRectDuplication(screen.bounds, &screen, paths::kScreenDuplication, timeoutMs, hdr,
+                                  dl, out, err);
 }
 
 }  // namespace ecapture

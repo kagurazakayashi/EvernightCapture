@@ -24,6 +24,8 @@
 #include "D3dDevice.h"
 #include "CaptureCommon.h"   // CaptureError：backend / stage / hresult 由它统一填
 #include "CursorControl.h"   // cursor_effective:: 那两个机器名（读回不符时写进 message）
+#include "Deadline.h"        // dl：透传给 CopyTextureRectToFrame，守 tone mapping 那趟扫描的预算
+#include "HdrColor.h"        // --hdr：帧池该建 FP16 还是 B8G8R8A8、显示 HDR 状态怎么只读地问
 #include "WgcGeometry.h"     // 每帧的几何判据与"要不要重建帧池 / 还来不来得及"这两条纯函数
 #include "WgcGeometry.h"     // 每帧的实际内容尺寸与纹理尺寸对不对得上，由它判
 
@@ -98,6 +100,9 @@ void ResetFrame(CapturedFrame* out) {
     // 光标那两个读数一起清掉：上一条会话的答复不能冒充这一条（调用点里 out 可能被复用）。
     out->cursorStateKnown = false;
     out->cursorInFrame = false;
+    // 色彩那两件也归位：out 可能被复用，上一条的 HDR 结论不能留在下一条的帧上（同光标的理由）。
+    out->sourceColorSpace = FrameColorSpace::kSrgbBgra8;
+    out->toneMapped = false;
 }
 
 // 把帧的 GPU 纹理复制到 CPU 可读的 staging 纹理，再按行搬进帧。这一段与桌面复制通道共用
@@ -105,8 +110,10 @@ void ResetFrame(CapturedFrame* out) {
 // rect 版只搬纹理左上角 contentWidth×contentHeight 那块有效矩形（缩小时纹理仍是帧池那份较大的
 // 尺寸，多出来的边缘是没定义的内容）。
 bool CopyToCpu(ID3D11Device* device, ID3D11Texture2D* src, uint32_t contentWidth,
-               uint32_t contentHeight, CapturedFrame* out, Diagnostic* err) {
-    return CopyTextureRectToFrame(device, src, 0, 0, contentWidth, contentHeight, L"wgc", out, err);
+               uint32_t contentHeight, const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+               Diagnostic* err) {
+    return CopyTextureRectToFrame(device, src, 0, 0, contentWidth, contentHeight, L"wgc", hdr, dl,
+                                  out, err);
 }
 
 // 会话与帧池的生命周期：WinRT 的 Close 是显式调用（析构只 Release COM 引用，不会停止采集 /
@@ -204,14 +211,17 @@ bool ApplyCursorControl(const wgc::GraphicsCaptureSession& session, const Cursor
 // 现在两处调用点不再各写一份 try），光标那一条是 capture.cursor_unverifiable。
 // 重建帧池时这里会被再走一遍，所以光标设置在**每一条**新会话上都重新应用并重新读回一次：
 // 旧会话上设过的值不会跟着新会话过来，而"窗口在取帧之间被放大"恰恰是新池那一条出图。
+// poolFormat 是帧池的像素格式：默认 B8G8R8A8（与 --hdr 这条选项存在之前逐字节一致）；只有显式
+// 要过 --hdr tonemap 且那块屏此刻核实是 HDR 模式时，调用方才传 A16R16G16B16Float（scRGB 线性），
+// 于是交回的帧带得回 HDR 那份亮度，再由 CopyTextureToFrame 映射成 8 位 sRGB。
 bool OpenSession(const wdx11::IDirect3DDevice& winrtDevice,
                  const wgc::GraphicsCaptureItem& item, wg::SizeInt32 newSize,
-                 const CursorRequest& cursor, const wchar_t* stepKey,
-                 wgc::Direct3D11CaptureFramePool& pool,
+                 wdx::DirectXPixelFormat poolFormat, const CursorRequest& cursor,
+                 const wchar_t* stepKey, wgc::Direct3D11CaptureFramePool& pool,
                  wgc::GraphicsCaptureSession& session, CapturedFrame* out, Diagnostic* err) {
     try {
-        pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(
-            winrtDevice, wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, newSize);
+        pool = wgc::Direct3D11CaptureFramePool::CreateFreeThreaded(winrtDevice, poolFormat, 2,
+                                                                   newSize);
         session = pool.CreateCaptureSession(item);
         // 隐藏窗口边框需要 Win11 的会话接口；拿不到这个接口就不去边框，与本工具无关。
         if (auto s3 =
@@ -248,7 +258,8 @@ wgc::Direct3D11CaptureFrame WaitForFrame(const wgc::Direct3D11CaptureFramePool& 
 // 窗口被放大超过帧池，那一帧本身就是残缺的，也被当成完整尺寸宣称。现在每帧都按 frame.ContentSize
 // 与纹理尺寸重新判（WgcGeometry），并且只在预算之内重建帧池追放大的目标。
 bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs,
-               const CursorRequest& cursor, CapturedFrame* out, Diagnostic* err) {
+               const CursorRequest& cursor, wdx::DirectXPixelFormat poolFormat,
+               const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
     HRESULT deviceHr = S_OK;
     ComPtr<ID3D11Device> device = CreateDevice(&deviceHr);
     if (!device) return Fail(err, L"cap.wgc.step.device", deviceHr);
@@ -275,8 +286,8 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs,
     wgc::GraphicsCaptureSession session{nullptr};
     SessionGuard guard{&session, &pool};
     // 开始采集之前这一关：光标那一条要求兑现不了就是 false，一个像素都不读。
-    if (!OpenSession(winrtDevice, item, poolSize, cursor, L"cap.wgc.step.session", pool, session,
-                    out, err))
+    if (!OpenSession(winrtDevice, item, poolSize, poolFormat, cursor, L"cap.wgc.step.session", pool,
+                     session, out, err))
         return false;
 
     uint32_t recreates = 0;
@@ -367,7 +378,7 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs,
                     // 只复制纹理左上角那块有效矩形（contentWidth×contentHeight）：纹理比它大的那
                     // 一圈是没定义的边缘，一个字节都不读。
                     return CopyToCpu(device.Get(), texture.Get(), decide.copyWidth,
-                                     decide.copyHeight, out, err);
+                                     decide.copyHeight, hdr, dl, out, err);
             }
             // 走到这里说明枚举里加了新动作却没处理：宁可当不合法交回，也不要默默掉出循环。
             if (!reopen) {
@@ -381,31 +392,58 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs,
         // 新会话上光标要**重新设一次并重新读回**（旧会话的设置在 Close 之后不跟着过来），
         // 所以这里走的是同一个 OpenSession，兑现不了同样在开始采集之前就停下。
         guard.Close();
-        if (!OpenSession(winrtDevice, item, poolSize, cursor, L"cap.wgc.step.recreate", pool,
-                        session, out, err))
+        if (!OpenSession(winrtDevice, item, poolSize, poolFormat, cursor, L"cap.wgc.step.recreate",
+                         pool, session, out, err))
             return false;
     }
+}
+
+// 只有显式要过 HDR 处理（--hdr tonemap / refuse）时才去只读地问一次那块屏此刻是不是 HDR 模式，
+// 再据此决定帧池格式与是否拒绝。没写或 --hdr auto 时这里连那次问答都不发（与这条选项存在之前
+// 逐字节相同）。问不出来（kUnknown）既不 tonemap 也不 refuse：HDR 这件事说不出结论时照 SDR 那条
+// 走，而不是猜一个（规矩 5；tonemap 因此是恒等透传，refuse 因此不拒绝它没确证过的东西）。
+bool DecideWgcPool(uint64_t hwnd, HMONITOR monitor, const HdrRequest& hdr,
+                   wdx::DirectXPixelFormat* poolFormat, Diagnostic* err) {
+    *poolFormat = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+    if (!hdr.given || hdr.policy == HdrPolicy::kAuto) return true;
+    const DisplayHdrState st =
+        monitor ? ProbeDisplayHdrForMonitor(monitor) : ProbeDisplayHdrForHwnd(hwnd);
+    if (hdr.policy == HdrPolicy::kRefuse && st == DisplayHdrState::kHdr) {
+        // 用户要的就是"别给我一张被硬压成 BGRA8 的发白图"：这块屏确实在 HDR 模式，
+        // 在 StartCapture 之前就停下，一个像素都不读。
+        CaptureError(err, L"wgc",
+                     Msgf(L"cap.hdr_refused", FrameColorSpaceName(FrameColorSpace::kScRgbFloat16)),
+                     Msg(L"cap.hdr_refused_hint"), codes::kHdrRefused);
+        return false;
+    }
+    if (hdr.policy == HdrPolicy::kToneMap && st == DisplayHdrState::kHdr)
+        *poolFormat = wdx::DirectXPixelFormat::R16G16B16A16Float;
+    return true;
 }
 
 }  // namespace
 
 bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, const CursorRequest& cursor,
-                      CapturedFrame* out, Diagnostic* err) {
+                      const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out, Diagnostic* err) {
     HRESULT aptHr = S_OK;
     // 套间是按线程的：不能拿"进程里初始化过一次"当凭证（见 WinrtApartment.h）
     if (!EnsureWinrtOnThisThread(&aptHr)) return Fail(err, L"cap.wgc.step.apartment", aptHr);
     ResetFrame(out);
 
+    wdx::DirectXPixelFormat poolFormat = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+    if (!DecideWgcPool(hwnd, nullptr, hdr, &poolFormat, err)) return false;
+
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(hwnd, nullptr, &itemHr);
     if (!item) return Fail(err, L"cap.wgc.step.item", itemHr);
-    if (!GrabFrame(item, timeoutMs, cursor, out, err)) return false;
+    if (!GrabFrame(item, timeoutMs, cursor, poolFormat, hdr, dl, out, err)) return false;
     out->path = paths::kWgc;  // 采集项就是这个窗口自己，帧里没有桌面像素
     return true;
 }
 
 bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const CursorRequest& cursor,
-                      const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err) {
+                      const HdrRequest& hdr, const Deadline& dl, const DesktopPermit& permit,
+                      CapturedFrame* out, Diagnostic* err) {
     HRESULT aptHr = S_OK;
     // 套间是按线程的：不能拿"进程里初始化过一次"当凭证（见 WinrtApartment.h）
     if (!EnsureWinrtOnThisThread(&aptHr)) return Fail(err, L"cap.wgc.step.apartment", aptHr);
@@ -415,10 +453,14 @@ bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const Cursor
     // 没有人的确认凭证就不建采集项。
     if (!PermitCovers(permit, screen.bounds, L"wgc", err)) return false;
 
+    const HMONITOR monitor = reinterpret_cast<HMONITOR>(screen.monitor);
+    wdx::DirectXPixelFormat poolFormat = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+    if (!DecideWgcPool(0, monitor, hdr, &poolFormat, err)) return false;
+
     HRESULT itemHr = S_OK;
-    const auto item = CreateItem(0, reinterpret_cast<HMONITOR>(screen.monitor), &itemHr);
+    const auto item = CreateItem(0, monitor, &itemHr);
     if (!item) return Fail(err, L"cap.wgc.step.item_monitor", itemHr);
-    if (!GrabFrame(item, timeoutMs, cursor, out, err)) return false;
+    if (!GrabFrame(item, timeoutMs, cursor, poolFormat, hdr, dl, out, err)) return false;
     out->path = paths::kScreenWgc;
     return true;
 }

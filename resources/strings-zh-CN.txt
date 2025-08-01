@@ -421,3 +421,18 @@ cap.cursor_unverifiable_hint	那条会话对"要不要把光标画进帧里"这�
 env.cursor_unsupported	%1 光标在这台机器上兑现不了：本来要试的是 %2，原因 %3
 env.cursor_unsupported_hint	这一条说的是这台机器，与目标窗口无关：那个开关要更高的 Windows 内部版本，而其余通道要么没有这个开关、要么来源本来就没有光标。换 --capture 不会把它变出来，重试同一个目标也是同样下场。想知道本机现在哪几条说得准，跑 --capabilities 看 cursor 那一段
 note.cursor_channel_skipped	auto 链里的 %1 兑现不了 %2 光标，已摘掉（%3），剩下的照顺序试
+
+# ---- HDR 色彩处理（--hdr，判据本体在 src/HdrColor.h）----
+# 三种下场各说一件事：cap.hdr_unsupported 说的是"这条通道结构上带不回广色域帧"（解析期，1），
+# cap.hdr_refused 说的是"来源核实是 HDR 而用户要求别交发白图"（7），
+# cap.hdr_unverifiable 说的是"带回一个本构建认不出的广色域格式，不敢映射"（7）。
+opt.hdr	HDR 来源怎么处理：auto(默认，本工具一个字都不改，结果里也不出现色彩那组键) / tonemap(把 HDR 帧按固定 tone mapping 映射成 8 位 SDR 交付) / refuse(核实来源是 HDR 就报错，绝不交一张被硬压成 BGRA8 的发白图)。只有 wgc 与 duplication 两条带得回广色域帧，所以 tonemap/refuse 配 printwindow / dwm / bitblt 在解析期报 capture.hdr_unsupported，绝不改走去读桌面像素的通道。这一条不改变授权；来源色彩空间、位深与实际处理写进结果，判据见 README 与 --capabilities 的 color 段
+cli.hdr_value	--hdr 只能写 auto / tonemap / refuse
+cap.hdr_unsupported	%1 处理做不到：--capture %2 这条路径带不回广色域帧，没有 HDR 可处理；带得回的是 %3
+cap.hdr_unsupported_hint	"帧里带广色域/高亮范围的 HDR"只有 wgc 与桌面复制两条带得回（它们的来源跟随显示模式）。本工具不会因为这一条就改走去读桌面像素的通道（那条同样没有更多 HDR，换来的只是一份没人批准过的画面）。改用 --capture wgc 或 duplication，或把这条要求去掉（--hdr auto）
+cap.hdr_refused	来源核实是 HDR 帧（%1），按 --hdr refuse 的要求拒绝，一个像素都不落地
+cap.hdr_refused_hint	用户要的就是别把 HDR 硬压成一张发白的 BGRA8 图。想要那张 SDR 版请用 --hdr tonemap（本工具按固定的浮点曲线映射之后再交），或换一条本来只交 8 位 SDR 的通道再问一次
+cap.hdr_unverifiable	这条路径带回一个本构建认不出的广色域帧格式（%1），无法正确映射
+cap.hdr_unverifiable_hint	认不出来源的像素格式不等于"那就按 BGRA8 硬解释"（那正是发白图的成因），也不等于"猜一个映射"。这一张一个像素都不落地。换 --capture wgc 或改回 --hdr auto 再试；反复出现请把 message 里那个格式编号原样报给工具维护者
+note.hdr_source_sdr	要求过 HDR 处理，但这一帧的来源核实是 8 位 SDR，没有 HDR 可映射
+note.hdr_source_sdr_hint	图照常交付（tone mapping 对 SDR 来源是恒等的）。这一条只是把"我要过 HDR 处理"与"其实这一帧没有 HDR"分开放在你眼前，别把一次静默的通过当成"HDR 已经被正确映射过"

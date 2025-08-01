@@ -14,6 +14,7 @@
 
 #include "CliOptions.h"
 #include "Consent.h"
+#include "HdrColor.h"   // FrameColorSpace：一帧的来源色彩空间（GPU 交回来、转换之前那一份事实）
 
 // CopyTextureToFrame 的两个 D3D 参数类型。本头文件不 include d3d11.h（各通道本来就 include 了），
 // 前向声明必须写在**全局作用域**：SDK 里它们就在那儿，声明进 ecapture 里会得到另一个同名类型，
@@ -54,6 +55,15 @@ struct CapturedFrame {
     // 两个值怎么合成结果里的 requested/effective/basis 三个键，只有一份判据（MakeCursorReport）。
     bool cursorStateKnown = false;
     bool cursorInFrame = false;
+
+    // HDR 色彩（--hdr）：pixels 交回来时那份**来源**色彩空间（编码之前的原样）。最常见的
+    // B8G8R8A8 那条恒为 kSrgbBgra8、toneMapped 为 false —— 与这条选项存在之前逐字节相同。
+    // 只有会带回广色域帧的两条通道（wgc / 桌面复制）在某次真带回 FP16/10 位帧时才写成别的值，
+    // 而那是被 --hdr tonemap 就地映射成 8 位 BGRA 之后仍然保留"映射前来源"那一份，供结果报告。
+    // toneMapped 只在确实过了一遍浮点 tone mapping 时为 true（SDR 透传不置它）。
+    // 判据与那三个结果键的合成只有一份（src/HdrColor.h 的 MakeHdrReport）。
+    FrameColorSpace sourceColorSpace = FrameColorSpace::kSrgbBgra8;
+    bool toneMapped = false;
 };
 
 // 帧的内存不变量与资源上限。这两条数字都是能说明白的，不是随手挑的：
@@ -185,14 +195,20 @@ bool WindowIsOnTopAt(HWND hwnd, const RECT& rect);
 // 于是"形状与上限在分配之前判完"和"Map 之后异常也要 Unmap"这两件事只写一遍。
 // ---------------------------------------------------------------------------
 
-// 建 staging 纹理 -> CopyResource -> Map -> 按行搬 width*4 字节。设备由调用方给
+// 建 staging 纹理 -> CopyResource -> Map -> 按行搬 width*bpp 字节。设备由调用方给
 //（各通道的设备创建策略不同，拷回 CPU 这一段没有区别）。
-// 像素按 BGRA8 解释；格式不是 B8G8R8A8_UNORM、单边或整帧超上限、行距装不下一行像素，
-// 都在这里按 capture.frame_invalid 报出来，不带着坏形状往下走。
-// CopyResource 返回 void，它自己失败只能由 GetDeviceRemovedReason 这条 **API 层面**的问法
-// 发现（设备没了 / 被移除就报 capture.failed 带真码），不靠画面颜色反证。
+// 默认（hdr.given=false 或 --hdr auto）只按 BGRA8 解释像素：格式不是 B8G8R8A8_UNORM、单边或
+// 整帧超上限、行距装不下一行像素，都在这里按 capture.frame_invalid / cap.frame_format 报出来，
+// 与这条选项存在之前的语义逐字节一致。CopyResource 返回 void，它自己失败只能由
+// GetDeviceRemovedReason 这条 **API 层面** 的问法发现（设备没了 / 被移除就报 capture.failed 带真码）。
+// 显式要过 HDR 处理时才认得广色域来源，而且保证交出去的永远是 8 位 BGRA（下游一处都不用改）：
+//   * --hdr tonemap —— 把 FP16 scRGB / 10 位 PQ|HLG 就地映射成 8 位 BGRA sRGB 再交出；
+//   * --hdr refuse  —— 核实来源确是 HDR 时一个像素都不落地（capture.hdr_refused），
+//                      带回一个认不出的广色域格式时 capture.hdr_unverifiable（不硬按 BGRA8 解释）。
+// dl 守 tone mapping 那趟线性扫描的预算（花光就 capture.timeout 而不动 frame）。
 bool CopyTextureToFrame(::ID3D11Device* device, ::ID3D11Texture2D* src, const wchar_t* channel,
-                        CapturedFrame* out, Diagnostic* err);
+                        const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+                        Diagnostic* err);
 
 // 只把纹理里 (x,y) 起 width×height 那一块拷进帧，纹理剩下的边缘一个字节都不读。
 // 用在"纹理比有效内容大"的那条路上：窗口缩小之后 WGC 交回的帧，其纹理仍是帧池当初那份较大
@@ -201,6 +217,7 @@ bool CopyTextureToFrame(::ID3D11Device* device, ::ID3D11Texture2D* src, const wc
 // x/width 与纹理边界对不上（相加绕回、越界、0 边、超单边上限）一律 capture.frame_invalid。
 bool CopyTextureRectToFrame(::ID3D11Device* device, ::ID3D11Texture2D* src, uint32_t x, uint32_t y,
                             uint32_t width, uint32_t height, const wchar_t* channel,
-                            CapturedFrame* out, Diagnostic* err);
+                            const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+                            Diagnostic* err);
 
 }  // namespace ecapture

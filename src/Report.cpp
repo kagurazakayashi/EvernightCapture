@@ -146,6 +146,22 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
             j.Key(L"cursorEffective").Value(img.cursor.effective);
             j.Key(L"cursorBasis").Value(img.cursor.basis);
         }
+        // HDR（--hdr）：这一次真写过这条选项才写这一组键，没写过时一个都不出现
+        // （与这条选项存在之前的输出逐字节相同）。五个键各说一件事、谁也不冒充谁：
+        //   hdrRequested      要求的策略：auto / tonemap / refuse
+        //   hdrEffective      这一帧实际经历的处理：sdr_passthrough / tone_mapped / unverified
+        //   hdrBasis          这个结论凭什么（来源那条路径登记成什么、这一帧来源核实成什么）
+        //   sourceColorSpace  编码之前那一份来源色彩空间（映射过的 wide 帧保留映射前那一份）
+        //   sourceBitDepth    来源每通道位数（8 / 10 / 16），认不出来时整个键不出现
+        // 与 cursor* / rect / capturedRect / cropRect 同一性质：这是内容判据，--quiet 不许藏。
+        if (img.hdr.written) {
+            j.Key(L"hdrRequested").Value(img.hdr.requested);
+            j.Key(L"hdrEffective").Value(img.hdr.effective);
+            j.Key(L"hdrBasis").Value(img.hdr.basis);
+            OptString(j, L"sourceColorSpace", img.hdr.sourceColorSpace);
+            if (img.hdr.bitDepthKnown)
+                j.Key(L"sourceBitDepth").Value(static_cast<long long>(img.hdr.bitDepth));
+        }
         if (img.screen) {
             // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
             j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
@@ -217,6 +233,11 @@ void WriteInputEcho(Json& j, const Options& opt) {
     // 断言"这次到底要求了什么"不必真的去截一张图（与 input.overwrite / input.yes 同一个理由）。
     j.Key(L"cursor").Value(CursorModeName(opt.cursor.mode));
     j.Key(L"cursorGiven").Value(opt.cursor.given);
+    // HDR 这一条与 cursor 同一做法：规范化取值 + "这次写没写过这条选项"各一个键，恒写。
+    // 而"这一帧实际经历的处理"（hdrEffective / sourceColorSpace / sourceBitDepth）在每一张图里，
+    // 那是按来源算的事，不在这里。断言"这次到底要求了什么"不必真的去截一张 HDR 图。
+    j.Key(L"hdr").Value(HdrPolicyName(opt.hdr.policy));
+    j.Key(L"hdrGiven").Value(opt.hdr.given);
     // 窗口内部裁剪这一层也回显：这次是哪种裁剪、--roi 那四个数规范化成了什么。
     // 断言"参数最终落到什么值"不必真的去截一张图（与 input.overwrite / input.yes 同一个理由）。
     // 没给裁剪时整个键不出现 —— 与 input.monitor 那条"给了才写"一致。

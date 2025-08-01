@@ -19,14 +19,19 @@
 
 namespace ecapture {
 
-// 窗口目标：定位那块输出、按旋转取出窗口矩形那一大块
+// 窗口目标：定位那块输出、按旋转取出窗口矩形那一大块。
+// hdr / dl：桌面纹理跟随那块输出的显示模式，HDR 时可能是 FP16 scRGB 或 10 位 PQ/HLG。
+// 没写 --hdr（或 auto）时这条路径照旧只认 B8G8R8A8（非它就报 cap.frame_format）；显式要过 HDR
+// 处理时才在拷回 CPU 那一步认得并映射广色域（判据与实现见 src/HdrColor.h 与 CopyTextureToFrame）。
 bool CaptureWindowDuplication(uint64_t hwnd, uint32_t timeoutMs, const DesktopPermit& permit,
-                              CapturedFrame* out, Diagnostic* err);
+                              const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
+                              Diagnostic* err);
 
 // 屏幕目标：按设备名（对不上时按完全相同的矩形）取该屏对应的那块 DXGI 输出。
 // 交付尺寸必须等于该屏矩形；裁不全就是拓扑在确认之后变了，报 capture.monitor_changed
-// 而不是悄悄换成另一块屏。
+// 而不是悄悄换成另一块屏。hdr / dl 与窗口目标同义。
 bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs,
-                              const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err);
+                              const DesktopPermit& permit, const HdrRequest& hdr, const Deadline& dl,
+                              CapturedFrame* out, Diagnostic* err);
 
 }  // namespace ecapture

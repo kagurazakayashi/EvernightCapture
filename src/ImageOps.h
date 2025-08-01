@@ -25,11 +25,15 @@ enum class FrameShape : uint32_t {
 
 // 一帧像素的内存形状。它与"字节实际存在哪"解耦：GPU 拷回 CPU 那一步要先按**打算分配**的
 // 形状判一遍（那时帧还不存在），判过才动手分配。
+// bytesPerPixel 默认 4（BGRA8 那一套，也是既有全部调用点的语义：行距落在 width*4 与 2*width*4 之间）。
+// 只有会带回广色域帧的那一步（FP16 scRGB 一条像素 8 字节）会传别的值，于是同一道"分配之前判形状"
+// 的判据对 8 字节的行也成立，而不必另写第二套。默认值让既有调用点逐字节不变。
 struct FrameShapeInfo {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t stride = 0;
     uint64_t size = 0;  // 可用的字节数（缓冲区大小，或准备分配的大小）
+    uint32_t bytesPerPixel = 4;
 };
 
 // 只做判断，不产生文字。宽高与缓冲区自不自洽、乘法溢不溢出，都在这一个函数里判

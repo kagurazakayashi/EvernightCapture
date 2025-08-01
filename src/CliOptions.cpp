@@ -14,6 +14,7 @@
 
 #include "ScreenMatch.h"   // 只要那条 inline 的 StripScreenDevicePrefix：设备名前缀的形状只写一处
 #include "CursorControl.h"  // 只要 inline 的那张光标登记表：解析期判"这条通道做不做得到"
+#include "HdrColor.h"       // 只要 inline 的那张 HDR 登记表：解析期判"这条通道带不带得回广色域帧"
 
 namespace ecapture {
 namespace {
@@ -332,6 +333,10 @@ constexpr const wchar_t* kCaptureValues[] = {
 // （不调任何通道的开关，结果里也不出现那三个键）；判据本体在 src/CursorControl.h。
 constexpr const wchar_t* kCursorValues[] = {L"default", L"include", L"exclude", nullptr};
 
+// --hdr 的取值。auto 是这条选项的默认值，含义是"本工具对 HDR 色彩这件事一个字都不改"
+// （照 B8G8R8A8 那条路线取帧，结果里也不出现色彩那组键）；判据本体在 src/HdrColor.h。
+constexpr const wchar_t* kHdrValues[] = {L"auto", L"tonemap", L"refuse", nullptr};
+
 // --lang 的规范写法。宽容输入（zh_TW / zh-Hant / cht / jp）由 LanguageFromTag 负责，
 // 这里只列推荐值，用于 --help 与取值非法时的提示。
 constexpr const wchar_t* kLangValues[] = {
@@ -387,6 +392,10 @@ constexpr OptionSpec kOptions[] = {
     // 光标要不要画进画面。取值写在 valueHint 里（这三个字本身就是判据），说明只写行为差别：
     // 判据本体在 src/CursorControl.h 那张按路径登记的表，不在文案里另写一份"哪条通道支持"。
     {L"cursor", L"", true, L"capture", L"<default|include|exclude>", kCursorValues, L"opt.cursor"},
+    // HDR 来源怎么处理。判据本体在 src/HdrColor.h 那张按路径登记的表（这条路径交回的帧带不带
+    // 得回广色域/高亮范围），取值写在 valueHint 里（那三个词本身就是判据），说明只写行为差别。
+    // auto(默认，本工具一个字都不改) / tonemap(把 HDR 映射成 SDR 交付) / refuse(遇到 HDR 就拒绝)。
+    {L"hdr", L"", true, L"capture", L"<auto|tonemap|refuse>", kHdrValues, L"opt.hdr"},
     // ---- 窗口内部裁剪（--roi 与 --client-area 互斥）----
     // 坐标系写在说明里（判据本体在 src/CropGeometry.h）：那四个数是**交付的整窗图像自己的像素
     // 坐标**，不是桌面绝对坐标；单位是物理像素，不按窗口所在屏的 DPI 缩放。
@@ -700,6 +709,15 @@ const wchar_t* CursorModeName(CursorMode m) {
         case CursorMode::kDefault: return L"default";
         case CursorMode::kInclude: return L"include";
         case CursorMode::kExclude: return L"exclude";
+    }
+    return L"?";
+}
+
+const wchar_t* HdrPolicyName(HdrPolicy p) {
+    switch (p) {
+        case HdrPolicy::kAuto: return L"auto";
+        case HdrPolicy::kToneMap: return L"tonemap";
+        case HdrPolicy::kRefuse: return L"refuse";
     }
     return L"?";
 }
@@ -1070,6 +1088,31 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             }
             opt.cursor.mode = mode;
             opt.cursor.given = true;
+            return;
+        }
+
+        // ---- HDR 色彩处理 ----
+        // 取值只认那三个词（忽略大小写与首尾空白，与 --capture / --cursor 同一套写法）。
+        // 认不了就整条不认，不退化成 auto：那等于把一次写错的 HDR 要求变成一个没人要的决定。
+        // 重复给出时最后一个生效（与其它取值选项的顺序语义一致）。
+        if (name == L"hdr") {
+            const std::wstring v = ToLower(Trim(value));
+            HdrPolicy policy = HdrPolicy::kAuto;
+            bool known = false;
+            if (v == L"auto") { policy = HdrPolicy::kAuto; known = true; }
+            else if (v == L"tonemap") { policy = HdrPolicy::kToneMap; known = true; }
+            else if (v == L"refuse") { policy = HdrPolicy::kRefuse; known = true; }
+            if (!known) {
+                std::wstring list;
+                for (const wchar_t* const* p = kHdrValues; *p; ++p) {
+                    if (p != kHdrValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kInvalidValue, Msg(L"cli.hdr_value"), L"--hdr", value, list);
+                return;
+            }
+            opt.hdr.policy = policy;
+            opt.hdr.given = true;
             return;
         }
 
@@ -1461,6 +1504,29 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 Msgf(L"cap.cursor_unsupported", CursorModeName(opt.cursor.mode),
                      CaptureMethodName(opt.capture), canDo),
                 L"--cursor", CursorModeName(opt.cursor.mode), Msg(L"cap.cursor_unsupported_hint"));
+        }
+
+        // ---- HDR 处理要求与这条通道能不能带回广色域帧 ----
+        // 与 --cursor 同一类：判据是"这条路径交回的帧带不带得回广色域/高亮范围"（那张登记表的
+        // 唯一出处在 src/HdrColor.h）。printwindow / dwm / bitblt 结构上只带得回 8 位 SDR，
+        // 所以 --hdr tonemap/refuse 配它们就在解析期说做不到，退出码 1，**不换后端**（换一条
+        // 会读桌面像素的通道既没有更多 HDR 可映射，又多拍一份没人批准过的画面）。
+        // --capture auto 不判（落到哪条通道要到运行期才知道，判据在 src/HdrColor.h）。
+        // 这一条排在授权规则之外：它不改变"会不会弹框"，只回答"这个组合根本没法兑现"。
+        if (opt.hdr.given && !HdrRequestPossible(opt.capture, opt.hdr.policy)) {
+            std::wstring canDo;
+            const CaptureMethod kChannels[] = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
+                                               CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt,
+                                               CaptureMethod::kDuplication};
+            for (const CaptureMethod m : kChannels) {
+                if (!HdrRequestPossible(m, opt.hdr.policy)) continue;
+                if (!canDo.empty()) canDo += L", ";
+                canDo += CaptureMethodName(m);
+            }
+            Err(codes::kHdrUnsupported,
+                Msgf(L"cap.hdr_unsupported", HdrPolicyName(opt.hdr.policy),
+                     CaptureMethodName(opt.capture), canDo),
+                L"--hdr", HdrPolicyName(opt.hdr.policy), Msg(L"cap.hdr_unsupported_hint"));
         }
 
         // 没给输出路径不再算错：按 "--out -" 处理，图片走 stdout，JSON 走 stderr

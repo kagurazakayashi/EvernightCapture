@@ -116,6 +116,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
 取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）
   --capture, -C <method>                      wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁，会按显示器的旋转校正方向；只取与该目标重叠最多的一块屏，没截全时结果里带 capturedRect/clipped) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)。只取窗口自己的画面：wgc / printwindow / dwm 缩略图；会从屏幕上取样：bitblt / duplication 与 dwm 的屏幕退路
   --cursor <default|include|exclude>          画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。只有 wgc 有一条能设进去也读得回来的开关（要内部版本 19041 起），其余几条交回的画面本来就没有光标，所以 include 配 printwindow / dwm / bitblt / duplication 报 capture.cursor_unsupported，绝不改走会读桌面像素的通道；auto 时做不到的那几条从链里摘掉并各留一条 note.cursor_channel_skipped。这一条不改变授权；requested / effective / basis 三件事的判据见 README
+  --hdr <auto|tonemap|refuse>                 HDR 来源怎么处理：auto(默认，本工具一个字都不改，结果里也不出现色彩那组键) / tonemap(把 HDR 帧按固定 tone mapping 映射成 8 位 SDR 交付) / refuse(核实来源是 HDR 就报错，绝不交一张被硬压成 BGRA8 的发白图)。只有 wgc 与 duplication 两条带得回广色域帧，所以 tonemap/refuse 配 printwindow / dwm / bitblt 在解析期报 capture.hdr_unsupported，绝不改走去读桌面像素的通道。这一条不改变授权；来源色彩空间、位深与实际处理写进结果，判据见 README 与 --capabilities 的 color 段
 
 窗口内部裁剪（对交付的整窗图像按图像自己的像素坐标再裁一次；不是桌面绝对坐标；下面两条互斥）
   --roi <x,y,w,h>                             从交付的整窗图像里裁出 x,y 起点、w×h 大小的一块。原点 (0,0) 是这张图像自己的左上角像素（图像对应的是用户看到的那圈可见边框，DWM 那圈透明 resize 边框不在里面），单位是物理像素且不按 DPI 缩放（本进程 per-monitor v2，要按逻辑像素指定就自己乘那道缩放），所以这四个数永远不会被当成桌面绝对坐标。四个数只认十进制、逗号分隔；x 与 y 可为 0，w 与 h 至少 1，都不超过 16384。放不下就整张不落地：取帧之前就看得出放不下报 match.roi_out_of_range（不弹框、不写文件），取到帧之后才发现报 capture.roi_invalid —— 不往里挪、不裁到边上为止、也不退回整窗交出。裁剪排在取帧之后，所以它不改变授权：会从屏幕上取样的那几条照样一定问人，--yes 不会因为"最后只留一小块"而生效。结果里 cropRect 是图像像素坐标，cropScreenRect 是同一块矩形的屏幕坐标（核实得出图像原点时才写），裁前尺寸在 fullWidth/fullHeight、裁后就是 width/height。与 --client-area 互斥，配整块屏幕的目标说不通（capture.unsupported）
@@ -541,10 +542,11 @@ ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原
 | `backends` | 每条路线：`compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`，以及它在窗口目标与屏幕目标上各走哪条内部路径（`dwm` 那条屏幕退路也在，所以 `--yes` 的适用范围不会被人读大） |
 | `formats` | 每种格式：`compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` 恒为 `unknown`，因为这一层不去实测编码器（实测就是"用一次编码来探测能力"，与"不靠截屏探测"是同一条理由）；曾经列过但没有编码器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里，好让调用方拿到确定答案 |
 | `cursor` | `--cursor` 这一条的故事：`default`（不给这条选项时的下场）、三种取值、那唯一一条开关写成 `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine`，然后每条已登记的内部路径一行（`capability` 是 `settable` / `excludes_cursor` / `unregistered`，加 `reason` 与 `include` / `exclude` 各三值 `yes` / `no` / `unknown`），末尾 `pointerShapeCompositing: "never"` 与 `pixelRetouching: "never"`。没登记的路径读 `unknown` 而不是猜一个答案 |
+| `color` | `--hdr` 这一条的故事：`default`（不给这条选项时的下场）、三种取值（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 说的是"这个构建带不带得回广色域帧 + 映射怎么做"，**不**去问那块屏此刻是不是 HDR 模式（reason 是 `hdr_display_mode_not_probed`）；`verifiedOnThisMachine` 恒为 `no`（本项目没有 HDR 屏，不宣称色彩验收通过）。每条已登记的内部路径一行（`capability` 是 `wide_gamut_capable` / `sdr_source_only` / `unregistered`），外加 `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR 一律映射成 8 位 SDR 交付，不出 HDR 原生图） |
 | `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 逐条比对这两处 |
 | `limits` | 单边像素上限、整帧字节上限、`--timeout-ms` 上限、隔离调用内置上限、WGC 帧池重建次数、编号与 PID 上限、`stdoutTargetsMax: 1`、JPEG 质量区间 |
 | `privacy` | 自述这份查询没做的事：不采集画面、不弹框、不上传、不枚举用户文件、不读环境变量、不含用户名、不含路径 |
-| `caveats` | 稳定的 ASCII token，列"这份报告没有断言什么"：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及按本机情况追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恒有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（光标那几个字段只说得到设置与来源那一层，说不到"这一张图里看得见或看不见指针"） |
+| `caveats` | 稳定的 ASCII token，列"这份报告没有断言什么"：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及按本机情况追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恒有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（光标那几个字段只说得到设置与来源那一层，说不到"这一张图里看得见或看不见指针"），以及恒有的 `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8`（HDR 的映射数学离线判过但没有 HDR 屏实测，且 HDR 一律被映射成 8 位 SDR 交付） |
 
 两份文档由**同一个**判据函数（`src/EnvReport.cpp` 的 `BuildEnvReport`）算出，只差段落取舍：
 `--diagnostics` 固定带 `build` 那一段（PE 链接时间戳、机器类型、映像大小、子系统），`--capabilities` 只在
@@ -815,6 +817,64 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 （`capability` / `reason` / `include` / `exclude`，后两者各是 `yes` / `no` / `unknown`），
 以及 `pointerShapeCompositing: "never"` 与 `pixelRetouching: "never"`。
 
+## HDR 色彩处理（`--hdr`）
+
+显示器处在 HDR 模式时，采集回来的帧可能带着超出 SDR 的亮度范围与另一种传递函数。把那种帧硬按
+8 位 BGRA 解释，得到的是一张发白、去饱和、亮部一团糊的图，而它"看着像一张正常图"—— 本工具不把这种
+结果默认为正确。`--hdr auto|tonemap|refuse` 就是让你对这件事作出明确决定。默认值 `auto` 的含义是本工具
+对色彩**一个字都不改**：不探测显示状态、不改采集格式、不做映射，结果里也不出现色彩那组键 —— 输出与
+这条选项存在之前逐字节相同。
+
+哪条路线带得回广色域帧，判据同样是**它的像素从哪来**，不是通道名字。那份登记表在 `src/HdrColor.h`，
+按 `images[].path` 一行一条：
+
+- `wgc` / `screen.wgc` / `duplication.frame` / `screen.duplication` 带得回（它们的来源跟随显示模式：
+  WGC 可以按 FP16 scRGB 线性交回，桌面复制交回的桌面纹理可能是 FP16 scRGB，也可能是 10 位
+  ST.2084 (PQ) / HLG BT.2020）。
+- `printwindow`（窗口自绘进 8 位 DC）、`dwm.thumbnail` / `dwm.screen`、`bitblt.screen` / `screen.bitblt`
+  结构上只带得回 8 位 SDR，所以对它们而言 HDR 处理没有对象，是恒等而不是"做不到就换一条"。
+
+三条取值：
+
+- `tonemap` —— 要求把 HDR 帧映射成 SDR 交付。本工具在编码之前建一份**逐像素的浮点中间量**（不分配整幅
+  浮点帧，免得把 1 GiB 的整帧预算乘四撑爆），按固定曲线处理：解传递函数（scRGB 线性 / PQ→绝对亮度→
+  相对线性 / HLG 反 OETF）→ BT.2020 到 BT.709 的原色矩阵 → 按亮度做**扩展 Reinhard** tone mapping
+  （确定、单调，`white=1` 时退化为恒等）→ sRGB 编码 → 不透明 alpha 直通。来源本就是 SDR 时是恒等透传。
+- `refuse` —— 一旦核实来源确是 HDR 帧就报错、一个像素都不落地，绝不交一张被硬压成 BGRA8 的发白图。
+- `auto`（默认）—— 不启用上面那条链路，只把这一帧实际带回的来源色彩空间如实报出来。
+
+由这张表推出两条规矩，与光标那一条同源：
+
+- **做不到的那条就拒绝，不偷偷改道。** `--hdr tonemap` / `refuse` 配 `printwindow` / `dwm` / `bitblt`
+  在解析期就是 `capture.hdr_unsupported`（退出码 `1`），**不换后端**（换成会读桌面像素的那条既没有更多
+  HDR 可映射，交回的也是一份没人批准过的画面）。`--capture auto` 不在解析期判（落到哪条通道要到运行期
+  才知道，而那两条带得回广色域帧的通道都在链里）。
+- **认不出就是认不出。** 带回一个本构建认不出的广色域像素格式时是 `capture.hdr_unverifiable`（退出码 `7`），
+  既不硬按 BGRA8 解释，也不"猜一个映射"；`--hdr refuse` 且核实来源是 HDR 时是 `capture.hdr_refused`
+  （退出码 `7`）。三条都在编码之前给出，都不落地。
+
+只要写过 `--hdr`，每张交出的图就带这组字段（没写过时一个都不出现，与这条选项存在之前逐字节相同）：
+
+| 字段 | 取值 | 说的是哪件事 |
+| --- | --- | --- |
+| `hdrRequested` | `auto` / `tonemap` / `refuse` | 要求的是哪一种 |
+| `hdrEffective` | `sdr_passthrough` / `tone_mapped` / `unverified` | 这一帧实际经历的处理 |
+| `hdrBasis` | `delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized` | 这个结论凭什么 |
+| `sourceColorSpace` | `srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `unknown` | 编码之前那份来源 |
+| `sourceBitDepth` | `8` / `10` / `16`（认不出来时整个键不出现） | 来源每通道位数 |
+
+明确要过处理（`tonemap` / `refuse`）而这一帧的来源核实是 8 位 SDR 时，图照常交付（映射对 SDR 是恒等的），
+并留一条 `note.hdr_source_sdr`：把"我要过 HDR 处理"与"其实这一帧没有 HDR"分开放在你眼前，而不是拿一次
+静默的通过冒充"HDR 已经被正确映射"。`--hdr auto` 不发这条提示（它本就只被动上报）。
+
+HDR 色彩这件事不改变授权：整个处理排在取帧之后、编码之前，判据仍然是"这条路径的像素从哪来"。会读到
+桌面像素的那几条照样一定弹框、`--yes` 照样管不着，也不引入任何"映射过就算免确认"的旁路。
+
+**这台开发机的显示器不支持开启 HDR**，所以"真带回一幅 HDR 帧并映射"的端到端现场在本机造不出来：
+tone mapping 的数学由离线判据用已知色块与亮度梯度逐点判（`tests\hdr_state.cpp`），`--capabilities` 里
+`color.verifiedOnThisMachine` 因此恒记 `no`（`hdr_tone_mapping_not_verified_on_hdr_display` 那条 caveat），
+`tests\hdr.ps1` 那几条要 HDR 设备的判据一律记未验证。在 HDR 显示器上复核之前，本工具不宣称色彩验收通过。
+
 ## 截图授权与 --yes
 
 凡是真要取帧的截图，都先弹一个模态确认框，**可靠的窗口通道也一样**。不弹框也不截的只有这些：没给任何条件
@@ -1043,6 +1103,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | `.\tests\consent.ps1` | 截图授权分级：离线一层用注入的假应答器与假屏幕布局把 `ConsentGate` 整台状态机跑完（`build\ecapture-consent-tests.exe`，源码 `tests\consent_state.cpp`）；真机一层把所有确认框一律代答"否"，判哪些路径必须弹、拒绝之后报什么（`code` / `stage` / `target` / `value`）、有没有落地，以及 `images[].path` / `scope` / `rect` 对不对。绝不代人答"是" |
 | `.\tests\isolation.ps1` | 真机资源隔离：同名的既有进程保持存活且不被当成目标、并发两轮互不串、异常退出只清理自身 |
 | `.\tests\identity.ps1` | 目标身份与 Z 序选择判据。离线层（`build\ecapture-identity-tests.exe`，注入假查询层）：句柄被另一个进程占用、PID 相同但那是另一个进程、类名换了、当初的条件不再成立、每一问各自问不出来，以及两档复核各问哪几问与短路顺序。真机层（只用自建窗口）：健康目标一次都不误伤、批次中途目标被销毁确实报 `capture.target_gone`、改了名而 `--title` 条件不再成立确实报 `capture.target_changed`、改名而条件仍成立就照常出图、`--topmost-match` / `--bottommost-match` 对着当下的 Z 序判（先建但置顶的那扇赢，正是"最后创建"那种读法会挑错的情形）。句柄与 PID 何时被回收没法安排现场（那要结束别人的进程），确认框那一段又要代人点"是"，两者一律记未验证而不伪造通过 |
+| `.\tests\hdr.ps1` | HDR 色彩处理（`--hdr`）：离线一层（`build\ecapture-hdr-tests.exe`，源码 `tests\hdr_state.cpp`）判两张登记表说的是同一批路径、DXGI 格式与显示 color space 的分类（认不出一律 unknown、不猜）、half 解码与传递函数与 tone 曲线的性质（黑进黑、单调、white=1 恒等、不越界）、用已知色块与亮度梯度逐点判 `ConvertWideFrameToSdrBgra8`、来源与形状守卫、以及那组结果键的合成与 `HdrRequestPossible`。真机一层只用自建窗口 + `--yes` 的窗口内容那一级（本机非 HDR）：判没写 `--hdr` 时那组键一个都不出现、`--hdr auto` 把来源如实报成 `srgb_bgra8` / `sdr_passthrough` 且不发提示、`tonemap` / `refuse` 在 SDR 上是恒等透传并各留一条 `note.hdr_source_sdr`、`--quiet` 抑制不掉那组键，以及每张图的尺寸/主色/颜色数与不写 `--hdr` 时一致（HDR 处理没把 SDR 图弄歪）。`--capabilities` 的 `color` 段：`verifiedOnThisMachine` 恒为 `no`、每条路径带不带广色域、两份查询同源。真 HDR 帧上的实拍对照、`refuse` 在 HDR 上拒绝、FP16 帧池出图、HLG 真机下场本机造不出，一律记未验证 |
 | `.\tests\cursor.ps1` | 光标包含与排除（`--cursor`）：离线一层（`build\ecapture-cursor-tests.exe`，源码 `tests\cursor_state.cpp`）按假版本与假通道链判那张按路径登记的能力表、两份表说的是同一批路径、链按光标要求收窄（19041 那道门槛两侧各判一次、版本问不出来时只按结构筛）、requested/effective/basis 的合成，以及直接调用解析层判"include 配做不到的通道在解析期就拒"；另有一条源码级守卫（`src/` 里出现取指针形状、把光标画进帧里、动使用者鼠标那类调用就红）。真机一层只用自建窗口：判 wgc 那条开关真的设进去也读回来、三种要求各截一张且画面仍是本次那扇窗口（尺寸 + 签名色）、没写 `--cursor` 时那三个键一个都不出现、`--quiet` 抑制不掉它们、`auto` + `include` 收窄后实际出图那条确实是 `wgc`、被拒的那几种不落地也不弹框，以及要求光标没把授权松动（桌面那两条照样弹框、只探测不代答）。像素级"看得见/看不见指针"、低于 19041 的机器、要人点头的桌面实截一律记未验证 |
 | `.\tests\crop.ps1` | 窗口内部裁剪（`--roi` / `--client-area`）：离线层（`build\ecapture-crop-tests.exe`，源码 `tests\crop_state.cpp`）把交付图像的尺寸、它的屏幕原点问没问到、客户区量没量到注进生产判据本体，逐条判贴边、越界一条像素、零宽零高、相加绕回、单边上限、客户区整块落在图像之外，以及负坐标的屏；真机层用自建的带边框窗口（WS_OVERLAPPEDWINDOW，于是窗口矩形 / 客户区矩形 / 可见边框矩形三者各不相同），拿三条独立的 Win32 问答对照 `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight`，与一张不裁剪的图逐点比像素，判「越界的请求在弹框与写文件之前就被挡掉」「目标被改小之后同一条矩形失效」「桌面像素那条即使 `--roi` 只要一小块、给了 `--yes` 也照样弹框」（测试一侧只看不点）。跨屏混合 DPI 与「预检通过之后、帧交回来之前那一瞬被改小」本机造不出，一律记未验证 |
 | `.\tests\screen.ps1` | 真机整屏测试：三条屏幕通道（都属于桌面路径，每一条都必须弹框）+ 红块定位 + 阴性对照。只有加了 `-SimulateConsent` 才会代答确认框，且只该在专门腾给测试的桌面上这么用；不给时凡是要答框的判据记 SKIP（未验证） |

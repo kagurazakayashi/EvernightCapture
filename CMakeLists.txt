@@ -42,6 +42,8 @@ add_executable(ecapture
   src/CaptureScope.cpp
   src/CropGeometry.cpp
   src/CursorControl.cpp
+  src/HdrColor.cpp
+  src/HdrDetect.cpp
   src/Deadline.cpp
   src/Worker.cpp
   src/WorkerProtocol.cpp
@@ -123,6 +125,8 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(ecapture-consent-tests
   tests/consent_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CaptureCommon.cpp
@@ -157,6 +161,7 @@ set_property(TARGET ecapture-consent-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # ---------------------------------------------------------------------------
 add_executable(ecapture-worker-tests
   tests/isolation_state.cpp
+  src/HdrColor.cpp
   src/WorkerProtocol.cpp
   src/Deadline.cpp
   src/WindowMatch.cpp
@@ -192,6 +197,8 @@ set_property(TARGET ecapture-worker-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # ---------------------------------------------------------------------------
 add_executable(ecapture-image-tests
   tests/image_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
   src/ImageOps.cpp
   src/CaptureCommon.cpp
   src/CaptureScope.cpp
@@ -249,6 +256,8 @@ set_property(TARGET ecapture-wgc-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # ---------------------------------------------------------------------------
 add_executable(ecapture-identity-tests
   tests/identity_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
   src/WindowIdentity.cpp
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
@@ -284,6 +293,8 @@ set_property(TARGET ecapture-identity-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # ---------------------------------------------------------------------------
 add_executable(ecapture-dup-tests
   tests/dup_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
   src/DupGeometry.cpp
   src/ImageOps.cpp
   src/CaptureCommon.cpp
@@ -377,6 +388,8 @@ set_property(TARGET ecapture-capabilities-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # ---------------------------------------------------------------------------
 add_executable(ecapture-windows-tests
   tests/windows_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
   src/WindowQuery.cpp
   src/WindowIdentity.cpp
   src/WindowMatch.cpp
@@ -417,6 +430,8 @@ set_property(TARGET ecapture-windows-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # ---------------------------------------------------------------------------
 add_executable(ecapture-screens-tests
   tests/screens_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
   src/ScreenIdentity.cpp
   src/ScreenQuery.cpp
   src/WindowQuery.cpp
@@ -496,4 +511,41 @@ target_link_libraries(ecapture-cursor-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib)
 set_target_properties(ecapture-cursor-tests PROPERTIES OUTPUT_NAME "ecapture-cursor-tests")
 set_property(TARGET ecapture-cursor-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# HDR 色彩处理（--hdr）的离线判据（由 tests\hdr.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：本机没有能开 HDR 的显示器，"真带回一幅 FP16 / 10 位帧"这件事在这里
+# 造不出来 —— 而 tone mapping 的数学、来源格式与色彩空间的分类、登记表一致性、以及那组结果键的
+# 合成本身全是纯算术，用"已知色块 + 亮度梯度"注入就能逐条判（真机那条在 tests\hdr.ps1 记未验证）。
+# 判据本体是 src/HdrColor.cpp（映射函数、分类、half 解码）与 src/HdrColor.h 那张按路径登记的表；
+# 连着 CaptureCommon / ImageOps / CaptureScope 编进来，用来现场核对两张表说的是同一批路径。
+# 这里链的是 HdrColor.cpp（纯算术那半），不是 HdrDetect.cpp（问显示 HDR 状态那半要 dxgi，只有
+# 主目标里的 CaptureWgc 用），所以链接项一个图形库都不需要。文案要读 .rc 里编进的四份资源。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-hdr-tests
+  tests/hdr_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
+  src/WindowMatch.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-hdr-tests PRIVATE resources src)
+target_compile_features(ecapture-hdr-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-hdr-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-hdr-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-hdr-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-hdr-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-hdr-tests PROPERTIES OUTPUT_NAME "ecapture-hdr-tests")
+set_property(TARGET ecapture-hdr-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

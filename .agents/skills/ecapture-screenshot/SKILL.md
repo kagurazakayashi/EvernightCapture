@@ -56,6 +56,11 @@ the last two `yes` / `no` / `unknown`, and `unknown` when a question gave no ans
 `minBuild` of 19041, and `pointerShapeCompositing: "never"` / `pixelRetouching: "never"`. Note that
 `verifiedOnThisMachine` covers the route, not a pixel-level claim about the pointer: this layer never inspects
 whether a pointer is visible in an image.
+`color` answers the `--hdr` question per internal path (`capability` = `wide_gamut_capable` / `sdr_source_only` /
+`unregistered`) plus the tone-mapping self-description (`toneMapping` / `floatIntermediateFrame` /
+`encoderOutput: "sdr_bgra8"`). Its `verifiedOnThisMachine` is always `no`: this project has no HDR display, so the
+mapping math is verified offline while color correctness on a real HDR frame is not claimed as accepted, and the
+layer never probes whether this screen is currently in HDR mode (`reason` `hdr_display_mode_not_probed`).
 
 Both documents are pure ASCII, so they do not change with `--lang` and you may diff them between runs. They are
 the only JSON that carries `contract` / `contractVersion`; the capture result stays as lean as the section below
@@ -329,6 +334,7 @@ they conflict with every read-only query.
   `--quiet` drops `notes` but **never suppresses `errors`**. **Empty fields are omitted entirely**, so
   `option`, `value` and `hint` may simply be absent - never assume a key is there.
 - When `--cursor` was given, each image also carries `cursorRequested` / `cursorEffective` / `cursorBasis` (what was asked, what this path actually delivered, and on what evidence). Without that option none of the three appears, and `--quiet` never suppresses them when they are there - see the `--cursor` section below.
+- When `--hdr` was given, each image also carries `hdrRequested` / `hdrEffective` / `hdrBasis` / `sourceColorSpace` / `sourceBitDepth` (the policy asked, what this frame actually went through, on what evidence, and the pre-encode source color space and bit depth; `sourceBitDepth` is omitted entirely when the source is unrecognized). Without that option none of them appears, and `--quiet` never suppresses them when they are there - see the `--hdr` section below.
   The read-only queries use their **own** key sets (`contract` / `contractVersion` / `query` / `authorization` /
   `policy` / `pagination` / `windows[]` or `window` / `caveats` for `--list` / `--inspect`; see Step 0b) -
   they never add top-level metadata to the capture document above, and the capture rules for `captured` /
@@ -532,6 +538,38 @@ So, as an AI caller:
 - `--capabilities` answers this without capturing anything, in its `cursor` section (`default`, the three values,
   that one switch's `compiled` / `status` / `minBuild`, one row per registered path with `capability` / `reason` /
   `include` / `exclude` as `yes` / `no` / `unknown`, and `pointerShapeCompositing: "never"`).
+
+## HDR color handling (`--hdr`)
+
+`--hdr auto|tonemap|refuse` decides what to do when the display is in HDR mode and the captured frame carries a
+wide gamut / high dynamic range (WGC can return FP16 scRGB; Desktop Duplication can return FP16 scRGB or 10-bit
+ST.2084 (PQ) / HLG BT.2020). Forcing such a frame into 8-bit BGRA gives a washed-out, desaturated, blown-highlight
+image that "looks like a normal picture" - this tool refuses to treat that as correct by default.
+
+- `auto` (the default) **changes nothing**: no display probe, no format change, no mapping, and none of the color
+  fields appear - output is byte-for-byte what it was before this option existed. It only reports the source color
+  space the frame actually came back as.
+- `tonemap` maps an HDR frame to 8-bit SDR before encoding through a per-pixel float intermediate (never a whole
+  float frame) and a fixed, deterministic curve (decode transfer → BT.2020→709 matrix → extended-Reinhard on
+  luminance → sRGB encode → alpha passthrough). An SDR source is an identity passthrough.
+- `refuse` errors out and writes no pixel once the source is confirmed HDR.
+
+Decide per internal path, not per channel name: `wgc` / `screen.wgc` / `duplication.frame` / `screen.duplication`
+can carry a wide-gamut frame; `printwindow` / `dwm.*` / `bitblt.*` are 8-bit SDR only. So `--hdr tonemap` / `refuse`
+with the latter is `capture.hdr_unsupported` + exit 1 at parse time, and the tool **never** reroutes to a
+desktop-reading channel (unlike `--cursor`, this option does not narrow the `auto` chain - a channel that cannot
+carry HDR just passes the SDR source through). A frame in a wide format this build cannot name is
+`capture.hdr_unverifiable` + exit 7 (no forcing into BGRA8, no guessing a mapping); `refuse` on a confirmed HDR
+source is `capture.hdr_refused` + exit 7. The display-HDR probe (`IDXGIOutput6::GetDesc1`) is read-only - it never
+changes display settings, and an unknown answer is treated as "no HDR to act on", not guessed.
+
+When `--hdr` was written, each image also carries `hdrRequested` / `hdrEffective` / `hdrBasis` / `sourceColorSpace` /
+`sourceBitDepth` (and `--quiet` does not suppress them). `hdrEffective` is `sdr_passthrough` / `tone_mapped` /
+`unverified`; asking for processing on an SDR source leaves a `note.hdr_source_sdr`. **This project has no HDR
+display**, so `--capabilities` `color.verifiedOnThisMachine` is always `no`: the tone-mapping math is verified
+offline with known color blocks and a brightness gradient, but color correctness on a real HDR frame is NOT claimed
+as accepted until re-checked on an HDR display. HDR color does not change authorization: it runs after capture and
+before encoding, desktop-pixel routes still prompt, and `--yes` still does not cover them.
 
 ## Choosing a capture channel (`--capture`)
 

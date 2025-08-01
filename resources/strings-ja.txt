@@ -411,3 +411,15 @@ cap.cursor_unverifiable_hint	そのキャプチャ セッションは「フレ�
 env.cursor_unsupported	%1 のマウス ポインターはこの機械では実現できません：試す予定だったのは %2、理由 %3
 env.cursor_unsupported_hint	これは対象のウィンドウではなくこの機械についての話です：あのスイッチはより新しい Windows ビルドを必要とし、その他のチャネルにはそのスイッチか、そもそもポインターがありません。--capture を変えても現れませんし、同じ対象をやり直しても同じ結果です。いまこの機械でどこまで言い切れるかは --capabilities の cursor 段落を見てください
 note.cursor_channel_skipped	auto 列の %1 は %2 のマウス ポインターを実現できないので外しました（%3）。残りは順序どおり試します
+
+# ---- HDR 色処理（--hdr、判定本体は src/HdrColor.h）----
+opt.hdr	HDR 由来の映像をどう扱うか：auto（既定、本ツールは何も変えず、結果にも色のキー群を出さない） / tonemap（HDR フレームを固定のトーンカーブで 8 ビット SDR に変換してから納品） / refuse（由来が HDR と確認できたらエラーにし、BGRA8 に強制変換した色あせ画像を決して出さない）。広色域フレームを運べるのは wgc と duplication の 2 系統のみなので、tonemap/refuse を printwindow / dwm / bitblt と合わせると解析時に capture.hdr_unsupported を返し、デスクトップ画素を読む系統へ回し直すことはしません。これは認可を変えません。由来の色空間・ビット深度・実際に行った処理を結果に書き込みます。判定は README と --capabilities の color 節を参照
+cli.hdr_value	--hdr は auto / tonemap / refuse のみ
+cap.hdr_unsupported	%1 は実行できません：--capture %2 の系統は広色域フレームを運べないため、扱う HDR がありません。運べるのは %3 です
+cap.hdr_unsupported_hint	広色域／ハイダイナミックレンジの HDR をフレームに載せて運べるのは wgc とデスクトップ複製の 2 系統だけです（これらの由来は表示モードに追随します）。本ツールはこの要求だけでデスクトップ画素を読む系統へ回し直すことはしません（その系統にも余分な HDR はなく、得るのは誰も承認していない画面だけです）。--capture wgc または duplication を使うか、この要求を取り下げてださい（--hdr auto）
+cap.hdr_refused	由来は HDR フレームと確認されました（%1）。--hdr refuse の要求どおり拒否し、1 画素も書き込みませんでした
+cap.hdr_refused_hint	ユーザーが求めたのは、HDR を無理やり色あせた BGRA8 に変換した画像を出さないことです。SDR 版が欲しければ --hdr tonemap を使ってください（本ツールは固定の浮動小数カーブで変換してから納品します）。あるいは元々 8 ビット SDR しか返さない系統に変えてもう一度聞いてください
+cap.hdr_unverifiable	この系統は本ビルドが認識できない広色域フレーム形式を返しました（%1）。正しく変換できません
+cap.hdr_unverifiable_hint	由来のピクセル形式を認識できないことは「BGRA8 に無理やり解釈する」（それが色あせ画像の原因）ことを意味せず、「変換を推測する」ことでもありません。このフレームは 1 画素も書き込みません。--capture wgc に変えるか --hdr auto に戻して再試行してください。繰り返し起きる場合は message 内の形式番号をそのままツール管理者に報告してください
+note.hdr_source_sdr	HDR 処理を要求しましたが、このフレームの由来は 8 ビット SDR と確認されたため、変換する HDR がありません
+note.hdr_source_sdr_hint	画像はそのまま納品されます（SDR 由来に対しトーンマッピングは恒等変換です）。この通知は「HDR 処理を頼んだ」と「実はこのフレームに HDR は無い」を並べて見せるためのもので、静かな通過を「HDR が正しく変換された」と取り違えないようにします

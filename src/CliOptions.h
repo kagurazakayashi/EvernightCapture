@@ -157,6 +157,39 @@ struct CursorRequest {
     bool given = false;
 };
 
+// ---------------------------------------------------------------------------
+// HDR 截图色彩处理（--hdr）
+// ---------------------------------------------------------------------------
+//
+// 显示器处在 HDR 模式时，采集回来的帧可能带着超出 SDR 的亮度范围与另一种传递函数
+// （WGC 可以按 FP16 scRGB 线性交回，桌面复制交回的桌面纹理可能是 FP16 scRGB 或 10 位
+// ST.2084 / HLG BT.2020）。把那种帧硬按 8 位 BGRA 解释会得到一张发白、去饱和的图，
+// 而它看起来"像一张正常图"—— 这正是本工具不能默认接受的结果。
+//
+// 与 --cursor 同源：判据是"这条路径的来源像素是什么色彩空间"，不是通道名字。
+// 默认值是 kAuto，含义是"本工具对这件事一个字都不改"（照今天的 B8G8R8A8 路线取帧，
+// 结果里也不出现色彩那几个键）；只有显式写过 --hdr 才会启用检测、浮点中间帧与 tone mapping，
+// 并在结果里报告。三条取值：
+//   kAuto    保持既有行为：B8G8R8A8 路线原样交付，不额外检测、不改采集格式、不加元数据键。
+//   kToneMap 请求广色域/高亮范围那条采集；若来源真是 HDR，按固定 tone mapping 映射回
+//            8 位 BT.709 sRGB 再交图（浮点中间帧只在编码之前的那一步）；来源本就是 SDR 时
+//            是恒等透传。
+//   kRefuse  一旦核实来源是 HDR 帧就报错、一个像素都不落地，绝不交一张被硬压成 BGRA8 的发白图。
+// 三条都**不改变授权**：判据仍是"这条路径的像素从哪来"（src/CaptureScope.cpp 那张表），
+// 会读到桌面像素的那几条照样一定弹框，--yes 也不因这条选项而开始生效。
+enum class HdrPolicy {
+    kAuto,     // 不给 --hdr 就是这一种：与这条选项存在之前逐字节相同
+    kToneMap,  // 要求把 HDR 映射成 SDR 交付
+    kRefuse,   // 要求遇到 HDR 来源就拒绝，不交发白图
+};
+
+struct HdrRequest {
+    HdrPolicy policy = HdrPolicy::kAuto;
+    // 与 CursorRequest 同一做法：policy 只留最后一个写法，而"到底写没写过这条选项"要单独记 ——
+    // 没写过 = 结果里色彩那组键一个都不出现（兼容），写过 = 报 requested/effective/basis。
+    bool given = false;
+};
+
 
 struct Options {
     MatchOptions match;
@@ -178,6 +211,12 @@ struct Options {
     // --cursor：画面里要不要鼠标指针。判据在 src/CursorControl.h（按"这条路径的来源像素里
     // 本来有没有光标"登记，不按通道名字猜），实现与核实只在 wgc 那一条走真正的开关。
     CursorRequest cursor;
+
+    // --hdr：HDR 来源怎么处理（auto / tonemap / refuse）。判据在 src/HdrColor.h（按"这条路径
+    // 交回的帧是什么色彩空间与位深"登记），实现只在会带回广色域帧的两条通道（wgc / 桌面复制）
+    // 生效；把 HDR 帧硬当 8 位 BGRA 交回这件事在 tonemap/refuse 下都不被默认为正确。
+    // 与 --cursor 同一规矩：没写过这条选项时结果里色彩那组键一个都不出现。
+    HdrRequest hdr;
 
     // --roi / --client-area：取到整窗图像之后再按图像像素坐标裁一次。
     // 这件事**不改变**授权判断：确认框上列出的是整个目标，会读桌面像素的那几条照样一定问人，
@@ -447,6 +486,26 @@ inline constexpr const wchar_t* kRoiUnmeasurable = L"capture.roi_unmeasurable";
 inline constexpr const wchar_t* kCursorUnsupported = L"capture.cursor_unsupported";
 inline constexpr const wchar_t* kEnvCursorUnsupported = L"env.cursor_unsupported";
 inline constexpr const wchar_t* kCursorUnverifiable = L"capture.cursor_unverifiable";
+// HDR 色彩处理（--hdr）。三条码各自的下一步不同，而共同点是**绝不交一张被硬压成 8 位 BGRA
+// 的发白图当成正确结果**（那正是这条选项要解决的问题）：
+//   capture.hdr_unsupported   显式指定的那条通道结构上带不回广色域帧（例如 --hdr tonemap 配
+//                             printwindow：窗口自绘到 8 位 DC，来源里根本没有 HDR 可映射）。
+//                             解析期给出，退出码 1，**不换后端**（与 --cursor include 同源）。
+//   capture.hdr_refused       --hdr refuse 且这条路径核实回来的帧确实是 HDR（FP16 scRGB 或
+//                             PQ/HLG BT.2020）。用户要的就是"别给我发白图"，所以一个像素都不
+//                             落地，退出码 7；下一步是改用 --hdr tonemap 或换一条 SDR 通道。
+//   capture.hdr_unverifiable  这条路径交回的帧带着一个本构建认不出来、也就无法正确映射的广色域
+//                             像素格式。"认不出格式"不等于"那就按 BGRA8 硬解释"，也不等于
+//                             "按 tonemap 猜一个映射"，这一张不落地，退出码 7。
+//                             与 capture.roi_unmeasurable / capture.cursor_unverifiable 同源。
+inline constexpr const wchar_t* kHdrUnsupported = L"capture.hdr_unsupported";
+inline constexpr const wchar_t* kHdrRefused = L"capture.hdr_refused";
+inline constexpr const wchar_t* kHdrUnverifiable = L"capture.hdr_unverifiable";
+// 质量提示（不是错误，图片照常交付）：这一次显式要求过 --hdr 的处理，而这条路径交回的帧
+// 核实出来本来就是 SDR（B8G8R8A8），所以那个处理是恒等的、没有改变任何一个像素。
+// 它存在的意义是把"我要过 HDR 处理"与"这一张其实没有 HDR 可处理"这两件事分开放在调用方眼前，
+// 而不是拿一个静默的通过冒充"HDR 已经被正确映射过"。--quiet 可抑制。
+inline constexpr const wchar_t* kHdrSourceSdr = L"note.hdr_source_sdr";
 // 运行环境（这一台机器上的 Windows 版本）提供不了所要求的东西，与"这个目标截不到"是两回事。
 // 判据与三条下限各写在哪儿见 src/SystemCompat.h；两条都在枚举目标、弹确认框、读像素**之前**
 // 给出，一个像素都不读，退出码 7。分开给码的理由就是调用方的下一步不同：
@@ -594,5 +653,10 @@ const wchar_t* CropModeName(CropMode m);
 // "default" / "include" / "exclude"。只增不改名；实际交回的那一种在 cursorEffective，
 // 这个结论的根据在 cursorBasis（两套取值在 src/CursorControl.h，各一个出处）。
 const wchar_t* CursorModeName(CursorMode m);
+
+// HDR 处理策略的机器名（-v 的 input.hdr 与 images[].hdrRequested 都写它）：
+// "auto" / "tonemap" / "refuse"。只增不改名；这条路径实际交回的那一种在 hdrEffective，
+// 这个结论的根据在 hdrBasis（几套取值在 src/HdrColor.h，各一个出处）。
+const wchar_t* HdrPolicyName(HdrPolicy p);
 
 }  // namespace ecapture

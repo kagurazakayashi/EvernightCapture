@@ -67,6 +67,10 @@ inline constexpr const wchar_t* kOsUnverifiable = L"os_version_unavailable";    
 inline constexpr const wchar_t* kNoDisplayTopology = L"no_display_topology";    // 这个会话里没有可用的屏幕输出
 inline constexpr const wchar_t* kDisplayTopologyUnknown = L"display_topology_unavailable";
 inline constexpr const wchar_t* kEncoderNotRegistered = L"encoder_not_registered";
+// HDR（--hdr）：这份只读查询不去问那块屏此刻是不是 HDR 模式（那要开一次 DXGI 输出问答，
+// 而这一层的规矩是"不靠实际截图或实际探测能力"），所以它只报"这个构建带不带得回 + 映射怎么做"，
+// 对"这台机器的显示现在是不是 HDR"不作任何断言。
+inline constexpr const wchar_t* kHdrDisplayModeNotProbed = L"hdr_display_mode_not_probed";
 }  // namespace cap_reason
 
 // caveats 的固定 token（写在 README 与 cli-contract.md 的契约表里，只增不改名）。
@@ -102,6 +106,13 @@ inline constexpr const wchar_t* kCursorSettingNotPixels =
 // 反过来也不抹。所以"排除"这件事在那些路径上说的是来源本来就没有，而不是事后修过图。
 inline constexpr const wchar_t* kPointerNeverComposited =
     L"pointer_shape_never_composited_nor_erased";
+// HDR（--hdr）的边界一：本项目没有一台能开 HDR 的显示器，所以 tone mapping 的数学虽然离线逐点判过，
+// "真在一幅 HDR 帧上跑通并与人眼看过的结果对照"这件事没有实测过。verifiedOnThisMachine 恒 no。
+inline constexpr const wchar_t* kHdrToneMappingUnverified =
+    L"hdr_tone_mapping_not_verified_on_hdr_display";
+// HDR 的边界二：本工具把 HDR 一律映射成 8 位 SDR BGRA 再编码交付，不输出 HDR/PQ 的原生图。
+// 所以"HDR 色彩处理"这件事的产物永远是一张 SDR 图，不会把 FP16 或 10 位硬塞进编码器冒充 HDR。
+inline constexpr const wchar_t* kHdrOutputIsSdr = L"hdr_output_is_tone_mapped_to_sdr_bgra8";
 }  // namespace caveat
 
 // 本项目**唯一实测过**这套工具的环境。README《系统支持》与 AGENTS.md 里"已实测"记的就是它，
@@ -245,6 +256,32 @@ struct EnvCursorReport {
     std::wstring pixelRetouching = L"never";
 };
 
+// 一条取帧路径对"带不带得回广色域帧"能做到什么（判据与 capability / reason 两套 token 的唯一
+// 出处在 src/HdrColor.h，这一份只是把它写成机器可读的一行，不另判一次）。
+struct HdrPathReport {
+    std::wstring path;         // images[].path 里那个机器名
+    std::wstring capability;   // wide_gamut_capable / sdr_source_only / unregistered
+    std::wstring reason;       // hdr_reason:: 那一个 token
+};
+
+// --hdr 这一段：默认值、三种取值、这条路线在本机的三态（compiled / status / verifiedOnThisMachine），
+// 每条路径各带不带得回广色域帧，以及 tone mapping / 浮点中间帧 / 编码输出这三件"做法"的自述。
+struct EnvHdrReport {
+    std::wstring option = L"--hdr";
+    std::wstring defaultValue = L"auto";   // 不给 = auto = 本工具对 HDR 色彩一个字都不改
+    std::vector<std::wstring> values;      // auto / tonemap / refuse
+    bool compiled = true;                  // 这个构建里有广色域采集 + tone mapping 实现
+    CapStatus status = CapStatus::kUnverified;
+    std::wstring reason = cap_reason::kNone;
+    // 本项目从没有一台能开 HDR 的显示器，所以这条**恒为 no**：tone mapping 的数学离线逐点判过，
+    // 但"真在 HDR 帧上跑通"这件事没有实测过，绝不写 yes、也不写 unknown 蒙混。
+    Tri verifiedOnThisMachine = Tri::kNo;
+    std::vector<HdrPathReport> paths;
+    std::wstring toneMapping;             // 那条固定的映射曲线叫什么
+    std::wstring floatIntermediateFrame;  // "per_pixel_registers"：不分配整幅浮点帧
+    std::wstring encoderOutput;           // 编码输入恒是 8 位 SDR BGRA（本工具不出 HDR 图）
+};
+
 struct FormatReport {
     std::wstring name;               // png / jpeg / ...
     bool compiled = true;
@@ -290,6 +327,8 @@ struct EnvReport {
     std::vector<BackendReport> backends;
     // 光标这件事（--cursor）：默认值 + 那条开关在本机的状态 + 每条路径各能做到什么。
     EnvCursorReport cursor;
+    // HDR 这件事（--hdr）：默认值 + 三种取值 + 每条路径带不带得回广色域帧 + tone mapping 的做法自述。
+    EnvHdrReport hdr;
     std::vector<FormatReport> formats;
     // 本机现在能试的 auto 链（两种目标各一份，被版本挡掉的那几条不在里面）。
     // 与 GateChannels 同源：查询里给的那一份和真去截图时用的那一份必须是同一个判据算的。

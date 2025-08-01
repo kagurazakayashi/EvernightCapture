@@ -14,6 +14,7 @@
 #include "CaptureScope.h"
 #include "CliOptions.h"
 #include "CursorControl.h"   // 光标能力登记表（cursor.paths 那一段逐条写它，不另判一次）
+#include "HdrColor.h"        // HDR 能力登记表（color.paths 那一段逐条写它，不另判一次）
 #include "Deadline.h"        // kIsolatedCallMs
 #include "Json.h"
 #include "WgcGeometry.h"     // kMaxWgcRecreates
@@ -448,6 +449,41 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
         r.cursor.paths.push_back(std::move(p));
     }
 
+    // ---- HDR 色彩处理（--hdr）----
+    // 这一段回答的是"这个构建带不带得回广色域帧、tone mapping 怎么做、在哪些路径上成立"。
+    // 三种取值从选项目录里读那一份（不抄第二份表），默认值明确写出来。
+    for (const auto& info : OptionCatalog()) {
+        if (info.name == L"hdr") r.hdr.values = info.allowedValues;
+    }
+    // compiled：这个 exe 里真的实现了广色域采集 + 浮点 tone mapping（src/HdrColor.cpp）。
+    r.hdr.compiled = true;
+    // status：这份只读查询**不去问那块屏此刻是不是 HDR 模式**（那要开一次 DXGI 输出的 GetDesc1，
+    // 与"不靠实际探测能力"这条规矩相抵）。所以只要本机有可用显示拓扑就是 unverified（不作断言），
+    // 没有拓扑（无图形会话）时才是 unavailable。绝不因为"编译支持"就写 available。
+    if (probe.displayTopology == Tri::kNo) {
+        r.hdr.status = CapStatus::kUnavailable;
+        r.hdr.reason = cap_reason::kNoDisplayTopology;
+    } else if (probe.displayTopology == Tri::kUnknown) {
+        r.hdr.status = CapStatus::kUnverified;
+        r.hdr.reason = cap_reason::kDisplayTopologyUnknown;
+    } else {
+        r.hdr.status = CapStatus::kUnverified;
+        r.hdr.reason = cap_reason::kHdrDisplayModeNotProbed;
+    }
+    // verifiedOnThisMachine 恒为 no：本项目没有能开 HDR 的显示器，tone mapping 的数学离线判过，
+    // 但"真在一幅 HDR 帧上跑通"没有实测过——写 yes 或 unknown 都会把这件事说歪。
+    r.hdr.verifiedOnThisMachine = Tri::kNo;
+    r.hdr.toneMapping = L"fixed_extended_reinhard_scrgb_pq_hlg";
+    r.hdr.floatIntermediateFrame = L"per_pixel_registers";
+    r.hdr.encoderOutput = L"sdr_bgra8";
+    for (const auto& e : RegisteredHdrPaths()) {
+        HdrPathReport p;
+        p.path = e.path;
+        p.capability = HdrCapabilityName(e.capability);
+        p.reason = e.reason;
+        r.hdr.paths.push_back(std::move(p));
+    }
+
     // auto 的两条链：与真去截图时用的同一个 GateChannels，所以"查询里给的链"与
     // "那次实际会试的链"不可能各写一份顺序而互相打脸。
     for (const bool screenMode : {false, true}) {
@@ -500,6 +536,10 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // 从不动指针形状、也从不事后抹光标。写在这里是为了调用方不必读源码就看得见边界。
     r.caveats.push_back(caveat::kCursorSettingNotPixels);
     r.caveats.push_back(caveat::kPointerNeverComposited);
+    // HDR 那两条边界恒在：这一份查询没去问显示此刻是不是 HDR 模式，而本项目从没在 HDR 帧上实测过
+    // tone mapping（只在离线用已知色块与梯度判过数学）；且 HDR 一律被映射成 8 位 SDR 再编码交付。
+    r.caveats.push_back(caveat::kHdrToneMappingUnverified);
+    r.caveats.push_back(caveat::kHdrOutputIsSdr);
     if (!probe.buildIdKnown) r.caveats.push_back(caveat::kBuildIdUnavailable);
     if (r.matchesVerifiedEnv == Tri::kNo) r.caveats.push_back(caveat::kNotTestedHere);
     if (r.matchesVerifiedEnv == Tri::kUnknown) r.caveats.push_back(caveat::kTestedEnvUnknown);
@@ -599,6 +639,36 @@ void WriteCursor(Json& j, const EnvCursorReport& cursor) {
     // "排除"在各条路径上说的都是**来源**，不是修过的图。
     j.Key(L"pointerShapeCompositing").Value(cursor.pointerCompositing);
     j.Key(L"pixelRetouching").Value(cursor.pixelRetouching);
+    j.End();
+}
+
+// --hdr 那一段：默认值、三种取值、这条路线在本机的三态、每条路径带不带得回广色域帧，
+// 以及 tone mapping / 浮点中间帧 / 编码输出三件"做法"的自述。三件事照旧分开写
+// （compiled / status / verifiedOnThisMachine）；verifiedOnThisMachine 恒 no（本项目没有 HDR 屏）。
+void WriteHdr(Json& j, const EnvHdrReport& hdr) {
+    j.Obj();
+    j.Key(L"option").Value(hdr.option);
+    j.Key(L"default").Value(hdr.defaultValue);
+    WriteStringArray(j, L"values", hdr.values);
+    j.Key(L"compiled").Value(hdr.compiled);
+    j.Key(L"status").Value(CapStatusName(hdr.status));
+    j.Key(L"reason").Value(hdr.reason);
+    j.Key(L"verifiedOnThisMachine").Value(TriOrNull(hdr.verifiedOnThisMachine));
+    // 做法的自述：映射曲线叫什么、有没有分配整幅浮点帧、编码器拿到的是什么。写出来让调用方
+    // 不必读源码就知道"HDR 处理"的产物永远是一张 8 位 SDR 图，而不是把 FP16 硬塞进编码器。
+    j.Key(L"toneMapping").Value(hdr.toneMapping);
+    j.Key(L"floatIntermediateFrame").Value(hdr.floatIntermediateFrame);
+    j.Key(L"encoderOutput").Value(hdr.encoderOutput);
+    j.Key(L"paths");
+    j.Arr();
+    for (const auto& p : hdr.paths) {
+        j.Obj();
+        j.Key(L"path").Value(p.path);
+        j.Key(L"capability").Value(p.capability);
+        j.Key(L"reason").Value(p.reason);
+        j.End();
+    }
+    j.End();
     j.End();
 }
 
@@ -815,6 +885,9 @@ std::wstring RenderEnvJson(const EnvReport& r, bool verbose, bool quiet) {
     // 不必先截一张再去猜"怎么图里没光标 / 怎么多了光标"。
     j.Key(L"cursor");
     WriteCursor(j, r.cursor);
+    // HDR 这一段紧跟 cursor：它说的就是"这几条路线各自带不带得回广色域帧、HDR 被怎么处理"。
+    j.Key(L"color");
+    WriteHdr(j, r.hdr);
     j.Key(L"formats");
     WriteFormats(j, r.formats);
     WriteStringArray(j, L"autoChainWindow", r.autoChainWindow);

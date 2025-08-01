@@ -13,6 +13,7 @@
 #include "CliOptions.h"
 #include "CropGeometry.h"   // ImageRect：images[].cropRect 用的那个图像像素坐标矩形
 #include "CursorControl.h"  // CursorReport：images[] 里光标那三个键的本体（判据在那个头文件）
+#include "HdrColor.h"       // HdrReport：images[] 里 HDR 那组键的本体（判据在那个头文件）
 
 namespace ecapture {
 
@@ -57,6 +58,10 @@ struct CapturedImage {
     // （requested / effective / basis）。written=false（没写过 --cursor）时渲染层一个键都不写，
     // 于是那条流与这条选项存在之前逐字节相同。合成判据只有 MakeCursorReport 那一份。
     CursorReport cursor;
+    // HDR（--hdr）：这一帧的来源色彩空间与它实际经历的处理，一组键一次算完
+    // （requested / effective / basis / sourceColorSpace / sourceBitDepth）。written=false
+    //（没写过 --hdr）时渲染层一个键都不写。合成判据只有 MakeHdrReport 那一份（src/HdrColor.h）。
+    HdrReport hdr;
     std::wstring hwndHex;
     uint32_t pid = 0;
     std::wstring title;

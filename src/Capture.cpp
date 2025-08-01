@@ -183,8 +183,8 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
 // 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
 bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
                        const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
-                       const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
-                       Diagnostic* err) {
+                       const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
+                       CapturedFrame* out, Diagnostic* err) {
     if (!win.Recheck(IdentityScope::kCheap, err)) return false;
 
     const wchar_t* path = WindowPathOf(method);
@@ -204,10 +204,12 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
         case CaptureMethod::kWgc:
             // 光标这件事只有这一条通道有一个真设得进去、也读得回来的开关，所以要求原样交给它；
             // 兑现不了时它在开始采集**之前**就停下（capture.cursor_unverifiable）。
-            return CaptureWindowWgc(hwnd, wait, cursor, out, err);
+            // HDR 那一条同通道也只有它有广色域帧池可建，与桌面凭证无关，照实交给它。
+            return CaptureWindowWgc(hwnd, wait, cursor, hdr, dl, out, err);
         case CaptureMethod::kDwmThumbnail:
             // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去；
             // 身份也一并交给它 —— 那条退路读的是桌面像素，升级之前要按 kFull 再复核一次。
+            // dwm.thumbnail 结构上只带得回 8 位重定向位图，没有 HDR 可映射，所以 hdr 不传进它。
             return CaptureWindowDwmThumbnail(hwnd, wait, gate, targetKey, win, dl, out, err);
         case CaptureMethod::kPrintWindow:
             // 这条一律走辅助进程：PrintWindow 同步等目标窗口的线程，本进程里没有中断点
@@ -215,7 +217,7 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
         case CaptureMethod::kBitBlt:
             return CaptureWindowBitBlt(hwnd, wait, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
-            return CaptureWindowDuplication(hwnd, wait, *auth.permit, out, err);
+            return CaptureWindowDuplication(hwnd, wait, *auth.permit, hdr, dl, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureWithMethod 展开成回退链
     }
@@ -230,8 +232,8 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
 // 剩下的三条（wgc / duplication / bitblt）拍的都是那块屏上此刻的一切，全部是桌面路径。
 bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
                              const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
-                             const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
-                             Diagnostic* err) {
+                             const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
+                             CapturedFrame* out, Diagnostic* err) {
     const wchar_t* path = ScreenPathOf(method);
     AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, screen.bounds, err);
     if (!auth.ok) {
@@ -242,12 +244,13 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
 
     switch (method) {
         case CaptureMethod::kWgc:
-            // 整屏那条与窗口那条共用同一条会话接口，所以光标开关同样设得进去
-            return CaptureScreenWgc(screen, wait, cursor, *auth.permit, out, err);
+            // 整屏那条与窗口那条共用同一条会话接口，所以光标开关同样设得进去；
+            // 广色域帧池也同一条接口，hdr 一并交给它（屏就是那块 HMONITOR）。
+            return CaptureScreenWgc(screen, wait, cursor, hdr, dl, *auth.permit, out, err);
         case CaptureMethod::kBitBlt:
             return CaptureScreenBitBlt(screen, wait, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
-            return CaptureScreenDuplication(screen, wait, *auth.permit, out, err);
+            return CaptureScreenDuplication(screen, wait, *auth.permit, hdr, dl, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureScreenWithMethod 展开成回退链
         default:
@@ -338,40 +341,42 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, 
 bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
                        const WindowTarget& win, CaptureMethod method,
                        const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
-                       const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
-                       Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
+                       const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
+                       CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
+                       bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureOneChannel(gate, targetKey, area, win, method,
-                                                        timeoutMs, dl, cursor, out, err);
+                                                        timeoutMs, dl, cursor, hdr, out, err);
                            },
                            err, fatal);
     }
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl,
-                                                      cursor, frame, e);
+                                                      cursor, hdr, frame, e);
                          });
 }
 
 bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
                              const ScreenInfo& screen, CaptureMethod method,
                              const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
-                             const Deadline& dl, const CursorRequest& cursor, CapturedFrame* out,
-                             Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal) {
+                             const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
+                             CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
+                             bool* fatal) {
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureScreenOneChannel(gate, targetKey, screen, method,
-                                                              timeoutMs, dl, cursor, out, err);
+                                                              timeoutMs, dl, cursor, hdr, out, err);
                            },
                            err, fatal);
     }
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
                              return CaptureScreenOneChannel(gate, targetKey, screen, m, timeoutMs,
-                                                            dl, cursor, frame, e);
+                                                            dl, cursor, hdr, frame, e);
                          });
 }
 
@@ -889,6 +894,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         std::optional<Diagnostic> uniformNote;   // 单色质量提示：等这张图真交出去了再送
         std::optional<Diagnostic> clippedNote;   // 区域丢失提示：同上，没交出去就不提示
         std::optional<Diagnostic> cropMappingNote;   // 屏幕原点核实不出来：同上
+        std::optional<Diagnostic> hdrNote;       // 要求过 HDR 处理而来源其实是 SDR：同上
         std::vector<uint8_t> encoded;
         try {
             CapturedFrame frame;
@@ -898,13 +904,13 @@ CaptureOutcome RunCapture(const Options& opt) {
                                             ? CaptureScreenWithMethod(gate, t.Tag(), t.screen,
                                                                       opt.capture, caps.chain,
                                                                       kFrameTimeoutMs, dl,
-                                                                      opt.cursor, &frame,
+                                                                      opt.cursor, opt.hdr, &frame,
                                                                       &targetErr, &outcome.notes,
                                                                       &fatal)
                                             : CaptureWithMethod(gate, t.Tag(), t.area, t.win,
                                                                 opt.capture, caps.chain,
                                                                 kFrameTimeoutMs, dl, opt.cursor,
-                                                                &frame,
+                                                                opt.hdr, &frame,
                                                                 &targetErr, &outcome.notes, &fatal);
                              },
                              &targetErr, &fatal);
@@ -933,6 +939,21 @@ CaptureOutcome RunCapture(const Options& opt) {
                 // 所以不会在这里冒充"我读过开关"。没写 --cursor 时 written=false，三个键都不出现。
                 img.cursor = MakeCursorReport(opt.cursor, img.path, frame.cursorStateKnown,
                                               frame.cursorInFrame);
+                // HDR 那组键也在这里一次算完（判据与取值都在 src/HdrColor.h）：requested 是要求的策略，
+                // effective 是这一帧**实际**经历的处理，basis 说这个结论凭什么，再加来源色彩空间与位深。
+                // 传进去的 frame.sourceColorSpace 是编码之前那一份来源事实（wide 帧映射后仍保留映射前
+                // 那一份）。没写 --hdr 时 written=false，那组键一个都不出现，这条流与之前逐字节相同。
+                img.hdr = MakeHdrReport(opt.hdr, img.path, frame.sourceColorSpace);
+                // 明确要过 HDR 处理（tonemap / refuse）而这一帧的来源核实是 SDR：这不是错误（图照常交），
+                // 但"我要过 HDR 处理"与"其实没有 HDR 可处理"是两件事，要放在调用方眼前，
+                // 而不是拿一个静默的通过冒充"HDR 已经被正确映射"。auto 不提示（它本就只是被动上报）。
+                if (opt.hdr.given && opt.hdr.policy != HdrPolicy::kAuto &&
+                    frame.sourceColorSpace == FrameColorSpace::kSrgbBgra8) {
+                    hdrNote = Diagnostic{codes::kHdrSourceSdr, Msg(L"note.hdr_source_sdr"),
+                                         L"--hdr", HdrPolicyName(opt.hdr.policy),
+                                         Msg(L"note.hdr_source_sdr_hint"), t.Tag(), img.source,
+                                         stages::kCapture};
+                }
                 // 从整幅桌面帧里裁出目标的通道（duplication / 拷屏幕的 bitblt）会报告实际截到的
                 // 那块矩形：请求的矩形没被完整截到时，图照常交付但要说清楚，绝不能默认"这就是
                 // 整个窗口"。窗口内容路径不报，等于"没有丢区域"。
@@ -1058,12 +1079,14 @@ CaptureOutcome RunCapture(const Options& opt) {
         if (recorded) {   // stdout 那条路已经入过列
             if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
             if (cropMappingNote) outcome.notes.push_back(std::move(*cropMappingNote));
+            if (hdrNote) outcome.notes.push_back(std::move(*hdrNote));
             if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
             continue;
         }
         // 到这里这一张是真交出去了（文件已提交，或字节已达标准输出），质量提示这时才有意义
         if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
         if (cropMappingNote) outcome.notes.push_back(std::move(*cropMappingNote));
+        if (hdrNote) outcome.notes.push_back(std::move(*hdrNote));
         if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
         img.bytes = encoded.size();
         img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
