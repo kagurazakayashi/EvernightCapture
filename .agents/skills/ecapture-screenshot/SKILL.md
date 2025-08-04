@@ -275,6 +275,43 @@ they conflict with every read-only query.
 ```
 
 
+## Scaling the delivered image down (`--scale`)
+
+`--scale` keeps the image about to be delivered inside the ceilings you name, proportionally, and it **never
+upscales**. Give any of `max-width=N`, `max-height=N` and `max-pixels=N` (`key=N`; the key is case-insensitive).
+Several keys may share one comma-separated token, and repeating the option keeps each ceiling separately (the
+last value written for the same ceiling wins). Sides are `1..16384` (the same ceiling as `--roi`), the pixel
+budget is `1..268435456`, and writing `--scale` with no ceiling at all is `cli.invalid_value` + 1, because "no
+ceiling" and "shrink to zero" cannot be told apart. Nothing is re-read in another base: `1e3`, `0x400`, `+40`
+and `1_000` are all refused, and a bad token does not leave the half that parsed in effect.
+
+- **One ratio, the tightest ceiling.** Each ceiling proposes a ratio (width, height, or the square root for a
+  pixel budget) and the smallest one wins. Width and height are each rounded **down** and each keeps at least
+  one pixel.
+- **An image already inside every ceiling is delivered untouched**, and the result says `scaleApplied: false`.
+  This option only ever makes an image smaller, and only when a ceiling is actually tighter than the image.
+- **One interpolation strategy: nearest neighbour** (`scaleMethod` is always `nearest`). Delivered pixel `(x,y)`
+  comes from `(floor(x * scaleFromWidth / width), floor(y * scaleFromHeight / height))` of the image before
+  scaling - an integer mapping you can reproduce yourself, never a floating-point or per-channel choice.
+- **Crop first, then scale, then encode.** `scaleFromWidth` / `scaleFromHeight` are the size of the **cropped**
+  image (not of the whole window), `cropRect` / `cropScreenRect` are untouched, and `width` / `height` are the
+  final size.
+- **Read these fields** (they appear only when `--scale` was written; without it the keys are absent, not
+  `null` / `0` / `false`): `scaleMethod`, `scaleApplied`, `scaleFromWidth`, `scaleFromHeight`. `--quiet` does
+  not suppress them, and `-v` echoes the normalised request under `input.scale`.
+- **This is not a way to lower the risk of a request.** Scaling runs after consent, so a desktop-pixel channel
+  with `--scale max-width=8` and `--yes` still opens the dialog. It is also not a way around the frame limits:
+  a frame too large for the shape check never reaches this step, and `--roi` is still judged against the
+  unscaled image.
+
+```powershell
+# Keep a wide window to at most 1280 pixels wide (its height follows the same ratio)
+& "$PSScriptRoot\ECAPTURE.EXE" --hwnd 0x001A0B4C --capture wgc --yes --scale max-width=1280 --out D:\shots\big.png
+# Crop first, then scale the cropped block into a 400000-pixel budget
+& "$PSScriptRoot\ECAPTURE.EXE" --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max-pixels=400000 --out D:\shots\part.png
+```
+
+
 ## Writing option values
 
 - **Numbers are decimal.** `--pid` (1..4294967295), `--index` (1..65535), `--monitor <n>` (1..65535),
@@ -289,6 +326,12 @@ they conflict with every read-only query.
   with `x`/`y` allowed to be 0, `w`/`h` at least 1, and none above 16384 (the frame's single-side ceiling, echoed
   by `--capabilities` as `limits.roiMaxValue`). Anything else is `cli.invalid_value` + exit 1 with the offending
   token echoed verbatim in `value`; nothing is re-read in another base or clamped into range.
+- **`--scale` is a list of `key=N`.** The keys are `max-width` / `max-height` / `max-pixels`
+  (case-insensitive) and N is `[0-9]+` only: sides 1..16384, the pixel budget 1..268435456. Several keys may
+  share one comma-separated token, and the option may be repeated (each ceiling is kept separately, the last
+  value for the same ceiling wins). Anything else - a bad key, a missing `=`, whitespace around `=`, a sign, a
+  dot, an exponent, an underscore or a `0x` - is `cli.invalid_value` + exit 1 and **the whole option does not
+  take effect**, never just the half that happened to parse.
 - **Value-taking switches: `--list` and `--inspect`.** Both may be written bare and then swallow nothing
   (`--list out.png` keeps `out.png` as a positional, which is a conflict - the query has no output path).
   `--list=all` merges minimised windows into the same Z axis; `--inspect=path` adds the full image path.
@@ -443,6 +486,9 @@ request was phrased.
   still decided by `images[].path`: `bitblt` or `duplication` with `--roi 0,0,8,8` and `--yes` still opens the
   dialog exactly like a full-screen grab, and `--yes` does not start applying because only a small piece is kept.
   The dialog lists the whole target, not the cropped result, so what a person approves always covers the image.
+- **Scaling does not move this line either.** `--scale` runs after the frame is captured, so the tier still
+  comes from `images[].path`: `bitblt` or `duplication` with `--scale max-width=8` and `--yes` still opens the
+  dialog exactly like a full-screen grab. Delivering a smaller image is not a lesser request.
 - Refusal (clicking "No", closing the dialog) => `capture.access_denied` + exit 6. A dialog that cannot be
   shown at all (service session, no interactive desktop) => `capture.consent_unavailable` + exit 6, which is
   *not* a human saying no: change the session, do not re-ask. Both carry `stage=consent`, `target`,
@@ -647,6 +693,7 @@ Floors, the declared support range and what has actually been measured are in
 | `match.roi_out_of_range` | 1 | The `--roi` rectangle does not fit the window as selected (`option` / `value` / `target` are all filled, and it fires before the consent dialog and before any output plan). Re-measure the window (`--list` / `--dry-run -v` gives its rectangle) and ask for a rectangle that lies inside it - nothing is slid inside, cropped to the edge, or swapped for the whole window |
 | `capture.roi_invalid` | 7 | The frame that came back is smaller than the requested crop (the target resized in between, or part of it hangs off the screen): that image is not written at all, the other targets in the batch are unaffected. Judge against `fullWidth` / `fullHeight` in an earlier result, then re-request |
 | `capture.roi_unmeasurable` | 7 | The question needed to locate the crop gave no answer (`client_unmeasurable` = the client area could not be measured; `image_unmeasurable` = this delivered image could not be tied to a region of the screen). Different next step from "does not fit": retry with `--capture wgc`, or drop `--client-area` for an `--roi` that lies inside the image |
+| `cap.scale_apply_failed` | 7 | The frame passed the shape judgement for this request but could not actually be shrunk (its in-memory shape contradicts itself), so this image is not written. Same class as `cap.crop_apply_failed`: retry with another `--capture`, or re-take the shot, and report the size in `message` to the tool maintainer - scaling never goes out of range by itself, so there is no second failure here |
 | `match.monitor_unknown_id` | 4 | The `--monitor device:…` / `id:…` identifier is not on the desktop right now (unplugged, disabled, or a stale value from an earlier `--screens`). Run `--screens` again; **the tool does not fall back to the primary monitor** |
 | `match.monitor_ambiguous_id` | 5 | One identifier matches several monitors; every candidate is in `hint`. Pick a more specific identifier (the cross-session `id:` one) or a number - the tool never chooses for you |
 | `match.monitor_id_unverifiable` | 7 | The screen identity could not be read at all (QueryDisplayConfig gave no answer), so naming a monitor by identifier is impossible. Check this machine's display topology - switching `--capture` is not the next step, since no pixel was read and no channel was chosen |

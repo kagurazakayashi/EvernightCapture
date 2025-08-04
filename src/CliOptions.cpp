@@ -217,6 +217,49 @@ bool ParseRoiValue(const std::wstring& raw, CropRequest* out) {
 }
 
 // ---------------------------------------------------------------------------
+// --scale 的取值：key=N 的清单，逗号分隔（max-width / max-height / max-pixels）
+// ---------------------------------------------------------------------------
+//
+// 与 --roi 同一套写法规矩：**不宽容**。键名大小写不敏感（与 --capture 那类取值同一做法），
+// 但键名与等号两侧一个空白都不吃；值只认 [0-9]+（用 ParseDecimal，区间一次判完）。
+// 一条里可以写多个 key=N；也可以把 --scale 写多次 —— 每条天花板各记各的，重复给同一条时
+// 最后一个生效（与仓库里其它取值选项的顺序语义一致，但它们不互相覆盖，因为它们是三件事）。
+// 一个键都不认得、缺等号、值为 0 / 非十进制 / 超上限，都算写坏了：整条不生效，不"留下认得的那半"。
+bool ParseScaleValue(const std::wstring& raw, ScaleRequest* out) {
+    bool any = false;
+    size_t pos = 0;
+    for (;;) {
+        const size_t comma = raw.find(L',', pos);
+        const std::wstring token =
+            comma == std::wstring::npos ? raw.substr(pos) : raw.substr(pos, comma - pos);
+        const size_t eq = token.find(L'=');
+        if (eq == std::wstring::npos) return false;   // 缺等号（或空段）= 整条写坏
+        const std::wstring key = ToLower(token.substr(0, eq));
+        const std::wstring value = token.substr(eq + 1);
+        uint64_t v = 0;
+        if (key == L"max-width") {
+            if (!ParseDecimal(value, 1, cli_limits::kScaleMaxSide, &v)) return false;
+            out->maxWidth = static_cast<uint32_t>(v);
+            out->hasMaxWidth = true;
+        } else if (key == L"max-height") {
+            if (!ParseDecimal(value, 1, cli_limits::kScaleMaxSide, &v)) return false;
+            out->maxHeight = static_cast<uint32_t>(v);
+            out->hasMaxHeight = true;
+        } else if (key == L"max-pixels") {
+            if (!ParseDecimal(value, 1, cli_limits::kScaleMaxPixels, &v)) return false;
+            out->maxPixels = v;
+            out->hasMaxPixels = true;
+        } else {
+            return false;   // 认不得的键名不猜（"是不是想写 max-width"不在这里代替判据）
+        }
+        any = true;
+        if (comma == std::wstring::npos) break;
+        pos = comma + 1;
+    }
+    return any;
+}
+
+// ---------------------------------------------------------------------------
 // --monitor 的取值语法（取值可省略，所以"要不要吃掉下一个参数"必须与实际解析同源）
 // ---------------------------------------------------------------------------
 
@@ -402,6 +445,11 @@ constexpr OptionSpec kOptions[] = {
     // valueHint 保持 ASCII，不翻译（与其它选项同一做法）；数字上限见 cli_limits::kRoiMaxValue。
     {L"roi", L"", true, L"crop", L"<x,y,w,h>", nullptr, L"opt.roi"},
     {L"client-area", L"", false, L"crop", L"", nullptr, L"opt.client-area"},
+    // 等比缩小（--scale）：只缩小、只在超过天花板时动手，绝不放大。取值是 key=N 的清单
+    // （max-width / max-height / max-pixels），可以一条里用逗号串、也可以把这一条写多次；
+    // 三条天花板互相独立。valueHint 保持 ASCII，不翻译（与其它选项同一做法）；
+    // 数字上限见 cli_limits::kScaleMaxSide / kScaleMaxPixels。
+    {L"scale", L"", true, L"crop", L"<key=N>", nullptr, L"opt.scale"},
     // ---- 截图授权 ----
     // --yes 只免掉窗口内容路径的确认框；会拍到桌面像素的那几条永远问人（见 src/Consent.h）。
     {L"yes", L"y", false, L"consent", L"", nullptr, L"opt.yes", false, false, true},
@@ -1138,6 +1186,33 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (name == L"client-area") {
             opt.crop.mode = CropMode::kClientArea;
             opt.crop.clientAreaGiven = true;
+            return;
+        }
+
+        // ---- 等比缩小 ----
+        // 与裁剪那两条各说各的（一个说留哪一块、一个说交多大），所以直接合到同一个请求上：
+        // 这一条写多次也只是把三条天花板各记各的，不构成一次"重复给值"。写坏时整条不生效。
+        if (name == L"scale") {
+            ScaleRequest parsed;
+            if (!ParseScaleValue(value, &parsed)) {
+                Err(codes::kInvalidValue, Msg(L"cli.scale_value"), L"--scale", value,
+                    Msg(L"cli.scale_value_hint"));
+                return;
+            }
+            opt.scale.given = true;
+            if (parsed.hasMaxWidth) {
+                opt.scale.hasMaxWidth = true;
+                opt.scale.maxWidth = parsed.maxWidth;
+            }
+            if (parsed.hasMaxHeight) {
+                opt.scale.hasMaxHeight = true;
+                opt.scale.maxHeight = parsed.maxHeight;
+            }
+            if (parsed.hasMaxPixels) {
+                opt.scale.hasMaxPixels = true;
+                opt.scale.maxPixels = parsed.maxPixels;
+            }
+            opt.scale.written = value;
             return;
         }
 

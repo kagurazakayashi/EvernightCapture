@@ -91,4 +91,42 @@ bool RotateCropFrame(const CapturedFrame& frame, const RECT& srcRect, uint32_t a
 // 形状不合格时不写 *out 并返回 false。
 bool PackTight(const CapturedFrame& frame, std::vector<uint8_t>* out);
 
+// ---------------------------------------------------------------------------
+// 等比缩小（--scale）
+// ---------------------------------------------------------------------------
+// 只做缩小：把 (srcWidth,srcHeight) 按**同一个比例**缩到 ScaleRequest 给的天花板之内，
+// 默认不放大。三条天花板（max-width / max-height / max-pixels）互相独立，比例取最紧的那一条，
+// 然后宽高各自**向下取整**（floor 只会更小，所以绝不越过任何一条天花板），再各自至少留 1 像素。
+//
+// 为什么比例用浮点算而不用分数：三条天花板里 max-pixels 天然是平方根关系（面积要除以几十万到
+// 几亿），用分数表达要另做一遍开方；而这里只有一次 sqrt + 两次乘法 + floor，IEEE-754 的 double
+// 在这几步上是可复现的。结尾另有一道**整数**核对把 max-pixels 钉死（floor 之后还要真的
+// 装得下），所以浮点那次开方差一丁点也不会让输出越过天花板。
+//
+// 与裁剪同一做法：这一层是**纯算术**，不碰屏幕、不弹框、不读像素（ScaleFrame 才搬像素），
+// 所以能离线把横竖图、极小图、超大输入、比例舍入与单边限制逐条注入（tests\image_state.cpp）。
+enum class ScaleStatus {
+    kNoScale,    // 没给 --scale：原样交付，连尺寸都不算
+    kUnchanged,  // 给了 --scale 但图本来就在天花板之内：不放大，原样交付
+    kScaled,     // 缩了，width / height 是新的尺寸
+    kRejected,   // 输入形状说不通（零尺寸 / 超单边上限）：不猜，交给调用方报 capture.frame_invalid
+};
+
+struct ScaleResolution {
+    ScaleStatus status = ScaleStatus::kNoScale;
+    uint32_t width = 0;   // 输出尺寸（kNoScale / kRejected 时无意义）
+    uint32_t height = 0;
+};
+
+// 判据本体：给定请求与缩之前那张图的尺寸，算出要交付的尺寸。不分配、不读像素。
+ScaleResolution ResolveScale(const ScaleRequest& request, uint32_t srcWidth, uint32_t srcHeight);
+
+// 就地等比缩小：把 frame 换成 outWidth×outHeight 的紧凑帧（最近邻），其余字段
+//（source / path / reportsCrop 那一组 / 色彩来源）一字不动 —— 缩的是同一张图，不是另一张。
+// 输出行距恒等于 width*4。约定与缓冲区形状在**分配之前**先过 CheckFrameShape（与 CropFrame
+// 同一道规矩）：不靠"分配失败抛异常"当检查。
+// 输出尺寸必须落在 [1, 源尺寸] 之内（不放大），源帧形状必须合法；任一条不成立就不改动
+// *frame 并返回 false（不交出半张图，也不把源帧弄坏）。
+bool ScaleFrame(CapturedFrame* frame, uint32_t outWidth, uint32_t outHeight);
+
 }  // namespace ecapture

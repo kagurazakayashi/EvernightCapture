@@ -133,6 +133,21 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
             j.Key(L"fullHeight").Value(static_cast<long long>(img.fullHeight));
             if (img.hasCropScreen) WriteRect(j, L"cropScreenRect", img.cropScreen);
         }
+        // 等比缩小（--scale）：写过这条选项时这组键才出现（没写过时一个都不出现，
+        // 与这条选项存在之前的输出逐字节相同）。四个键各说一件事、谁也不冒充谁：
+        //   scaleMethod       插值策略，恒为 "nearest"：交付像素 (x,y) 取缩之前那张图的
+        //                     (floor(x*srcW/dstW), floor(y*srcH/dstH))，可预测的整数映射
+        //   scaleApplied      这一次真的缩小了；false = 图本来就在天花板之内，原样交付
+        //   scaleFromWidth / scaleFromHeight  缩之前那张（裁之后）图的尺寸；width/height 是缩之后的
+        // 映射是闭合的：scaleFrom 是缩放那一层的输入尺寸，再往上一层就是 cropRect（给了裁剪时）。
+        // 与 cropRect / cursor* / hdr* 同一性质：这是内容与映射判据，--quiet 不许藏。
+        // 取值全是 ASCII 机器名，不随 --lang 变。
+        if (img.scaled) {
+            j.Key(L"scaleMethod").Value(L"nearest");
+            j.Key(L"scaleApplied").Value(img.scaleApplied);
+            j.Key(L"scaleFromWidth").Value(static_cast<long long>(img.scaleFromWidth));
+            j.Key(L"scaleFromHeight").Value(static_cast<long long>(img.scaleFromHeight));
+        }
         // 光标（--cursor）：这一次真写过这条选项才写这三个键，没写过时一个都不出现
         // （与这条选项存在之前的输出逐字节相同）。三个键各说一件事、谁也不冒充谁：
         //   cursorRequested  用户要的那一种：default / include / exclude
@@ -250,6 +265,19 @@ void WriteInputEcho(Json& j, const Options& opt) {
             j.Key(L"width").Value(static_cast<long long>(opt.crop.width));
             j.Key(L"height").Value(static_cast<long long>(opt.crop.height));
         }
+        j.End();
+    }
+    // 等比缩小这一层也回显：这次给过哪几条天花板、规范化成了什么数。分开写是让调用方不必
+    // 从用户原文里抠数字（与 input.crop 那条同源）。三条天花板互相独立，没给的那条整个键不出现；
+    // 没写过 --scale 时 input.scale 整个键不出现（与 input.monitor 那条"给了才写"一致）。
+    if (opt.scale.given) {
+        j.Key(L"scale").Obj();
+        if (opt.scale.hasMaxWidth)
+            j.Key(L"maxWidth").Value(static_cast<long long>(opt.scale.maxWidth));
+        if (opt.scale.hasMaxHeight)
+            j.Key(L"maxHeight").Value(static_cast<long long>(opt.scale.maxHeight));
+        if (opt.scale.hasMaxPixels)
+            j.Key(L"maxPixels").Value(static_cast<long long>(opt.scale.maxPixels));
         j.End();
     }
     // 运行环境这两项是"这台机器能走哪几条通道"的答案，与 --capture 请求了什么无关：

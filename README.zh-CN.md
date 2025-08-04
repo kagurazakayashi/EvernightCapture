@@ -23,6 +23,7 @@
 - **六条取图通道**：被遮挡的窗口也能截（`wgc` / `dwm` / `printwindow`），或者故意只拷屏幕上可见的像素（`bitblt` / `duplication`）
 - **多窗口一次截完**：`--all` 每个命中窗口各存一张，配合 `%i` 之类占位符命名
 - **窗口内部裁剪**：`--roi x,y,w,h` 从交付的整窗图像里留一块，`--client-area` 只留客户区。坐标说的是**这张图像自己的像素**（左上角 = (0,0)，物理像素，不按 DPI 缩放），永远不会被当成桌面绝对坐标；放不下的矩形是拒绝，而不是往里挪、裁到边上为止、或退回整窗交出。裁剪排在取帧之后，所以它不改变人批准过的那一片：会从屏幕上取样的那几条照样一定问人，`--yes` 不会因为最后只留一小块而生效
+- **等比缩小**：`--scale max-width=N,max-height=N,max-pixels=N` 把交付的这张图缩到天花板之内，而且一定等比：三条天花板取最紧的那一条算出一个比例，宽高各自向下取整，也**绝不放大**（本来就在天花板之内的原样交付，`scaleApplied=false`）。插值策略只有一种，而且是可预测的整数映射（最近邻）。顺序是先裁（`--roi` / `--client-area`）后缩、再编码，所以缩的是裁完的那一块，`scaleFromWidth` / `scaleFromHeight` 说的是**那张**图，而 `cropRect` / `cropScreenRect` 一字不改。缩放排在授权之后，所以请求的风险等级一点没变：会读桌面像素的那几条照样一定问人，`--yes` 不会因为最后交的是张小图而生效，一帧大到过不了帧形状检查的也缩不回来
 - **截图授权**：凡是真要取帧的截图，连可靠的窗口通道也一样，先弹模态确认框；`--yes` 只免掉"帧绑在所选窗口本身、
   不从桌面采样"那一条层的确认——任何会拍到桌面像素的路径一定要人答，没有开关能跳过
 - **目标身份会复核**：选定目标那一刻记下句柄、归属进程、该进程的创建时间、窗口类名与当初的选择条件，在每一次取帧尝试之前、
@@ -118,9 +119,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --cursor <default|include|exclude>          画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。只有 wgc 有一条能设进去也读得回来的开关（要内部版本 19041 起），其余几条交回的画面本来就没有光标，所以 include 配 printwindow / dwm / bitblt / duplication 报 capture.cursor_unsupported，绝不改走会读桌面像素的通道；auto 时做不到的那几条从链里摘掉并各留一条 note.cursor_channel_skipped。这一条不改变授权；requested / effective / basis 三件事的判据见 README
   --hdr <auto|tonemap|refuse>                 HDR 来源怎么处理：auto(默认，本工具一个字都不改，结果里也不出现色彩那组键) / tonemap(把 HDR 帧按固定 tone mapping 映射成 8 位 SDR 交付) / refuse(核实来源是 HDR 就报错，绝不交一张被硬压成 BGRA8 的发白图)。只有 wgc 与 duplication 两条带得回广色域帧，所以 tonemap/refuse 配 printwindow / dwm / bitblt 在解析期报 capture.hdr_unsupported，绝不改走去读桌面像素的通道。这一条不改变授权；来源色彩空间、位深与实际处理写进结果，判据见 README 与 --capabilities 的 color 段
 
-窗口内部裁剪（对交付的整窗图像按图像自己的像素坐标再裁一次；不是桌面绝对坐标；下面两条互斥）
+窗口内部裁剪与等比缩小（对交付的整窗图像按图像自己的像素坐标再裁一次；不是桌面绝对坐标；顺序是先裁后缩，--roi 与 --client-area 两条互斥）
   --roi <x,y,w,h>                             从交付的整窗图像里裁出 x,y 起点、w×h 大小的一块。原点 (0,0) 是这张图像自己的左上角像素（图像对应的是用户看到的那圈可见边框，DWM 那圈透明 resize 边框不在里面），单位是物理像素且不按 DPI 缩放（本进程 per-monitor v2，要按逻辑像素指定就自己乘那道缩放），所以这四个数永远不会被当成桌面绝对坐标。四个数只认十进制、逗号分隔；x 与 y 可为 0，w 与 h 至少 1，都不超过 16384。放不下就整张不落地：取帧之前就看得出放不下报 match.roi_out_of_range（不弹框、不写文件），取到帧之后才发现报 capture.roi_invalid —— 不往里挪、不裁到边上为止、也不退回整窗交出。裁剪排在取帧之后，所以它不改变授权：会从屏幕上取样的那几条照样一定问人，--yes 不会因为"最后只留一小块"而生效。结果里 cropRect 是图像像素坐标，cropScreenRect 是同一块矩形的屏幕坐标（核实得出图像原点时才写），裁前尺寸在 fullWidth/fullHeight、裁后就是 width/height。与 --client-area 互斥，配整块屏幕的目标说不通（capture.unsupported）
   --client-area                               只交回窗口客户区那一块：在交付的整窗图像里再去掉标题栏与三边边框。这块矩形照目标此刻的几何量出来（GetClientRect 加 ClientToScreen），坐标系与单位跟 --roi 完全同一套。量不出客户区报 capture.roi_unmeasurable，有一边落在交付图像之外（挂在屏外、或中途改了尺寸）报 capture.roi_invalid，两种都不退回整窗交出。与 --roi 互斥
+  --scale <key=N>                             把交付的这张图等比缩小到天花板之内：max-width=N 限宽、max-height=N 限高、max-pixels=N 限总像素数（N 都是十进制；边长 1..16384，像素数 1..268435456）。三条互相独立，可只给一条、也可一条里用逗号串几条（如 max-width=1920,max-pixels=2073600）；这一条写多次时每条天花板各记各的，重复给同一条时最后一个生效。三条都按同一个比例缩（取最紧的那一条），宽高各自向下取整；默认不放大，图本来就在天花板之内就原样交付（结果里 scaleApplied=false）。插值策略只有一个，而且是可预测的整数映射：最近邻。顺序是先裁（--roi / --client-area）后缩、再编码，所以缩的是裁完的那一块；结果里 scaleFromWidth/scaleFromHeight 是缩之前的尺寸、width/height 是缩之后的，scaleMethod 是插值策略，映射按这个顺序闭合。这一条不改变授权与帧上限：会读桌面像素的路径照样一定弹框问人（--yes 不会因为最后交的是张小图而生效），一帧大到过不了帧形状检查的缩不回来，--roi 的越界判据也仍按原图判
 
 截图授权（真实截图默认都要先弹框问一次；--yes 只免掉只取窗口画面的那条路径）
   --yes, -y                                   跳过"只取所选窗口画面"那条路径的确认框。不保证目标一定有画面，也不忽略权限、受保护内容、错误或覆盖保护；任何会从屏幕上取样的路径（bitblt、duplication、整屏任何通道、dwm 的屏幕退路）一定会弹框，这个开关跳不过。写 --yes=false 表示明确要问
@@ -422,6 +424,32 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 没点头就不落地」（测试一侧只探测有没有弹出确认框，从不代答）。两条本机造不出、照实记未验证而不是推导：
 同一条 `--roi` 在两块缩放比不同的屏上（这台机器只接了一块屏），以及目标在「取帧之前的预检通过之后、帧交回来之前」
 这一瞬间被改小（要的就是这段竞态本身，时间点安排不出来 —— 它由离线层 `build\ecapture-crop-tests.exe` 逐条判）。
+
+## 等比缩小（`--scale`）
+
+`--scale max-width=N,max-height=N,max-pixels=N` 把工具即将交付的那张图缩到这几条天花板之内。三个键互相独立（可以只给一个，
+也可以一条里用逗号串几个；这一条写多次时每条天花板各记各的，重复给同一条时最后一个生效）；`--scale` 什么都不写是参数错误，
+因为“一条天花板都没给”与“缩到 0”没法区分。N 只认十进制，边长 1..16384（与帧的单边上限同一条线），像素数 1..268435456。
+
+规矩很短，而它们就是全部契约：
+
+- **一个比例，取最紧的那一条天花板。** 每条天花板各提出一个比例（宽、高，像素预算则开方），取最小的那一个。宽高各自**向下取整**，
+  且各至少留 1 像素。
+- **绝不放大。** 本来就在每条天花板之内的图原样交付，结果里写 `scaleApplied: false`。没有哪条天花板真的比图更紧时，
+  这一条什么都不会“减少”。
+- **插值策略只有一种，而且可预测**：最近邻（`scaleMethod` 恒为 `nearest`）。交付像素 `(x,y)` 取自缩之前那张图的
+  `(floor(x*scaleFromWidth/width), floor(y*scaleFromHeight/height))`。没有浮点采样，也不按通道挑算法。
+- **先裁、后缩、再编码。** `scaleFromWidth` / `scaleFromHeight` 是**裁之后**那张图的尺寸（不是整窗图），`cropRect` /
+  `cropScreenRect` 一字不改，`width` / `height` 是最终尺寸。单色质量提示判的是交付出去那张（也就是缩过的）。
+- **授权那一层一点不动。** 缩放排在授权之后，它不是降低请求风险等级的办法：桌面像素那条配 `--scale max-width=8`，即使给了
+  `--yes` 也照样弹框，也没有哪个开关会因为最后交的是小图而开始生效。它同样不是绕开既有上限的办法——一帧大到过不了帧形状检查的
+  根本到不了这一步，`--roi` 仍按未缩的那张图判。
+- **只有写过这一条时**，`scaleMethod` / `scaleApplied` / `scaleFromWidth` / `scaleFromHeight` 才出现；没写 `--scale` 时这四个键
+  一个都没有（不是 `null`、`0` 或 `false`），所以那条流与之前逐字节相同。
+- 编码那一层没动：`png`、`jpeg`、`bmp` 写下的都是缩过之后的尺寸（见 `.\tests\scale.ps1`）。
+
+本机未验证：单边超过 16384 的帧的真机现场（造不出一扇那么大的窗口，而且那种帧本来也过不了帧形状检查——这条由离线层判）、
+HDR 与缩放同时生效（这台开发机开不了 HDR）、跨屏混合 DPI（只接了一块屏）。
 
 ## 不给输出路径（兼容性说明）
 
@@ -1087,7 +1115,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | 命令 | 用途 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 619 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法、查询与截图选项互斥那一组）+ 通道分离 + 省略 `--out` 与 `--out -` 的等价对拍 + 多语言检查（一律 `--dry-run`，不截图） |
+| `.\tests\cli.ps1` | 746 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法、查询与截图选项互斥那一组）+ 通道分离 + 省略 `--out` 与 `--out -` 的等价对拍 + 多语言检查（一律 `--dry-run`，不截图） |
 | `.\tests\capabilities.ps1` | 能力与诊断查询（`--capabilities` / `--diagnostics`）：离线跑 `build\ecapture-capabilities-tests.exe`（注入假探针判"一块屏都没有""版本正好低于某条下限""版本问不出来""某个编码器没登记""`--yes` 的适用范围与登记表一致""两份查询共享同一批判据"）；真机层判查询确实不弹框（期限就是判据）、不落地、`os` / `arch` / 通道链与 WMI 及 `--dry-run -v` 两处独立值同源、文档全 ASCII 且不随 `--lang` 变、不含用户名与任何路径。无图形会话、更低版本、编码器缺失、ARM64 / Server / 远程桌面这几项本机造不出，一律记未验证 |
 | `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8，以及省略 `--out` 与显式 `--out -` 在成功 / 无匹配 / 歧义 / 非法参数 / 后端失败 / 被拒绝 / 写入断管七个场景上的机器语义对拍（只截自建的窗口） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
@@ -1106,6 +1134,7 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 | `.\tests\hdr.ps1` | HDR 色彩处理（`--hdr`）：离线一层（`build\ecapture-hdr-tests.exe`，源码 `tests\hdr_state.cpp`）判两张登记表说的是同一批路径、DXGI 格式与显示 color space 的分类（认不出一律 unknown、不猜）、half 解码与传递函数与 tone 曲线的性质（黑进黑、单调、white=1 恒等、不越界）、用已知色块与亮度梯度逐点判 `ConvertWideFrameToSdrBgra8`、来源与形状守卫、以及那组结果键的合成与 `HdrRequestPossible`。真机一层只用自建窗口 + `--yes` 的窗口内容那一级（本机非 HDR）：判没写 `--hdr` 时那组键一个都不出现、`--hdr auto` 把来源如实报成 `srgb_bgra8` / `sdr_passthrough` 且不发提示、`tonemap` / `refuse` 在 SDR 上是恒等透传并各留一条 `note.hdr_source_sdr`、`--quiet` 抑制不掉那组键，以及每张图的尺寸/主色/颜色数与不写 `--hdr` 时一致（HDR 处理没把 SDR 图弄歪）。`--capabilities` 的 `color` 段：`verifiedOnThisMachine` 恒为 `no`、每条路径带不带广色域、两份查询同源。真 HDR 帧上的实拍对照、`refuse` 在 HDR 上拒绝、FP16 帧池出图、HLG 真机下场本机造不出，一律记未验证 |
 | `.\tests\cursor.ps1` | 光标包含与排除（`--cursor`）：离线一层（`build\ecapture-cursor-tests.exe`，源码 `tests\cursor_state.cpp`）按假版本与假通道链判那张按路径登记的能力表、两份表说的是同一批路径、链按光标要求收窄（19041 那道门槛两侧各判一次、版本问不出来时只按结构筛）、requested/effective/basis 的合成，以及直接调用解析层判"include 配做不到的通道在解析期就拒"；另有一条源码级守卫（`src/` 里出现取指针形状、把光标画进帧里、动使用者鼠标那类调用就红）。真机一层只用自建窗口：判 wgc 那条开关真的设进去也读回来、三种要求各截一张且画面仍是本次那扇窗口（尺寸 + 签名色）、没写 `--cursor` 时那三个键一个都不出现、`--quiet` 抑制不掉它们、`auto` + `include` 收窄后实际出图那条确实是 `wgc`、被拒的那几种不落地也不弹框，以及要求光标没把授权松动（桌面那两条照样弹框、只探测不代答）。像素级"看得见/看不见指针"、低于 19041 的机器、要人点头的桌面实截一律记未验证 |
 | `.\tests\crop.ps1` | 窗口内部裁剪（`--roi` / `--client-area`）：离线层（`build\ecapture-crop-tests.exe`，源码 `tests\crop_state.cpp`）把交付图像的尺寸、它的屏幕原点问没问到、客户区量没量到注进生产判据本体，逐条判贴边、越界一条像素、零宽零高、相加绕回、单边上限、客户区整块落在图像之外，以及负坐标的屏；真机层用自建的带边框窗口（WS_OVERLAPPEDWINDOW，于是窗口矩形 / 客户区矩形 / 可见边框矩形三者各不相同），拿三条独立的 Win32 问答对照 `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight`，与一张不裁剪的图逐点比像素，判「越界的请求在弹框与写文件之前就被挡掉」「目标被改小之后同一条矩形失效」「桌面像素那条即使 `--roi` 只要一小块、给了 `--yes` 也照样弹框」（测试一侧只看不点）。跨屏混合 DPI 与「预检通过之后、帧交回来之前那一瞬被改小」本机造不出，一律记未验证 |
+| `.\tests\scale.ps1` | 等比缩小（`--scale`）：离线层（`build\ecapture-image-tests.exe`，源码 `tests\image_state.cpp`）把源尺寸与请求注进生产判据本体，逐条判「不放大」、三条天花板取最紧、向下取整、各边至少 1 像素、16384x16384 的像素预算、最近邻映射逐点对拍、「只缩不放」、坏帧形状与带填充的行；真机层用自建的带边框窗口，拿 `--roi` 造出横块与竖块：不写 `--scale` 时尺寸与像素一个都不动、天花板比图大时不放大（`scaleApplied: false`）、交付尺寸等于按同一个比例算出的尺寸、`scaleFromWidth` / `scaleFromHeight` 说的是**裁之后**那张图（顺序判据）、缩放图与「只裁不缩」那张在映射到的像素上相等、`cropRect` / `cropScreenRect` 不被改写、3x2 的图变成 1x1、`png` / `bmp` / `jpeg` 三种格式写下的都是缩过的尺寸、`--quiet` 里那组键藏不掉并被 `-v` 回显、一批里每张都缩。还判「桌面像素那条配极小 `--scale`、给了 `--yes` 也照样弹框」（测试一侧只看不点）。单边超过 16384 的帧、HDR 与缩放同时生效、跨屏混合 DPI 本机造不出，一律记未验证 |
 | `.\tests\screen.ps1` | 真机整屏测试：三条屏幕通道（都属于桌面路径，每一条都必须弹框）+ 红块定位 + 阴性对照。只有加了 `-SimulateConsent` 才会代答确认框，且只该在专门腾给测试的桌面上这么用；不给时凡是要答框的判据记 SKIP（未验证） |
 | `.\tests\window_shot.bat` | 给人跑的批处理：编译测试窗口程序 → 逐通道截图（框由人自己点）→ 整屏那一步 → 打开截图目录 → 只结束自己起的那个 PID |
 | `.\scripts\mkreadme.ps1` | 用各语言 `--help` 的原样输出重生成四份 README 的帮助段 |

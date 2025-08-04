@@ -54,6 +54,17 @@ struct CapturedImage {
     uint32_t fullHeight = 0;
     bool hasCropScreen = false;
     RECT cropScreen{};
+    // 等比缩小（--scale）：写过这条选项时这一组才有效（scaled 为真）。
+    //   scaleApplied        这一次真的缩小了；false = 图本来就在天花板之内，原样交付
+    //   scaleFromWidth/Height  缩之前那张（裁之后）图的尺寸；width/height 是缩之后的
+    // 映射是闭合的：交付像素 (x,y) 来自它自己那张图的 (floor(x*scaleFromWidth/width),
+    // floor(y*scaleFromHeight/height))（插值策略只有一个：最近邻），再按 cropRect 的偏移
+    // 落到整窗图像（给了 --roi / --client-area 时），最后按 rect / cropScreenRect 落到屏幕。
+    // 与 cropRect 一样是定位判据，--quiet 不许藏。
+    bool scaled = false;
+    bool scaleApplied = false;
+    uint32_t scaleFromWidth = 0;
+    uint32_t scaleFromHeight = 0;
     // 光标（--cursor）：交出去的这一帧里"有没有光标"这件事的报告，三个键一次算完
     // （requested / effective / basis）。written=false（没写过 --cursor）时渲染层一个键都不写，
     // 于是那条流与这条选项存在之前逐字节相同。合成判据只有 MakeCursorReport 那一份。

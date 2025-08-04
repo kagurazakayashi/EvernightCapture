@@ -924,6 +924,30 @@ CaptureOutcome RunCapture(const Options& opt) {
                     targetErr = std::move(cropErr);
                 }
             }
+            // 等比缩小（--scale）排在裁剪之后、编码与质量提示之前：交出去的就是缩过的那一张，
+            // 所以下面"整幅是不是只有一个颜色"判的也是它。它同样在授权之后、在帧形状检查之后：
+            // 一帧大到过不了 capture.frame_invalid 的，缩不回来（这一层根本没有机会碰它），
+            // --roi 的越界判据也已经按**原图**判过了（缩放在它之后），所以缩放绕不过这两道。
+            if (ok && opt.scale.given) {
+                const wchar_t* scaleChannel =
+                    frame.source.empty() ? CaptureMethodName(opt.capture) : frame.source.c_str();
+                const ScaleResolution scaleRes = ResolveScale(opt.scale, frame.width, frame.height);
+                if (scaleRes.status == ScaleStatus::kRejected) {
+                    ok = false;
+                    CaptureError(&targetErr, scaleChannel, Msg(L"cap.scale_apply_failed"),
+                                 Msg(L"cap.scale_apply_failed_hint"), codes::kFrameInvalid);
+                } else {
+                    img.scaled = true;
+                    img.scaleFromWidth = frame.width;
+                    img.scaleFromHeight = frame.height;
+                    img.scaleApplied = scaleRes.status == ScaleStatus::kScaled;
+                    if (img.scaleApplied && !ScaleFrame(&frame, scaleRes.width, scaleRes.height)) {
+                        ok = false;
+                        CaptureError(&targetErr, scaleChannel, Msg(L"cap.scale_apply_failed"),
+                                     Msg(L"cap.scale_apply_failed_hint"), codes::kFrameInvalid);
+                    }
+                }
+            }
             if (ok) {
                 img.width = frame.width;
                 img.height = frame.height;

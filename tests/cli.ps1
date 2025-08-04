@@ -47,10 +47,14 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 # 天然比中文长得多（en 大约是 zh 的 1.7 倍），拿一个数去卡四种语言会把"这个语言的
 # 说明本来就更啰嗦"判成"帮助膨胀"，所以按语言分别给。
 # 上调这条数字只应该发生在**新增一条选项或新增一段说明**的时候，并且要说得出是哪一次改动。
-# 上一次上调：HDR 色彩处理那一条（--hdr 一行目录 + 一句说明；没有新增分组标题，接在 --cursor 后面）。
-# 四种语言各加约 380～520 字符（英文那份天然最长），实测 zh-CN 8374 / zh-TW 8414 / en 15258 / ja 9328，
-# 所以下面四个数按各自实际增量分别抬起，并把余量留在"再加一条短选项"还能装下的位置上。
-$HELP_LIMITS = @{ 'zh-CN' = 8600; 'zh-TW' = 8700; 'en' = 15650; 'ja' = 9700 }
+# 上上次上调：HDR 色彩处理那一条（--hdr 一行目录 + 一句说明；没有新增分组标题，接在 --cursor 后面）。
+# 上一次上调：等比缩小那一条（--scale 一行目录 + 一句说明；同样接在 --cursor / --hdr 后面）。
+# 它不是最短的那一条说明（三条天花板各是什么、只有一种内插、先裁后缩的顺序、以及"不改变授权"
+# 都要说清楚），四种语言各加约 570～1430 字符（英文那份天然最长）。随之一起抬的还有同一组的分组标题
+# grp.crop（原来只说裁剪，现在这一组还装着等比缩小，改成了"裁剪与等比缩小…先裁后缩"）。
+# 实测 zh-CN 8980 / zh-TW 9019 / en 16764 / ja 10087，所以下面四个数按各自实际长度分别抬起，
+# 并把余量留在"再加一条短选项"还能装下的位置上。
+$HELP_LIMITS = @{ 'zh-CN' = 9250; 'zh-TW' = 9300; 'en' = 17200; 'ja' = 10450 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']
@@ -1072,6 +1076,99 @@ $cases += @{ Name = '--hdr 与 --cursor、--roi 同时给出不算冲突'
    A = ($ANCHOR + @('--hdr', 'tonemap', '--cursor', 'exclude', '--roi', '0,0,5,5', '--verbose', 'out.png')); Exit = 0
    Check = { param($o) $o.input.hdr -eq 'tonemap' -and $o.input.cursor -eq 'exclude' -and
                         $o.input.crop.mode -eq 'roi' } }
+
+# 等比缩小（--scale）：这一节判**解析层**（写法、三条天花板各自的取值域、回显，以及
+# "写了它不改变授权与帧上限那一层"）。判据本体（比例怎么取、向下舍入、只有最近邻一种内插、
+# 映射怎么闭合）在离线层 tests\image_state.cpp；要真的动像素、真的缩下来那一段在 tests\scale.ps1。
+# 这里全部配 --dry-run：不取帧，所以既不弹框也不落地。
+# 写坏的名字或取值一律 cli.invalid_value（文案键 cli.scale_value），且整条不生效：
+# 不留下"认得的那半"（缺等号、键名认不得、值超范围、段里多写一个逗号都算同一条）。
+foreach ($bad in @('max-width', 'max-width=', 'max-width=0', 'max-width=16385',
+                   'max-pixels=0', 'max-pixels=268435457', 'width=100', '=100',
+                   'max-width=abc', 'max-width=-1', 'max-width=1e3', 'max-width=0x10',
+                   'Max_Width=100', 'max-width=100 200', 'max-width=100,',
+                   ',max-width=100', 'max-width=100,,max-height=50')) {
+    $cases += @{ Name = ('--scale 的写法不合（[{0}]）' -f $bad)
+       A = ($ANCHOR + @('--scale', $bad, 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                            $o.errors[0].option -eq '--scale' }.GetNewClosure() }
+}
+# 三条天花板各自独立：只给一条时其余两个键整个不出现（不给"看起来像默认值"的 0）。
+$cases += @{ Name = '--scale 只给 max-width：input.scale 里只有这一个键'
+   A = ($ANCHOR + @('--scale', 'max-width=1920', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxWidth -eq 1920 -and
+                        -not $o.input.scale.PSObject.Properties.Name.Contains('maxHeight') -and
+                        -not $o.input.scale.PSObject.Properties.Name.Contains('maxPixels') } }
+$cases += @{ Name = '--scale 三条天花板一次给全'
+   A = ($ANCHOR + @('--scale', 'max-width=1920,max-height=1080,max-pixels=2073600', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxWidth -eq 1920 -and $o.input.scale.maxHeight -eq 1080 -and
+                        $o.input.scale.maxPixels -eq 2073600 } }
+# 这一条写多次不等于"重复给值"：三条天花板各说各的，合到同一个请求上（与 --roi 那种
+# "一条选项里四个数"不同，也与 --capture / --hdr 那种"最后一个生效"不同，所以单独判）。
+$cases += @{ Name = '--scale 写两次：两条天花板各记各的'
+   A = ($ANCHOR + @('--scale', 'max-width=1920', '--scale', 'max-height=1080', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxWidth -eq 1920 -and $o.input.scale.maxHeight -eq 1080 } }
+$cases += @{ Name = '--scale 重复给同一条天花板：最后一个生效'
+   A = ($ANCHOR + @('--scale', 'max-width=1920', '--scale', 'max-width=800', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxWidth -eq 800 } }
+foreach ($w in @(@('--scale=max-width=1920', 'maxWidth', 1920),
+                 @('--scale=MAX-WIDTH=1920', 'maxWidth', 1920))) {
+    $cases += @{ Name = ('--scale 的内联写法与键名大小写（{0}）' -f $w[0])
+       A = ($ANCHOR + @($w[0], '--verbose', 'out.png')); Exit = 0
+       Check = { param($o) $o.input.scale.($w[1]) -eq $w[2] }.GetNewClosure() }
+}
+# 取值域的边界：三条各自的两个端点在范围内，正好越界在上一组里已经判过。
+$cases += @{ Name = '--scale 的边界值放行（max-width 与 max-height 都到 16384）'
+   A = ($ANCHOR + @('--scale', 'max-width=16384,max-height=16384', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxWidth -eq 16384 -and $o.input.scale.maxHeight -eq 16384 } }
+$cases += @{ Name = '--scale 的边界值放行（max-pixels 到 268435456）'
+   A = ($ANCHOR + @('--scale', 'max-pixels=268435456', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxPixels -eq 268435456 } }
+$cases += @{ Name = '没写 --scale 时 input.scale 整个键不出现'
+   A = ($ANCHOR + @('--verbose', 'out.png')); Exit = 0
+   Check = { param($o) -not $o.input.PSObject.Properties.Name.Contains('scale') } }
+# --scale 必带取值（不是可选取值那一类），argv 到头就是 cli.missing_value；
+# 且它要吃值：--scale out.png 里的 out.png 被当取值并当场报错，不会悄悄变成输出文件名。
+$cases += @{ Name = '--scale 放在末尾没有取值：cli.missing_value'
+   A = @('--class', 'Shell_TrayWnd', '--dry-run', 'out.png', '--scale'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.missing_value' -and
+                        $o.errors[0].option -eq '--scale' } }
+$cases += @{ Name = '--scale 吃掉后面的输出路径写法并当场报错（不变成文件名）'
+   A = ($ANCHOR + @('--scale', 'out.png')); Exit = 1; ToStderr = $true
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.invalid_value' -and
+                        $o.errors[0].value -eq 'out.png' } }
+# 一条选项写坏了名字要能对着契约找到；帮助里必须看得见这条选项与它的三个键名。
+$cases += @{ Name = '--help 含等比缩小那一条选项'
+   A = @('--help'); Exit = 3; Text = $true; Has = @('--scale <key=N>') }
+$cases += @{ Name = '帮助里 --scale 的说明写出三条天花板的键名'
+   A = @('--help'); Exit = 3; Text = $true
+   Has = @('max-width', 'max-height', 'max-pixels', 'scaleApplied') }
+# --scale 不是匹配条件：只给仍是"零条件"。
+$cases += @{ Name = '只给 --scale 而不给任何条件：仍是文本帮助 + 退出码 2'
+   A = @('--scale', 'max-width=100'); Exit = 2; Text = $true; Has = @('未指定任何匹配条件') }
+# 两类查询都不产图，所以截图那一级的选项一条都不成立（缩放属于编码之前那一级）。
+$cases += @{ Name = '环境查询与 --scale 冲突（cli.query_conflict）'
+   A = @('--capabilities', '--scale', 'max-width=100'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' -and
+                        $o.errors[0].value -match '--scale' } }
+$cases += @{ Name = '屏幕查询与 --scale 冲突'
+   A = @('--screens', '--scale', 'max-width=100'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.query_conflict' } }
+$cases += @{ Name = '窗口查询与 --scale 冲突（cli.window_query_conflict）'
+   A = @('--list', '--scale', 'max-width=100'); Exit = 1
+   Check = { param($o) ((Codes $o.errors) -join ',') -eq 'cli.window_query_conflict' -and
+                        $o.errors[0].value -match '--scale' } }
+# --scale 与 --roi / --cursor / --hdr 各管各的（一个说交多大、一个说留哪块、一个说指针、
+# 一个说色彩），不算冲突，而且裁剪与缩放能同时成立（顺序是先裁后缩，判据在离线层）。
+$cases += @{ Name = '--scale 与 --roi、--cursor、--hdr 同时给出不算冲突'
+   A = ($ANCHOR + @('--scale', 'max-width=1920', '--roi', '0,0,5,5', '--cursor', 'exclude', '--hdr', 'tonemap', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) $o.input.scale.maxWidth -eq 1920 -and $o.input.crop.mode -eq 'roi' -and
+                        $o.input.cursor -eq 'exclude' -and $o.input.hdr -eq 'tonemap' } }
+# 缩放在取帧之后才发生：--dry-run 一样只报告不截图，回显里三条天花板照写。
+$cases += @{ Name = '--scale 与 --dry-run 一起：只报告不截图'
+   A = ($ANCHOR + @('--scale', 'max-width=1920', '--verbose', 'out.png')); Exit = 0; Json = $true
+   Notes = @('note.dry_run')
+   Check = { param($o) $o.captured -eq 0 -and $o.input.scale.maxWidth -eq 1920 } }
 
 # ---------- 只读查询（--capabilities / --diagnostics）----------
 # 这两份文档不是截图结果：没有 captured / images，也没有 notes / input。用例要标 Query，

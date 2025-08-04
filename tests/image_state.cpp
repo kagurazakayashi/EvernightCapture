@@ -323,6 +323,208 @@ void TestCrop() {
 }
 
 // ---------------------------------------------------------------------------
+// 等比缩小（--scale）：默认不放大、比例只减不增、向下取整、只有最近邻一种内插
+// ---------------------------------------------------------------------------
+// 为什么在这一层测：比例怎么取、取整取到哪、映射落在哪一个源像素上，全都能用**手工摆出的
+// 特定像素排布**逐点判（大到 16384x16384 的输入连分配都不用，ResolveScale 只做算术）。
+// 这里测的是生产函数本体（src/ImageOps.cpp），不是另抄一份算法当判据。
+void TestScale() {
+    Section("等比缩小：天花板怎么取、放大怎么被拒、内插与映射怎么闭合");
+
+    // 没写过 --scale：这一层一个字节都不动（与这条选项存在之前逐字节相同）
+    ScaleRequest none{};
+    ScaleResolution r = ResolveScale(none, 100, 50);
+    Check(r.status == ScaleStatus::kNoScale, "没给请求时状态是 kNoScale（连尺寸都不算）");
+    Check(r.width == 0 && r.height == 0, "没给请求时不报尺寸（不是缩到 0）");
+
+    // 写了却一条天花板都没给：解析期拦得住，这一层也不把它当成"缩到 0"
+    ScaleRequest empty{};
+    empty.given = true;
+    r = ResolveScale(empty, 100, 50);
+    Check(r.status == ScaleStatus::kUnchanged && r.width == 100 && r.height == 50,
+          "空请求按原样交回（不是缩到 0）");
+
+    // 源形状说不通：与帧形状那一关同一组边界，不猜
+    Check(ResolveScale(empty, 0, 50).status == ScaleStatus::kRejected, "源宽 0 被拒");
+    Check(ResolveScale(empty, 100, 0).status == ScaleStatus::kRejected, "源高 0 被拒");
+    Check(ResolveScale(empty, kFrameMaxSide + 1u, 10).status == ScaleStatus::kRejected,
+          "源宽超过单边上限被拒");
+    Check(ResolveScale(empty, 10, kFrameMaxSide + 1u).status == ScaleStatus::kRejected,
+          "源高超过单边上限被拒");
+
+    // 默认不放大：天花板比图大（或正好相等）时原样交回
+    ScaleRequest wide{};
+    wide.given = true;
+    wide.hasMaxWidth = true;
+    wide.maxWidth = 1920;
+    r = ResolveScale(wide, 100, 50);
+    Check(r.status == ScaleStatus::kUnchanged && r.width == 100 && r.height == 50,
+          "图本来就在天花板之内：原样交回（不放大）");
+    Check(ResolveScale(wide, 1920, 1080).status == ScaleStatus::kUnchanged,
+          "正好等于天花板也算放得下");
+
+    // 横图：限宽，高跟着同一个比例走
+    ScaleRequest mw{};
+    mw.given = true;
+    mw.hasMaxWidth = true;
+    mw.maxWidth = 200;
+    r = ResolveScale(mw, 400, 200);
+    Check(r.status == ScaleStatus::kScaled && r.width == 200 && r.height == 100,
+          "横图 400x200 限宽 200 -> 200x100");
+
+    // 竖图：限高，宽跟着同一个比例走（不是两边各自独立缩）
+    ScaleRequest mh{};
+    mh.given = true;
+    mh.hasMaxHeight = true;
+    mh.maxHeight = 200;
+    r = ResolveScale(mh, 200, 400);
+    Check(r.status == ScaleStatus::kScaled && r.width == 100 && r.height == 200,
+          "竖图 200x400 限高 200 -> 100x200");
+    mh.maxHeight = 100;
+    r = ResolveScale(mh, 400, 200);
+    Check(r.status == ScaleStatus::kScaled && r.width == 200 && r.height == 100,
+          "单边限制只限高时，宽按同一个比例走");
+
+    // 三条一起给：取最紧的那一条（这里限高 100 最紧）
+    ScaleRequest all{};
+    all.given = true;
+    all.hasMaxWidth = true;
+    all.maxWidth = 1000;
+    all.hasMaxHeight = true;
+    all.maxHeight = 100;
+    all.hasMaxPixels = true;
+    all.maxPixels = 10000000u;
+    r = ResolveScale(all, 400, 200);
+    Check(r.status == ScaleStatus::kScaled && r.width == 200 && r.height == 100,
+          "三条天花板一起给：取最紧的那一条（限高 100）");
+
+    // 比例舍入：向下取整
+    ScaleRequest round1{};
+    round1.given = true;
+    round1.hasMaxWidth = true;
+    round1.maxWidth = 333;
+    r = ResolveScale(round1, 1000, 333);
+    Check(r.status == ScaleStatus::kScaled && r.width == 333 && r.height == 110,
+          "比例舍入向下取整：1000x333 限宽 333 -> 333x110");
+
+    // 极小图：再缩也要留 1 像素（空图不是一张图）
+    ScaleRequest tiny{};
+    tiny.given = true;
+    tiny.hasMaxWidth = true;
+    tiny.maxWidth = 1;
+    r = ResolveScale(tiny, 3, 1);
+    Check(r.status == ScaleStatus::kScaled && r.width == 1 && r.height == 1,
+          "极小图 3x1 限宽 1 -> 1x1（另一边被夹到至少 1 像素）");
+
+    // 超大输入：面积天花板按开方取比例，16384x16384 只做算术、不分配
+    ScaleRequest mp{};
+    mp.given = true;
+    mp.hasMaxPixels = true;
+    mp.maxPixels = 2073600u;
+    r = ResolveScale(mp, 16384, 16384);
+    Check(r.status == ScaleStatus::kScaled, "超大输入 16384x16384 能被面积天花板缩小");
+    Check(r.width == 1440 && r.height == 1440, "16384x16384 限 2073600 像素 -> 1440x1440");
+    Check(static_cast<uint64_t>(r.width) * r.height <= mp.maxPixels,
+          "缩完之后的总像素数真的落在天花板之内（不靠浮点运气）");
+    mp.maxPixels = 2;
+    r = ResolveScale(mp, 5, 5);
+    Check(r.status == ScaleStatus::kScaled && r.width == 1 && r.height == 1,
+          "5x5 限 2 像素 -> 1x1（夹到至少 1 像素，且 1 不越过面积天花板）");
+
+    // 三条天花板同时给时，整数核对之后仍同时落在三条之内
+    ScaleRequest tight{};
+    tight.given = true;
+    tight.hasMaxWidth = true;
+    tight.maxWidth = 7;
+    tight.hasMaxHeight = true;
+    tight.maxHeight = 7;
+    tight.hasMaxPixels = true;
+    tight.maxPixels = 41;
+    r = ResolveScale(tight, 100, 100);
+    Check(r.status == ScaleStatus::kScaled && r.width <= 7 && r.height <= 7 &&
+              static_cast<uint64_t>(r.width) * r.height <= 41u,
+          "三条天花板同时给：结果同时落在三条之内");
+
+    // ScaleFrame：最近邻，交付像素 (x,y) 取源 (x*srcW/outW, y*srcH/outH)（整数除法）
+    CapturedFrame f = FrameOf(4, 2);
+    for (uint32_t y = 0; y < 2; ++y) {
+        for (uint32_t x = 0; x < 4; ++x) {
+            PutPixel(&f, x, y, Px(static_cast<int>(x + 1), static_cast<int>(y + 1), 0));
+        }
+    }
+    Check(ScaleFrame(&f, 2, 1), "4x2 缩到 2x1 成功");
+    Check(f.width == 2 && f.height == 1 && f.stride == 8 && f.pixels.size() == 8,
+          "缩完的宽高与行距是 2x1 / 8（紧凑行）");
+    Check(f.pixels[0] == 1 && f.pixels[1] == 1 && f.pixels[4] == 3 && f.pixels[5] == 1,
+          "最近邻取的是源 x = floor(0*4/2) = 0 与 floor(1*4/2) = 2 那两个像素");
+
+    // 恒等尺寸：内容逐字节不变（"给了 --scale 但天花板不生效"不会被搬成另一张图）
+    CapturedFrame id = FrameOf(3, 2);
+    FillAll(&id, Px(9, 8, 7));
+    const std::vector<uint8_t> idBefore = id.pixels;
+    Check(ScaleFrame(&id, 3, 2), "同尺寸的 ScaleFrame 成功");
+    Check(id.pixels == idBefore && id.width == 3 && id.height == 2, "同尺寸时内容逐字节不变");
+
+    // 只缩不放：任何一边要放大都被拒，且不改动原帧
+    CapturedFrame grow = FrameOf(4, 4);
+    const std::vector<uint8_t> growBefore = grow.pixels;
+    Check(!ScaleFrame(&grow, 5, 4), "要放大的请求被拒");
+    Check(!ScaleFrame(&grow, 4, 5), "另一边要放大也被拒");
+    Check(!ScaleFrame(&grow, 0, 4), "输出宽 0 被拒");
+    Check(!ScaleFrame(&grow, 4, 0), "输出高 0 被拒");
+    Check(!ScaleFrame(nullptr, 2, 2), "没给帧指针就不动任何东西");
+    Check(grow.pixels == growBefore && grow.width == 4 && grow.height == 4,
+          "被拒的调用没有改动原帧的任何一个字节");
+
+    // 形状坏了的帧：拒绝缩放，且不改动
+    CapturedFrame broken = FrameOf(4, 4);
+    broken.pixels = growBefore;
+    broken.height = 40;   // 缓冲区只够 4 行
+    Check(!ScaleFrame(&broken, 2, 2), "形状坏了的帧拒绝缩放");
+    Check(broken.pixels == growBefore, "形状坏了的帧失败后仍是原样");
+
+    // 带行末填充：缩出来的是紧凑行，填充不参与
+    CapturedFrame pad = FrameWithPadding(8, 8, 12);
+    FillAll(&pad, Px(1, 2, 3));
+    Check(ScaleFrame(&pad, 4, 4), "带填充的帧能缩");
+    Check(pad.stride == 16 && pad.pixels.size() == 64, "缩完行距变成紧凑行长，尾部填充没跟过来");
+    bool tightRows = true;
+    for (size_t i = 0; i < pad.pixels.size(); ++i) {
+        if (pad.pixels[i] != Px(1, 2, 3)[i % 4]) tightRows = false;
+    }
+    Check(tightRows, "缩出来的每一行都是那两个像素，没有填充字节");
+
+    // 与 ROI 组合（顺序：有效帧 -> 裁剪 -> 缩放 -> 编码）：
+    // 8x6 的源裁出 (2,1,4,2)，再限宽 2 缩成 2x1。
+    // 交付 (0,0) 出自裁后 (0,0) = 源 (2,1)；(1,0) 出自裁后 (2,0) = 源 (4,1)。
+    CapturedFrame combo = FrameOf(8, 6);
+    for (uint32_t y = 0; y < 6; ++y) {
+        for (uint32_t x = 0; x < 8; ++x) {
+            PutPixel(&combo, x, y, Px(static_cast<int>(x), static_cast<int>(y), 0x11));
+        }
+    }
+    Check(CropFrame(&combo, 2, 1, 4, 2), "组合现场：先在 8x6 上裁 (2,1,4,2)");
+    Check(combo.width == 4 && combo.height == 2, "裁完是 4x2（缩的是裁完的那一块）");
+    ScaleRequest comboReq{};
+    comboReq.given = true;
+    comboReq.hasMaxWidth = true;
+    comboReq.maxWidth = 2;
+    const ScaleResolution cr = ResolveScale(comboReq, combo.width, combo.height);
+    Check(cr.status == ScaleStatus::kScaled && cr.width == 2 && cr.height == 1,
+          "裁完那一块 4x2 限宽 2 -> 2x1");
+    Check(ScaleFrame(&combo, cr.width, cr.height), "裁完再缩成功");
+    Check(combo.pixels[0] == 2 && combo.pixels[4] == 4,
+          "缩完的 (0,0) 出自源 (2,1)、(1,0) 出自源 (4,1)：裁与缩的映射按顺序闭合");
+
+    // 缩完仍是一帧紧凑、形状说得通的帧：后面那几路编码器（png / jpeg / bmp）不需要再补齐，
+    // 也不会因为"缩过一道"而看到另一种形状。格式之间真正的差别（字节流）在 tests\scale.ps1 判。
+    Check(InspectFrameShape(combo) == FrameShape::kOk, "缩完之后仍是一帧形状说得通的帧");
+    Check(combo.stride == combo.width * 4u &&
+              combo.pixels.size() == static_cast<size_t>(combo.stride) * combo.height,
+          "缩完是紧凑行距，交给任何编码器都不需要再补齐");
+}
+
+// ---------------------------------------------------------------------------
 // 行距补齐（编码接口只接受紧凑行）
 // ---------------------------------------------------------------------------
 void TestPackTight() {
@@ -383,8 +585,9 @@ void TestStrings() {
         L"cap.frame_invalid",     L"cap.frame_invalid_hint", L"cap.frame_format",
         L"cap.frame_format_hint", L"cap.gpu.staging",        L"cap.gpu.context",
         L"cap.gpu.copy_failed",   L"cap.gpu.map",            L"cap.select_bitmap",
-        L"cap.crop_failed",       L"cap.crop_failed_hint",   L"note.frame_uniform",
-        L"note.frame_uniform_hint",
+        L"cap.crop_failed",       L"cap.crop_failed_hint",   L"cap.scale_apply_failed",
+        L"cap.scale_apply_failed_hint",
+        L"note.frame_uniform",    L"note.frame_uniform_hint",
     };
     auto narrow = [](const wchar_t* w) {
         std::string out;
@@ -432,6 +635,7 @@ int main() {
     TestUniformity();
     TestShape();
     TestCrop();
+    TestScale();
     TestPackTight();
     TestLimits();
     TestStrings();

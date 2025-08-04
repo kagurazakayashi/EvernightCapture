@@ -132,6 +132,41 @@ struct CropRequest {
 };
 
 // ---------------------------------------------------------------------------
+// 截图等比缩小（--scale）
+// ---------------------------------------------------------------------------
+//
+// "交出去的这张图太大"是调用方（尤其是 AI）反复要解决的问题：一次窗口截图动辄两三千像素宽，
+// 而多数下游只需要一张能看清楚的缩略图。这一条只做**等比缩小**，而且只在超过了给定的天花板时
+// 才动手 —— 默认不放大，所以"给了 --scale 但图本来就在天花板之内"与没给一样是原样交付。
+//
+// 三条天花板互相独立、可任意组合：max-width / max-height 管边长，max-pixels 管总像素数。
+// 三条都按**同一个比例**缩（等比），取最紧的那一条算出比例，再对宽高各自向下取整
+// （floor 只会更小，所以绝不越过任何一条天花板），最后各自至少留 1 像素。
+// 取值可以给多次，也可以一条里用逗号串联：每条天花板各记各的，重复给同一条时最后一个生效。
+//
+// 顺序只有一条：先裁（--roi / --client-area，在整窗图像自己的像素坐标里）、再缩、最后编码。
+// 所以 --scale 缩的是**裁完之后**的那一块，坐标映射也按这个顺序闭合（见 src/ImageOps.h 与
+// README《等比缩小》一节）。
+//
+// 这一条**不改变授权**，也不改变资源上限那一关：取帧、帧形状检查、确认框全都排在它前面，
+// 一帧大到过不了 capture.frame_invalid 的，缩不回来；桌面像素那几条照样一定问人，--yes 不会
+// 因为"最后交出去的是张小图"而生效；--roi 的越界判据也在缩放之前按原图判，缩放绕不过它。
+//
+// 插值策略只有一个，而且是可预测的整数映射：最近邻（nearest）—— 交付像素 (x,y) 取缩之前那张图
+// 的 (floor(x*srcW/dstW), floor(y*srcH/dstH))。不用任何重采样库，也不做隐式的质量/体积权衡。
+struct ScaleRequest {
+    bool given = false;
+    bool hasMaxWidth = false;
+    bool hasMaxHeight = false;
+    bool hasMaxPixels = false;
+    uint32_t maxWidth = 0;   // 1..cli_limits::kScaleMaxSide
+    uint32_t maxHeight = 0;  // 1..cli_limits::kScaleMaxSide
+    uint64_t maxPixels = 0;  // 1..cli_limits::kScaleMaxPixels
+    // 用户写过的最后一条原文（诊断的 value 用它，与 --roi 的 written 同源）。
+    std::wstring written;
+};
+
+// ---------------------------------------------------------------------------
 // 光标包含与排除（--cursor）
 // ---------------------------------------------------------------------------
 //
@@ -222,6 +257,12 @@ struct Options {
     // 这件事**不改变**授权判断：确认框上列出的是整个目标，会读桌面像素的那几条照样一定问人，
     // --yes 也不因为"最后只留一小块"而开始生效（判据见 src/CaptureScope.cpp 那张登记表）。
     CropRequest crop;
+
+    // --scale：把**裁完之后**那张图等比缩小到给定天花板之内（只缩小、不放大）。
+    // 与 --cursor / --hdr 同一规矩：没写过这条选项时结果里那组键一个都不出现（兼容）。
+    // 判据本体在 src/ImageOps.h（纯算术，离线逐条注入），这里只落"用户给了哪些天花板"。
+    // 与 --roi 一样**不改变**授权判断与帧上限那一关（见上面 ScaleRequest 的说明）。
+    ScaleRequest scale;
 
     // --timeout-ms：自动处理阶段的**总**预算（匹配、后端重试、取帧等待、编码、提交共用这一份，
     // 每一步只拿"还剩多少"）。0 = 不设总预算，此时各隔离调用仍受内置上限约束（Worker.h）。
@@ -558,6 +599,13 @@ inline constexpr uint64_t kDefaultWindowListLimit = 50ull;
 // 成立。两份数字不许各写一套 —— 相等那条判据写在 tests\crop_state.cpp 里现场核对
 //（CliOptions.h 不去 include 取帧公共件，那会把 Consent / ScreenMatch 全拖进解析层）。
 inline constexpr uint64_t kRoiMaxValue = 16384ull;
+// ---- --scale 的三条天花板的上限 ----
+// 边长上限与 --roi 用**同一个数**（= 帧的单边上限 kFrameMaxSide，理由同上：一条比交付图像还能宽的
+// 天花板本来就不成立）。像素数上限就是那条单边上限的平方 —— 上限之内最大的一帧有多少个像素，
+// 比这还多的"天花板"一定是敲错了，照实在解析期拒掉，不留到运行期去比。
+// 两份数字不许各写一套：相等那条判据写在 tests\image_state.cpp 里现场核对。
+inline constexpr uint64_t kScaleMaxSide = kRoiMaxValue;
+inline constexpr uint64_t kScaleMaxPixels = kRoiMaxValue * kRoiMaxValue;
 }  // namespace cli_limits
 
 // 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。

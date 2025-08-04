@@ -26,6 +26,7 @@
 | `--hdr` | | `auto`（默认）/`tonemap`/`refuse` | **HDR 来源怎么处理**。显示器在 HDR 模式时采集回来的帧可能带超出 SDR 的亮度范围与另一种传递函数（WGC 可按 FP16 scRGB 线性交回；桌面复制的桌面纹理可能是 FP16 scRGB 或 10 位 ST.2084 (PQ) / HLG BT.2020）。把它硬按 8 位 BGRA 解释会得到一张发白、去饱和、亮部一团糊却"看着像正常图"的结果——本工具不把这当成正确的默认交付。判据是那条路径的**来源带不带得回广色域帧**，不是通道名字：`wgc` / `screen.wgc` / `duplication.frame` / `screen.duplication` 带得回（来源跟随显示模式）；`printwindow` / `dwm.thumbnail` / `dwm.screen` / `bitblt.screen` / `screen.bitblt` 结构上只有 8 位 SDR。`tonemap` = 在编码之前把广色域帧经一份逐像素浮点中间量按固定曲线映射成 8 位 sRGB 交付（不分配整幅浮点帧；来源本就是 SDR 时是恒等透传）；`refuse` = 核实来源确是 HDR 就报错、一个像素都不落地；`auto`（默认）= 本工具对色彩一个字都不改。**做不到的那条就拒绝、绝不改走去读桌面像素的通道**：`tonemap` / `refuse` 配 `printwindow` / `dwm` / `bitblt` 在解析期报 `capture.hdr_unsupported`+1（`option`=`--hdr`、`value`=规范化取值、`message` 带实际通道与做得到的那两条）；`refuse` 核实是 HDR = `capture.hdr_refused`+7；带回一个认不出的广色域格式 = `capture.hdr_unverifiable`+7。与 `--cursor` 不同：这条**不摘链**，`--capture auto` 也在解析期放行（落到哪条通道要到运行期才知道）。探测显示 HDR 状态走只读的 `IDXGIOutput6::GetDesc1`，绝不改显示设置，问不出来给 `unknown` 不猜。取值只认那三个词（忽略大小写与空白，内联 `--hdr=tonemap` 也认），写别的报 `cli.invalid_value`+1 而不退化成 `auto`；重复给出最后一个生效；`-v` 回显 `input.hdr` 与 `input.hdrGiven`。**默认值真的不动任何东西**：没写这条选项时不改采集格式、结果里色彩那组键（`hdrRequested` / `hdrEffective` / `hdrBasis` / `sourceColorSpace` / `sourceBitDepth`）一个都不出现。写了 `--hdr` 才报这一帧实际的来源色彩空间、位深与经历的处理；`--hdrEffective` 只说这台机器把 HDR 映射成了 SDR（`tone_mapped`）或来源本就是 SDR（`sdr_passthrough`），**不**说这台机器验过色彩正确性（本项目无 HDR 屏，`--capabilities` 的 `color.verifiedOnThisMachine` 恒 `no`）。这条选项不改变授权：会读桌面像素那几条照样一定弹框、`--yes` 照样管不着 |
 | `--roi` | | `<x,y,w,h>` | **窗口内部裁剪**：从交付的整窗图像里裁出 x,y 起点、w×h 大小的一块。原点 `(0,0)` 是**这张图像自己的左上角像素**（图像对应的是用户看到的可见边框，`GetWindowRect` 还算在内的 DWM 透明 resize 边框不在里面），单位物理像素且**不按 DPI 缩放**（本进程 per-monitor v2，要按逻辑像素指定就自己乘缩放） —— 所以这四个数永远不会被当成桌面绝对坐标。四段都只认 `[0-9]+`、逗号分隔、不认空白/正负号/小数点/指数/下划线/`0x`与非 ASCII 数字；`x`/`y` 可为 0，`w`/`h` 至少 1，四条都不超过 16384（= 帧的单边上限，`--capabilities` 报成 `limits.roiMaxValue`）。写法不合 = `cli.invalid_value`+1。放不下 = 拒绝，绝不往里挪、裁到边上为止、也不退回整窗交出：取帧之前就看得出放不下报 `match.roi_out_of_range`+1（在确认框与输出名规划之前，不弹框、不写文件），取到帧之后才发现报 `capture.roi_invalid`+7（目标改了尺寸或被屏幕边缘裁短）。与 `--client-area` 互斥（`cli.crop_conflict`+1），与整块屏幕的目标说不通（`capture.unsupported`+1，**不会**改按桌面坐标去截），与只读查询一起给也算冲突。`--dry-run` 不取帧所以不判这条几何。结果里多带 `cropMode` / `cropRect`（图像坐标）/ `fullWidth` / `fullHeight` / `cropScreenRect`（屏幕坐标，只在图像原点核实得出来时才写，否则整个键不出现并留 `note.crop_mapping_unavailable`） |
 | `--client-area` | | 开关 | 只交回窗口客户区那一块：在交付的整窗图像里再去掉标题栏与三边边框。这块矩形照目标此刻的几何量出来（`GetClientRect` + `ClientToScreen`），所以坐标系与单位跟 `--roi` 完全同一套。客户区问不出来 = `capture.roi_unmeasurable`+7，客户区有一边落在交付图像之外 = `capture.roi_invalid`+7（挂在屏外、或中途改了尺寸），两种都不退回整窗交出。`--client-area=false` 与普通开关同义 = 没写。与 `--roi` 互斥 |
+| `--scale` | | `key=N[,...]` | **等比缩小**：把即将交付的这张图缩到天花板之内，**只缩不放**。三个键：`max-width=N` 限宽、`max-height=N` 限高、`max-pixels=N` 限总像素数（大小写不敏感；N 只认十进制，边长 1..16384（与 `--roi` 同一条线）、像素数 1..268435456）。可以只给一条，也可以一条里用逗号串几条；这一条写多次时每条天花板各记各的，重复给同一条时最后一个生效；一条都不给 = `cli.invalid_value`+1，**整条不生效**，不留下认得的那半。三条都按同一个比例缩（取最紧的那一条），宽高各自**向下取整**且各至少留 1 像素；本来就在天花板之内就原样交付（结果里 `scaleApplied: false`）。插值策略只有一种而且可预测：最近邻。顺序是**先裁（`--roi` / `--client-area`）后缩、再编码**，所以缩的是裁完的那一块；结果里 `scaleFromWidth` / `scaleFromHeight` 是缩之前的尺寸、`width` / `height` 是缩之后的。这一条**不改变授权与帧上限**：会从屏幕上取样的那几条照样一定弹框（`--yes` 不因为最后交的是小图而生效），`--roi` 的越界判据仍按未缩的那张图判。与任何环境查询（`cli.query_conflict`）或窗口查询（`cli.window_query_conflict`）同时给出都是冲突 |
 | `--yes` | `-y` | 开关，可写 `=true/false` | **截图授权**：只免掉"只取所选窗口画面"那几条路径（`wgc` / `printwindow` / `dwm.thumbnail`）的确认框。裸写与 `=true/1/yes/y/on` = 开，`=false/0/no/n/off` = 关（它虽是正向开关，写 `=false` 却**有意义**：明确要问），重复给出时最后一个生效，最终结果由 `-v` 的 `input.yes` 回显；写成两头都不沾的取值（`--yes=maybe`）解析期就报 `cli.switch_takes_no_value`+1，不会当成"开了"。**其它一概不保证**：不保证目标真交出有效帧、不越过权限、不解除受保护内容、不吞掉任何错误，也不影响覆盖保护。凡是从屏幕上取像素的路径（`bitblt`、`duplication`、任何整屏、`dwm` 的屏幕退路）一定会弹框，这个开关跳不过 |
 | `--timeout-ms` | | 毫秒，0–86400000 | **自动阶段的总预算**：从选定目标起，匹配（含 `--title-regex` 求值）、`auto` 的后端重试、等帧、编码、写文件 / 写 stdout 共用这一份剩余时间，整批只发一次，没有哪一步或哪个目标能另领一份。省略或 `0` = 不设总预算，此时被隔离进辅助进程执行的那几步（见「期限与阻塞隔离」）仍有内置 5000 ms 上限兜底，`--capture printwindow` / `dwm` 不再能无限期卡住。预算耗尽时受影响的那张图**不写**：按阶段报 `match.timeout`（`stage=match`）/ `capture.timeout`（`stage=capture`，编码超时也算它）/ `io.timeout`（`stage=write`/`stdout`，退出码 8）；剩下的目标不再开始，已经写好的图留着。等人工确认**不计入**这条预算。只认十进制 `[0-9]+`（`0x…`、负号、下划线、指数、空白与非 ASCII 数字一律拒收），重复给出最后一个生效，最终结果由 `-v` 的 `input.timeoutMs` 回显 |
 | `--consent-timeout-ms` | | 毫秒，0–86400000 | 确认框最多等人回答多久；省略或 `0` = 一直等。超时按**拒绝**处理而绝不当作同意：报 `capture.consent_timeout` + 退出码 6、`stage=consent`。这一段单独计时，**不消耗** `--timeout-ms` 的预算；点「是」之后那约 1 秒的关框动画缓冲属于人工阶段，不会为了赶预算被跳过。取值写法与回显同上（`input.consentTimeoutMs`） |
@@ -349,6 +350,39 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --client-area --out D:\shots\
 ECAPTURE.EXE --hwnd 0x001A0B4C --dry-run --roi 20,40,120,80 --verbose --out D:\shots\plan.png
 ```
 
+## 等比缩小（`--scale`）
+
+这一条回答的是：**交付的这张图要不要再取小一点**。判据本体是纯算术（`src/ImageOps.h/.cpp` 的 `ResolveScale` /
+`ScaleFrame`），落地在 `src/Capture.cpp`，离线判据在 `tests\image_state.cpp` → `build\ecapture-image-tests.exe`。
+
+- **取值是 `key=N` 的清单**：`max-width` / `max-height` / `max-pixels` 三个键（大小写不敏感），N 只认十进制，
+  边长 1..16384（与 `--roi` 同一条线）、像素数 1..268435456。可以只给一条、也可一条里用逗号串几条；这一条写多次时
+  每条天花板各记各的，重复给同一条时最后一个生效。一条都不给 = `cli.invalid_value`(1)，**整条不生效**，
+  不留下认得的那半；`1e3` / `0x400` / `+40` / `1_000` 一样不收。
+- **一个比例，取最紧的那一条**：三条天花板各提出一个比例（宽、高，像素预算则开方），取最小的那一个；宽高各自
+  **向下取整**，且各至少留 1 像素。**默认不放大**：本来就在天花板之内的图原样交付（`scaleApplied: false`）。
+- **插值策略只有一种，而且可预测**：最近邻（`scaleMethod` 恒 `nearest`）。交付像素 `(x,y)` 取自缩之前那张图的
+  `(floor(x*scaleFromWidth/width), floor(y*scaleFromHeight/height))`，是调用方能自己复算的整数映射，
+  没有浮点采样、也不按通道挑算法。
+- **顺序：先裁（`--roi` / `--client-area`）后缩、再编码。** 所以 `scaleFromWidth` / `scaleFromHeight` 是**裁之后**
+  那张图的尺寸（不是整窗图），`cropRect` / `cropScreenRect` 一字不改，`width` / `height` 是最终尺寸；
+  单色质量提示判的是交付出去那张（缩过的）。
+- **不改变授权，也不是绕开上限的路径**：缩放排在取帧与授权之后，所以会从屏幕上取样的那几条即使
+  `--scale max-width=8` 也照样一定弹框、`--yes` 不因此生效；一帧大到过不了形状检查的根本到不了这一步，
+  `--roi` 的越界判据也仍按未缩的那张图判。
+- **结果里的四个键（写过 `--scale` 才出现，`--quiet` 不许藏）**：`scaleMethod` / `scaleApplied` /
+  `scaleFromWidth` / `scaleFromHeight`。没写 `--scale` 时一个都不出现（不是 `null` / `0` / `false`）。
+- **失败只有一种码**：`cap.scale_apply_failed`(7) —— 形状判据放得下却缩不下来（帧自相矛盾），这一张不落地，
+  与 `cap.crop_apply_failed` 同一类。
+
+```powershell
+# 一扇 1920 宽的窗口，最多交 1280 宽（高按同一比例）
+ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --scale max-width=1280 --out D:\shots\big.png
+# 先裁出 800×600，再缩进 400000 像素的预算里
+ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max-pixels=400000 --out D:\shots\part.png
+```
+
+
 ## 截图授权（两级：谁必须问人）
 
 **调用方规矩一句话：可靠窗口截图带 `--yes`；会拍到别家窗口时先向用户说明范围，启动后等用户本人点「是」；
@@ -487,11 +521,13 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --dry-run --roi 20,40,120,80 --verbose --out D:\s
 
 ### 窗口图（`images[]` 每一项）
 
-`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`requestedRect` / `capturedRect` / `clipped` / `rotation`（只有从整幅桌面帧裁目标的通道会写，见下面那段）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`；给了 `--roi` / `--client-area` 时再多 `cropMode` `cropRect` `fullWidth` `fullHeight`（以及图像原点核实得出来时的 `cropScreenRect`），见「窗口内部裁剪」一节；写过 `--cursor` 时再多 `cursorRequested` `cursorEffective` `cursorBasis`（见下面「光标那三个键」那段）；写过 `--hdr` 时再多 `hdrRequested` `hdrEffective` `hdrBasis` `sourceColorSpace` `sourceBitDepth`（见下面「HDR 那一组键」那段）
+`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`requestedRect` / `capturedRect` / `clipped` / `rotation`（只有从整幅桌面帧裁目标的通道会写，见下面那段）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`；给了 `--roi` / `--client-area` 时再多 `cropMode` `cropRect` `fullWidth` `fullHeight`（以及图像原点核实得出来时的 `cropScreenRect`），见「窗口内部裁剪」一节；写过 `--scale` 时再多 `scaleMethod` `scaleApplied` `scaleFromWidth` `scaleFromHeight`（见「等比缩小」一节）；写过 `--cursor` 时再多 `cursorRequested` `cursorEffective` `cursorBasis`（见下面「光标那三个键」那段）；写过 `--hdr` 时再多 `hdrRequested` `hdrEffective` `hdrBasis` `sourceColorSpace` `sourceBitDepth`（见下面「HDR 那一组键」那段）
 
 **光标那三个键（写过 `--cursor` 才出现，`--quiet` 也不许藏）**：`cursorRequested` 是要求的那一种（`default` / `include` / `exclude`）；`cursorEffective` 是**这条路径实际**交回的那一种（`include` / `exclude` / `unverified`）；`cursorBasis` 说这个结论凭什么 —— `wgc_session_property_set`（按这次要求设过、再把读回来的值核对过）、`wgc_session_property_read`（没设过，只读当前值，即 `--cursor default`）、`path_excludes_cursor`（这条路径的来源像素里没有光标）、`wgc_cursor_property_unavailable`（那一问没答案，此时 `cursorEffective` 就是 `unverified`）。三个键各说一件事，谁也不冒充谁：`effective` 说不到"这一张图里看得见或看不见指针"那一层（本 SDK 的会话接口没有 `IsCursorVisible` 那个只读属性，像素级的事本工具一条都不声称，而 `--capabilities` 把这条边界写成 `cursor_effective_is_a_setting_not_a_pixel_check`）。没写 `--cursor` 时三个键一个都不出现（那才是"默认不要求"与从前逐字节相同的保证）。
 
 **HDR 那一组键（写过 `--hdr` 才出现，`--quiet` 也不许藏）**：`hdrRequested` 是要求的策略（`auto` / `tonemap` / `refuse`）；`hdrEffective` 是**这一帧实际**经历的处理（`sdr_passthrough` = 来源核实是 8 位 SDR、没做也不需要映射；`tone_mapped` = 来源是 HDR、已按固定的浮点曲线映射成 8 位 sRGB；`unverified` = 带回一个认不出的广色域格式，既不敢说映射对也不敢说就是 SDR）；`hdrBasis` 说这个结论凭什么（`delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized`）；`sourceColorSpace` 是编码之前那份来源（`srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `unknown`）；`sourceBitDepth` 是来源每通道位数（`8` / `10` / `16`，来源认不出时整个键不出现，绝不写 0）。明确要过处理（`tonemap` / `refuse`）而来源其实是 8 位 SDR 时图照常交付（映射对 SDR 恒等）并留一条 `note.hdr_source_sdr`；`--hdr auto` 不发这条（它只被动上报）。`hdrEffective: "tone_mapped"` 只说这台机器过了那条映射链路，**不**说色彩正确性被验过（本项目无 HDR 屏，`--capabilities` 的 `color.verifiedOnThisMachine` 恒 `no`）。没写 `--hdr` 时这一组键一个都不出现（与这条选项存在之前逐字节相同）。
+
+**等比缩小那一组键（写过 `--scale` 才出现，`--quiet` 也不许藏）**：`scaleMethod` 是插值策略（恒为 `nearest`，本工具只有这一种，而且映射是能自己复算的整数式）；`scaleApplied` 说这一次真的缩小了没有（本来就在天花板之内就是 `false`，此时图一个像素都没动）；`scaleFromWidth` / `scaleFromHeight` 是**缩之前**那张图、也就是**裁之后**那张图的尺寸（不是整窗图），所以映射按「有效帧 → 裁剪 → 缩放 → 编码」这个顺序闭合：交付像素在 `cropRect` 里再按 `scaleFromWidth/width` 与 `scaleFromHeight/height` 反查。这四个键与 `cropRect` / `cropScreenRect` 并存而不重复：后一组说缩之前交出哪一块，前一组说那一块最后被取成了多大。没写 `--scale` 时四个键一个都不出现（那才是"默认不缩放"与从前逐字节相同的保证）。
 
 **取帧位置的四个键（定位判据，`--quiet` 也不许藏）**：`duplication`、以及 `bitblt` / `dwm` 的屏幕取样那几条，是从一整块
 输出的画面里把目标裁出来的，所以它们额外写 `requestedRect`（这条通道本来要截的那一块，虚拟屏幕坐标）与
@@ -665,6 +701,7 @@ UI 线程挂死，同后端重试还会超时——换 `wgc` 或加大预算）
 `capture.hdr_unverifiable`（**7**，这条路径带回一个本构建认不出的广色域像素格式（`message` 给那个 DXGI 格式编号）。认不出格式不等于硬按 BGRA8 解释（那正是发白图的成因），也不等于猜一个映射，所以这一张不落地。下一步是 `--hdr auto` 换一条通道或改要求，反复出现请把那个格式编号原样报给工具维护者）
 `capture.roi_invalid`（7，交付的整窗图像比请求的裁剪矩形小：目标在选定之后改了尺寸、或被屏幕边缘裁短。这一张一个像素都不落地，既不往里挪，也不退回整窗交出；`message` 给图像实际尺寸与请求矩形的右下边 + ASCII 原因名）
 `capture.roi_unmeasurable`（7，定位这块裁剪矩形所需要的那一问没有答案：客户区量不出来 （`client_unmeasurable`），或这块交付图像核实不出它对应屏幕上哪一块（`image_unmeasurable`）。与「放不下」分开给码：下一步是换一条窗口内容通道或整窗重取，而不是把请求往里挪挪）
+`cap.scale_apply_failed`（7，形状判据放得下却缩不下来——帧在内存里的形状自相矛盾，这一张不落地；与 `cap.crop_apply_failed` 同一类：换一条 `--capture` 或重截一次，并把 `message` 里的尺寸报给本工具的维护者。缩放本身不会越界，所以没有第二种失败）
 `capture.frame_invalid`（7，交回来的那帧像素自己说不通：宽高为 0、单边超过 16384 像素、行距装不下一行像素
 （`< width*4`）或超过两倍行长、缓冲区比 `行距×高` 还短、整帧超过 1 GiB。裁剪 / 行重排 / 单色判定 / 编码之前都先核
 这一道，所以坏帧不会被告知"成功"，也不会被读越界。上限与实际数字写在 `hint` 里，`stage` 是出问题那一步）

@@ -35,7 +35,7 @@ grp.target	截图目标（不给 --monitor 就只按下面的窗口条件找）
 grp.match	窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）
 grp.pick	匹配到多个窗口时（互斥）
 grp.capture	取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）
-grp.crop	窗口内部裁剪（对交付的整窗图像按图像自己的像素坐标再裁一次；不是桌面绝对坐标；下面两条互斥）
+grp.crop	窗口内部裁剪与等比缩小（对交付的整窗图像按图像自己的像素坐标再裁一次；不是桌面绝对坐标；顺序是先裁后缩，--roi 与 --client-area 两条互斥）
 grp.consent	截图授权（真实截图默认都要先弹框问一次；--yes 只免掉只取窗口画面的那条路径）
 grp.timeout	执行期限（自动处理那一段的总预算；人工确认另算，到点按拒绝处理）
 grp.output	输出
@@ -63,6 +63,7 @@ opt.all	每个匹配窗口各存一张
 opt.capture	wgc(默认，被遮挡也能截) / dwm(DWM 缩略图，被遮挡也能截) / printwindow(窗口自绘) / bitblt(拷屏幕可见像素) / duplication(桌面复制后按矩形裁，会按显示器的旋转校正方向；只取与该目标重叠最多的一块屏，没截全时结果里带 capturedRect/clipped) / auto(按 wgc-dwm-printwindow-bitblt 回退；整屏截图只用 wgc-duplication-bitblt)。只取窗口自己的画面：wgc / printwindow / dwm 缩略图；会从屏幕上取样：bitblt / duplication 与 dwm 的屏幕退路
 opt.roi	从交付的整窗图像里裁出 x,y 起点、w×h 大小的一块。原点 (0,0) 是这张图像自己的左上角像素（图像对应的是用户看到的那圈可见边框，DWM 那圈透明 resize 边框不在里面），单位是物理像素且不按 DPI 缩放（本进程 per-monitor v2，要按逻辑像素指定就自己乘那道缩放），所以这四个数永远不会被当成桌面绝对坐标。四个数只认十进制、逗号分隔；x 与 y 可为 0，w 与 h 至少 1，都不超过 16384。放不下就整张不落地：取帧之前就看得出放不下报 match.roi_out_of_range（不弹框、不写文件），取到帧之后才发现报 capture.roi_invalid —— 不往里挪、不裁到边上为止、也不退回整窗交出。裁剪排在取帧之后，所以它不改变授权：会从屏幕上取样的那几条照样一定问人，--yes 不会因为"最后只留一小块"而生效。结果里 cropRect 是图像像素坐标，cropScreenRect 是同一块矩形的屏幕坐标（核实得出图像原点时才写），裁前尺寸在 fullWidth/fullHeight、裁后就是 width/height。与 --client-area 互斥，配整块屏幕的目标说不通（capture.unsupported）
 opt.client-area	只交回窗口客户区那一块：在交付的整窗图像里再去掉标题栏与三边边框。这块矩形照目标此刻的几何量出来（GetClientRect 加 ClientToScreen），坐标系与单位跟 --roi 完全同一套。量不出客户区报 capture.roi_unmeasurable，有一边落在交付图像之外（挂在屏外、或中途改了尺寸）报 capture.roi_invalid，两种都不退回整窗交出。与 --roi 互斥
+opt.scale	把交付的这张图等比缩小到天花板之内：max-width=N 限宽、max-height=N 限高、max-pixels=N 限总像素数（N 都是十进制；边长 1..16384，像素数 1..268435456）。三条互相独立，可只给一条、也可一条里用逗号串几条（如 max-width=1920,max-pixels=2073600）；这一条写多次时每条天花板各记各的，重复给同一条时最后一个生效。三条都按同一个比例缩（取最紧的那一条），宽高各自向下取整；默认不放大，图本来就在天花板之内就原样交付（结果里 scaleApplied=false）。插值策略只有一个，而且是可预测的整数映射：最近邻。顺序是先裁（--roi / --client-area）后缩、再编码，所以缩的是裁完的那一块；结果里 scaleFromWidth/scaleFromHeight 是缩之前的尺寸、width/height 是缩之后的，scaleMethod 是插值策略，映射按这个顺序闭合。这一条不改变授权与帧上限：会读桌面像素的路径照样一定弹框问人（--yes 不会因为最后交的是张小图而生效），一帧大到过不了帧形状检查的缩不回来，--roi 的越界判据也仍按原图判
 opt.yes	跳过"只取所选窗口画面"那条路径的确认框。不保证目标一定有画面，也不忽略权限、受保护内容、错误或覆盖保护；任何会从屏幕上取样的路径（bitblt、duplication、整屏任何通道、dwm 的屏幕退路）一定会弹框，这个开关跳不过。写 --yes=false 表示明确要问
 opt.timeout-ms	自动处理阶段的总预算（毫秒）：从选定目标开始，条件求值、后端重试、取帧、编码、写文件共用这一份剩余时间，任何一步都不会重新领一份完整预算。不给或写 0 = 不设总预算，此时每次隔离调用仍受内置上限（5000 毫秒）约束。人工确认的等待不算在这里，见 --consent-timeout-ms。预算用尽时那一张不落地，按阶段报 match.timeout / capture.timeout / io.timeout
 opt.consent-timeout-ms	确认框最多等多久（毫秒）。不给或写 0 = 一直等人回答。到点按"拒绝"处理，绝不按"默认同意"处理，报 capture.consent_timeout。这段等待单独计时，不占 --timeout-ms 那份自动预算；点"是"之后那约 1 秒的关闭动画缓冲也算在这一级，不会为了赶期限而省掉
@@ -105,6 +106,8 @@ cli.regex_late	正则在该阶段重新编译失败
 cli.index_value	--index 是从 1 开始的十进制序号
 cli.roi_value	--roi 要写 x,y,w,h 四个十进制数，用逗号分隔
 cli.roi_value_hint	四条都只认 0-9：不要空白、正负号、小数点、指数（1e3）、下划线与 0x 前缀。x 与 y 可以是 0，w 与 h 至少 1，每一条都不超过 16384。例：--roi 0,0,200,120（段数也要正好四条，少一段或多写一个逗号都算这一条）
+cli.scale_value	--scale 要写 key=N 的清单：max-width=N / max-height=N / max-pixels=N，多条用逗号分隔
+cli.scale_value_hint	键名只有 max-width / max-height / max-pixels 三个（大小写不敏感），等号两侧不吃空白；N 只认 0-9，不要空白、正负号、小数点、指数（1e3）、下划线或 0x，边长 1..16384、像素数 1..268435456。例：--scale max-width=1920,max-height=1080（少写等号、键名认不得、N 超范围都算这一条；写坏时整条不生效，不留下认得的那半）
 cli.crop_conflict	--roi 与 --client-area 互斥，一次只能选一种裁剪
 cli.crop_conflict_hint	两者说的都是"这张窗口图里留哪一块"：要么给一条 --roi x,y,w,h，要么用 --client-area 只要客户区。这条与选择策略（--index / --topmost-match 那一组）无关，删掉那边不解决问题
 cli.unknown_capture_method	--capture 取值不在允许列表内
@@ -316,6 +319,8 @@ cap.roi_unmeasurable	定位这次裁剪矩形所需要的某一问没有答案�
 cap.roi_unmeasurable_hint	client_unmeasurable = 客户区没量出来（这个窗口的 GetClientRect 或 ClientToScreen 没给出答案）；image_unmeasurable = 这块交付图像核实不出它对应屏幕上的哪一块（窗口在这中间改了尺寸，或这条通道把 DWM 那圈透明边框一起交了）。问不出来不等于放不下，也不等于"那就整窗交出"：换 --capture wgc 重取一次，或去掉 --client-area 改用一条落在图像内的 --roi。这一张一个像素都没落地
 cap.crop_apply_failed	按判据放得下的裁剪没有裁下来：这一帧的内存形状自己说不通
 cap.crop_apply_failed_hint	与 capture.frame_invalid 同一条下一步：这一帧不该往下走，换一条通道或重新截一次，并把这份尺寸报给工具维护者
+cap.scale_apply_failed	按判据放得下的等比缩小没有缩下来：这一帧的内存形状自己说不通
+cap.scale_apply_failed_hint	与 capture.frame_invalid 同一条下一步：这一帧不该往下走，换一条通道或重新截一次。缩放只会在原尺寸之内取更小的尺寸，本身不会越界
 note.capture_clipped	目标没有被完整截到：要截 %1x%2，只截到 %3x%4
 note.capture_clipped_hint	丢掉的部分：左 %1 上 %2 右 %3 下 %4 像素。这一条通道取的是某一块显示器的合成分，跨屏或一部分在屏幕外的目标只能截到与那块屏重叠的那一片
 note.crop_mapping_unavailable	已按请求裁好，但这块 %1×%2 的窗口图像核实不出它对应屏幕上的哪一块，所以结果里没有 cropScreenRect 那一行

@@ -1,5 +1,7 @@
 #include "ImageOps.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <string>
 
@@ -191,6 +193,121 @@ bool PackTight(const CapturedFrame& frame, std::vector<uint8_t>* out) {
         std::memcpy(out->data() + static_cast<size_t>(row) * rowBytes,
                     frame.pixels.data() + static_cast<size_t>(row) * frame.stride, rowBytes);
     }
+    return true;
+}
+
+ScaleResolution ResolveScale(const ScaleRequest& request, uint32_t srcWidth, uint32_t srcHeight) {
+    ScaleResolution r;
+    if (!request.given) {
+        r.status = ScaleStatus::kNoScale;
+        return r;
+    }
+    // 输入形状说不通（零尺寸 / 超单边上限）：与帧形状那一关同一组边界，不猜
+    if (srcWidth == 0 || srcHeight == 0 || srcWidth > kFrameMaxSide || srcHeight > kFrameMaxSide) {
+        r.status = ScaleStatus::kRejected;
+        return r;
+    }
+    // 一条天花板都没给（解析期拦得住，这里只是不把"空请求"当成一次"缩到 0"）
+    if (!request.hasMaxWidth && !request.hasMaxHeight && !request.hasMaxPixels) {
+        r.status = ScaleStatus::kUnchanged;
+        r.width = srcWidth;
+        r.height = srcHeight;
+        return r;
+    }
+
+    // 比例只减不增：三条天花板各算一个比例，取最小的；没有一条比图更紧时 ratio 留在 1
+    //（这就是"默认不放大"：比例永远不会大于 1，所以输出永远不会比源大）。
+    double ratio = 1.0;
+    if (request.hasMaxWidth && request.maxWidth < srcWidth) {
+        ratio = std::min(ratio, static_cast<double>(request.maxWidth) / static_cast<double>(srcWidth));
+    }
+    if (request.hasMaxHeight && request.maxHeight < srcHeight) {
+        ratio = std::min(ratio,
+                         static_cast<double>(request.maxHeight) / static_cast<double>(srcHeight));
+    }
+    if (request.hasMaxPixels) {
+        const double area = static_cast<double>(srcWidth) * static_cast<double>(srcHeight);
+        if (static_cast<double>(request.maxPixels) < area) {
+            ratio = std::min(ratio,
+                             std::sqrt(static_cast<double>(request.maxPixels) / area));
+        }
+    }
+    if (ratio >= 1.0) {
+        r.status = ScaleStatus::kUnchanged;
+        r.width = srcWidth;
+        r.height = srcHeight;
+        return r;
+    }
+
+    // 向下取整：floor 只会更小，所以按比例算出来的宽高不会越过任何一条天花板；
+    // 再各自至少留 1 像素（空图不是一张图）。
+    uint32_t w = static_cast<uint32_t>(std::floor(static_cast<double>(srcWidth) * ratio));
+    uint32_t h = static_cast<uint32_t>(std::floor(static_cast<double>(srcHeight) * ratio));
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+
+    // 两道**整数**核对（不靠上面那次开方的精度）：把三条天花板真的钉死，
+    // 一条不成立就再缩一像素（正常情况下一次都不会转，这里只是不把"差一像素"留给运气）。
+    if (request.hasMaxWidth && w > request.maxWidth) w = request.maxWidth;
+    if (request.hasMaxHeight && h > request.maxHeight) h = request.maxHeight;
+    if (request.hasMaxPixels) {
+        while (static_cast<uint64_t>(w) * h > request.maxPixels && (w > 1 || h > 1)) {
+            if (w >= h && w > 1) {
+                --w;
+            } else if (h > 1) {
+                --h;
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (w >= srcWidth && h >= srcHeight) {   // 核对之后又不比源小了（只是可能）：按原样
+        r.status = ScaleStatus::kUnchanged;
+        r.width = srcWidth;
+        r.height = srcHeight;
+        return r;
+    }
+    r.status = ScaleStatus::kScaled;
+    r.width = w;
+    r.height = h;
+    return r;
+}
+
+bool ScaleFrame(CapturedFrame* frame, uint32_t outWidth, uint32_t outHeight) {
+    if (!frame) return false;
+    if (InspectFrameShape(*frame) != FrameShape::kOk) return false;
+    if (outWidth == 0 || outHeight == 0) return false;
+    if (outWidth > frame->width || outHeight > frame->height) return false;   // 只缩不放
+
+    const uint64_t rowBytes = RowBytesOf(outWidth);
+    const uint64_t outBytes = rowBytes * outHeight;
+    // 分配之前先判形状与上限（与 CropFrame 同一道规矩：不靠"分配失败抛异常"当检查）
+    if (CheckFrameShape(FrameShapeInfo{outWidth, outHeight, static_cast<uint32_t>(rowBytes), outBytes}) !=
+        FrameShape::kOk) {
+        return false;
+    }
+
+    std::vector<uint8_t> scaled(static_cast<size_t>(outBytes));
+    const uint8_t* srcBase = frame->pixels.data();
+    const uint64_t srcW = frame->width;
+    const uint64_t srcH = frame->height;
+    for (uint32_t y = 0; y < outHeight; ++y) {
+        // 最近邻：源行 = floor(y * srcH / outHeight)。恒等尺寸下它正好就是它自己那一行，
+        // 所以"给了 --scale 但天花板不生效"不会被这一层搬成另一张图。
+        const uint64_t sy = static_cast<uint64_t>(y) * srcH / outHeight;
+        const uint8_t* srcRow = srcBase + static_cast<size_t>(sy) * frame->stride;
+        uint8_t* dstRow = scaled.data() + static_cast<size_t>(y) * rowBytes;
+        for (uint32_t x = 0; x < outWidth; ++x) {
+            const uint64_t sx = static_cast<uint64_t>(x) * srcW / outWidth;
+            std::memcpy(dstRow + static_cast<size_t>(x) * 4u,
+                        srcRow + static_cast<size_t>(sx) * 4u, 4u);
+        }
+    }
+    frame->pixels.swap(scaled);
+    frame->width = outWidth;
+    frame->height = outHeight;
+    frame->stride = static_cast<uint32_t>(rowBytes);
     return true;
 }
 
