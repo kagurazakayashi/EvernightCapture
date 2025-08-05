@@ -15,6 +15,7 @@
 
 #include "ScreenIdentity.h"   // MonitorSelectorLabel：选择器标签只写一处
 #include "ScreenMatch.h"
+#include "WindowMatchInternal.h"
 
 namespace ecapture {
 namespace {
@@ -106,22 +107,103 @@ std::string AsciiDetail(const char* what) {
     return out;
 }
 
-// 编译一次正则在枚举前，避免每个窗口重复构造
-struct Compiled {
-    std::vector<uint64_t> hwnds;
-    std::vector<uint32_t> pids;
-    std::vector<std::wstring> processes;     // 已小写
-    std::vector<std::wstring> exePaths;      // 已小写
-    std::vector<std::wstring> titles;
-    std::vector<std::wstring> titleContains;
-    std::vector<std::wstring> classes;       // 已小写
-    std::vector<std::wregex> titleRegexes;
-    std::vector<RECT> onScreens;             // --monitor 的屏幕限制；空 = 不限
-};
+// CompiledConditions 与 RegexFault 这两份形状住在 WindowMatchInternal.h：离线判据要直接
+// 对着下面这两个函数注入假候选，而不是另抄一套匹配算法。
+}  // namespace
+
+bool CompileConditions(const MatchRequest& req, CompiledConditions* out,
+                       BlockedStatus* status, std::string* detail) {
+    CompiledConditions c;
+    c.hwnds = req.match.hwnds;
+    c.pids = req.match.pids;
+    for (const auto& s : req.match.processes) {
+        std::wstring v = ToLowerPlain(s);
+        if (v.find(L'.') == std::wstring::npos) v += L".exe";
+        c.processes.push_back(std::move(v));
+    }
+    for (const auto& s : req.match.exePaths) c.exePaths.push_back(ToLowerPlain(s));
+    c.titles = req.match.titles;
+    c.titleContains = req.match.titleContains;
+    for (const auto& s : req.match.classes) c.classes.push_back(ToLowerPlain(s));
+    for (const auto& expr : req.match.titleRegexes) {
+        try {
+            c.titleRegexes.emplace_back(expr, std::regex_constants::ECMAScript);
+        } catch (const std::regex_error& e) {
+            // 语法在解析期已经挡过一遍；走到这里说明这台机器的标准库拒绝编译它。
+            // 只把机器码与 ASCII 细节交回去，本地化文案由父进程拼。
+            *status = BlockedStatus::kRegexInvalid;
+            *detail = AsciiDetail(e.what());
+            return false;
+        }
+    }
+    c.onScreens = req.onScreens;
+    *out = std::move(c);
+    return true;
+}
+
+// 每一类条件**各判各的**：跨类是 AND，同类多个取值是 OR。类与类之间不共享中间结果 ——
+// 早先这里复用一个 bool any，前一类（hwnd/pid/process/exe/title/title-contains）命中之后
+// 那个真值会一直留到正则那一段，于是"全部正则都不匹配"仍被前面的命中放行。
+// 一条不成立的 --title-regex 因此在选择路径上形同消失，--list / --inspect / 截图 /
+// 身份复核全都走这一份判据，所以修复只改这里。
+bool MatchesWindow(const CompiledConditions& c, const WindowInfo& w, RegexFault* fault) {
+    if (!c.hwnds.empty() &&
+        std::find(c.hwnds.begin(), c.hwnds.end(), w.hwnd) == c.hwnds.end()) return false;
+    if (!c.pids.empty() &&
+        std::find(c.pids.begin(), c.pids.end(), w.pid) == c.pids.end()) return false;
+
+    // 这三项是同类比较的写法（映像名/完整路径/类名忽略大小写），与"上一类有没有命中"无关。
+    const std::wstring imageLower = ToLowerPlain(w.imageName);
+    const std::wstring pathLower = ToLowerPlain(w.imagePath);
+    const std::wstring classLower = ToLowerPlain(w.className);
+
+    if (!c.processes.empty() &&
+        std::find(c.processes.begin(), c.processes.end(), imageLower) == c.processes.end()) {
+        return false;
+    }
+    if (!c.exePaths.empty() &&
+        std::find(c.exePaths.begin(), c.exePaths.end(), pathLower) == c.exePaths.end()) {
+        return false;
+    }
+    // 标题是用户自己写的那一串：精确与子串两条都按原样比，不做大小写折叠。
+    if (!c.titles.empty() &&
+        std::find(c.titles.begin(), c.titles.end(), w.title) == c.titles.end()) return false;
+    const auto containsOne = [&](const std::wstring& needle) {
+        return w.title.find(needle) != std::wstring::npos;
+    };
+    if (!c.titleContains.empty() &&
+        !std::any_of(c.titleContains.begin(), c.titleContains.end(), containsOne)) return false;
+    if (!c.titleRegexes.empty()) {
+        bool anyRegexHit = false;
+        for (const std::wregex& re : c.titleRegexes) {
+            try {
+                if (std::regex_search(w.title, re)) { anyRegexHit = true; break; }
+            } catch (const std::regex_error& e) {
+                // MSVC 的正则库对回溯复杂度有一道内置上限（error_complexity），失控的模式
+                // 会在这里被挡下来，而不是永远跑下去 —— 那是"能中断"的那一类。
+                // 这一类当场按"不成立"处理，同时把原因记下来让整次求值作废。
+                if (fault && !fault->hit) {
+                    fault->hit = true;
+                    fault->status = e.code() == std::regex_constants::error_complexity
+                                        ? BlockedStatus::kRegexTooComplex
+                                        : BlockedStatus::kRegexInvalid;
+                    fault->detail = AsciiDetail(e.what());
+                }
+                break;
+            }
+        }
+        if (!anyRegexHit) return false;
+    }
+    if (!c.classes.empty() &&
+        std::find(c.classes.begin(), c.classes.end(), classLower) == c.classes.end()) return false;
+    return true;
+}
+
+namespace {
 
 // 窗口矩形与所选屏有重叠即算命中，所以跨屏窗口在两块屏上都找得到。
 // 用完整窗口矩形（含 DWM 那圈透明边）而不是扩展边框：这里要的是"人把窗口放在哪"。
-bool OnAnyScreen(const Compiled& c, const WindowInfo& w) {
+bool OnAnyScreen(const CompiledConditions& c, const WindowInfo& w) {
     if (c.onScreens.empty()) return true;
     const RECT r{w.x, w.y, w.x + w.width, w.y + w.height};
     for (const RECT& m : c.onScreens) {
@@ -130,74 +212,8 @@ bool OnAnyScreen(const Compiled& c, const WindowInfo& w) {
     return false;
 }
 
-// 正则求值时的失败要就地记下：异常不许穿过 EnumWindows 那条回调边界
-// （回调是被 user32 调的，那条栈上没有 C++ 的展开信息，异常会绕到调用栈外面去）。
-struct RegexFault {
-    bool hit = false;
-    BlockedStatus status = BlockedStatus::kOk;
-    std::string detail;
-};
-
-bool Matches(const Compiled& c, const WindowInfo& w, RegexFault* fault) {
-    const std::wstring imageLower = ToLowerPlain(w.imageName);
-    const std::wstring pathLower = ToLowerPlain(w.imagePath);
-    const std::wstring classLower = ToLowerPlain(w.className);
-
-    bool any = false;
-    if (!c.hwnds.empty()) {
-        any = std::find(c.hwnds.begin(), c.hwnds.end(), w.hwnd) != c.hwnds.end();
-        if (!any) return false;
-    }
-    if (!c.pids.empty()) {
-        any = std::find(c.pids.begin(), c.pids.end(), w.pid) != c.pids.end();
-        if (!any) return false;
-    }
-    if (!c.processes.empty()) {
-        any = std::find(c.processes.begin(), c.processes.end(), imageLower) != c.processes.end();
-        if (!any) return false;
-    }
-    if (!c.exePaths.empty()) {
-        any = std::find(c.exePaths.begin(), c.exePaths.end(), pathLower) != c.exePaths.end();
-        if (!any) return false;
-    }
-    if (!c.titles.empty()) {
-        any = std::find(c.titles.begin(), c.titles.end(), w.title) != c.titles.end();
-        if (!any) return false;
-    }
-    if (!c.titleContains.empty()) {
-        any = std::any_of(c.titleContains.begin(), c.titleContains.end(),
-                          [&](const std::wstring& needle) { return w.title.find(needle) != std::wstring::npos; });
-        if (!any) return false;
-    }
-    if (!c.titleRegexes.empty()) {
-        for (const std::wregex& re : c.titleRegexes) {
-            try {
-                if (std::regex_search(w.title, re)) { any = true; break; }
-            } catch (const std::regex_error& e) {
-                // MSVC 的正则库对回溯复杂度有一道内置上限（error_complexity），失控的模式
-                // 会在这里被挡下来，而不是永远跑下去 —— 那是"能中断"的那一类。
-                if (fault && !fault->hit) {
-                    fault->hit = true;
-                    fault->status = e.code() == std::regex_constants::error_complexity
-                                        ? BlockedStatus::kRegexTooComplex
-                                        : BlockedStatus::kRegexInvalid;
-                    fault->detail = AsciiDetail(e.what());
-                }
-                any = false;
-                break;
-            }
-        }
-        if (!any) return false;
-    }
-    if (!c.classes.empty()) {
-        any = std::find(c.classes.begin(), c.classes.end(), classLower) != c.classes.end();
-        if (!any) return false;
-    }
-    return true;
-}
-
 struct CollectState {
-    const Compiled* compiled;
+    const CompiledConditions* compiled;
     std::vector<WindowInfo>* all;      // 命中且可见
     std::vector<WindowInfo>* iconic;   // 命中但最小化（用于给提示）
     int32_t order = 0;
@@ -255,7 +271,7 @@ BOOL CALLBACK CollectCallback(HWND hwnd, LPARAM lParam) {
     if (w.width <= 0 || w.height <= 0) return TRUE;
 
     if (state->fault.hit) return TRUE;   // 已经报废的求值不必再往下数
-    if (!Matches(*state->compiled, w, &state->fault)) return TRUE;
+    if (!MatchesWindow(*state->compiled, w, &state->fault)) return TRUE;
     // 最小化的窗口只为 hint 收集，屏幕限制只管真正的目标
     if (!w.iconic && !OnAnyScreen(*state->compiled, w)) return TRUE;
     if (w.iconic) state->iconic->push_back(w);
@@ -297,30 +313,14 @@ std::wstring DescribeWindow(const WindowInfo& w) {
 // ---------------------------------------------------------------------------
 MatchOutcome EnumerateMatches(const MatchRequest& req) {
     MatchOutcome outcome;
-    Compiled c;
-    c.hwnds = req.match.hwnds;
-    c.pids = req.match.pids;
-    for (const auto& s : req.match.processes) {
-        std::wstring v = ToLowerPlain(s);
-        if (v.find(L'.') == std::wstring::npos) v += L".exe";
-        c.processes.push_back(std::move(v));
+    CompiledConditions c;
+    // 编译一次在枚举前（含 --title-regex 那几条）：避免每个窗口重复构造正则。
+    // 判据本体是 MatchesWindow，与离线判据共用同一份，这里不另立第二套匹配规则。
+    BlockedStatus compileStatus = BlockedStatus::kOk;
+    if (!CompileConditions(req, &c, &compileStatus, &outcome.detail)) {
+        outcome.status = compileStatus;
+        return outcome;
     }
-    for (const auto& s : req.match.exePaths) c.exePaths.push_back(ToLowerPlain(s));
-    c.titles = req.match.titles;
-    c.titleContains = req.match.titleContains;
-    for (const auto& s : req.match.classes) c.classes.push_back(ToLowerPlain(s));
-    for (const auto& expr : req.match.titleRegexes) {
-        try {
-            c.titleRegexes.emplace_back(expr, std::regex_constants::ECMAScript);
-        } catch (const std::regex_error& e) {
-            // 语法在解析期已经挡过一遍；走到这里说明这台机器的标准库拒绝编译它。
-            // 只把机器码与 ASCII 细节交回去，本地化文案由父进程拼。
-            outcome.status = BlockedStatus::kRegexInvalid;
-            outcome.detail = AsciiDetail(e.what());
-            return outcome;
-        }
-    }
-    c.onScreens = req.onScreens;
 
     // 求值过程中的 regex_error：MSVC 的正则库对回溯复杂度有一道内置上限
     // （error_complexity），所以失控的模式会以异常中断，而不是永远跑下去。

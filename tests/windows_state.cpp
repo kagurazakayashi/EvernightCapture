@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../src/CliOptions.h"
@@ -22,6 +23,7 @@
 #include "../src/Version.h"
 #include "../src/WindowIdentity.h"
 #include "../src/WindowMatch.h"
+#include "../src/WindowMatchInternal.h"
 #include "../src/WindowQuery.h"
 
 using namespace ecapture;
@@ -115,11 +117,197 @@ bool HasCode(const std::vector<Diagnostic>& items, const wchar_t* code) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// 组合筛选判据本体的脚手架：条件按 MatchOptions 的形状给（用户写的那些取值），
+// 候选是一条假窗口。判的是生产枚举用的那一对函数本体（CompileConditions /
+// MatchesWindow，src/WindowMatch.cpp），不是测试另抄的一份匹配算法。
+// ---------------------------------------------------------------------------
+struct Predicate {
+    CompiledConditions c;
+    bool compiled = false;
+    BlockedStatus status = BlockedStatus::kOk;
+    std::string detail;
+};
+
+Predicate Compile(const MatchOptions& m) {
+    MatchRequest req;
+    req.match = m;
+    Predicate p;
+    p.compiled = CompileConditions(req, &p.c, &p.status, &p.detail);
+    return p;
+}
+
+// 这一条候选会不会被当成命中。条件编译不出来（本机标准库拒绝那条正则）时按"没命中"算，
+// 那条路另有判据（见 TestCombinedConditions 末尾：编译失败要交回机器码，而不是当成不匹配）。
+bool Hit(const Predicate& p, const WindowInfo& w) {
+    if (!p.compiled) return false;
+    return MatchesWindow(p.c, w, nullptr);
+}
+
+WindowInfo WithTitle(uint64_t hwnd, const wchar_t* title) {
+    WindowInfo w = HealthyWindow(hwnd, 0);
+    w.title = title;
+    return w;
+}
+
 std::wstring Render(const WindowQueryResult& r, WindowAction action, bool verbose = false,
                     bool quiet = false) {
     const std::wstring contract =
         action == WindowAction::kInspect ? L"windowinspect" : kWindowQueryContractName;
     return RenderWindowQuery(r, contract, verbose, quiet);
+}
+
+// ---------------------------------------------------------------------------
+// 组合筛选：跨类 AND、同类 OR —— 每一类必须自己成立
+//
+// 回归的起点是那份被多类共用的 bool any：hwnd / pid / process / exe / title /
+// title-contains 里任何一类命中后，那个真值会一路留到 --title-regex 那一段，
+// 于是"正则全部不匹配"仍被前面那类的命中放行（`if (!any) return false` 判的是别人的结果）。
+// 反例的形状是标题 PRIVATE、正则 ^PUBLIC$、再叠一条命中的 --process：
+// 单独的正则该拒绝，组合起来却放行。下面每一组"别的类成立 + 正则不成立"都是那一次。
+// ---------------------------------------------------------------------------
+void TestCombinedConditions() {
+    Section("组合筛选：每一类各判各的（跨类 AND、同类 OR）");
+
+    // 三条假候选：进程/类名用 HealthyWindow 那份，标题各管标题那一类。
+    const WindowInfo priv = WithTitle(0x777, L"PRIVATE");
+    const WindowInfo pub = WithTitle(0x778, L"PUBLIC");
+    const WindowInfo blank = WithTitle(0x779, L"");
+
+    MatchOptions onlyRegex;
+    onlyRegex.titleRegexes.push_back(L"^PUBLIC$");
+    const Predicate regexOnly = Compile(onlyRegex);
+    Check(Hit(regexOnly, pub), "只有正则：标题 PUBLIC 命中");
+    Check(!Hit(regexOnly, priv), "只有正则：标题 PRIVATE 拒绝（这一条本来就对，钉住它）");
+
+    // 每一类各给一个"这一条候选确实满足"的取值，再叠一条对它不成立的正则。
+    // --process 写 APP（不带 .exe）与 --class 写 TestCLASS：顺带钉住大小写折叠与补 .exe 那两条写法。
+    MatchOptions byHwnd;
+    byHwnd.hwnds.push_back(priv.hwnd);
+    MatchOptions byPid;
+    byPid.pids.push_back(priv.pid);
+    MatchOptions byProcess;
+    byProcess.processes.push_back(L"APP");
+    MatchOptions byExe;
+    byExe.exePaths.push_back(L"C:\\Users\\someone\\App\\app.exe");
+    MatchOptions byTitle;
+    byTitle.titles.push_back(L"PRIVATE");
+    MatchOptions byContains;
+    byContains.titleContains.push_back(L"IVATE");
+    MatchOptions byClass;
+    byClass.classes.push_back(L"TestCLASS");
+
+    const std::vector<std::pair<MatchOptions, const char*>> categories = {
+        {byHwnd, "--hwnd"}, {byPid, "--pid"}, {byProcess, "--process"}, {byExe, "--exe"},
+        {byTitle, "--title"}, {byContains, "--title-contains"}, {byClass, "--class"},
+    };
+    for (const auto& one : categories) {
+        MatchOptions rejecting = one.first;
+        rejecting.titleRegexes.push_back(L"^PUBLIC$");
+        Check(!Hit(Compile(rejecting), priv),
+              (std::string("命中的 ") + one.second + " + 不成立的正则：拒绝").c_str());
+
+        MatchOptions accepting = one.first;
+        accepting.titleRegexes.push_back(L"^PRIVATE$");
+        Check(Hit(Compile(accepting), priv),
+              (std::string("命中的 ") + one.second + " + 成立的正则：命中（AND 没有整体作废）").c_str());
+    }
+
+    // 多条正则：同类是 OR，所以"其中一条成立"就该命中，"全部不成立"必须拒绝。
+    MatchOptions allRegexMiss = byProcess;
+    allRegexMiss.titleRegexes.push_back(L"^PUBLIC$");
+    allRegexMiss.titleRegexes.push_back(L"\\d+");
+    Check(!Hit(Compile(allRegexMiss), priv), "命中的 --process + 两条正则全不成立：拒绝");
+    MatchOptions oneRegexHits = byProcess;
+    oneRegexHits.titleRegexes.push_back(L"^PUBLIC$");
+    oneRegexHits.titleRegexes.push_back(L"IVATE");
+    Check(Hit(Compile(oneRegexHits), priv), "命中的 --process + 两条正则里有一条成立：命中");
+
+    // 反过来那一半也得判：正则成立而别的类不成立，同样不能放行。
+    MatchOptions wrongProcess = onlyRegex;
+    wrongProcess.processes.push_back(L"notepad.exe");
+    Check(!Hit(Compile(wrongProcess), pub), "正则命中 + 进程不命中：拒绝");
+    MatchOptions wrongTitle = onlyRegex;
+    wrongTitle.titles.push_back(L"OTHER");
+    Check(!Hit(Compile(wrongTitle), pub), "正则命中 + 精确标题不命中：拒绝");
+    MatchOptions wrongClass = onlyRegex;
+    wrongClass.classes.push_back(L"OtherClass");
+    Check(!Hit(Compile(wrongClass), pub), "正则命中 + 类名不命中：拒绝");
+    MatchOptions wrongHwnd = onlyRegex;
+    wrongHwnd.hwnds.push_back(0x8888);
+    Check(!Hit(Compile(wrongHwnd), pub), "正则命中 + 句柄不命中：拒绝");
+
+    // 同类多个取值的 OR 没有因为这次改动而变严：进程写两个、其中一个成立，仍是命中。
+    MatchOptions processOr = byProcess;
+    processOr.processes.push_back(L"notepad.exe");
+    processOr.titleRegexes.push_back(L"^PUBLIC$");
+    Check(!Hit(Compile(processOr), priv),
+          "同类 OR（进程两个取值命中一个）也不许替正则说话：拒绝");
+    MatchOptions processOrOk = byProcess;
+    processOrOk.processes.push_back(L"notepad.exe");
+    processOrOk.titleRegexes.push_back(L"^PRIVATE$");
+    Check(Hit(Compile(processOrOk), priv), "同类 OR：进程两个取值里命中一个 + 正则成立 -> 命中");
+
+    // 选项书写顺序不影响结论：同一条 AND 判据，先写正则与先写进程必须给同一个答案。
+    MatchOptions regexFirst;
+    regexFirst.titleRegexes.push_back(L"^PUBLIC$");
+    regexFirst.processes.push_back(L"APP");
+    MatchOptions processFirst;
+    processFirst.processes.push_back(L"APP");
+    processFirst.titleRegexes.push_back(L"^PUBLIC$");
+    Check(Hit(Compile(regexFirst), priv) == Hit(Compile(processFirst), priv) &&
+              !Hit(Compile(regexFirst), priv),
+          "正则写在进程前面与写在进程后面结果一致（都是拒绝）");
+    MatchOptions regexFirstOk;
+    regexFirstOk.titleRegexes.push_back(L"^PRIVATE$");
+    regexFirstOk.pids.push_back(priv.pid);
+    MatchOptions pidFirstOk;
+    pidFirstOk.pids.push_back(priv.pid);
+    pidFirstOk.titleRegexes.push_back(L"^PRIVATE$");
+    Check(Hit(Compile(regexFirstOk), priv) && Hit(Compile(pidFirstOk), priv),
+          "同样两种书写顺序：都成立时都是命中");
+
+    // 空标题是真值，不是"没答案"：^$ 要能命中，^x 叠一条命中的进程仍要拒绝。
+    MatchOptions emptyRegex;
+    emptyRegex.titleRegexes.push_back(L"^$");
+    emptyRegex.processes.push_back(L"APP");
+    Check(Hit(Compile(emptyRegex), blank), "空标题 + ^$ + 命中的进程：命中");
+    MatchOptions emptyReject;
+    emptyReject.titleRegexes.push_back(L"^x");
+    emptyReject.processes.push_back(L"APP");
+    Check(!Hit(Compile(emptyReject), blank), "空标题 + ^x + 命中的进程：拒绝");
+
+    // 大小写约定：标题那一类按用户写的原样比（精确与子串都不折叠），正则照 ECMAScript 默认。
+    MatchOptions titleCase;
+    titleCase.titles.push_back(L"private");
+    Check(!Hit(Compile(titleCase), priv), "--title 区分大小写：小写的 private 不命中 PRIVATE");
+    MatchOptions regexCase;
+    regexCase.titleRegexes.push_back(L"^private$");
+    regexCase.processes.push_back(L"app");
+    Check(!Hit(Compile(regexCase), priv), "正则默认区分大小写：^private$ 不命中 PRIVATE");
+
+    // 一条都没给时不作限制（这一条与本次修复无关，但它是 AND 的零元素那一端）。
+    Check(Hit(Compile(MatchOptions()), priv), "一个条件都没给：所有候选都算命中");
+
+    // 本机标准库拒绝编译的那条正则：交回机器码与 ASCII 细节，不是"判它不成立"。
+    MatchOptions badRegex;
+    badRegex.titleRegexes.push_back(L"[bad(");
+    const Predicate bad = Compile(badRegex);
+    Check(!bad.compiled, "编不出来的正则：编译这一步失败（而不是当成不匹配）");
+    Check(bad.status == BlockedStatus::kRegexInvalid, "失败的原因是 kRegexInvalid 这个机器码");
+    Check(!bad.detail.empty(), "失败细节是 ASCII 的 what()，交回父进程拼文案");
+
+    // 与截图那一路的衔接：用正则认出的目标，复核要重跑条件（而不是比标题快照）。
+    // 判的是这一件事没有被这次改动漏掉——修复让正则真的能筛掉窗口，而"当初凭什么挑中它"
+    // 仍然要靠同一份条件在取像素之前再问一次。
+    MatchOptions recheckOpt;
+    recheckOpt.titleRegexes.push_back(L"^PUBLIC$");
+    Check(MakeWindowIdentity(pub, recheckOpt, false).selectionNeedsRecheck,
+          "含 --title-regex 的条件：身份复核要重跑条件（kFull 那一问）");
+    MatchOptions recheckCheap;
+    recheckCheap.pids.push_back(pub.pid);
+    Check(!MakeWindowIdentity(pub, recheckCheap, false).selectionNeedsRecheck,
+          "只靠 PID/句柄/类名认出的目标：不重跑条件（kCheap 那四问已覆盖）");
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +807,7 @@ int main() {
     SetLanguage(Language::kEn);
 
     TestMachineWords();
+    TestCombinedConditions();
     TestListIsNeverAmbiguous();
     TestInspectNeedsUniqueTarget();
     TestPagination();

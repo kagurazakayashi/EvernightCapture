@@ -175,6 +175,45 @@ try {
                     $and.Json.windows[0].hwnd -eq (Get-EcHwndHex $solo.Hwnd)) `
             '跨类 AND（类名 + 标题子串）没对上单独那一扇'
 
+        # ---- 跨类 AND 里 --title-regex 必须自己成立（回归：前面那类的命中曾把它顶掉）----
+        # 阳性对照先立住：同一份进程条件 + 一条成立的正则，确实对得上那一扇。
+        $soloHex = Get-EcHwndHex $solo.Hwnd
+        $rxHit = '^' + $solo.Title + '$'
+        $rxMiss = '^EC-WQ-NO-SUCH-TITLE-' + $stag + '$'
+        $rxAnd = Invoke-Wq -Arguments @('--list', '--process', 'ecwindow.exe', '--title-regex', $rxHit)
+        Assert-Ec ($rxAnd.Exit -eq 0 -and $rxAnd.Json.pagination.matched -eq 1 -and
+                    $rxAnd.Json.windows[0].hwnd -eq $soloHex) `
+            "进程 + 成立的正则应当对上那一扇：exit=$($rxAnd.Exit) matched=$($rxAnd.Json.pagination.matched)"
+
+        # 同一份进程条件换成不成立的正则：必须是 0 条。旧实现这里会把该进程全部可见窗口交回来
+        # （hwnd/pid/process/exe/title/title-contains 任一类的命中被当成"正则那类也满足了"）。
+        foreach ($combo in @(
+            @{ Name = '进程 + 不成立的正则'; A = @('--process', 'ecwindow.exe') },
+            @{ Name = '句柄 + 不成立的正则'; A = @('--hwnd', $soloHex) },
+            @{ Name = 'PID + 不成立的正则'; A = @('--pid', [string]$solo.Pid) },
+            @{ Name = '精确标题 + 不成立的正则'; A = @('--title', $solo.Title) },
+            @{ Name = '标题子串 + 不成立的正则'; A = @('--title-contains', $stag) }
+        )) {
+            $r = Invoke-Wq -Arguments (@('--list') + $combo.A + @('--title-regex', $rxMiss))
+            Assert-Ec ($r.Exit -eq 0 -and $r.Json.pagination.matched -eq 0 -and
+                        @($r.Json.windows).Count -eq 0) `
+                ("$($combo.Name)：正则不成立时应当 0 条，实际 matched=$($r.Json.pagination.matched)")
+        }
+
+        # 反过来那一半：正则成立而别的类不成立，同样不能放行（AND 的两个方向都得判）。
+        $rev = Invoke-Wq -Arguments @('--list', '--hwnd', (Get-EcHwndHex $a1.Hwnd), '--title-regex', $rxHit)
+        Assert-Ec ($rev.Exit -eq 0 -and $rev.Json.pagination.matched -eq 0) `
+            '句柄不匹配 + 正则匹配：不该命中'
+
+        # 书写顺序与入口：正则写在别的类前面，结论不变；--inspect 与 --dry-run 走同一条判据。
+        $inspRx = Invoke-Wq -Arguments @('--inspect', '--title-regex', $rxMiss, '--hwnd', $soloHex)
+        Assert-Ec ($inspRx.Exit -eq 4 -and (Codes $inspRx.Json.errors) -contains 'match.no_window') `
+            "inspect（正则写在前面）：exit=$($inspRx.Exit) codes=[($(Codes $inspRx.Json.errors) -join ','))]"
+        $dryRx = Invoke-Wq -Arguments @('--title-regex', $rxMiss, '--process', 'ecwindow.exe',
+                                        '--dry-run', 'out.png')
+        Assert-Ec ($dryRx.Exit -eq 4 -and (Codes $dryRx.Json.errors) -contains 'match.no_window') `
+            "dry-run（正则不成立）：exit=$($dryRx.Exit) codes=[($(Codes $dryRx.Json.errors) -join ','))]"
+
         # ---- 无匹配：一个都不成立的条件也是空列表 + 0 ----
         $none = Invoke-Wq -Arguments @('--list', '--class', "ec-wq-none-$stag")
         Assert-Ec ($none.Exit -eq 0 -and $none.Json.contract -eq 'windowquery' -and
