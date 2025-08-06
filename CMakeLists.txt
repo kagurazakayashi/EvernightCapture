@@ -46,6 +46,7 @@ add_executable(ecapture
   src/HdrDetect.cpp
   src/Deadline.cpp
   src/Worker.cpp
+  src/WorkerIo.cpp
   src/WorkerProtocol.cpp
   src/WinrtApartment.cpp
   src/OutputPlan.cpp
@@ -157,11 +158,14 @@ set_property(TARGET ecapture-consent-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # 既慢又造不全，而发布版 ECAPTURE.EXE 里绝不该有能喂自定义消息的入口。
 # 期限那条判据要读 --lang 那套资源，所以把 Lang/CliOptions 与 .rc 一起编进来。
 # 这里不链 Worker.cpp：它要起辅助进程，也要用到几条取图通道，而格式与期限这两层判据
-# 都只需要纯数据的那几份源文件。
+# 都只需要纯数据的那几份源文件。异步 I/O 生命周期那层判据（tests\worker_io_state.cpp）
+# 链的是 WorkerIo.cpp 本体与注入的假后端 —— 判的就是生产状态机，不是它的抄本。
 # ---------------------------------------------------------------------------
 add_executable(ecapture-worker-tests
   tests/isolation_state.cpp
+  tests/worker_io_state.cpp
   src/HdrColor.cpp
+  src/WorkerIo.cpp
   src/WorkerProtocol.cpp
   src/Deadline.cpp
   src/WindowMatch.cpp

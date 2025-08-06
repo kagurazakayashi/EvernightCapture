@@ -351,12 +351,19 @@ void CheckDeadline() {
 
 }  // namespace
 
+// worker_io_state.cpp 提供：异步管道 I/O 生命周期的注入式判据（回报本层检查数与失败数）。
+namespace ecapture { int RunWorkerIoStateChecks(int* checksOut, int* failuresOut); }
+
 int main() {
     std::printf("隔离执行消息格式（WorkerProtocol）与执行期限（Deadline）离线判据\n");
     CheckHeader();
     CheckTask();
     CheckReply();
     CheckDeadline();
-    std::printf("共 %d 项检查，失败 %d\n", g_checks, g_failures);
-    return g_failures ? 1 : 0;
+    // 异步管道 I/O 生命周期（WorkerIo + 注入假后端）判据在 worker_io_state.cpp，
+    // 两层的计数并进来打同一行摘要，真机脚本按最后一行核对总数。
+    int ioChecks = 0, ioFails = 0;
+    const int ioFailures = ecapture::RunWorkerIoStateChecks(&ioChecks, &ioFails);
+    std::printf("共 %d 项检查，失败 %d\n", g_checks + ioChecks, g_failures + ioFailures);
+    return (g_failures || ioFailures) ? 1 : 0;
 }

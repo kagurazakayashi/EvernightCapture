@@ -30,7 +30,9 @@
     0 ms 就读到了）。所以"把目标卡住"在这台机器上造不出"父进程被拖住"的现场，
     第 4 节因此判两种结局都必须成立的不变式（父命令在期限内返回），没触发到的那半如实
     记未验证，不假装已经判过。而期限本身是现场判的：给一个连辅助进程都来不及起来的
-    预算（--timeout-ms 1），父命令必须立刻带着稳定码回来 —— 第 3 节。
+    预算（--timeout-ms 1），父命令必须立刻带着稳定码回来 —— 第 3 节。第 3b 节把同一条路
+    连打十二轮，并在一个父进程里连做几笔半途超时的交易、采样运行期句柄数，钉住
+    "取消之后必须等内核松手才释放资源、而且这个等待有界"。
 
     隐私规矩不动：辅助进程只做"读某个窗口自己的画面"和"把顶层窗口列一遍"，桌面像素那几条
     照旧要弹框；本脚本代答确认框时一律只答"否"（拒绝不拍到任何东西）。
@@ -142,7 +144,8 @@ try {
         $m = [regex]::Match($tail, '共 (\d+) 项检查，失败 (\d+)')
         Assert-Ec ($m.Success) "离线判据的摘要读不出来：$tail"
         Assert-Ec ([int]$m.Groups[2].Value -eq 0) '离线判据里有失败项'
-        Assert-Ec ([int]$m.Groups[1].Value -ge 55) "离线判据的检查数不对劲（$($m.Groups[1].Value)），是不是被删了"
+        # 60 项（消息格式 + 期限）+ 55 项（异步管道 I/O 生命周期）：只许增不许减
+        Assert-Ec ([int]$m.Groups[1].Value -ge 110) "离线判据的检查数不对劲（$($m.Groups[1].Value)），是不是被删了"
         Write-Host "  $tail" -ForegroundColor DarkGray
     }
 
@@ -219,6 +222,60 @@ try {
             "$($case.Name)：期限到点之后仍落了文件"
         Assert-Ec ($r.DurationMs -lt 4000) "$($case.Name)：没有按期限返回（$($r.DurationMs) ms）"
         Assert-Ec (@(Wait-EcIdleHelpers).Count -eq 0) "$($case.Name)：留下了没被回收的辅助进程"
+    }
+
+    # =========================================================================
+    Write-Host "`n=== 3b) 取消排干压测：每次管道超时都要等内核松手才走 ==="
+    # =========================================================================
+    # 极小预算让父侧每次都恰好卡在"管道 I/O 还挂着"的那一刻：这正是 CancelIoEx +
+    # 排干确认这条路在真命名管道上的现场（离线层用假后端判顺序，这里判真实行为）。
+    # 判据两块：
+    #   1) 连打 12 轮单目标：每轮限时返回、码稳定、不落文件、不留辅助进程 ——
+    #      若把"取消调用返回"当成"操作已结束"就立刻不等了（本判据抓不到，靠离线层），
+    #      但若改成无界等待或清理漏关句柄，这里的用时与残留进程立刻炸。
+    #   2) 同一个父进程里连做几笔交易（--pid --all 多窗批次 + 刚够匹配、不够取帧的预算），
+    #      运行期采样父进程句柄数。正常每笔交易收尾要把管道句柄与事件归还干净；
+    #      这条按"灾难级泄漏"设上限（每笔漏一两个句柄在这个规模测不出来，如实声明），
+    #      抓的是每笔漏几十句柄、事件从不关闭这类一眼的坏账。
+    for ($i = 0; $i -lt 12; $i++) {
+        $outS = Get-EcRunFile -RunDir $run -Name ('cancel_stress' + $i + '.png')
+        $r = Invoke-Ec @('--hwnd', $hPlain, '--capture', 'dwm', '--yes', '--out', $outS,
+                        '--timeout-ms', '1')
+        $o = Json-Of $r
+        $e = First-Error $o
+        Assert-Ec ($r.Exit -eq 7) "取消压测第 $i 轮：退出码该是 7，实际 $($r.Exit)"
+        Assert-Ec (@('match.timeout', 'capture.timeout') -contains $e.code) "取消压测第 $i 轮：该报期限码，实际 $($e.code)"
+        Assert-Ec ($r.DurationMs -lt 6000) "取消压测第 $i 轮：返回太久（$($r.DurationMs) ms）——取消收尾没有界，或中间有死等"
+        Assert-Ec (-not (Test-Path -LiteralPath $outS)) "取消压测第 $i 轮：期限到点仍落了文件"
+        Assert-Ec (@(Wait-EcIdleHelpers).Count -eq 0) "取消压测第 $i 轮：留下了辅助进程"
+    }
+
+    $stressWin = Start-EcWindow -RunDir $run -Class "ec-to-stress-$tag" -Title "取消压测批 $tag" `
+        -Rect '240,240,560,420' -Windows 6 -Seed 29 -MaxLifeSeconds 900
+    $dir3b = Get-EcRunFile -RunDir $run -Name 'stress_batch'
+    New-Item -ItemType Directory -Force -Path $dir3b | Out-Null
+    $script:EcHandleSamples = @()
+    $probeHandles = {
+        param($p)
+        try { $script:EcHandleSamples += @([int]$p.HandleCount) } catch { }
+        return ''
+    }
+    # 预算给到"匹配多半来得及、取帧一定来不及"的量级：批里每个目标各起一笔隔离交易，
+    # 每笔都在管道 I/O 上半路超时。批内成败组合不作断言（时序天然不确定），只断言不变式。
+    $r = Invoke-Ec @('--pid', [string]$stressWin.Pid, '--all', '--capture', 'dwm', '--yes',
+                    '--out', (Join-Path $dir3b 'stress_%i.png'), '--timeout-ms', '300') `
+              -probe $probeHandles -probeMs 30000
+    Assert-Ec (@(0, 5, 7) -contains $r.Exit) "取消压测批次退出码异常：$($r.Exit)"
+    Assert-Ec ($r.DurationMs -lt 25000) "取消压测批次跑太久（$($r.DurationMs) ms）"
+    Assert-Ec (@(Wait-EcIdleHelpers).Count -eq 0) '取消压测批次留下了辅助进程'
+    $samples = @($script:EcHandleSamples | Where-Object { $_ -gt 0 })
+    if ($samples.Count -ge 3) {
+        $mx = ($samples | Measure-Object -Maximum).Maximum
+        $mn = ($samples | Measure-Object -Minimum).Minimum
+        Write-Host ("  运行期句柄采样 {0} 点：最小 {1}，最大 {2}" -f $samples.Count, $mn, $mx) -ForegroundColor DarkGray
+        Assert-Ec ($mx -lt 400) "父进程句柄数到了 $($mx)：疑似每笔交易都在漏事件或管道句柄"
+    } else {
+        Skip-Ec '运行期句柄数核对' "采样点不足（$($samples.Count) 点），这一轮父进程退得太快没探到"
     }
 
     # =========================================================================

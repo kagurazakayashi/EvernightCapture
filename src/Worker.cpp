@@ -19,6 +19,7 @@
 #include "CapturePrintWindow.h"
 #include "ImageOps.h"
 #include "Lang.h"
+#include "WorkerIo.h"
 #include "WorkerProtocol.h"
 
 namespace ecapture {
@@ -35,6 +36,11 @@ constexpr const wchar_t* kPipePrefix = L"\\\\.\\pipe\\ecapture-worker-";
 
 constexpr uint32_t kPipeBufferBytes = 64u * 1024u;
 constexpr uint32_t kReapGraceMs = 2000u;    // 交回结果后给辅助进程的收尾时间
+// 请求取消之后，愿意多等一次"确认终态"的宽限（毫秒）。它**不占**自动处理预算：
+// 预算在那次超时上已经花掉了，这一段纯粹是把 CancelIoEx 的"已排入取消"兑现成
+// "操作确实结束"，否则 OVERLAPPED/事件/缓冲就成了悬空引用。有这条上限，
+// 就不许有人把它说成"无限等待"；也不许有人拿"预算到点"当理由跳过它。
+constexpr uint32_t kCancelDrainGraceMs = 2000u;
 // 辅助进程没人交任务（或卡住）时自己退出的时限。必须明显大于 kMaxTaskWaitMs：
 // 父进程还在等的那条任务不能被这道兜底掐掉，否则"期限还没到，结果先没了"。
 constexpr uint32_t kWorkerIdleMs = 30000u;
@@ -127,6 +133,9 @@ public:
     OwnedHandle& operator=(const OwnedHandle&) = delete;
     void Reset(HANDLE h) { Close(); h_ = h; }
     void Close() { if (h_) { CloseHandle(h_); h_ = nullptr; } }
+    // 放弃所有权、把句柄原样交出去：只用于"仍有未决异步 I/O 挂在它上面，提前关闭
+    // 是文档不保证的行为"的收尾场景（见 Transaction::Finish 的注释）。
+    HANDLE Release() { const HANDLE h = h_; h_ = nullptr; return h; }
     HANDLE get() const { return h_; }
     explicit operator bool() const { return h_ != nullptr && h_ != INVALID_HANDLE_VALUE; }
 
@@ -137,84 +146,73 @@ private:
 // ---------------------------------------------------------------------------
 // 带期限的管道 I/O
 // ---------------------------------------------------------------------------
-struct Step {
-    bool done = false;
-    bool timedOut = false;
-    DWORD gle = 0;
-    // 实际搬运的字节数。重叠 I/O 下这个数只能取 GetOverlappedResult 的那份：
-    // ReadFile/WriteFile 的"写了几个字节"出参在异步完成路径上不作承诺
-    // （按它判断会把"读完了"误认成"对方关了管道"，实测就是这个坑）。
-    size_t transferred = 0;
-};
+// 状态机本体在 WorkerIo.{h,cpp}：那里保证"确认 I/O 进入终态之后才释放 OVERLAPPED、
+// 事件与内核触碰的缓冲"，本层只把它翻成交易用的结局。
+// 实际搬运的字节数只能取 GetOverlappedResult 的那份（由状态机负责）：
+// ReadFile/WriteFile 的"写了几个字节"出参在异步完成路径上不作承诺
+// （按它判断会把"读完了"误认成"对方关了管道"，实测就是这个坑）。
+using Step = workerio::IoStep;
 
-// 发一个重叠 I/O 并等它，等待本身盯着剩余预算。
-// 期限到点就 CancelIoEx 之后走人：不"先等到有结果再判断是不是超时"，那条路根本没有期限可言。
-template <typename Op>
-Step RunOverlapped(HANDLE handle, const Deadline& dl, Op op) {
-    Step step;
-    OVERLAPPED ov{};
-    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!ov.hEvent) {
-        step.gle = GetLastError();
-        return step;
-    }
-    const BOOL started = op(&ov);
-    if (!started) {
-        const DWORD gle = GetLastError();
-        if (gle != ERROR_IO_PENDING) {
-            step.gle = gle;
-            CloseHandle(ov.hEvent);
-            return step;
-        }
-    }
-    const DWORD wait = WaitForSingleObject(ov.hEvent, WaitTimeout(dl));
-    if (wait == WAIT_OBJECT_0) {
-        DWORD transferred = 0;
-        if (GetOverlappedResult(handle, &ov, &transferred, FALSE)) {
-            step.done = true;
-            step.transferred = transferred;
-        } else {
-            step.gle = GetLastError();
-        }
-    } else if (wait == WAIT_TIMEOUT) {
-        step.timedOut = true;
-        CancelIoEx(handle, &ov);
-    } else {
-        step.gle = GetLastError();
-    }
-    CloseHandle(ov.hEvent);
-    return step;
+// ReadFile/WriteFile/ConnectNamedPipe 的 BOOL + GetLastError 约定 -> 发起阶段结局。
+// 重叠调用返回非 0 是"同步完成"，此时事件已由系统置起，后续等待会立即返回。
+workerio::StartResult StartOf(const BOOL r) {
+    if (r) return {workerio::StartState::kSyncDone, 0};
+    const DWORD gle = GetLastError();
+    if (gle == ERROR_IO_PENDING) return {workerio::StartState::kPending, gle};
+    return {workerio::StartState::kSyncFailed, gle};
 }
 
 Step WriteAll(HANDLE pipe, const uint8_t* data, size_t size, const Deadline& dl) {
     size_t offset = 0;
     while (offset < size) {
-        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - offset, kPipeBufferBytes));
+        const uint32_t chunk =
+            static_cast<uint32_t>(std::min<size_t>(size - offset, kPipeBufferBytes));
         const uint8_t* at = data + offset;
-        const Step s = RunOverlapped(pipe, dl, [&](LPOVERLAPPED ov) {
-            return WriteFile(pipe, at, chunk, nullptr, ov);
-        });
+        // 内核只从操作对象自有的缓冲里读：调用方的 framed 缓冲区在任何超时路径上
+        // 都可以安全失效，不会因为一次没赶上的写请求而变成悬空引用。
+        const Step s = workerio::RunOverlappedOp(
+            workerio::Win32Backend(), pipe, chunk, WaitTimeout(dl), kCancelDrainGraceMs,
+            [&](OVERLAPPED& ov, uint8_t* buf, uint32_t cap) {
+                std::memcpy(buf, at, chunk);
+                return StartOf(WriteFile(pipe, buf, cap, nullptr, &ov));
+            },
+            nullptr);
         if (!s.done) return s;
         offset += s.transferred;
     }
-    return Step{true, false, 0, 0};
+    Step ok;
+    ok.done = true;
+    return ok;
 }
 
 Step ReadExact(HANDLE pipe, uint8_t* buf, size_t size, const Deadline& dl) {
     size_t offset = 0;
     while (offset < size) {
-        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(size - offset, kPipeBufferBytes));
-        const Step s = RunOverlapped(pipe, dl, [&](LPOVERLAPPED ov) {
-            return ReadFile(pipe, buf + offset, chunk, nullptr, ov);
-        });
+        const uint32_t chunk =
+            static_cast<uint32_t>(std::min<size_t>(size - offset, kPipeBufferBytes));
+        // 读取同样落进操作对象的缓冲，确认终态后才复制回调用方内存：
+        // 一次超时的挂起读不会再往调用方已经释放的堆块里写像素。
+        std::vector<uint8_t> got;
+        const Step s = workerio::RunOverlappedOp(
+            workerio::Win32Backend(), pipe, chunk, WaitTimeout(dl), kCancelDrainGraceMs,
+            [&](OVERLAPPED& ov, uint8_t* dst, uint32_t cap) {
+                return StartOf(ReadFile(pipe, dst, cap, nullptr, &ov));
+            },
+            &got);
         if (!s.done) return s;
         if (s.transferred == 0) {
             // 0 字节 = 对方已经把写完的那一段交回并关了管道：这次调用拿不到应答
-            return Step{false, false, ERROR_BROKEN_PIPE, 0};
+            Step broken;
+            broken.gle = ERROR_BROKEN_PIPE;
+            return broken;
         }
+        std::memcpy(buf + offset, got.data(), s.transferred);
         offset += s.transferred;
     }
-    return Step{true, false, 0, offset};
+    Step ok;
+    ok.done = true;
+    ok.transferred = offset;
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -336,10 +334,20 @@ Call Transaction::Start(uint16_t kind, const std::vector<uint8_t>& task, const D
 
     // 把管道交出去之前先确认"连上来的是我刚起的那个进程"：
     // 名字里带了本次的 PID 与 nonce，但"是谁连的"要由内核回答，不能靠名字。
-    const Step connect = RunOverlapped(pipe_.get(), dl, [&](LPOVERLAPPED ov) {
-        const BOOL r = ConnectNamedPipe(pipe_.get(), ov);
-        return r == TRUE || GetLastError() == ERROR_PIPE_CONNECTED;
-    });
+    const Step connect = workerio::RunOverlappedOp(
+        workerio::Win32Backend(), pipe_.get(), 0, WaitTimeout(dl), kCancelDrainGraceMs,
+        [&](OVERLAPPED& ov, uint8_t*, uint32_t) {
+            const BOOL r = ConnectNamedPipe(pipe_.get(), &ov);
+            if (r) return workerio::StartResult{workerio::StartState::kSyncDone, 0};
+            const DWORD gle = GetLastError();
+            if (gle == ERROR_IO_PENDING) return workerio::StartResult{workerio::StartState::kPending, gle};
+            // ERROR_PIPE_CONNECTED：对方已连上，但**没有**发起中的 I/O，事件不会由系统置起。
+            // 原实现把它按"已发起"处理、照样等事件 —— 这条已知语义缺陷属于 F03，本次
+            // 只修资源生命周期，映射回 kSyncDone 保持对外行为逐字一致，不改判它的对错。
+            if (gle == ERROR_PIPE_CONNECTED) return workerio::StartResult{workerio::StartState::kSyncDone, 0};
+            return workerio::StartResult{workerio::StartState::kSyncFailed, gle};
+        },
+        nullptr);
     if (connect.timedOut) return Call::kTimedOut;
     if (!connect.done) { gle_ = connect.gle; return Call::kChannelFailed; }
 
@@ -398,7 +406,18 @@ Call Transaction::ReadReply(Reply* out, uint16_t expectKind, const Deadline& dl)
 void Transaction::Finish() {
     // 顺序是固定的：先收尾辅助进程，再关作业句柄。
     // 关作业句柄会触发 KILL_ON_JOB_CLOSE，那是"我没能好好收尸"时的兜底，不是常规手段。
-    pipe_.Close();
+    //
+    // 管道句柄什么时候能关，取决于登记表里有没有挂着它的未决异步操作：
+    //   * 没有（一切成功路径，外加绝大多数超时/取消 —— 状态机在返回前就已排干）：
+    //     照旧先关管道、提示辅助进程退出，不多等一次；
+    //   * 有（取消已受理但宽限内等不到完成，属于驱动级卡死的病理场景）：带着未决 I/O
+    //     关句柄是文档不保证的行为，所以先收尸 —— 对面进程一没，飞行中的管道 I/O
+    //     基本立刻能进终态 —— 再让登记表确认一次。确认得了就关；确认不了就把这个
+    //     句柄连同它的 OVERLAPPED/事件/缓冲一起交给登记表收养，随进程退出由系统回收。
+    //     代价是一份有界缓冲与一个句柄的遗留，换来的是不再有"内核往已释放内存写"。
+    if (pipe_ && !workerio::HasPendingOps(pipe_.get())) {
+        pipe_.Close();
+    }
     if (process_) {
         if (WaitForSingleObject(process_.get(), kReapGraceMs) != WAIT_OBJECT_0) {
             TerminateProcess(process_.get(), 9);   // 只结束我自己起的这一个进程
@@ -409,6 +428,14 @@ void Transaction::Finish() {
     childExit_ = (process_ && GetExitCodeProcess(process_.get(), &code)) ? static_cast<int>(code) : -1;
     process_.Close();
     thread_.Close();
+    if (pipe_) {
+        if (workerio::DrainPendingOps(pipe_.get(), kCancelDrainGraceMs) == 0) {
+            pipe_.Close();
+        } else {
+            workerio::AdoptHandle(pipe_.get());
+            pipe_.Release();   // 关闭责任移交登记表（登记表在操作全数终态后替它关）
+        }
+    }
     job_.Close();
 }
 
