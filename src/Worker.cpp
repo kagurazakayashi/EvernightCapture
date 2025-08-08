@@ -153,14 +153,9 @@ private:
 // （按它判断会把"读完了"误认成"对方关了管道"，实测就是这个坑）。
 using Step = workerio::IoStep;
 
-// ReadFile/WriteFile/ConnectNamedPipe 的 BOOL + GetLastError 约定 -> 发起阶段结局。
+// ReadFile/WriteFile/ConnectNamedPipe 的 BOOL + GetLastError 约定 -> 发起阶段结局：
+// 映射本体在 WorkerIo（StartOf / ConnectStartOf），生产与判据共用的就是这四态的判据。
 // 重叠调用返回非 0 是"同步完成"，此时事件已由系统置起，后续等待会立即返回。
-workerio::StartResult StartOf(const BOOL r) {
-    if (r) return {workerio::StartState::kSyncDone, 0};
-    const DWORD gle = GetLastError();
-    if (gle == ERROR_IO_PENDING) return {workerio::StartState::kPending, gle};
-    return {workerio::StartState::kSyncFailed, gle};
-}
 
 Step WriteAll(HANDLE pipe, const uint8_t* data, size_t size, const Deadline& dl) {
     size_t offset = 0;
@@ -174,7 +169,7 @@ Step WriteAll(HANDLE pipe, const uint8_t* data, size_t size, const Deadline& dl)
             workerio::Win32Backend(), pipe, chunk, WaitTimeout(dl), kCancelDrainGraceMs,
             [&](OVERLAPPED& ov, uint8_t* buf, uint32_t cap) {
                 std::memcpy(buf, at, chunk);
-                return StartOf(WriteFile(pipe, buf, cap, nullptr, &ov));
+                return workerio::StartOf(WriteFile(pipe, buf, cap, nullptr, &ov));
             },
             nullptr);
         if (!s.done) return s;
@@ -196,7 +191,7 @@ Step ReadExact(HANDLE pipe, uint8_t* buf, size_t size, const Deadline& dl) {
         const Step s = workerio::RunOverlappedOp(
             workerio::Win32Backend(), pipe, chunk, WaitTimeout(dl), kCancelDrainGraceMs,
             [&](OVERLAPPED& ov, uint8_t* dst, uint32_t cap) {
-                return StartOf(ReadFile(pipe, dst, cap, nullptr, &ov));
+                return workerio::StartOf(ReadFile(pipe, dst, cap, nullptr, &ov));
             },
             &got);
         if (!s.done) return s;
@@ -334,18 +329,18 @@ Call Transaction::Start(uint16_t kind, const std::vector<uint8_t>& task, const D
 
     // 把管道交出去之前先确认"连上来的是我刚起的那个进程"：
     // 名字里带了本次的 PID 与 nonce，但"是谁连的"要由内核回答，不能靠名字。
+    // 连接有四类结局，逐类分开判（见 workerio::ConnectStartOf）：
+    //   * 已连接（ERROR_PIPE_CONNECTED）：辅助进程赶在 ConnectNamedPipe 之前就连上了。
+    //     这是一次成立且没有挂起 I/O —— 状态机就地进完成态，直接往下走任务交换，
+    //     绝不等那个不会由系统置起的事件（等它就是"抢先连接被误报成超时"）；
+    //   * 同步成功：事件已由系统置起，等待立即返回；
+    //   * ERROR_IO_PENDING：确有挂起操作，按剩余预算等，到点按 F02 的机制安全取消；
+    //   * 其他错误：如实上报通道故障，不做免检。
+    // 预算沿用整次交易的剩余量（WaitTimeout(dl)），连接成功与否都不重新领一份。
     const Step connect = workerio::RunOverlappedOp(
         workerio::Win32Backend(), pipe_.get(), 0, WaitTimeout(dl), kCancelDrainGraceMs,
         [&](OVERLAPPED& ov, uint8_t*, uint32_t) {
-            const BOOL r = ConnectNamedPipe(pipe_.get(), &ov);
-            if (r) return workerio::StartResult{workerio::StartState::kSyncDone, 0};
-            const DWORD gle = GetLastError();
-            if (gle == ERROR_IO_PENDING) return workerio::StartResult{workerio::StartState::kPending, gle};
-            // ERROR_PIPE_CONNECTED：对方已连上，但**没有**发起中的 I/O，事件不会由系统置起。
-            // 原实现把它按"已发起"处理、照样等事件 —— 这条已知语义缺陷属于 F03，本次
-            // 只修资源生命周期，映射回 kSyncDone 保持对外行为逐字一致，不改判它的对错。
-            if (gle == ERROR_PIPE_CONNECTED) return workerio::StartResult{workerio::StartState::kSyncDone, 0};
-            return workerio::StartResult{workerio::StartState::kSyncFailed, gle};
+            return workerio::ConnectStartOf(ConnectNamedPipe(pipe_.get(), &ov));
         },
         nullptr);
     if (connect.timedOut) return Call::kTimedOut;

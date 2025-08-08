@@ -54,6 +54,14 @@ public:
             MarkTerminal();
             return step;
         }
+        if (started.state == StartState::kAlreadyConnected) {
+            // 已连接（ERROR_PIPE_CONNECTED）= 连接早已成立：这次调用没有发起挂起 I/O，事件
+            // 不会由系统置起。就地进成功终态 —— 不等事件、不取消、不取结果，把自己建的
+            // 事件关掉就走；后续的身份核验与任务交换归调用方。
+            step.done = true;
+            MarkTerminal();
+            return step;
+        }
 
         // kSyncDone 与 kPending 都从等事件起步：同步完成时事件已由系统置起，
         // 这次等待会立即返回（与原实现一致，不多等一轮）。
@@ -73,8 +81,9 @@ public:
         //   * TRUE：取消已排入，操作将以 ABORTED / 竞争获胜 / 其他错误收尾，事件必定置起
         //     —— 在宽限内等它；等不到就把整份资源移交登记表，绝不空手放手。
         //   * FALSE + ERROR_NOT_FOUND：没找到可取消的请求。两种可能 —— 操作刚好完成
-        //     （事件应已置起），或这个 OVERLAPPED 根本不曾真正入队（调用方把"同步就
-        //     连上"之类的返回当成了发起）。各用一次 0 等待探一下事件：置起→取结果收尾；
+        //     （事件应已置起），或这个 OVERLAPPED 根本不曾真正入队（历史缺陷：调用方把
+        //     ERROR_PIPE_CONNECTED 这种"早已连上"当成发起；现在 ConnectStartOf 已把四类
+        //     分开，此分支留作防御）。各用一次 0 等待探一下事件：置起→取结果收尾；
         //     没置起→内核不引用任何东西，同样按终态处理。不许把"取消没成"直接当"结束了"，
         //     也不许让幽灵记录进登记表白白收养句柄。
         //   * 其他 FALSE：取消没被受理，操作按还在飞行处理 —— 走宽限排干那一条。
@@ -219,6 +228,27 @@ private:
 };
 
 }  // namespace
+
+StartResult StartOf(const BOOL r) {
+    if (r) return {StartState::kSyncDone, 0};
+    const DWORD gle = GetLastError();
+    if (gle == ERROR_IO_PENDING) return {StartState::kPending, gle};
+    return {StartState::kSyncFailed, gle};
+}
+
+StartResult ConnectStartOf(const BOOL r) {
+    if (r) return {StartState::kSyncDone, 0};
+    const DWORD gle = GetLastError();
+    if (gle == ERROR_IO_PENDING) return {StartState::kPending, gle};
+    // 官方文档（ConnectNamedPipe，Return value）：客户端在 CreateNamedPipe 与
+    // ConnectNamedPipe 之间的间隙里连上时，函数返回 0 且 GetLastError 为
+    // ERROR_PIPE_CONNECTED —— "there is a good connection between client and server"。
+    // 这是一次成功而不是挂起操作：没有 IRP 在飞，事件也不会由系统置起。
+    // 其余错误（ERROR_NO_DATA、ERROR_PIPE_LISTENING、拒绝访问……）照实进 kSyncFailed，
+    // 这一档不是"可以忽略所有错误"的通行证。
+    if (gle == ERROR_PIPE_CONNECTED) return {StartState::kAlreadyConnected, 0};
+    return {StartState::kSyncFailed, gle};
+}
 
 IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD waitMs,
                        DWORD cancelGraceMs, const IssueFn& issue, std::vector<uint8_t>* outBuf) {

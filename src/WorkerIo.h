@@ -33,15 +33,29 @@ namespace workerio {
 
 // 发起阶段的结局。与 ReadFile/WriteFile/ConnectNamedPipe 的 BOOL + GetLastError 约定一一对应。
 enum class StartState {
-    kSyncDone,     // 同步完成（重叠调用返回非 0；事件此时已置起）
-    kPending,      // ERROR_IO_PENDING：操作进入飞行中
-    kSyncFailed,   // 其他错误：没有未决操作，可以直接走终态
+    kSyncDone,          // 同步完成（重叠调用返回非 0；事件此时已置起，等待会立即返回）
+    kAlreadyConnected,  // 已连接（ConnectNamedPipe 的 ERROR_PIPE_CONNECTED）：客户端在调用之前
+                        // 就连上了 —— 这是一次成功，但**没有发起任何挂起 I/O**，事件不会由系统
+                        // 置起（官方文档：even though the function returns zero, there is a good
+                        // connection）。所以它直接进成功终态，绝不能按"等待内核通知的异步请求"
+                        // 去等那个永不置起的事件 —— 那正是抢先连接被误报成超时的来源。
+    kPending,           // ERROR_IO_PENDING：操作进入飞行中
+    kSyncFailed,        // 其他错误：没有未决操作，可以直接走终态
 };
 
 struct StartResult {
     StartState state = StartState::kSyncFailed;
     DWORD gle = 0;   // 仅 kSyncFailed 有意义
 };
+
+// ReadFile/WriteFile 的 BOOL + GetLastError -> 发起阶段结局。重叠调用返回非 0 是"同步完成"，
+// 事件已由系统置起；ERROR_IO_PENDING 才是飞行中。这两个调用没有"已连接"那一档。
+StartResult StartOf(BOOL r);
+
+// ConnectNamedPipe 专用：在 StartOf 的三档之外，把 ERROR_PIPE_CONNECTED 单独判成
+// kAlreadyConnected。只有这一种成功是"没有挂起操作"的；其余错误一律照实进 kSyncFailed，
+// 不许拿 ERROR_PIPE_CONNECTED 当免检通行证。
+StartResult ConnectStartOf(BOOL r);
 
 // 发起一次重叠请求。buf/cap 是 PendingOperation 拥有的缓冲区：内核只会读写这块内存，
 // 绝不直接触碰调用方的内存；读取到的数据在确认终态之后由状态机复制回调用方。

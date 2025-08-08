@@ -144,8 +144,9 @@ try {
         $m = [regex]::Match($tail, '共 (\d+) 项检查，失败 (\d+)')
         Assert-Ec ($m.Success) "离线判据的摘要读不出来：$tail"
         Assert-Ec ([int]$m.Groups[2].Value -eq 0) '离线判据里有失败项'
-        # 60 项（消息格式 + 期限）+ 55 项（异步管道 I/O 生命周期）：只许增不许减
-        Assert-Ec ([int]$m.Groups[1].Value -ge 110) "离线判据的检查数不对劲（$($m.Groups[1].Value)），是不是被删了"
+        # 60 项（消息格式 + 期限）+ 61 项（异步管道 I/O 生命周期）+ 31 项（F03 连接时序，
+        # 含真命名管道判据）：只许增不许减
+        Assert-Ec ([int]$m.Groups[1].Value -ge 150) "离线判据的检查数不对劲（$($m.Groups[1].Value)），是不是被删了"
         Write-Host "  $tail" -ForegroundColor DarkGray
     }
 

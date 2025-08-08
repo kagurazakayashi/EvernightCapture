@@ -352,18 +352,35 @@ void CheckDeadline() {
 }  // namespace
 
 // worker_io_state.cpp 提供：异步管道 I/O 生命周期的注入式判据（回报本层检查数与失败数）。
-namespace ecapture { int RunWorkerIoStateChecks(int* checksOut, int* failuresOut); }
+// worker_connect_state.cpp 提供：Worker 连接时序的真命名管道判据（F03：抢先连接不得误报成
+// 超时），以及它判据五那个"外部客户端"傀儡进程的下场（--f03-peer 模式）。
+namespace ecapture {
+int RunWorkerIoStateChecks(int* checksOut, int* failuresOut);
+int RunWorkerConnectStateChecks(int* checksOut, int* failuresOut);
+int RunWorkerConnectPeerMode(const wchar_t* pipeName);
+}
 
-int main() {
+#include <cwchar>
+
+// 傀儡模式要拿宽字符 argv（管道名按原样送达），所以入口用 wmain 而不是 main。
+int wmain(int argc, wchar_t* argv[]) {
+    // 判据五的傀儡模式：不起判据、不打印，只连管、握手、等测试方收尾（见 worker_connect_state.cpp）。
+    if (argc == 3 && std::wcscmp(argv[1], L"--f03-peer") == 0) {
+        return ecapture::RunWorkerConnectPeerMode(argv[2]);
+    }
+
     std::printf("隔离执行消息格式（WorkerProtocol）与执行期限（Deadline）离线判据\n");
     CheckHeader();
     CheckTask();
     CheckReply();
     CheckDeadline();
     // 异步管道 I/O 生命周期（WorkerIo + 注入假后端）判据在 worker_io_state.cpp，
-    // 两层的计数并进来打同一行摘要，真机脚本按最后一行核对总数。
+    // 连接时序（真命名管道）判据在 worker_connect_state.cpp；三层计数并进来打同一行摘要，
+    // 真机脚本按最后一行核对总数。
     int ioChecks = 0, ioFails = 0;
     const int ioFailures = ecapture::RunWorkerIoStateChecks(&ioChecks, &ioFails);
-    std::printf("共 %d 项检查，失败 %d\n", g_checks + ioChecks, g_failures + ioFailures);
-    return (g_failures || ioFailures) ? 1 : 0;
+    int connChecks = 0, connFails = 0;
+    const int connFailures = ecapture::RunWorkerConnectStateChecks(&connChecks, &connFails);
+    std::printf("共 %d 项检查，失败 %d\n", g_checks + ioChecks + connChecks, g_failures + ioFails + connFailures);
+    return (g_failures || ioFailures || connFailures) ? 1 : 0;
 }

@@ -393,6 +393,46 @@ void CheckZeroAndClamp() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 判据十一：已连接分支（ERROR_PIPE_CONNECTED）—— 连接早已成立、没有挂起 I/O，
+// 必须就地进成功终态：不等事件、不取消、不取结果，也绝不伪装成等待内核通知的异步请求。
+// 这条判据钉住 F03 的缺陷本体：原实现把它映射成 kSyncDone 去等一个永不置起的事件，
+// 抢先连接因此被误报成超时（在假后端上表现为"多等了一次预算"）。
+// ---------------------------------------------------------------------------
+void CheckAlreadyConnected() {
+    FakeBackend be;
+    bool issued = false;
+    const IoStep s = RunOverlappedOp(
+        be, kH1, 0, 1000, 500,
+        [&](OVERLAPPED&, uint8_t*, uint32_t) {
+            issued = true;
+            return StartResult{StartState::kAlreadyConnected, 0};
+        },
+        nullptr);
+    Check(issued, "已连接分支照样先走完发起这一步");
+    Check(s.done && !s.timedOut && !s.unresolved && s.gle == 0 && s.transferred == 0,
+          "已连接就地判定为成功终态（不是超时、不是未决）");
+    Check(be.waitMsSeen.empty() && be.cancelCalls == 0 && be.fetchCalls == 0,
+          "已连接不等待、不取消、不取结果 —— 没有挂起操作可等");
+    Check(be.eventsClosed.size() == 1 && be.doubleClose == 0 && be.eventsAlive() == 0,
+          "已连接分支把自己建的事件恰好关闭一次");
+    Check(!HasPendingOps(kH1) && be.unexpected == 0,
+          "已连接不进登记表、全程无计划外调用");
+}
+
+// 同一状态机对"零预算 + 已连接"也不许多做一次等待：预算烧尽了连接照样立刻算成功。
+void CheckAlreadyConnectedWithSpentBudget() {
+    FakeBackend be;
+    const IoStep s = RunOverlappedOp(
+        be, kH2, 0, 0, 500,
+        [](OVERLAPPED&, uint8_t*, uint32_t) {
+            return StartResult{StartState::kAlreadyConnected, 0};
+        },
+        nullptr);
+    Check(s.done && !s.timedOut && be.waitMsSeen.empty(),
+          "预算已尽时已连接分支不进入任何等待（等待只对确有挂起操作的路径有意义）");
+}
+
 }  // namespace
 
 int RunWorkerIoStateChecks(int* checksOut, int* failuresOut) {
@@ -407,6 +447,8 @@ int RunWorkerIoStateChecks(int* checksOut, int* failuresOut) {
     CheckWaitFailed();
     CheckAdoptedHandle();
     CheckZeroAndClamp();
+    CheckAlreadyConnected();
+    CheckAlreadyConnectedWithSpentBudget();
     if (checksOut) *checksOut = g_checks;
     if (failuresOut) *failuresOut = g_failures;
     return g_failures;

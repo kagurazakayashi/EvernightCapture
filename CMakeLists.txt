@@ -159,11 +159,16 @@ set_property(TARGET ecapture-consent-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # 期限那条判据要读 --lang 那套资源，所以把 Lang/CliOptions 与 .rc 一起编进来。
 # 这里不链 Worker.cpp：它要起辅助进程，也要用到几条取图通道，而格式与期限这两层判据
 # 都只需要纯数据的那几份源文件。异步 I/O 生命周期那层判据（tests\worker_io_state.cpp）
-# 链的是 WorkerIo.cpp 本体与注入的假后端 —— 判的就是生产状态机，不是它的抄本。
+# 链的是 WorkerIo.cpp 本体与注入的假后端 —— 判的就是生产状态机，不是它的抄本；
+# 连接时序那层（tests\worker_connect_state.cpp，F03）同样链 WorkerIo.cpp 本体，只是后端
+# 换成真实的 Win32Backend + 真命名管道 —— "客户端抢先连上"这类顺序判不了假数据，
+# 而发布版 ECAPTURE.EXE 里不许有控制连接顺序的开关，所以傀儡进程是本测试 exe 自己
+# （--f03-peer 模式），不碰任何用户应用与桌面内容。
 # ---------------------------------------------------------------------------
 add_executable(ecapture-worker-tests
   tests/isolation_state.cpp
   tests/worker_io_state.cpp
+  tests/worker_connect_state.cpp
   src/HdrColor.cpp
   src/WorkerIo.cpp
   src/WorkerProtocol.cpp
