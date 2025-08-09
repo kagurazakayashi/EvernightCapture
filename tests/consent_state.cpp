@@ -7,8 +7,12 @@
 //
 // 这个可执行文件不含任何取帧代码：它只链接纯逻辑那几份源文件（见 CMakeLists.txt）。
 
+#include <atomic>
+#include <climits>
 #include <cstdio>
+#include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -65,6 +69,10 @@ public:
         reply.answer = ConsentAnswer::kAccepted;   // 脚本没写到的那一次一律答"是"
         const size_t n = asks;   // 第 n 次弹框（1 起）
         if (n <= answers.size()) reply.answer = answers[n - 1];
+        // "到点没人答"与"人答了否"同为拒绝，但要能分开带出去（timedOuts 按次给）
+        if (reply.answer == ConsentAnswer::kDeclined && n <= timedOuts.size()) {
+            reply.timedOut = timedOuts[n - 1];
+        }
         reply.win32 = unavailableWin32;
         return reply;
     }
@@ -72,6 +80,7 @@ public:
     int asks = 0;
     std::vector<Asked> asked;
     std::vector<ConsentAnswer> answers;   // 空 = 一律答"是"
+    std::vector<bool> timedOuts;
     DWORD unavailableWin32 = 0;
 };
 
@@ -129,6 +138,80 @@ std::vector<GateTarget> TwoTargets() {
 }
 
 bool CodeIs(const Diagnostic& d, const wchar_t* code) { return d.code == code; }
+
+// ---------------------------------------------------------------------------
+// 假弹框驱动：不弹真框，把生产的生命周期状态机（RunMonitoredDialog）整台跑完。
+//
+// 弹框线程由状态机自己创建，这个驱动只控制三件事：框多晚出现（appearAfterMs）、
+// 关它的话第几次才生效（honorCloseAfter）、生效后回哪个按钮（answer）。判的是生产
+// 那份代码，不是它独立抄一遍的副本。驱动只存在于本测试翻译单元 —— 发布版
+// ECAPTURE.EXE 里没有任何入口能选到它（没有运行时开关，能选的只有编译进谁的身体），
+// 所以它不构成"accepted 后门"：连 ConsentGate 都到不了的那层假象都没有。
+// ---------------------------------------------------------------------------
+
+class FakeDialog final : public DialogDriver {
+public:
+    // —— 剧本 ——
+    int answer = IDNO;           // Show 返回的按钮值
+    DWORD failWin32 = 0;         // 非 0 => "没弹成"（MessageBoxW 返回 0 的同一约定）
+    bool throwInShow = false;    // 驱动崩了：按"不可用"判，异常不许跑出线程
+    int appearAfterMs = 0;       // 窗口 Show 开始这么久之后才找得到（弹框创建延迟）
+    int honorCloseAfter = 0;     // 第 N 次有效关框请求之后框才真关；INT_MAX = 永不关
+    std::atomic<bool> releaseNow{false};   // 测试线程手动放行（立即应答 / 放弃后观察）
+
+    // —— 可观察 ——
+    std::atomic<int> closeSlices{0};       // RequestClose 被调了几次（含还没窗口的）
+    std::atomic<int> effectiveCloses{0};   // 其中"窗口已在、指令真的送出去了"的次数
+    std::atomic<bool> showEntered{false};
+    std::atomic<bool> showReturned{false};
+    std::atomic<DWORD> seenThreadId{0};
+
+    DialogResult Show() override {
+        showStart_ = GetTickCount64();
+        showEntered.store(true);
+        while (!released()) Sleep(10);
+        showReturned.store(true);
+        if (throwInShow) throw std::runtime_error("fake driver blew up");
+        DialogResult r;
+        if (failWin32 != 0) {
+            r.code = 0;
+            r.win32 = failWin32;
+        } else {
+            r.code = answer;
+        }
+        return r;
+    }
+
+    bool RequestClose(DWORD dialogThreadId) override {
+        closeSlices.fetch_add(1);
+        if (dialogThreadId != 0) seenThreadId.store(dialogThreadId);
+        if (GetTickCount64() - showStart_ < ULONGLONG(appearAfterMs)) return false;
+        effectiveCloses.fetch_add(1);
+        return true;
+    }
+
+    bool WaitShowReturned() {
+        for (int i = 0; i < 200; ++i) {
+            if (showReturned.load()) return true;
+            Sleep(10);
+        }
+        return false;
+    }
+
+private:
+    bool released() {
+        if (releaseNow.load()) return true;
+        return honorCloseAfter > 0 && honorCloseAfter != INT_MAX &&
+               effectiveCloses.load() >= honorCloseAfter;
+    }
+
+    ULONGLONG showStart_ = 0;
+};
+
+struct Tick {
+    ULONGLONG t0 = GetTickCount64();
+    ULONGLONG Ms() const { return GetTickCount64() - t0; }
+};
 
 }  // namespace
 
@@ -365,6 +448,166 @@ int main() {
         Check(f.prompt.asks == 1, "两块屏只问一次");
         Check(p1->Covers(R(0, 0, 1920, 1080)) && !p1->Covers(R(1920, 0, 3840, 1080)),
               "第一块屏的凭证不能拿去截第二块");
+    }
+
+    // =========================================================================
+    Section("8) 弹框生命周期：任何超时路径都可收尾（假驱动跑生产状态机）");
+    // =========================================================================
+    {
+        // 答"是"：同意，而且关闭动画缓冲一分不少（它是对用户的承诺，不是可省的重负）
+        auto d = std::make_shared<FakeDialog>();
+        d->answer = IDYES;
+        d->releaseNow = true;
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 0);
+        Check(r.answer == ConsentAnswer::kAccepted && !r.timedOut, "答\"是\" => kAccepted");
+        Check(t.Ms() >= 950, "同意路径保留约 1 秒关闭动画缓冲（不被任何超时逻辑削减）");
+        Check(d->WaitShowReturned(), "弹框线程正常收尾");
+    }
+    {
+        // 设了期限但人在期限前答了"是"：缓冲照留 —— 有 --consent-timeout-ms 不等于抄近路
+        auto d = std::make_shared<FakeDialog>();
+        d->answer = IDYES;
+        d->releaseNow = true;
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 30000);
+        Check(r.answer == ConsentAnswer::kAccepted && t.Ms() >= 950,
+              "带期限的提前同意：accepted 且缓冲完整");
+    }
+    {
+        auto d = std::make_shared<FakeDialog>();
+        d->answer = IDNO;
+        d->releaseNow = true;
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 0);
+        Check(r.answer == ConsentAnswer::kDeclined && !r.timedOut, "答\"否\" => kDeclined");
+        Check(t.Ms() < 900, "非同意路径不付关闭动画缓冲");
+    }
+    {
+        auto d = std::make_shared<FakeDialog>();
+        d->answer = IDCANCEL;   // 人自己按 X 关框
+        d->releaseNow = true;
+        const ConsentReply r = RunMonitoredDialog(d, 0);
+        Check(r.answer == ConsentAnswer::kDeclined, "人关框 = 不同意");
+    }
+    {
+        auto d = std::make_shared<FakeDialog>();
+        d->failWin32 = 42;      // Show 立刻带回"没弹成"
+        d->releaseNow = true;
+        const ConsentReply r = RunMonitoredDialog(d, 0);
+        Check(r.answer == ConsentAnswer::kUnavailable && r.win32 == 42,
+              "弹不出框 => kUnavailable 并带出原 Win32 码");
+    }
+    {
+        auto d = std::make_shared<FakeDialog>();
+        d->throwInShow = true;
+        d->releaseNow = true;
+        const ConsentReply r = RunMonitoredDialog(d, 0);
+        Check(r.answer == ConsentAnswer::kUnavailable,
+              "驱动抛异常 => 不可用（绝不拖崩进程、也绝不算同意）");
+        Check(d->WaitShowReturned(), "异常线程照样收尾");
+    }
+    {
+        // 到点没人答、第一次关框就生效：拒绝 + timedOut
+        auto d = std::make_shared<FakeDialog>();
+        d->answer = IDNO;
+        d->honorCloseAfter = 1;
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 300);
+        Check(r.answer == ConsentAnswer::kDeclined && r.timedOut, "到点关框 => 拒绝 + timedOut");
+        Check(t.Ms() >= 300 && t.Ms() < 3500, "有界返回（期限 + 宽限之内）");
+        Check(d->seenThreadId.load() != 0, "关框请求拿到了弹框线程 id");
+        Check(d->WaitShowReturned(), "关掉的线程被收工，没有抛弃");
+    }
+    {
+        // 本机实测场景：头几次关框消息被无视（WM_CLOSE 处理了但不关）——靠重试救回
+        auto d = std::make_shared<FakeDialog>();
+        d->honorCloseAfter = 10;
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 300);
+        Check(r.answer == ConsentAnswer::kDeclined && r.timedOut, "关框晚生效仍是拒绝 + timedOut");
+        Check(d->effectiveCloses.load() >= 10, "宽限期内逐切片重试，第一条消息没生效不是死路");
+        Check(t.Ms() < 300 + 3000 + 500, "晚生效也没撞上放弃线");
+    }
+    {
+        // 框弹得晚：期限到时还没有窗口可关，后来的切片把它补上
+        auto d = std::make_shared<FakeDialog>();
+        d->appearAfterMs = 900;
+        d->honorCloseAfter = 1;
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 300);
+        Check(r.answer == ConsentAnswer::kDeclined && r.timedOut, "弹框延迟后到点仍按拒绝收尾");
+        Check(d->effectiveCloses.load() >= 1, "窗口迟到后关框请求补送成功");
+        Check(d->closeSlices.load() >= d->effectiveCloses.load(), "迟到的请求如实计了数");
+    }
+    {
+        // 极端：怎么都关不掉。放弃线必须兑现，而且放弃之后线程回来写结果不落空。
+        auto d = std::make_shared<FakeDialog>();
+        d->honorCloseAfter = INT_MAX;   // 永不因关框请求而回
+        d->answer = IDYES;              // 之后"人"才点了是：答案已经交不回同意了
+        Tick t;
+        const ConsentReply r = RunMonitoredDialog(d, 200);
+        Check(r.answer == ConsentAnswer::kDeclined && r.timedOut,
+              "关不掉的框按到点拒绝收尾，绝不无限等");
+        Check(t.Ms() >= 200 + 3000 && t.Ms() < 200 + 3000 + 1000, "放弃线：期限 + 宽限 + 一个切片");
+        Check(!d->showReturned.load(), "放弃时线程确实还在弹框里（没有 TerminateThread）");
+        d->releaseNow = true;           // 线程之后才返回：往共享状态里写，谁都没悬空
+        Check(d->WaitShowReturned(), "被放弃的线程自己安全收尾（共享生命周期覆盖到它归还）");
+        Check(r.answer == ConsentAnswer::kDeclined,
+              "线程迟到带回\"是\"也改不了已交出的拒绝（没人再消费它）");
+    }
+    {
+        // 竞争：期限到点的同一个瞬间"是"才落地 —— 保守优先级：超时赢
+        auto d = std::make_shared<FakeDialog>();
+        d->answer = IDYES;
+        d->honorCloseAfter = 1;
+        const ConsentReply r = RunMonitoredDialog(d, 300);
+        Check(r.answer == ConsentAnswer::kDeclined && r.timedOut,
+              "超时与同意同刻发生：按拒绝 + timedOut，绝不改成同意");
+    }
+    {
+        // 竞争的另一侧的干净判据：Show 在期限之前带回 code 0 => 报不可用（约定见 Consent.h）
+        auto d = std::make_shared<FakeDialog>();
+        d->failWin32 = 5;
+        d->releaseNow = true;           // Show 立刻就回，期限完全没参与
+        const ConsentReply r = RunMonitoredDialog(d, 100000);
+        Check(r.answer == ConsentAnswer::kUnavailable && r.win32 == 5,
+              "期限之前弹框就失败：kUnavailable 带原码，不记成超时");
+    }
+
+    // =========================================================================
+    Section("9) \"到点没人答\"在授权状态机里：独立诊断码 + 粘住整批");
+    // =========================================================================
+    {
+        Fixture f(false, TwoTargets());
+        f.prompt.answers = {ConsentAnswer::kDeclined};
+        f.prompt.timedOuts = {true};
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "超时不放行");
+        Check(CodeIs(err, codes::kConsentTimeout), "超时的码是 capture.consent_timeout（≠答否）");
+        Check(err.stage == stages::kConsent, "stage 仍是 consent");
+        Check(f.gate.Refused(), "超时同样停止本次剩下的采集");
+        Diagnostic err2;
+        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err2), "同批第二个目标不再截");
+        Check(CodeIs(err2, codes::kConsentTimeout), "粘住的诊断保持超时码，不被改写成\"被拒绝\"");
+        std::optional<DesktopPermit> permit;
+        Check(!f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err2) &&
+                  CodeIs(err2, codes::kConsentTimeout),
+              "桌面路径撞同一堵墙：也保持超时码");
+    }
+    {
+        // 窗口那级批了、桌面那级到点没人答：之后一切拒绝都按桌面超时粘住
+        Fixture f(false, TwoTargets());
+        f.prompt.answers = {ConsentAnswer::kAccepted, ConsentAnswer::kDeclined};
+        f.prompt.timedOuts = {false, true};
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口那级先批");
+        std::optional<DesktopPermit> permit;
+        Check(!f.gate.AuthorizeDesktop(paths::kScreenWgc, kA, kAreaA, &permit, &err),
+              "桌面那级超时拒绝");
+        Check(CodeIs(err, codes::kConsentTimeout), "桌面超时的码正确");
+        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err), "跨级也要停");
+        Check(CodeIs(err, codes::kConsentTimeout), "跨级粘住的仍是超时码");
     }
 
     // =========================================================================

@@ -9,7 +9,8 @@
          假应答器与假屏幕布局把 ConsentGate 整台状态机跑完 —— 不需要桌面，也不需要人。
       2) 真机层：目标一律是本测试自建的窗口（tests\helper\ec_window.cs），只收尾自己起的进程。
          凡是要弹框的用例，本脚本一律代答"否"（IDNO）：拒绝不会拍到任何东西，所以可以自动跑，
-         同时把"必须弹框"与"拒绝之后的契约"一起判掉。绝代人点"是" —— 那等于替人同意把桌面上
+         同时把"必须弹框"与"拒绝之后的契约"一起判掉（第 8 节的超时判据是"什么都不答"，
+         让框自己到点收尾 —— 那正是它判的东西）。绝代人点"是" —— 那等于替人同意把桌面上
          其它窗口拍进图里。要跑桌面路径的画面判据，请在无隐私的专用桌面上用
          tests\channels.ps1 -SimulateConsent 或 tests\window_shot.bat（由人自己点）。
          "没有可交互桌面"那种情况在本机（当前登录的交互会话）造不出来，如实记未验证，
@@ -279,6 +280,52 @@ try {
     Skip-Ec $skipNoDesktop $whyNoDesktop
     Skip-Ec $skipYesClick $whyYesClick
     Skip-Ec $skipAutoEsc $whyAutoEsc
+
+    # =========================================================================
+    Write-Host "`n=== 8) 关框收尾与 auto 链的拒绝传播（真机框） ==="
+    # =========================================================================
+    # (a) auto 链到点没人答：框必须自己关得掉（本机实测头一发 WM_CLOSE 会被无视，
+    #     收尾靠的是升级链），且码保持 capture.consent_timeout —— 不许换后端重跑，
+    #     更不许最后统一吞成 capture.failed（那会把"没人同意"说成"机器不行"）。
+    $p8a = Get-EcRunFile -RunDir $run -Name 'auto_consent_timeout.png'
+    Remove-Item -LiteralPath $p8a -ErrorAction SilentlyContinue
+    $r = Invoke-EcConsentShot -Exe $Exe -Arguments @(
+        '--hwnd', $hwnd, '--out', $p8a, '--consent-timeout-ms', '900')
+    Assert-Ec $r.Dialog 'auto 路径设了 --consent-timeout-ms 却压根没弹框'
+    $o = Json-Of $r
+    $codes8a = (Codes $o.errors) -join ','
+    if ($r.Exit -eq 0 -or $codes8a -eq 'capture.access_denied') {
+        Skip-Ec 'auto 链确认超时：码保持 + 不换后端' `
+            "这一次有人在 900 ms 内碰了确认框（exit=$($r.Exit)，码=[$codes8a]）：前提`"没人回答`"不成立，测试侧不代答`"是`""
+    } else {
+        Assert-Ec ($r.Exit -eq 6) "auto 链确认超时的退出码 $($r.Exit)，应为 6（零交付按拒绝）"
+        Assert-Ec ($codes8a -eq 'capture.consent_timeout') `
+            "auto 链确认超时只该报 capture.consent_timeout：[$codes8a]（绝不吞成 capture.failed）"
+        Assert-Ec ($null -eq $o.notes) '确认超时不该有 capture_channel 提示：后端一条都没试过'
+        Assert-Ec ($o.captured -eq 0 -and -not (Test-Path -LiteralPath $p8a)) '确认超时的这一次仍有产出'
+    }
+    # (b) auto 路径答"否"：拒绝同为终局，整份 errors 就一条 access_denied
+    $p8b = Get-EcRunFile -RunDir $run -Name 'auto_consent_denied.png'
+    Remove-Item -LiteralPath $p8b -ErrorAction SilentlyContinue
+    $r = Invoke-EcConsentShot -Exe $Exe -Arguments @('--hwnd', $hwnd, '--out', $p8b) -Answer $IDNO
+    $o = Json-Of $r
+    Assert-Ec ($r.Exit -eq 6 -and ((Codes $o.errors) -join ',') -eq 'capture.access_denied') `
+        "auto 答`"否`"应退出 6 且只报 capture.access_denied（exit=$($r.Exit)）：[$((Codes $o.errors) -join ',')]"
+    Assert-Ec (-not (Test-Path -LiteralPath $p8b)) 'auto 路径被取消却写出了文件'
+    # (c) 一批两个目标、问一次答"否"：零交付按拒绝退出 6；判定器拒后整批停住，
+    #     所以 errors 恰好一条（第二个目标根本没被处理），文件一个不落。
+    $dir8 = Join-Path $run.Path 'refused_batch'
+    New-Item -ItemType Directory -Force -Path $dir8 | Out-Null
+    $argvRefuse2 = @('--hwnd', $hwnd, '--hwnd', $pair0, '--all', '--out', (Join-Path $dir8 'batch_%n.png'))
+    $r = Invoke-EcConsentShot -Exe $Exe -Arguments $argvRefuse2 -Answer $IDNO
+    $o = Json-Of $r
+    Assert-Ec ($r.Exit -eq 6 -and $o.captured -eq 0) `
+        "整批被拒（零交付）该退出 6：exit=$($r.Exit) captured=$($o.captured)"
+    $codes8c = @(Codes $o.errors)
+    Assert-Ec ($codes8c.Count -eq 1 -and $codes8c[0] -eq 'capture.access_denied') `
+        "拒绝后整批应当就此收住（恰好一条 access_denied）：[$(($codes8c -join ','))]"
+    Assert-Ec (@(Get-ChildItem -LiteralPath $dir8 -Filter 'batch_*' -ErrorAction SilentlyContinue).Count -eq 0) `
+        '被拒的一批写出了文件'
 } finally {
     Stop-EcOwnedWindows
     if (-not $Keep) { Remove-EcRunDir $run -Quiet } else { Write-Host "  截图保留在 $($run.Path)" }

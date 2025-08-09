@@ -302,7 +302,11 @@ bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, 
             return true;
         }
         if (attemptErr.code == codes::kAccessDenied ||
-            attemptErr.code == codes::kConsentUnavailable || attemptErr.code == codes::kConsentStale) {
+            attemptErr.code == codes::kConsentUnavailable ||
+            attemptErr.code == codes::kConsentTimeout || attemptErr.code == codes::kConsentStale) {
+            // consent_timeout 也在这里：到点没人答同样是这一关的终局。漏了它，auto 链会把每条
+            // 通道都撞一遍同一堵"已被拒绝"的墙，最后把真实原因吞成 capture.failed ——
+            // 调用方看到的就是"机器不行"，而真相是"没人同意"。
             if (err) *err = std::move(attemptErr);
             return false;   // 授权这一关的结果不换后端重跑：拒绝就是拒绝，位置变了就重新确认
         }

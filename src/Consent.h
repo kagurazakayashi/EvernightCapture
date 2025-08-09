@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -70,11 +71,13 @@ public:
     virtual ConsentReply Ask(const ConsentQuestion& question) = 0;
 };
 
-// 真机上那一个：模态 MessageBox，默认焦点在"否"上。
+// 真机上那一个：模态 MessageBox（MB_YESNO），默认焦点在"否"上。
 //
 // 确认框跑在一条专门的线程上，本线程只负责等它 —— 因为 MessageBoxW 自己是阻塞的，
-// 而 --consent-timeout-ms 要求"到点没人答就按拒绝处理"，那就必须有一个能主动把框关掉的
-// 观察者。这条线程一定在 MessageBox 返回之后才被收尾（不靠 TerminateThread 抛弃它）。
+// 而 --consent-timeout-ms 要求"到点没人答就按拒绝处理"，那就必须有一个能主动把框关掉、
+// 并且**任何超时路径都能收尾**的观察者（见下面的 RunMonitoredDialog）。这条线程从不被
+// TerminateThread 抛弃：宽限用尽仍关不掉时，等待方按"拒绝"返回，弹框线程与它引用的
+// 一切由共享生命周期接管（进程退出时一起消失，其间绝不构成同意）。
 // timeoutMs = 0 表示一直等人回答。
 class DialogConsentPrompt final : public IConsentPrompt {
 public:
@@ -85,6 +88,58 @@ public:
 private:
     uint64_t timeoutMs_ = 0;
 };
+
+// ---------------------------------------------------------------------------
+// 弹框生命周期机制
+//
+// "框怎么弹、怎么关"（驱动）与"等多久、到点关不关得掉、线程怎么收尾"（状态机）分开：
+// 状态机才是 F05 的要害 —— 到点必须有一个有界、可信的结束路径，不管框是没弹出来、
+// 关它的话没送到、还是送到了没生效。真机的驱动是 MessageBoxW（ShowConsentDialog）；
+// 测试目标链的是**同一份实现**，只是把驱动换成自己的傀儡，判的是生产那台状态机本身。
+// 这不是发布版后门：ECAPTURE.EXE 里注入点不接线、也不存在任何能选驱动的运行时入口，
+// 傀儡驱动只编译进测试可执行文件。
+// ---------------------------------------------------------------------------
+
+// 驱动在弹框线程上跑完一次的结果。沿用 MessageBoxW 的约定：code 0 = 没弹成。
+struct DialogResult {
+    int code = 0;
+    DWORD win32 = 0;      // code == 0 时这才是失败原值（在弹框那条线程上取的）
+};
+
+class DialogDriver {
+public:
+    DialogDriver() = default;
+    virtual ~DialogDriver() = default;
+    DialogDriver(const DialogDriver&) = delete;
+    DialogDriver& operator=(const DialogDriver&) = delete;
+
+    // 在专门的弹框线程上被调用：把框弹出来，阻塞到它关闭。
+    // 状态机保证这条线程绝不被终止 —— 它可能在等待方放弃之后才返回，
+    // 那时它引用的状态由它自己持有的那份共享所有权接管，不落空。
+    virtual DialogResult Show() = 0;
+
+    // 期限到点后在**等待线程**上被调用，宽限期内每个轮询切片重试一次：
+    // 试着把框关掉。dialogThreadId 是弹框线程的 id（0 = 那条线程还没跑起来）。
+    // 返回值只表示"关的指令送出去了没有"；生效与否一律由 done 事件 + 宽限期裁决。
+    virtual bool RequestClose(DWORD dialogThreadId) = 0;
+};
+
+// 看守一次弹框直到拿到一个可信的结束（或放弃这条框）。规则：
+//   * 只有弹框真的关闭、且驱动报回 IDYES、且期限还没到，才是 kAccepted；
+//     同意之后固定留一段关闭动画缓冲（kDialogSettleMs，见 Consent.cpp），不为赶期限省略。
+//   * 人答"否"、人自己关框 => kDeclined。
+//   * 期限到点 => 先 latch timedOut 再裁决：宽限期内反复 RequestClose；到点仍没人答过，
+//     不管是关不掉、还是"是"在同一瞬间被点下，一律 kDeclined + timedOut，绝不改成同意。
+//     timeoutMs > 0 时本函数在 timeoutMs + 关框宽限 + 一个切片内必定返回。
+//   * 框根本没弹出来、驱动抛异常、或事件/线程创建失败 => kUnavailable（带 win32 原值）。
+//     弹框线程已经交出结果（code 0）之后，即使期限也到了，仍报 kUnavailable ——
+//     "弹都没弹出去"比"没人回答"更具体，两者同为拒绝，隐私上等价。
+ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t timeoutMs);
+
+// 生产入口：用 MessageBoxW 弹一帧（flags 须含 MB_YESNO —— 到点关框的升级链要点那块
+// "否"按钮，见 Consent.cpp 的 MessageBoxDriver），其余规则同上。
+ConsentReply ShowConsentDialog(const std::wstring& body, const std::wstring& title, UINT flags,
+                               uint64_t timeoutMs);
 
 // 一次桌面取样的凭证。构造函数私有，唯一的发出者是 ConsentGate，而 GrabScreenRect、
 // duplication、整屏 wgc 都把它做成必需参数 —— 内部退路想绕开授权就拿不到这张凭证，
