@@ -783,6 +783,9 @@ CaptureOutcome RunCapture(const Options& opt) {
     gateCfg.yes = opt.yes;
     gateCfg.captureLabel = CaptureMethodName(opt.capture);
     gateCfg.consentTimeoutMs = opt.consentTimeoutMs;
+    // 真人等待从上面那份整批自动预算里暂停出去（判定器只在真要弹框时套上暂停作用域；
+    // --consent-timeout-ms 有自己的秒表，不跟着冻结）。dl 比判定器活得久，这里只借指针。
+    gateCfg.autoBudget = &dl;
     for (const Target& t : targets) {
         GateTarget gt;
         gt.screen = t.isScreen;

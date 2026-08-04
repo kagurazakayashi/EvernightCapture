@@ -349,6 +349,164 @@ void CheckDeadline() {
           "确认超时的码是 capture.consent_timeout（与'人答否'同为拒绝但可分开分支）");
 }
 
+// ---------------------------------------------------------------------------
+// 自动预算的暂停（F04）：人工确认等待不占预算，暂停也不许回填预算。
+// 全部用假时钟踩精确毫秒数；生产 QPC 时钟另给一条带容差的实测判据。
+// ---------------------------------------------------------------------------
+struct FakeClock {
+    int64_t ms = 0;
+};
+
+void CheckDeadlinePause() {
+    using ecapture::Deadline;
+    FakeClock c;
+    const auto now = [&c]() { return c.ms; };
+
+    // 文档里的数值场景：总预算 5000；先自动处理 1000，人工等待 20000 加关闭缓冲 1000，
+    // 恢复后仍剩 4000；再自动处理 500 之后剩 3500
+    c.ms = 0;
+    {
+        const Deadline dl = Deadline::FromTotalMs(5000, now);
+        c.ms += 1000;
+        Check(dl.RemainingMs() == 4000, "假时钟：自动处理 1000 之后剩 4000");
+        {
+            const auto pause = dl.PauseForHumanWait();
+            c.ms += 20000 + 1000;   // 真人等待 + 同意后约 1 秒关闭动画缓冲
+            Check(dl.RemainingMs() == 4000, "暂停在世：人工等待一分不烧自动预算");
+            Check(dl.ElapsedMs() == 1000, "暂停在世：流逝读数只算自动处理");
+            Check(!dl.Spent(), "暂停在世：预算没被人等没");
+        }
+        Check(dl.RemainingMs() == 4000, "恢复后：暂停区间被原样跳过（既不烧也不回填）");
+        c.ms += 500;
+        Check(dl.RemainingMs() == 3500, "恢复后的自动处理继续烧同一份预算");
+        Check(dl.ElapsedMs() == 1500, "总流逝 = 自动处理之和，与人工等待的 21000 无关");
+    }
+
+    // 嵌套暂停：只由最外层进出账，内层重复进入不重复扣
+    c.ms = 0;
+    {
+        const Deadline dl = Deadline::FromTotalMs(5000, now);
+        c.ms += 1000;
+        {
+            const auto outer = dl.PauseForHumanWait();
+            c.ms += 500;
+            {
+                const auto inner = dl.PauseForHumanWait();
+                c.ms += 3000;
+                Check(dl.RemainingMs() == 4000, "嵌套暂停内层：剩余照样冻结");
+            }
+            c.ms += 500;
+            Check(dl.RemainingMs() == 4000, "嵌套暂停内层退出、外层仍在：冻结不中断");
+        }
+        Check(dl.RemainingMs() == 4000, "嵌套暂停合计 4000，只扣一次（不重复扣除）");
+        c.ms += 200;
+        Check(dl.RemainingMs() == 3800, "最外层恢复后计时照常推进");
+    }
+
+    // 异常退栈：暂停作用域靠析构恢复，不存在"忘了 resume"的分支
+    c.ms = 0;
+    {
+        const Deadline dl = Deadline::FromTotalMs(5000, now);
+        bool caught = false;
+        try {
+            const auto pause = dl.PauseForHumanWait();
+            c.ms += 21000;
+            throw 1;
+        } catch (...) {
+            caught = true;
+        }
+        Check(caught, "判据自己确实从暂停里抛了出去");
+        Check(dl.RemainingMs() == 5000, "暂停中异常退出：作用域照常恢复，人工段不扣预算");
+        c.ms += 1000;
+        Check(dl.RemainingMs() == 4000, "异常退栈后同一份预算继续正常计时");
+    }
+
+    // 复制件（查询闭包 / 隔离调用拿到的那份）与原件共享状态：暂停互相看得见
+    c.ms = 0;
+    {
+        const Deadline dl = Deadline::FromTotalMs(5000, now);
+        const Deadline copy = dl;   // 值复制再带进闭包的那一份
+        c.ms += 800;
+        {
+            const auto pause = copy.PauseForHumanWait();   // 由复制件发起暂停
+            c.ms += 12000;
+            Check(dl.RemainingMs() == 4200, "复制件发起的暂停对原件同样生效（没有独立盲副本）");
+        }
+        c.ms += 200;
+        Check(dl.RemainingMs() == 4000 && copy.RemainingMs() == 4000,
+              "原件与复制件烧的是同一份预算，读数一致");
+    }
+
+    // 弹框之前就已耗尽的预算，绝不借一次确认复活
+    c.ms = 0;
+    {
+        const Deadline dl = Deadline::FromTotalMs(1000, now);
+        c.ms += 1500;
+        Check(dl.Spent() && dl.RemainingMs() == 0 && dl.ClampWait(2000) == 0,
+              "耗尽：任何一步都拿不到等待时间");
+        {
+            const auto pause = dl.PauseForHumanWait();
+            c.ms += 30000;
+            Check(dl.RemainingMs() == 0, "耗尽之后进入暂停：剩余照样是 0");
+        }
+        Check(dl.Spent() && ecapture::WaitTimeout(dl) == 0,
+              "已耗尽的自动预算不借人工确认复活（恢复后仍是 0，不是 INFINITE）");
+    }
+
+    // 0 = 不设总预算：暂停是惰性对象，"不限"语义原样保持
+    c.ms = 0;
+    {
+        const Deadline free = Deadline::FromTotalMs(0, now);
+        c.ms += 999999;
+        Check(!free.Enabled() && free.RemainingMs() == Deadline::kNoLimit,
+              "0 预算：不设限，也不存在已用尽");
+        {
+            const auto pause = free.PauseForHumanWait();
+            c.ms += 999999;
+            Check(free.RemainingMs() == Deadline::kNoLimit && !free.Spent(),
+                  "0 预算上的暂停是惰性的：不冻结任何东西也不报错");
+        }
+        Check(free.RemainingMs() == Deadline::kNoLimit, "惰性暂停退出后语义不变");
+    }
+
+    // 整批一份预算：目标 A 的确认不刷新预算，目标 B 也不能借第二次确认重新领一份
+    c.ms = 0;
+    {
+        const Deadline dl = Deadline::FromTotalMs(5000, now);
+        c.ms += 300;                       // 目标 A：匹配
+        c.ms += 200;                       // 目标 A：等帧
+        {
+            const auto pause = dl.PauseForHumanWait();   // 整批第一次问人（含缓冲）
+            c.ms += 20000 + 1000;
+        }
+        c.ms += 400;                       // 目标 A：通道回退再来一趟
+        Check(dl.RemainingMs() == 4100, "回退与确认之后仍是同一份预算（剩余 = 5000 - 900）");
+        c.ms += 4100;                      // 目标 B：取帧 + 编码 + 写盘，烧穿预算
+        Check(dl.Spent(), "目标 B 只能花剩下的：整批没有第二份预算");
+        {
+            const auto pause = dl.PauseForHumanWait();   // 授权失效后的重新确认
+            c.ms += 10000;
+        }
+        Check(dl.Spent() && dl.RemainingMs() == 0,
+              "第二个人工确认之后预算照样是 0：暂停不重置整批预算");
+    }
+
+    // 假时钟算式必须也成立于生产 QPC 时钟：暂停段用真实 Sleep，判"基本不烧"（±30 ms 容差）
+    {
+        const Deadline dl = Deadline::FromTotalMs(1000);
+        Sleep(60);
+        const uint64_t before = dl.RemainingMs();
+        {
+            const auto pause = dl.PauseForHumanWait();
+            Sleep(200);
+            Check(dl.RemainingMs() + 30 >= before, "生产时钟：暂停在世剩余不被 200 ms 的 Sleep 烧掉");
+        }
+        const uint64_t after = dl.RemainingMs();
+        Check(after + 30 >= before && after <= before,
+              "生产时钟：恢复后预算与暂停前一致（QPC 粒度容差 30 ms）");
+    }
+}
+
 }  // namespace
 
 // worker_io_state.cpp 提供：异步管道 I/O 生命周期的注入式判据（回报本层检查数与失败数）。
@@ -374,6 +532,7 @@ int wmain(int argc, wchar_t* argv[]) {
     CheckTask();
     CheckReply();
     CheckDeadline();
+    CheckDeadlinePause();
     // 异步管道 I/O 生命周期（WorkerIo + 注入假后端）判据在 worker_io_state.cpp，
     // 连接时序（真命名管道）判据在 worker_connect_state.cpp；三层计数并进来打同一行摘要，
     // 真机脚本按最后一行核对总数。

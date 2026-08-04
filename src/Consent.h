@@ -39,6 +39,8 @@
 
 namespace ecapture {
 
+class Deadline;
+
 // 弹框要问的那一轮。全部由授权判定器算出，UI 只是把它显示出来。
 struct ConsentQuestion {
     PixelScope scope = PixelScope::kWindowContent;
@@ -186,6 +188,11 @@ struct GateConfig {
     // 这一段计时与 --timeout-ms 那份自动处理预算**分开**：等一个人不是在处理任务，
     // 把等待的时间算进自动预算会让"人离开了键盘"变成"截图失败"。
     uint64_t consentTimeoutMs = 0;
+    // 本次运行的自动处理预算（可空）。非空时，判定器**只在真的要等人回答的弹框区间**
+    // 暂停它（含同意后 DialogConsentPrompt 里的关闭动画缓冲）：--timeout-ms 因此只计算
+    // 自动处理时间。--yes 直通、复用已给出的许可这些根本不弹框的分支不暂停、不补时间。
+    // 指向的 Deadline 由建立它的流水线保活（判定器不持有所有权）。
+    const Deadline* autoBudget = nullptr;
 };
 
 // 屏幕拓扑的取值函数。测试注入假布局，真机用 EnumScreens。

@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include "CaptureCommon.h"
+#include "Deadline.h"
 #include "ScreenMatch.h"
 
 namespace ecapture {
@@ -60,6 +61,18 @@ bool RectContains(const RECT& outer, const RECT& inner) {
 
 bool RectIsEmpty(const RECT& r) { return r.right <= r.left || r.bottom <= r.top; }
 
+// 问一次人：这次运行若配了自动预算（GateConfig::autoBudget），就**只在真人等待的这一段**
+// 暂停它 —— 弹框阻塞、以及同意后关闭动画的缓冲（RunMonitoredDialog 里的 Sleep）都在这段
+// 之内。暂停不回填预算：弹框之前已耗尽的预算恢复后照样是零。调用点只在真的要 Ask 时才走到
+// 这里；--yes 直通、同批复用已给出的许可那些分支在本函数之前就已返回，不借道补时间。
+// 人工那一级自己的 --consent-timeout-ms 走 GetTickCount64 秒表，不受这份暂停影响。
+ConsentReply AskWithBudgetPause(const Deadline* budget, IConsentPrompt& prompt,
+                                const ConsentQuestion& q) {
+    std::optional<Deadline::PauseScope> pause;
+    if (budget) pause.emplace(budget->PauseForHumanWait());
+    return prompt.Ask(q);
+}
+
 // ---------------------------------------------------------------------------
 // 弹框那条线程与生命周期状态机
 // ---------------------------------------------------------------------------
@@ -76,7 +89,9 @@ constexpr DWORD kDialogPollSliceMs = 50;
 // 立刻截就会把半透明的残影拍进图里。1 秒足够动画放完，也不会让人觉得卡住。
 // 它只在"真有个框刚被关掉、而且人答了是"那一条路上生效：超时与放弃的路径到不了这里，
 // 但超时也**绝不削减**它 —— 答应留的缓冲就留满，这是文案对用户的承诺。
-// 这个等待算在**人工确认那一级**，不算在 --timeout-ms 的自动处理预算里。
+// 这个等待算在**人工确认那一级**，不算在 --timeout-ms 的自动处理预算里：它发生在
+// ConsentGate 暂停自动预算的作用域之内（见上面 AskWithBudgetPause 套的 PauseScope），
+// 所以这段 Sleep 既不烧自动预算，也不被自动预算削减。
 constexpr DWORD kDialogSettleMs = 1000;
 
 // 一次弹框的可变状态，由 shared_ptr 共享寿命：等待线程与弹框线程（乃至被放弃后
@@ -412,7 +427,7 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
 
     ++windowAsks_;
     const ConsentQuestion q = MakeQuestion(path, PixelScope::kWindowContent, config_.targets);
-    const ConsentReply reply = prompt_.Ask(q);
+    const ConsentReply reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
     if (reply.answer == ConsentAnswer::kAccepted) {
         windowLevel_ = Level::kGranted;
         return true;
@@ -448,7 +463,7 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
 
     ++desktopAsks_;
     const ConsentQuestion q = MakeQuestion(path, PixelScope::kDesktop, config_.targets);
-    const ConsentReply reply = prompt_.Ask(q);
+    const ConsentReply reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
     if (reply.answer != ConsentAnswer::kAccepted) {
         desktopLevel_ = Level::kRefused;
         lastDenyUnavailable_ = reply.answer == ConsentAnswer::kUnavailable;

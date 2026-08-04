@@ -19,6 +19,7 @@
 #include "../src/CaptureScope.h"
 #include "../src/CliOptions.h"
 #include "../src/Consent.h"
+#include "../src/Deadline.h"
 #include "../src/Lang.h"
 #include "../src/ScreenMatch.h"
 
@@ -65,6 +66,9 @@ public:
     ConsentReply Ask(const ConsentQuestion& q) override {
         ++asks;
         asked.push_back(Asked{q.scope, q.path, q.yesGiven, q.targets.size(), q.outputs.size()});
+        // 真人等待那一段由回调推进假时钟（F04 判据），顺带记录"框挂着时"看到的剩余预算
+        if (onAsk) onAsk();
+        if (throwInAsk) throw std::runtime_error("fake prompt blew up");
         ConsentReply reply;
         reply.answer = ConsentAnswer::kAccepted;   // 脚本没写到的那一次一律答"是"
         const size_t n = asks;   // 第 n 次弹框（1 起）
@@ -82,6 +86,8 @@ public:
     std::vector<ConsentAnswer> answers;   // 空 = 一律答"是"
     std::vector<bool> timedOuts;
     DWORD unavailableWin32 = 0;
+    std::function<void()> onAsk;          // 弹框在世时执行：推进假时钟 / 探测预算冻结
+    bool throwInAsk = false;              // 应答器抛异常：判暂停作用域的异常退栈恢复
 };
 
 // ---------------------------------------------------------------------------
@@ -126,6 +132,33 @@ struct Fixture {
 
     Fixture(bool yes, std::vector<GateTarget> targets)
         : gate(Config(yes, std::move(targets)), prompt, FakeTopology) {}
+};
+
+// ---------------------------------------------------------------------------
+// F04 判据的夹具：判定器带着**假时钟**的自动预算跑整台状态机。
+// 真人等待由 FakePrompt::onAsk 推进假时钟（弹框阻塞 + 同意后关闭动画都发生在那一段），
+// 于是"人工确认到底烧不烧 --timeout-ms"判的是精确毫秒数，不是墙上的秒表。
+// ---------------------------------------------------------------------------
+
+struct FakeClock {
+    int64_t ms = 0;
+};
+
+struct BudgetFixture {
+    FakeClock clock;
+    Deadline dl;
+    FakePrompt prompt;
+    ConsentGate gate;
+
+    BudgetFixture(bool yes, std::vector<GateTarget> targets, uint64_t totalMs)
+        : dl(Deadline::FromTotalMs(totalMs, [this] { return clock.ms; })),
+          gate(MakeConfig(yes, std::move(targets), &dl), prompt, FakeTopology) {}
+
+    static GateConfig MakeConfig(bool yes, std::vector<GateTarget> targets, const Deadline* dl) {
+        GateConfig c = Config(yes, std::move(targets));
+        c.autoBudget = dl;
+        return c;
+    }
 };
 
 const RECT kAreaA = R(100, 100, 500, 400);
@@ -608,6 +641,115 @@ int main() {
         Check(CodeIs(err, codes::kConsentTimeout), "桌面超时的码正确");
         Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err), "跨级也要停");
         Check(CodeIs(err, codes::kConsentTimeout), "跨级粘住的仍是超时码");
+    }
+
+    // =========================================================================
+    Section("10) 自动预算：只暂停真正等人的段（F04）");
+    // =========================================================================
+    {
+        // 文档场景走真判定器：总预算 5000；先自动处理 1000，人工等待 20000 + 关闭缓冲
+        // 1000；同意之后仍剩 4000 可继续处理；再自动处理 500 后剩 3500。
+        BudgetFixture f(false, TwoTargets(), 5000);
+        f.clock.ms += 1000;   // 弹框之前的自动处理（匹配 / 等帧）
+        int64_t during = -1;
+        f.prompt.onAsk = [&] {
+            f.clock.ms += 20000 + 1000;   // 真人等待 + 同意后约 1 秒关闭动画，都在 Ask 段内
+            during = static_cast<int64_t>(f.dl.RemainingMs());
+        };
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口确认：等人很久之后照常放行");
+        Check(during == 4000, "弹框在世时剩余预算冻结：人工等待不烧 --timeout-ms");
+        Check(f.dl.RemainingMs() == 4000, "等待后同意仍剩 4000 ms：能继续处理（本修复的要害）");
+        f.clock.ms += 500;   // 恢复后的自动处理：取帧 / 编码 / 写盘
+        Check(f.dl.RemainingMs() == 3500, "确认之后继续烧同一份预算");
+        Check(f.dl.ElapsedMs() == 1500, "流逝汇报只算自动处理，不含 21000 ms 人工时间");
+    }
+    {
+        // --yes 直通的那一级不进暂停、也不借机补时间；桌面一级真要弹框才暂停
+        BudgetFixture f(true, TwoTargets(), 5000);
+        f.prompt.onAsk = [&] { f.clock.ms += 21000; };
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "--yes：窗口路径直接放行");
+        Check(f.prompt.asks == 0, "--yes：压根没弹框，也就没进暂停");
+        Check(f.dl.RemainingMs() == 5000, "直通分支不给预算白添时间（分毫未动）");
+        std::optional<DesktopPermit> permit;
+        f.clock.ms += 800;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err),
+              "--yes 之下桌面路径仍要问人");
+        Check(f.prompt.asks == 1 && f.dl.RemainingMs() == 4200,
+              "只有真等人的段暂停：烧掉 800 自动段，21000 人工段不烧");
+    }
+    {
+        // 批次复用已给出的许可 = 不弹框 = 不暂停：已经烧穿的预算不会"歇一口气"
+        BudgetFixture f(false, TwoTargets(), 5000);
+        f.prompt.onAsk = [&] { f.clock.ms += 21000; };
+        Diagnostic err;
+        std::optional<DesktopPermit> p1;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &p1, &err),
+              "第一次桌面确认给出许可");
+        Check(f.dl.RemainingMs() == 5000, "第一次确认没烧自动预算");
+        f.clock.ms += 5000;   // 后面的真实自动处理把预算烧尽
+        std::optional<DesktopPermit> p2;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kB, kAreaB, &p2, &err),
+              "第二个目标复用同一份许可（没有第二次弹框）");
+        Check(f.prompt.asks == 1, "复用段不弹框");
+        Check(f.dl.Spent(), "复用许可不白送一次暂停：烧穿的预算照旧烧穿");
+    }
+    {
+        // 窗口确认后升级桌面、授权失效后再确认：每一次真人等待都各自暂停，
+        // 而自动处理跨三次确认累计的份额一分不少地照烧。
+        BudgetFixture f(false, TwoTargets(), 5000);
+        f.prompt.onAsk = [&] { f.clock.ms += 21000; };
+        Diagnostic err;
+        std::optional<DesktopPermit> permit;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口那级先问");
+        f.clock.ms += 300;
+        Check(f.gate.AuthorizeDesktop(paths::kScreenWgc, kA, kAreaA, &permit, &err),
+              "同一批次升级到桌面那级再问");
+        f.clock.ms += 300;
+        Check(f.dl.RemainingMs() == 4400, "两次确认之间只烧了自动段（600 ms）");
+        g_screens.push_back(MakeScreen(L"\\\\.\\DISPLAY2", R(1920, 0, 3840, 1080), false));
+        f.clock.ms += 200;
+        std::optional<DesktopPermit> after;
+        Check(f.gate.AuthorizeDesktop(paths::kScreenWgc, kA, kAreaA, &after, &err),
+              "拓扑一变授权作废，重新问人");
+        g_screens.pop_back();
+        f.clock.ms += 100;
+        Check(f.prompt.asks == 3 && f.dl.RemainingMs() == 4100,
+              "三段人工等待全部排除，自动处理累计 900 ms 照烧");
+    }
+    {
+        // 拒绝（含超时式拒绝）之前的人等同样不烧预算：暂停按的是"在世区间"，不问答案
+        BudgetFixture f(false, TwoTargets(), 5000);
+        f.prompt.answers = {ConsentAnswer::kDeclined};
+        f.prompt.timedOuts = {true};
+        f.prompt.onAsk = [&] { f.clock.ms += 60000; };
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "答\"否\"/超时：不放行");
+        Check(CodeIs(err, codes::kConsentTimeout), "超时拒绝的诊断照旧（F04 不改拒绝语义）");
+        Check(f.dl.RemainingMs() == 5000 && !f.dl.Spent(),
+              "拒绝前的人等 60 秒也不烧自动预算");
+    }
+    {
+        // 应答器抛异常：暂停作用域在退栈时恢复（RAII），不留欠账也不留下在世暂停
+        BudgetFixture f(false, TwoTargets(), 5000);
+        f.prompt.throwInAsk = true;
+        f.prompt.onAsk = [&] { f.clock.ms += 15000; };
+        Diagnostic err;
+        bool threw = false;
+        try {
+            f.gate.AuthorizeWindow(paths::kWgc, kA, &err);
+        } catch (const std::exception&) {
+            threw = true;
+        }
+        Check(threw, "应答器异常穿出判定器（不吞、不把半成品授权当同意）");
+        Check(f.dl.RemainingMs() == 5000, "异常退栈：暂停照常恢复，人工段不烧预算");
+        f.prompt.throwInAsk = false;
+        f.clock.ms += 700;
+        Check(f.dl.RemainingMs() == 4300, "异常恢复后预算继续正常计时（深度没有残留）");
+        Diagnostic err2;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err2), "异常之后的再一问照常进行");
+        Check(f.dl.RemainingMs() == 4300, "第二次人工段同样不烧：嵌套/异常路径的账都结得干净");
     }
 
     // =========================================================================
