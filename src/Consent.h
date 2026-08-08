@@ -17,6 +17,11 @@
 //      之前已经完成的图保留。
 //   6. 一次确认可以覆盖本次明确列出的那一批目标，但绝不跨请求缓存，也不扩大目标；
 //      目标区域或屏幕拓扑一变，相应授权立即作废。
+//   7. "展示什么，就批准什么"：桌面那一级在弹框**之前**把目标清单、区域与屏幕拓扑冻结成
+//      一份不可变快照，框上的文字与答"是"后冻结的授权都出自这同一份事实。人点头之后先重新
+//      查询一遍拓扑再与这份快照比较 —— 确认期间布局变了（热插拔、改分辨率、挪位置）时，
+//      那次"是"批的是人最后看到的旧布局，新布局不会被当成旧请求的已批准基线：这一问以
+//      capture.consent_stale 收尾、一张都不截，之后的调用会拿新的事实重新问一次。
 //
 // 这不是安全边界：确认框是合作式自动化（人或 AI）的误操作防护，它分不清点击的是不是人，
 // 也挡不住同一个权限级别里存心绕过的进程。能保证的是"照规矩跑的调用方一定会先问一次"。
@@ -153,7 +158,9 @@ public:
     DesktopPermit(DesktopPermit&&) = default;
     DesktopPermit& operator=(DesktopPermit&&) = default;
 
-    // 当时批准的是不是这一块区域（要求实际取样矩形落在批准的矩形之内，长大或挪走都不算）
+    // 当时批准的是不是这一块区域：**严格包含，零容差**。向外扩一个像素去采人没批准过的
+    // 画面就是扩大批准的隐私范围，所以没有"测量误差"这回事可以豁免它 ——
+    // 而正常取样的矩形本来就量在批准矩形之内（见 Consent.cpp 里 Covers 的注释）。
     bool Covers(const RECT& area) const;
     const std::wstring& TargetKey() const { return targetKey_; }
     RECT Approved() const { return approved_; }
@@ -172,11 +179,14 @@ private:
 };
 
 // 本次请求的目标清单里的一项：给判定器用来核对"要截的就是人看到的那些"。
+// 这里**不存**拼好的整行文案 —— 文案由判定器在弹框那一刻从 (subject, area) 现渲染，
+// 所以 SetTargetArea 刷新区域之后，框上写的坐标与实际要采样的矩形必然是同一份事实，
+// 不存在"内部矩形更新了、给人看的那行还是旧坐标"这种平行文本过期的形状。
 struct GateTarget {
     bool screen = false;
-    std::wstring key;          // 窗口给 0x…，屏幕给设备名 —— 与诊断里的 target 同形
-    std::wstring description;  // 弹框与 hint 里的那一行
-    RECT area{};               // 该目标当前的屏幕矩形（窗口矩形 / 该屏矩形）
+    std::wstring key;      // 窗口给 0x…，屏幕给设备名 —— 与诊断里的 target 同形
+    std::wstring subject;  // 目标身份那一段文字（DescribeWindow / DescribeScreen），不含区域
+    RECT area{};           // 该目标当前的屏幕矩形（窗口矩形 / 该屏矩形）
 };
 
 struct GateConfig {
@@ -211,12 +221,15 @@ public:
     // 桌面路径（bitblt、duplication、整屏任何通道、以及 DWM 内部的屏幕退路）。
     // 永远要人确认；批准了才把 *out 填好，调用方没有它就取不到屏幕像素。
     // area 是"这次实际要取样的那块屏幕矩形"，必须落在弹框上给人看过的那一片区域内。
+    // 弹框前把清单（目标、区域、拓扑、输出）冻结成快照：框上的文字与答"是"后签发的授权
+    // 都出自这同一份；应答返回之后先重新查询拓扑与快照比较，确认期间布局变了就按
+    // capture.consent_stale 收尾（不授权，也不把新布局当成批准过的基线）。
     bool AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey, const RECT& area,
                           std::optional<DesktopPermit>* out, Diagnostic* err);
 
     // 流水线在取帧前量到的目标矩形要能刷新到这里，好让弹框上写的是"现在就在那儿"的矩形。
-    // 这只影响给人看的那份清单；已经批准的桌面授权用的是答"是"那一刻的快照，
-    // 所以挪动过的窗口会被判成"范围已变"而重新问一次。
+    // 只影响还没弹出去的那一轮：一旦弹框，本轮问的就是那一刻的快照，之后刷新改不了它。
+    // 已经批准的桌面授权用的是快照里冻结的区域，所以挪动过的窗口会被判成"范围已变"而重新问。
     void SetTargetArea(const std::wstring& targetKey, const RECT& area);
 
     // 已经有人在某一级确认上答过"否"（或根本弹不出框）：本次请求剩下的采集一律停止。
@@ -231,18 +244,30 @@ public:
 private:
     enum class Level { kNotAsked, kGranted, kRefused };
 
+    // 弹框前冻结的授权快照（"展示什么，就批准什么"的那一份事实）：
+    // 框上的每一行、答"是"之后 desktopAreas_ 里冻结的每个矩形、以及拓扑基线，
+    // 全部出自这同一次取值。之后的 SetTargetArea / 布局变化都改不了在世的那一轮。
+    struct ConsentSnapshot {
+        std::vector<GateTarget> listed;   // 清单与各自区域（弹框那一刻）
+        std::vector<std::wstring> outputs;
+        uint64_t topology = 0;            // 弹框那一刻的拓扑指纹
+    };
+
+    ConsentSnapshot TakeSnapshot() const;
     ConsentQuestion MakeQuestion(const wchar_t* path, PixelScope scope,
-                                 const std::vector<GateTarget>& listed) const;
+                                 const ConsentSnapshot& snap) const;
     Diagnostic Denied(const wchar_t* path, const std::wstring& targetKey, PixelScope scope,
                       bool unavailable, DWORD gle, bool timedOut) const;
-    // 人同意之后：把当前列出的目标区域冻结成本次桌面授权
-    void GrantDesktop(const std::vector<GateTarget>& listed);
+    // 确认基线在弹框期间失效（拓扑变了）：这一问不授权，也不换基线重试
+    Diagnostic Stale(const wchar_t* path, const std::wstring& targetKey) const;
+    // 人同意、且确认后拓扑复核与快照一致之后：把快照里列出的目标区域冻结成本次桌面授权
+    void GrantDesktop(const ConsentSnapshot& snap);
     bool DesktopGrantedFor(const std::wstring& targetKey, const RECT& area, RECT* approved) const;
 
     GateConfig config_;
     IConsentPrompt& prompt_;
     TopologyProvider topology_;
-    uint64_t topologyAtAsk_ = 0;
+    uint64_t topologyAtAsk_ = 0;   // 弹框**之前**的拓扑基线（来自快照，不是应答之后首次所见）
 
     Level windowLevel_ = Level::kNotAsked;
     Level desktopLevel_ = Level::kNotAsked;
@@ -250,7 +275,7 @@ private:
     // 但它们各自的诊断得说清当初是哪一种，而不是统统写成"被拒绝"。
     bool lastDenyUnavailable_ = false;
     bool lastDenyTimedOut_ = false;
-    std::vector<GateTarget> desktopAreas_;  // 答"是"那一刻的目标快照（不随窗口移动更新）
+    std::vector<GateTarget> desktopAreas_;  // 答"是"那一轮弹框前冻结的授权快照清单
     int windowAsks_ = 0;
     int desktopAsks_ = 0;
 };

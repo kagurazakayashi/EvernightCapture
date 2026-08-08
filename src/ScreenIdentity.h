@@ -172,6 +172,29 @@ ScreenIdentityCheck CompareScreenIdentity(const ScreenCandidate& wanted,
                                           const std::vector<ScreenCandidate>& current,
                                           ScreenCandidate* fresh);
 
+// ---------------------------------------------------------------------------
+// 确认之后、采样之前的采样入口复核（纯函数：当下的那张候选表由调用方交进来）
+// ---------------------------------------------------------------------------
+// CompareScreenIdentity 把的是"选目标到弹框前"的漂移；这一条把的是另一段时间窗：人点头、
+// 桌面授权签发之后，到某条整屏通道真的去读像素之前。取帧与授权不是原子的，这段间隔里
+// 屏幕同样可能被拔掉、改名、挪位置。整屏的三条采样入口（wgc / bitblt / duplication）
+// 都必须在拿到 DesktopPermit 之后、读像素之前过这一问，用回答换出**当下的**那块屏
+// （含当下的 HMONITOR 句柄）作为采样对象 —— 拿选定那一刻的旧句柄直接采，热插拔之后
+// 句柄可能已经发给另一块面板。
+enum class SamplingRecheck {
+    kOk,            // 还是那块屏、形状与批准时一致，且采样矩形仍在刚批准的区域之内
+    kStale,         // 确认之后形状/位置变了，或当下矩形超出批准区域：一个像素都不采，
+                    // 旧授权不会被用在新布局上（capture.consent_stale）
+    kGone,          // 那块屏不在桌面里了，或它的身份已换到另一块面板：不采，也不替代
+    kUnverifiable,  // 当初用得上的那一问这次没有答案：不能按"没变"放行
+};
+
+// approvedTarget = 授权快照那一刻的候选（身份 + 事实），approvedArea = 判定器刚批准的
+// 屏幕矩形（DesktopPermit::Approved()）。kOk 时 *fresh 是本次采样要用的当下候选。
+SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget, const RECT& approvedArea,
+                                      const std::vector<ScreenCandidate>& current,
+                                      ScreenCandidate* fresh);
+
 // 选择器的机器写法：primary / all / 编号（十进制字符串）/ device:X / id:X。
 // hint、-v 的 input 段与窗口查询那一份回显读的都是这一份，不在三处各拼一遍。
 std::wstring MonitorSelectorLabel(const MonitorSelector& sel);

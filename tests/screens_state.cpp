@@ -357,6 +357,74 @@ void TestIdentityRecheck() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. 确认之后、采样之前的采样入口复核（F06）
+//
+// 弹框前那一问（上面第 5 节）定下授权快照；这一节判的是拿到 DesktopPermit 之后、
+// 那条通道真去读像素之前的第二次核对 —— 人在框上点头的这几秒里，屏可能被拔掉、
+// 名字可能被重新发给另一块面板、分辨率/位置可能改。三种漂移都要停在采样之前。
+// ---------------------------------------------------------------------------
+void TestSamplingRecheck() {
+    const std::vector<ScreenCandidate> all = TwoScreens();
+    const ScreenCandidate& wanted = all[1];
+    const RECT approved = wanted.screen.bounds;   // 判定器刚批准的那一片（= 弹框前那一刻的矩形）
+    ScreenCandidate fresh{};
+
+    Check(RecheckScreenSampling(wanted, approved, all, &fresh) == SamplingRecheck::kOk &&
+              fresh.screen.monitor == all[1].screen.monitor,
+          "身份与形状都没变 → kOk，采样对象换成当下问到的那一份（含当下的 HMONITOR）");
+
+    // 采样用的是当下句柄，不是选定那一刻的旧句柄：热插拔重建布局后旧句柄不可信。
+    std::vector<ScreenCandidate> rebuilt = TwoScreens();
+    rebuilt[1].screen.monitor = 0x9ABC;
+    Check(RecheckScreenSampling(wanted, approved, rebuilt, &fresh) == SamplingRecheck::kOk &&
+              fresh.screen.monitor == 0x9ABC,
+          "同一块屏重建后 → kOk 且交回的是新句柄（旧句柄不拿去做采样证据）");
+
+    std::vector<ScreenCandidate> moved = TwoScreens();
+    moved[1].screen.bounds = RectOf(-1920, 0, 0, 1080);
+    Check(RecheckScreenSampling(wanted, approved, moved, &fresh) == SamplingRecheck::kStale,
+          "确认之后那块屏改了矩形/位置 → kStale：一像素不采，旧授权不追认到新布局");
+
+    std::vector<ScreenCandidate> unplugged = {all[0]};
+    Check(RecheckScreenSampling(wanted, approved, unplugged, &fresh) == SamplingRecheck::kGone,
+          "那块屏被拔掉 → kGone：不采，也不替它挑另一块屏");
+
+    std::vector<ScreenCandidate> renamed = TwoScreens();
+    renamed[1].facts.monitorPath = L"\\\\?\\DISPLAY#ACR0020#5&1c6638c9&0&UID9999";
+    Check(RecheckScreenSampling(wanted, approved, renamed, &fresh) == SamplingRecheck::kGone,
+          "同名设备换成另一身份（名字被重新发出去）→ kGone：接管名字的是一块没批准过的屏");
+
+    std::vector<ScreenCandidate> unreadable = TwoScreens();
+    for (ScreenCandidate& c : unreadable) {
+        c.facts.monitorPathQ.read = ReadState::kFailed;
+        c.facts.monitorPath.clear();
+    }
+    Check(RecheckScreenSampling(wanted, approved, unreadable, &fresh) ==
+              SamplingRecheck::kUnverifiable,
+          "采样这一问问不出身份 → kUnverifiable：不能按\"大概没变吧\"放行");
+
+    // 调用点自洽的负对照：身份说没变，但批准区域装不下当下矩形 = 调用方给错了区域，
+    // 采样照样要停（这条兜住的是判定器与采样入口之间被写错的接线，不放宽成容差）。
+    Check(RecheckScreenSampling(wanted, RectOf(-50, -50, 50, 50), all, &fresh) ==
+              SamplingRecheck::kStale,
+          "当下矩形越出批准区域 → kStale（零容差，与 DesktopPermit::Covers 同一判据）");
+
+    // 老那一档（基线没有跨会话标识）：按名字核，同名同形状就放行，不新增失败。
+    const ScreenCandidate legacy = WithoutFacts(1, L"\\\\.\\DISPLAY1", RectOf(0, 0, 2560, 1440),
+                                                true);
+    std::vector<ScreenCandidate> legacyCurrent;
+    legacyCurrent.push_back(WithoutFacts(1, L"\\\\.\\DISPLAY1", RectOf(0, 0, 2560, 1440), true));
+    Check(RecheckScreenSampling(legacy, legacy.screen.bounds, legacyCurrent, &fresh) ==
+              SamplingRecheck::kOk,
+          "基线没有 devnode 时按设备名核对放行（与旧行为一致）");
+    std::vector<ScreenCandidate> legacyMoved;
+    legacyMoved.push_back(WithoutFacts(1, L"\\\\.\\DISPLAY1", RectOf(0, 0, 1920, 1080), true));
+    Check(RecheckScreenSampling(legacy, legacy.screen.bounds, legacyMoved, &fresh) ==
+              SamplingRecheck::kStale,
+          "老那一档里名字对上了但矩形变了 = 那块屏改了样子：确认之后变的按 kStale 停");
+}
+
+// ---------------------------------------------------------------------------
 // 6. 文档级判据：并集矩形、复制模式、对不上路径的条数
 // ---------------------------------------------------------------------------
 void TestTopologyFacts() {
@@ -502,6 +570,8 @@ void RunAll() {
     TestSelectorLabels();
     Section("取帧之前的身份复核");
     TestIdentityRecheck();
+    Section("确认之后、采样之前的采样入口复核");
+    TestSamplingRecheck();
     Section("文档级的拓扑判据");
     TestTopologyFacts();
     Section("渲染：稳定性、unknown、隐私");

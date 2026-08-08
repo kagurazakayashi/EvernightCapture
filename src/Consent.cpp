@@ -321,12 +321,13 @@ ConsentReply DialogConsentPrompt::Ask(const ConsentQuestion& q) {
 
 bool DesktopPermit::Covers(const RECT& area) const {
     if (RectIsEmpty(area) || RectIsEmpty(approved_)) return false;
-    // 允许一点测量误差：DWM 报告的外壳矩形、宿主窗口的实际尺寸与 GetWindowRect 之间可以差
-    // 几像素（那圈不可见边框各处取整方式不同）。真被人挪走或换掉的窗口不会只差这么点。
-    constexpr int kSlackPx = 16;
-    RECT grown{approved_.left - kSlackPx, approved_.top - kSlackPx, approved_.right + kSlackPx,
-               approved_.bottom + kSlackPx};
-    return RectContains(grown, area);
+    // 严格包含、零容差：向外扩任何像素去采样都是把人没批准过的画面带进图里，
+    // "测量误差"不能成为扩大隐私范围的理由。而正常路径本来就量在批准矩形之内：
+    // 批准的是整窗外框（GetWindowRect 那圈含不可见边框的大矩形），从屏幕实际读走的
+    // 是 DWM 的扩展框架矩形（WindowScreenRect），它是前者**内缩**的一块；DWM 升级路径
+    // 授权与采样的都是宿主窗口矩形本身，逐像素相等。真被人挪走或换大的目标会撞在
+    // 这条线上判成 consent_stale —— 那正是要它做的事。
+    return RectContains(approved_, area);
 }
 
 // ---------------------------------------------------------------------------
@@ -350,15 +351,31 @@ void ConsentGate::SetTargetArea(const std::wstring& targetKey, const RECT& area)
     // 清单外的目标 = 调用方扩大了范围，这里不接受：宁可让它因为"没有对应授权"而重新问一次。
 }
 
+ConsentGate::ConsentSnapshot ConsentGate::TakeSnapshot() const {
+    ConsentSnapshot snap;
+    snap.listed = config_.targets;
+    snap.outputs = config_.outputs;
+    snap.topology = TopologyFingerprint();   // 弹框**之前**取的基线
+    return snap;
+}
+
 ConsentQuestion ConsentGate::MakeQuestion(const wchar_t* path, PixelScope scope,
-                                          const std::vector<GateTarget>& listed) const {
+                                          const ConsentSnapshot& snap) const {
     ConsentQuestion q;
     q.scope = scope;
     q.path = path ? path : paths::kUnknown;
     q.yesGiven = config_.yes;
     q.captureLabel = config_.captureLabel;
-    for (const GateTarget& t : listed) q.targets.push_back(t.description);
-    q.outputs = config_.outputs;
+    // 框上的每一行从快照即时渲染：给人看的坐标与将要冻结进授权的坐标是同一份数，
+    // 不存在"文案拼好之后区域又刷新了"的平行文本。
+    for (const GateTarget& t : snap.listed) {
+        q.targets.push_back(Msgf(L"consent.target_line", t.subject,
+                                 static_cast<long long>(t.area.left),
+                                 static_cast<long long>(t.area.top),
+                                 static_cast<long long>(t.area.right - t.area.left),
+                                 static_cast<long long>(t.area.bottom - t.area.top)));
+    }
+    q.outputs = snap.outputs;
     return q;
 }
 
@@ -389,10 +406,25 @@ Diagnostic ConsentGate::Denied(const wchar_t* path, const std::wstring& targetKe
     return d;
 }
 
-void ConsentGate::GrantDesktop(const std::vector<GateTarget>& listed) {
+Diagnostic ConsentGate::Stale(const wchar_t* path, const std::wstring& targetKey) const {
+    // 确认基线在弹框期间失效：这不是"人不同意"（那是 access_denied，整批要停），也不是
+    // "弹不出框"。它说的是"人点头时看到的那份事实已经不在了"—— 这一问不签发任何授权，
+    // 也不换一个新基线把这一问蒙过去；调用方拿新的事实重来一遍，会再问一次。
+    Diagnostic d;
+    d.code = codes::kConsentStale;
+    d.message = Msg(L"cap.consent.stale");
+    d.option = L"--capture";
+    d.value = path ? path : std::wstring();
+    d.hint = Msg(L"cap.consent.stale_hint");
+    d.target = targetKey;
+    d.stage = stages::kConsent;
+    return d;
+}
+
+void ConsentGate::GrantDesktop(const ConsentSnapshot& snap) {
     desktopLevel_ = Level::kGranted;
-    desktopAreas_ = listed;  // 冻结：之后目标挪了位置就要重新问
-    topologyAtAsk_ = TopologyFingerprint();
+    desktopAreas_ = snap.listed;   // 冻结的就是人刚看过的那一份：之后目标挪了位置要重新问
+    topologyAtAsk_ = snap.topology;  // 基线是弹框**之前**那一次取值，不是应答之后首次所见
 }
 
 bool ConsentGate::DesktopGrantedFor(const std::wstring& targetKey, const RECT& area,
@@ -426,7 +458,11 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
     }
 
     ++windowAsks_;
-    const ConsentQuestion q = MakeQuestion(path, PixelScope::kWindowContent, config_.targets);
+    // 同样从弹框前的快照问起（清单与文案同源）。这一级不做确认后的拓扑复核：窗口内容
+    // 路径的像素来自目标窗口自己，屏幕布局在确认期间怎么变都不改变"人批准了什么"；
+    // "点完'是'之后目标还是不是那一扇"由流水线在授权之后按身份复核（CaptureOneChannel
+    // 与 DWM 升级路径各有一次），不是这一关的职责。
+    const ConsentQuestion q = MakeQuestion(path, PixelScope::kWindowContent, TakeSnapshot());
     const ConsentReply reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
     if (reply.answer == ConsentAnswer::kAccepted) {
         windowLevel_ = Level::kGranted;
@@ -462,7 +498,9 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
     }
 
     ++desktopAsks_;
-    const ConsentQuestion q = MakeQuestion(path, PixelScope::kDesktop, config_.targets);
+    // 弹框前冻结这一轮的授权快照：框上写的目标、区域、输出与拓扑基线全部出自这一次取值。
+    const ConsentSnapshot snap = TakeSnapshot();
+    const ConsentQuestion q = MakeQuestion(path, PixelScope::kDesktop, snap);
     const ConsentReply reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
     if (reply.answer != ConsentAnswer::kAccepted) {
         desktopLevel_ = Level::kRefused;
@@ -474,7 +512,17 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
         }
         return false;
     }
-    GrantDesktop(config_.targets);
+    // 人点头（含关闭动画缓冲）之后、签发授权之前，重新查询一遍拓扑，与**弹框前**那份快照比。
+    // 这一步是 F06 的要害：确认期间热插拔、拔线、改分辨率或挪了屏幕位置时，人在框上最后
+    // 看到的还是旧布局 —— 拿应答之后第一次所见的新布局当基线，等于替旧请求追认了新拓扑。
+    // 判据是停，不是重试：这一问一张都不采、不签发凭证，也不自动按新布局再弹一次框
+    // （同一次调用里反复弹框就是无限重复问人）；调用方重来一遍时会在新的快照上重新问。
+    if (TopologyFingerprint() != snap.topology) {
+        desktopLevel_ = Level::kNotAsked;   // 没答"否"：批次不因这个失败而整批停止
+        if (err) *err = Stale(path, targetKey);
+        return false;
+    }
+    GrantDesktop(snap);
     if (!DesktopGrantedFor(targetKey, area, &approved)) {
         // 人在框上看到的清单里根本没有这次要取的这一块：不给自己放行。
         // 真机流水线的目标矩形在问之前刚量过，正常走不到这里；走到就是调用点写错了。

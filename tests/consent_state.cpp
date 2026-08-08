@@ -59,13 +59,15 @@ struct Asked {
     bool yesGiven;
     size_t targets;
     size_t outputs;
+    std::vector<std::wstring> targetLines;   // 框上渲染出的每一行（"展示什么批准什么"要比文字）
 };
 
 class FakePrompt final : public IConsentPrompt {
 public:
     ConsentReply Ask(const ConsentQuestion& q) override {
         ++asks;
-        asked.push_back(Asked{q.scope, q.path, q.yesGiven, q.targets.size(), q.outputs.size()});
+        asked.push_back(Asked{q.scope, q.path, q.yesGiven, q.targets.size(), q.outputs.size(),
+                               q.targets});
         // 真人等待那一段由回调推进假时钟（F04 判据），顺带记录"框挂着时"看到的剩余预算
         if (onAsk) onAsk();
         if (throwInAsk) throw std::runtime_error("fake prompt blew up");
@@ -112,7 +114,9 @@ GateTarget Target(const wchar_t* key, RECT area, bool screen = false) {
     t.key = key;
     t.area = area;
     t.screen = screen;
-    t.description = key;
+    // 只给身份那一段；整行由判定器在弹框那一刻从 (subject, area) 现渲染（F06：
+    // 框上坐标与将要冻结的授权区域同源，不存在"刷新了矩形、文案还是旧的"）。
+    t.subject = key;
     return t;
 }
 
@@ -418,7 +422,7 @@ int main() {
         Check(!p3.has_value(), "重新问之前那个目标没有凭证");
     }
     {
-        // 区域：凭证只认批准过的那一片（允许一点测量误差）
+        // 区域：凭证只认批准过的那一片（严格包含、零容差）
         Fixture f(false, TwoTargets());
         Diagnostic err;
         std::optional<DesktopPermit> permit;
@@ -426,7 +430,8 @@ int main() {
         Check(permit->Covers(R(120, 120, 480, 380)), "批准区域内的子矩形算覆盖");
         Check(!permit->Covers(R(100, 100, 1500, 1000)), "整块屏幕不在那一片之内");
         Check(!permit->Covers(R(-50, -50, 50, 50)), "挪到别处不算");
-        Check(permit->Covers(R(90, 90, 510, 410)), "十几像素的边框测量误差容忍");
+        Check(!permit->Covers(R(90, 90, 510, 410)),
+              "向外扩 10 像素不算覆盖（零容差：容差会把没批准过的画面带进图里）");
         Check(!permit->Covers(R(0, 0, 0, 0)), "空矩形一律不算覆盖");
         Check(!permit->Covers(R(100, 100, 500 + 300, 400)), "明显变大不算覆盖");
         // 目标在确认之后挪了位置：取样矩形超出批准范围 = 不截
@@ -750,6 +755,143 @@ int main() {
         Diagnostic err2;
         Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err2), "异常之后的再一问照常进行");
         Check(f.dl.RemainingMs() == 4300, "第二次人工段同样不烧：嵌套/异常路径的账都结得干净");
+    }
+
+    // =========================================================================
+    Section("11) 确认期间发生变化：展示什么，就批准什么（F06）");
+    // =========================================================================
+    // 这一段判的是同一段时间窗：授权快照在**弹框前**冻结，人点头（含关闭缓冲）之后判定器
+    // 重新查询拓扑再与那份快照比。确认期间热插拔 / 拔线 / 改分辨率 / 挪位置 —— 一律停在
+    // 签发之前：不授权、不采像素、不把"确认后第一次看到的新布局"追认成旧请求的基线，
+    // 也不在同一次调用里对着新布局自动再弹一帧（重来一遍时会在新的快照上重新问）。
+    const RECT kMovedArea = R(2000, 100, 2400, 400);
+
+    // 正对照：确认期间什么都没变 —— 授权照发，凭证批准的就是框上展示的那一片。
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        Diagnostic err;
+        std::optional<DesktopPermit> permit;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err),
+              "确认期间拓扑未变：授权照常签发");
+        Check(f.prompt.asks == 1 && permit.has_value() && permit->Covers(kAreaA),
+              "问一次、有凭证、批准区域覆盖采样矩形");
+    }
+    // 确认期间插上第二块屏：这一问作废。
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        f.prompt.answers = {ConsentAnswer::kAccepted};   // 人答的是"旧布局那份"，必须不被沿用
+        f.prompt.onAsk = [] {
+            g_screens.push_back(MakeScreen(L"\\\\.\\DISPLAY2", R(1920, 0, 3840, 1080), false));
+        };
+        Diagnostic err;
+        std::optional<DesktopPermit> permit;
+        Check(!f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err),
+              "Ask 期间多了一块屏：不签发授权（人点头时看到的布局已经不在了）");
+        Check(!permit.has_value(), "作废的这一问没有凭证 —— 一像素都不该被采");
+        Check(CodeIs(err, codes::kConsentStale), "下场是 capture.consent_stale（不是\"被拒绝\"）");
+        Check(err.stage == stages::kConsent, "stage=consent：停在授权这一关");
+        Check(!f.gate.Refused(), "基线失效不等于人不同意：整批不因它停止");
+        // 重来一遍：在**新快照**上重新问，框上写的是变化后的事实而不是旧文字。
+        f.prompt.onAsk = nullptr;
+        f.prompt.answers = {};
+        std::optional<DesktopPermit> again;
+        Diagnostic err2;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &again, &err2) &&
+                  f.prompt.asks == 2,
+              "重新发起会在新拓扑上再问一次并签发（不无限重试：一次问只验一次基线）");
+        Check(again.has_value() && again->Covers(kAreaA), "重问后的凭证覆盖展示过的那一片");
+    }
+    // 确认期间目标那块屏消失（拔掉），与拓扑查询一路答空（问不出来）：同为基线失效。
+    {
+        for (int mode = 0; mode < 2; ++mode) {
+            g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+            Fixture f(false, {Target(kA.c_str(), kAreaA)});
+            f.prompt.onAsk = [mode] {
+                if (mode == 0) g_screens.clear();   // 拔掉：一块都不剩
+                else g_screens[0].bounds = R(0, 0, 1280, 720);   // 改了分辨率
+            };
+            Diagnostic err;
+            std::optional<DesktopPermit> permit;
+            Check(!f.gate.AuthorizeDesktop(mode == 0 ? paths::kScreenBitBlt
+                                                     : paths::kScreenWgc,
+                                           kA, kAreaA, &permit, &err) &&
+                      CodeIs(err, codes::kConsentStale) && !permit.has_value(),
+                      mode == 0 ? "Ask 期间显示器消失：consent_stale、无凭证"
+                                : "Ask 期间分辨率变化：consent_stale、无凭证");
+        }
+    }
+    // 确认期间拓扑问不出来（EnumScreens 失败 = 空表）：保守停在基线不符，而不是"没变"。
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        f.prompt.onAsk = [] { g_screens.clear(); };
+        Diagnostic err;
+        std::optional<DesktopPermit> permit;
+        Check(!f.gate.AuthorizeDesktop(paths::kScreenDuplication, kA, kAreaA, &permit, &err) &&
+                  CodeIs(err, codes::kConsentStale),
+              "拓扑这一问没答案时按\"与批准基线不符\"处理（问不出≠没变，fail-closed）");
+    }
+    // SetTargetArea 与框上文字同源刷新：给人看的坐标就是将要批准的坐标。
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 3840, 1080), true)};
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        f.gate.SetTargetArea(kA, kMovedArea);   // 流水线在弹框前重新量到的矩形
+        Diagnostic err;
+        std::optional<DesktopPermit> permit;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kMovedArea, &permit, &err) &&
+                  permit.has_value(),
+              "矩形刷新后按新矩形问人、按新矩形签发");
+        const std::wstring& line = f.prompt.asked[0].targetLines[0];
+        Check(line.find(L"2000,100") != std::wstring::npos &&
+                  line.find(L"400x300") != std::wstring::npos,
+              "框上那行写的是刷新后的区域坐标（不再有\"矩形更新了、文字还是旧的\"）");
+        Check(permit->Approved().left == kMovedArea.left &&
+                  permit->Approved().top == kMovedArea.top &&
+                  permit->Approved().right == kMovedArea.right &&
+                  permit->Approved().bottom == kMovedArea.bottom,
+              "凭证批准的区域与框上展示的完全相同（展示什么批准什么）");
+        Check(!permit->Covers(kAreaA), "旧位置不再被这份凭证覆盖（新授权只批了新那一片）");
+    }
+    // 多目标批次：其中一个目标的拓扑变了，只有"变了之后仍未重新展示"的旧授权不能用；
+    // 重新问的那一轮，清单里两块屏的区域都按当下事实渲染。
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true),
+                     MakeScreen(L"\\\\.\\DISPLAY2", R(1920, 0, 3840, 1080), false)};
+        const std::wstring kS1 = L"DISPLAY1";
+        const std::wstring kS2 = L"DISPLAY2";
+        Fixture f(false, {Target(kS1.c_str(), R(0, 0, 1920, 1080), true),
+                          Target(kS2.c_str(), R(1920, 0, 3840, 1080), true)});
+        Diagnostic err;
+        std::optional<DesktopPermit> p1;
+        Check(f.gate.AuthorizeDesktop(paths::kScreenWgc, kS1, R(0, 0, 1920, 1080), &p1, &err),
+              "批次里第一块屏正常确认");
+        // 第二块开工前流水线先重量（SetTargetArea = 弹框前的那次复核答复），再发起授权。
+        g_screens[1].bounds = R(1920, 0, 2560, 1440);   // 确认之后、第二次授权之前有人改了布局
+        f.gate.SetTargetArea(kS2, g_screens[1].bounds);
+        std::optional<DesktopPermit> p2;
+        Check(f.gate.AuthorizeDesktop(paths::kScreenWgc, kS2, g_screens[1].bounds, &p2, &err),
+              "拓扑一变旧授权作废：第二块屏在新快照上重新问一次才放行");
+        Check(f.prompt.asks == 2, "复用只发生在\"仍有效且已明确展示\"的授权上：变了就必再问");
+        Check(f.prompt.asked[1].targetLines[1].find(L"640x1440") != std::wstring::npos,
+              "重问那一轮清单里写的是变化后的区域，不是旧文字");
+        Check(p2.has_value() && p2->Covers(g_screens[1].bounds) &&
+                  !p2->Covers(R(1920, 0, 3840, 1080)),
+              "新凭证只覆盖新展示过的那一片，旧区域反而不再被批准");
+    }
+    // 后端回退与 DWM 内部升级走的是同一台判定器：不给特殊通道留旁路。
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口内容那一级先确认（--yes 未给）");
+        f.prompt.onAsk = [] { g_screens.clear(); };
+        std::optional<DesktopPermit> permit;
+        Check(!f.gate.AuthorizeDesktop(paths::kDwmScreen, kA, kAreaA, &permit, &err) &&
+                  CodeIs(err, codes::kConsentStale),
+              "DWM 升级到桌面像素：同一条确认后复核，确认期间拓扑变了照样停");
+        Check(!permit.has_value(), "升级路径也没有凭证可用");
     }
 
     // =========================================================================

@@ -553,4 +553,29 @@ ScreenIdentityCheck CompareScreenIdentity(const ScreenCandidate& wanted,
     return ScreenIdentityCheck::kGone;
 }
 
+SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget,
+                                      const RECT& approvedArea,
+                                      const std::vector<ScreenCandidate>& current,
+                                      ScreenCandidate* fresh) {
+    ScreenCandidate now{};
+    switch (CompareScreenIdentity(approvedTarget, current, &now)) {
+        case ScreenIdentityCheck::kUnverifiable: return SamplingRecheck::kUnverifiable;
+        case ScreenIdentityCheck::kGone: return SamplingRecheck::kGone;
+        // "还是那块屏，但形状/编号/主屏归属变了"落在采样这一问里就是确认之后的漂移：
+        // 人在框上批准的是旧样子。不采、也不把旧授权追认到新布局上 —— 重新确认由
+        // 调用方带着新的事实重来一遍，而不是在这里悄悄换一块矩形继续。
+        case ScreenIdentityCheck::kMoved: return SamplingRecheck::kStale;
+        case ScreenIdentityCheck::kSame: break;
+    }
+    // 身份说形状没变，还要与"刚批准的那一片"再对一次：批准区域是人看过的那份事实，
+    // 采样矩形越出它以外就不是被批准的画面。零容差 —— 与 DesktopPermit::Covers 同一判据。
+    const RECT& b = now.screen.bounds;
+    const RECT& a = approvedArea;
+    if (b.left < a.left || b.top < a.top || b.right > a.right || b.bottom > a.bottom) {
+        return SamplingRecheck::kStale;
+    }
+    if (fresh) *fresh = now;
+    return SamplingRecheck::kOk;
+}
+
 }  // namespace ecapture

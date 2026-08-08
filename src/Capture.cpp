@@ -63,8 +63,8 @@ struct Target {
     WindowInfo window;
     // 选定那一刻的身份快照 + 复核要用的查询层。窗口目标在每一次真正读像素之前都要照它复核
     //（WindowIdentity.h）；屏幕目标没有窗口身份，那边靠 ScreenIdentity.h 的
-    // CompareScreenIdentity 重新核对那块屏，win 在这里留空、也永远不会被用到
-    //（CaptureScreenOneChannel 不收这个参数）。
+    // CompareScreenIdentity（弹框前）与 RecheckScreenSampling（拿到桌面凭证之后、采样之前）
+    // 重新核对那块屏，win 在这里留空、也永远不会被用到。
     WindowTarget win;
     ScreenInfo screen;
     // 选定那一刻问到的屏幕身份（按标识选屏那一路才有答案）。取帧之前的复核靠它分辨
@@ -78,10 +78,13 @@ struct Target {
     std::wstring Tag() const {
         return isScreen ? ScreenDisplayName(screen) : HwndHexOf(window.hwnd);
     }
-    // 给人看的那一行（弹框与 hint 用）
+    // 给人看的那一行（弹框与 hint 用）：只有身份那一段，区域由授权判定器在弹框那一刻
+    // 与它冻结的区域一起渲染 —— 文案与实际批准的范围不会有先后之差。
     std::wstring Describe() const {
         return isScreen ? DescribeScreen(screen) : DescribeWindow(window);
     }
+    // 屏幕目标的"身份 + 当下值"一份快照：整屏链路的采样入口复核拿它比对（见 ScreenIdentity.h）。
+    ScreenCandidate Candidate() const { return ScreenCandidate{screen, screenFacts}; }
 };
 
 // 一次通道尝试的授权结果。桌面路径必须带着判定器签发的凭证才准去读屏幕像素，
@@ -230,17 +233,48 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
 // 屏幕目标的单通道取帧。dwm / printwindow 取的是"某个窗口的画面"，屏幕上并没有
 // 这么一个窗口可让它们画，所以这两种通道在解析期就已经被挡在屏幕目标之外。
 // 剩下的三条（wgc / duplication / bitblt）拍的都是那块屏上此刻的一切，全部是桌面路径。
+// wanted 是授权快照那一刻的身份 + 当下值：授权之后、读像素之前按它再核一次那块屏还在不在、
+// 还是不是人批准时的样子（RecheckScreenSampling），采样对象换成复核答复里的**当下**候选 ——
+// 热插拔之后旧 HMONITOR 句柄可能已经不作废地指向别的面板，拿选定那一刻的句柄直接采是错的。
 bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
-                             const ScreenInfo& screen, CaptureMethod method, uint32_t timeoutMs,
-                             const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
-                             CapturedFrame* out, Diagnostic* err) {
+                             const ScreenCandidate& wanted, CaptureMethod method,
+                             uint32_t timeoutMs, const Deadline& dl, const CursorRequest& cursor,
+                             const HdrRequest& hdr, CapturedFrame* out, Diagnostic* err) {
     const wchar_t* path = ScreenPathOf(method);
-    AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, screen.bounds, err);
+    AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, wanted.screen.bounds, err);
     if (!auth.ok) {
         if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
         return false;   // 没通过授权：整块屏幕一个像素都不读
     }
+
+    // 凭证到手 != 那块屏还是人点头时看到的那块屏。采样入口这一问用当下的枚举结果回答：
+    // 没了 / 问不出身份 / 换了样子 / 当下矩形越出批准区域 —— 都停在这里，一个像素不读，
+    // 也不替它挑另一块屏、不把旧授权追认到新布局上（诊断沿用既有稳定码）。
+    ScreenCandidate live{};
+    const SamplingRecheck rc =
+        RecheckScreenSampling(wanted, auth.permit->Approved(),
+                              EnumScreenCandidates(wanted.facts.hasFacts), &live);
+    if (rc != SamplingRecheck::kOk) {
+        const wchar_t* backend = CaptureMethodName(method);
+        if (rc == SamplingRecheck::kStale) {
+            CaptureError(err, backend, Msg(L"cap.consent.stale"), Msg(L"cap.consent.stale_hint"),
+                         codes::kConsentStale);
+        } else if (rc == SamplingRecheck::kGone) {
+            Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"), L"--monitor",
+                         wanted.screen.deviceName, Msg(L"cap.monitor_changed_hint"), targetKey,
+                         backend, stages::kCapture};
+            if (err) *err = std::move(d);
+        } else {
+            Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"), L"--monitor",
+                         wanted.screen.deviceName, Msg(L"cap.monitor_unverifiable_hint"), targetKey,
+                         backend, stages::kCapture};
+            if (err) *err = std::move(d);
+        }
+        return false;
+    }
+
     const uint32_t wait = dl.ClampWait(timeoutMs);
+    const ScreenInfo& screen = live.screen;   // 采样对象 = 当下问到的那块屏（句柄与矩形都是）
 
     switch (method) {
         case CaptureMethod::kWgc:
@@ -364,7 +398,7 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const R
 }
 
 bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
-                             const ScreenInfo& screen, CaptureMethod method,
+                             const ScreenCandidate& wanted, CaptureMethod method,
                              const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
                              const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
                              CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
@@ -372,14 +406,15 @@ bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
-                               return CaptureScreenOneChannel(gate, targetKey, screen, method,
-                                                              timeoutMs, dl, cursor, hdr, out, err);
+                               return CaptureScreenOneChannel(gate, targetKey, wanted, method,
+                                                              timeoutMs, dl, cursor, hdr, out,
+                                                              err);
                            },
                            err, fatal);
     }
     return FallbackChain(chain, dl, out, err, notes, fatal,
                          [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureScreenOneChannel(gate, targetKey, screen, m, timeoutMs,
+                             return CaptureScreenOneChannel(gate, targetKey, wanted, m, timeoutMs,
                                                             dl, cursor, hdr, frame, e);
                          });
 }
@@ -791,11 +826,9 @@ CaptureOutcome RunCapture(const Options& opt) {
         gt.screen = t.isScreen;
         gt.key = t.Tag();
         gt.area = t.area;
-        gt.description = Msgf(L"consent.target_line", t.Describe(),
-                              static_cast<long long>(gt.area.left),
-                              static_cast<long long>(gt.area.top),
-                              static_cast<long long>(gt.area.right - gt.area.left),
-                              static_cast<long long>(gt.area.bottom - gt.area.top));
+        // 只交身份那一段：整行（含区域坐标）由判定器在弹框那一刻从 (subject, area) 现渲染，
+        // SetTargetArea 刷新区域后文案自动同步，不会出现"框上还写着旧坐标"的平行文本。
+        gt.subject = t.Describe();
         gateCfg.targets.push_back(std::move(gt));
     }
     for (const std::wstring& p : plannedPaths) {
@@ -840,8 +873,9 @@ CaptureOutcome RunCapture(const Options& opt) {
         // 屏幕目标另外要按**身份**重新核对一次：编号只是枚举位置，而设备名是系统按连接顺序发
         // 出去的 —— 当初问得到那条跨会话标识（devnode 路径）就按它核，名字被重新发给另一块面板
         // 时只有这条发现得了；当初问不到就照旧按名字核，不新增失败。
-        // 那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给判定器 —— 屏幕拓扑一变，
-        // 已给出的桌面授权自动作废，人会看到重新列出的具体范围，旧授权不会被用在新显示器上。
+        // 那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给判定器 —— 这一问定下
+        // 弹框快照的基线。弹框之后到采样之前再变的，由判定器的确认后拓扑复核与采样入口的
+        // RecheckScreenSampling 拦下（旧的不再追认，新的必须重新给人看过）。
         if (t.isScreen) {
             ScreenCandidate fresh{};
             ScreenCandidate wanted{};
@@ -908,7 +942,7 @@ CaptureOutcome RunCapture(const Options& opt) {
             ok = CallBackend(stages::kCapture, CaptureMethodName(opt.capture),
                              [&] {
                                  return t.isScreen
-                                            ? CaptureScreenWithMethod(gate, t.Tag(), t.screen,
+                                            ? CaptureScreenWithMethod(gate, t.Tag(), t.Candidate(),
                                                                       opt.capture, caps.chain,
                                                                       kFrameTimeoutMs, dl,
                                                                       opt.cursor, opt.hdr, &frame,
