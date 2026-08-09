@@ -500,11 +500,21 @@ set_property(TARGET ecapture-crop-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # FilterChainForCursor / GateCaptureChain 与 src/CursorControl.h 那张按路径登记的表）是纯函数：
 # 假版本与假通道链注进来就能逐条判。文案那一段要读 .rc 里编进的四份资源，所以连着
 # CliOptions/Lang 一起编进来；另外链上 CaptureScope.cpp，用来现场核对"两条表说的是同一批路径"。
-# 这里不碰 WinRT / D3D / 窗口 / 弹框，链接项一个图形库都不需要。
+# GateCaptureChain 现在串的是**三道**闸门（版本 / 光标 / HDR），所以那一道要的 HdrColor.cpp 与
+# 它自己的依赖（CaptureCommon / ImageOps / Deadline / Consent / 那两条枚举件）一并链进来 ——
+# 这一份判据仍然不碰 WinRT / D3D / 窗口 / 弹框，链接项里没有图形库。
 # ---------------------------------------------------------------------------
 add_executable(ecapture-cursor-tests
   tests/cursor_state.cpp
   src/CursorControl.cpp
+  src/HdrColor.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/Deadline.cpp
+  src/Consent.cpp
+  src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
+  src/WindowMatch.cpp
   src/CaptureScope.cpp
   src/SystemCompat.cpp
   src/CliOptions.cpp
@@ -517,7 +527,7 @@ set_target_properties(ecapture-cursor-tests PROPERTIES CXX_STANDARD 20 CXX_STAND
 target_compile_options(ecapture-cursor-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
 target_compile_definitions(ecapture-cursor-tests PRIVATE UNICODE _UNICODE NOMINMAX)
 target_link_libraries(ecapture-cursor-tests PRIVATE
-  kernel32.lib user32.lib advapi32.lib gdi32.lib)
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-cursor-tests PROPERTIES OUTPUT_NAME "ecapture-cursor-tests")
 set_property(TARGET ecapture-cursor-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -532,10 +542,19 @@ set_property(TARGET ecapture-cursor-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # 连着 CaptureCommon / ImageOps / CaptureScope 编进来，用来现场核对两张表说的是同一批路径。
 # 这里链的是 HdrColor.cpp（纯算术那半），不是 HdrDetect.cpp（问显示 HDR 状态那半要 dxgi，只有
 # 主目标里的 CaptureWgc 用），所以链接项一个图形库都不需要。文案要读 .rc 里编进的四份资源。
+#
+# 2026-10 加进来的一份：策略筛选与回退控制（F07）。同一份判据还要逐条判"显式 tonemap/refuse 时
+# 链里只剩兑现得了的那几条"（src/HdrColor.cpp 的 FilterChainForHdr 与串三道闸门的
+# GateCaptureChain，所以连着 CursorControl.cpp / SystemCompat.cpp），以及"后端交回
+# capture.hdr_refused 之后其余后端一次都不调用、原码原样交出"（src/FallbackChain.h 那个模板，
+# 假后端在这里注入）。这两件都造不出真实现场：本机没有 HDR 显示器，也没有一条真通道会被测试
+# 允许去试 —— 所以判的是生产函数本体，不是测试里另抄的一份规则。
 # ---------------------------------------------------------------------------
 add_executable(ecapture-hdr-tests
   tests/hdr_state.cpp
   src/HdrColor.cpp
+  src/CursorControl.cpp
+  src/SystemCompat.cpp
   src/Deadline.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp

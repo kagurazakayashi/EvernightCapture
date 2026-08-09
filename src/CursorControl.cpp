@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "CaptureScope.h"   // WindowPathOf / ScreenPathOf：通道落到哪条内部路径，只有一份答案
+#include "HdrColor.h"       // FilterChainForHdr：显式 HDR 要求那一道闸门（判据在那个头文件）
 #include "Lang.h"
 
 namespace ecapture {
@@ -140,8 +141,8 @@ CursorChainGate FilterChainForCursor(const std::vector<CaptureMethod>& chain,
 }
 
 ChannelGate GateCaptureChain(CaptureMethod requested, bool screenMode, const OsVersion& os,
-                             const CursorRequest& cursor) {
-    // 版本那一道先走：它说的是"这条通道在这台机器上根本用不了"，与光标无关，
+                             const CursorRequest& cursor, const HdrRequest& hdr) {
+    // 版本那一道先走：它说的是"这条通道在这台机器上根本用不了"，与光标、色彩都无关，
     // 而那条错误优先于这里（一次请求只交回一条最靠前能说清楚的下一步）。
     ChannelGate gate = GateChannels(requested, screenMode, os);
     if (!gate.error.code.empty()) return gate;
@@ -154,6 +155,18 @@ ChannelGate GateCaptureChain(CaptureMethod requested, bool screenMode, const OsV
         return gate;
     }
     gate.chain = cursorGate.chain;
+
+    // 色彩那一道最后走，判据与顺序都是同一套：它说的也是"这条通道兑现不了这一次的要求"，
+    // 而两条筛的都是**减**候选 —— 谁也不会把一条通道换进链里，所以两道闸门串起来的先后
+    // 不改变"会不会读桌面像素"那一级（授权判据在 src/CaptureScope.cpp，与这里无关）。
+    const HdrChainGate hdrGate = FilterChainForHdr(gate.chain, hdr, screenMode);
+    for (const Diagnostic& n : hdrGate.notes) gate.notes.push_back(n);
+    if (!hdrGate.error.code.empty()) {
+        gate.error = hdrGate.error;
+        gate.chain.clear();
+    } else {
+        gate.chain = hdrGate.chain;
+    }
     return gate;
 }
 

@@ -455,7 +455,10 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     for (const auto& info : OptionCatalog()) {
         if (info.name == L"hdr") r.hdr.values = info.allowedValues;
     }
-    // compiled：这个 exe 里真的实现了广色域采集 + 浮点 tone mapping（src/HdrColor.cpp）。
+    // compiled：这个 exe 里真的实现了广色域采集 + 浮点 tone mapping（src/HdrColor.cpp），
+    // 而**兑现得了显式 tonemap/refuse 的路径只有 WGC 那两条**：桌面复制那一条登记成
+    // wide_gamut_unverified（它仍用 DuplicateOutput()，采集前不问显示色彩空间），逐条写在下面
+    // paths 那一段的 honorsExplicitPolicy 里，另外配 caveat 那一条同源边界。
     r.hdr.compiled = true;
     // status：这份只读查询**不去问那块屏此刻是不是 HDR 模式**（那要开一次 DXGI 输出的 GetDesc1，
     // 与"不靠实际探测能力"这条规矩相抵）。所以只要本机有可用显示拓扑就是 unverified（不作断言），
@@ -481,11 +484,16 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
         p.path = e.path;
         p.capability = HdrCapabilityName(e.capability);
         p.reason = e.reason;
+        // 与闸门同一个判据（src/HdrColor.h 的 HdrPathHonorsPolicy），不在这里另写一份通道名单。
+        p.honorsExplicitPolicy = HdrPathHonorsPolicy(e.path);
         r.hdr.paths.push_back(std::move(p));
     }
 
-    // auto 的两条链：与真去截图时用的同一个 GateChannels，所以"查询里给的链"与
-    // "那次实际会试的链"不可能各写一份顺序而互相打脸。
+    // auto 的两条链：版本那一道判据与真去截图时用的**同一条**（GateChannels），所以"查询里给的链"
+    // 与那次截图没有被版本筛歪的可能。这里**不**叠光标与 HDR 那两道闸门：这一份查询没有请求上下文
+    //（它不收 --cursor / --hdr），报的是"这台机器给得出哪些路线"，绝不冒充"已经按某一次具体请求
+    // 筛过了"。那两道闸门会不会再收窄这条链，逐条看得见：cursor.paths / color.paths 两段各自写着
+    // 每条路径兑现得了哪一种要求，而真去截图那一次 -v 的 input.captureChain 才是三道闸门串起来的答案。
     for (const bool screenMode : {false, true}) {
         ChannelGate gate = GateChannels(CaptureMethod::kAuto, screenMode, probe.os);
         std::vector<std::wstring> chain;
@@ -540,6 +548,9 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // tone mapping（只在离线用已知色块与梯度判过数学）；且 HDR 一律被映射成 8 位 SDR 再编码交付。
     r.caveats.push_back(caveat::kHdrToneMappingUnverified);
     r.caveats.push_back(caveat::kHdrOutputIsSdr);
+    // 这一条与 color.paths 那一段逐路径的 honorsExplicitPolicy 同源：显式要过 tonemap/refuse 时，
+    // 兑现得了的只有 WGC 那两条路径，桌面复制那两条本构建没实现那几步（所以会被摘出 auto 链）。
+    r.caveats.push_back(caveat::kHdrPolicyWgcOnly);
     if (!probe.buildIdKnown) r.caveats.push_back(caveat::kBuildIdUnavailable);
     if (r.matchesVerifiedEnv == Tri::kNo) r.caveats.push_back(caveat::kNotTestedHere);
     if (r.matchesVerifiedEnv == Tri::kUnknown) r.caveats.push_back(caveat::kTestedEnvUnknown);
@@ -666,6 +677,10 @@ void WriteHdr(Json& j, const EnvHdrReport& hdr) {
         j.Key(L"path").Value(p.path);
         j.Key(L"capability").Value(p.capability);
         j.Key(L"reason").Value(p.reason);
+        // 这一条路径兑不兑现得了**显式**的 tonemap/refuse。写成一个布尔而不是靠调用方猜 capability
+        // 的语义：false 有两种原因（结构上只带 8 位 / 本构建没实现那几步），capability 那一个键
+        // 分得开，而这个键直接回答"我这次的要求会不会被回退链丢掉"。
+        j.Key(L"honorsExplicitPolicy").Value(p.honorsExplicitPolicy);
         j.End();
     }
     j.End();

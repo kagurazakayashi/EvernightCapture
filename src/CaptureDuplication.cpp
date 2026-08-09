@@ -426,6 +426,11 @@ void ResetFrameGeometry(CapturedFrame* out) {
     out->rotation = 0;
     out->sourceColorSpace = FrameColorSpace::kSrgbBgra8;
     out->toneMapped = false;
+    // 这一条路径采集之前**没有**去问过那块屏此刻的色彩空间（它仍用 DuplicateOutput()，也不选
+    // 广色域格式），所以这里的 kUnknown 是"没问过"这条事实本身，不是没清干净。显式 HDR 策略下
+    // 这条通道早就被 HDR 闸门摘掉了（src/HdrColor.h 的 kWideGamutUnverified），走不到这一步；
+    // 留这一句是为了 --hdr auto 那一路也别想在帧上留下一个来历不明的值。
+    out->displayHdrState = DisplayHdrState::kUnknown;
 }
 
 }  // namespace

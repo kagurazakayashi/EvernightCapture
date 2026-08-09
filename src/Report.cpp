@@ -290,10 +290,11 @@ void WriteInputEcho(Json& j, const Options& opt) {
     const OsVersion os = ProbeOsVersion();
     if (os.known) j.Key(L"osBuild").Value(static_cast<long long>(os.build));
     j.Key(L"captureChain").Arr();
-    // 与真去截图那一次同一个判据、同一条顺序：版本筛完之后还要按这一次的光标要求筛
-    //（--cursor include 配 auto 时链里只剩设得进开关的那一条）。回显与执行不是两套答案。
+    // 与真去截图那一次同一个判据、同一条顺序：版本筛完之后还要按这一次的两种要求筛
+    //（--cursor include 配 auto 时链里只剩设得进开关的那一条，--hdr tonemap/refuse 配 auto 时
+    // 链里只剩真兑现得了那一条）。回显与执行不是两套答案。
     for (const CaptureMethod usable : GateCaptureChain(opt.capture, opt.ScreenMode(), os,
-                                                       opt.cursor)
+                                                       opt.cursor, opt.hdr)
                                              .chain) {
         j.Value(CaptureMethodName(usable));
     }

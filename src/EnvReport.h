@@ -113,6 +113,12 @@ inline constexpr const wchar_t* kHdrToneMappingUnverified =
 // HDR 的边界二：本工具把 HDR 一律映射成 8 位 SDR BGRA 再编码交付，不输出 HDR/PQ 的原生图。
 // 所以"HDR 色彩处理"这件事的产物永远是一张 SDR 图，不会把 FP16 或 10 位硬塞进编码器冒充 HDR。
 inline constexpr const wchar_t* kHdrOutputIsSdr = L"hdr_output_is_tone_mapped_to_sdr_bgra8";
+// HDR 的边界三：**这个构建里兑现得了显式 --hdr tonemap/refuse 的只有 WGC 那两条路径。**
+// 桌面复制那两条登记成 wide_gamut_unverified：它仍用 IDXGIOutput1::DuplicateOutput()，采集之前
+// 不问那块屏此刻的色彩空间，也不选广色域格式，所以交回一张 8 位帧时说不出"原始内容是不是 HDR"。
+// 因此 --capture auto 配显式策略时它会被摘出链，显式点名它时解析期就报 capture.hdr_unsupported；
+// 完整的广色域采集是独立后续任务。这一条与 color.paths 里逐路径的 honorsExplicitPolicy 同源。
+inline constexpr const wchar_t* kHdrPolicyWgcOnly = L"hdr_explicit_policy_only_fulfilled_by_wgc";
 }  // namespace caveat
 
 // 本项目**唯一实测过**这套工具的环境。README《系统支持》与 AGENTS.md 里"已实测"记的就是它，
@@ -260,8 +266,13 @@ struct EnvCursorReport {
 // 出处在 src/HdrColor.h，这一份只是把它写成机器可读的一行，不另判一次）。
 struct HdrPathReport {
     std::wstring path;         // images[].path 里那个机器名
-    std::wstring capability;   // wide_gamut_capable / sdr_source_only / unregistered
+    std::wstring capability;   // wide_gamut_capable / wide_gamut_unverified / sdr_source_only / unregistered
     std::wstring reason;       // hdr_reason:: 那一个 token
+    // 这一条路径兑现得了**显式**的 --hdr tonemap / refuse 吗（与 --hdr 闸门用的是同一个判据，
+    // 不是这里另判一次）。false 有两种原因，capability 那一个字段分得开：结构上只带得回 8 位 SDR，
+    // 还是本构建没实现/没核实那几步（桌面复制那两条）。--capture auto + 显式策略时，链里只留这里
+    // 为 true 的那几条（src/HdrColor.h 的 FilterChainForHdr）。
+    bool honorsExplicitPolicy = false;
 };
 
 // --hdr 这一段：默认值、三种取值、这条路线在本机的三态（compiled / status / verifiedOnThisMachine），

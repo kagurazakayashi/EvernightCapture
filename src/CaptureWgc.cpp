@@ -103,6 +103,9 @@ void ResetFrame(CapturedFrame* out) {
     // 色彩那两件也归位：out 可能被复用，上一条的 HDR 结论不能留在下一条的帧上（同光标的理由）。
     out->sourceColorSpace = FrameColorSpace::kSrgbBgra8;
     out->toneMapped = false;
+    // 显示色彩空间那一次问答的答复同样归"没问过"：上面那两句是"这一帧是什么"，这一句是
+    // "我们有没有问到这块屏此刻是什么"，两条都得重问，不然旧会话的答案会冒充这一次的。
+    out->displayHdrState = DisplayHdrState::kUnknown;
 }
 
 // 把帧的 GPU 纹理复制到 CPU 可读的 staging 纹理，再按行搬进帧。这一段与桌面复制通道共用
@@ -402,12 +405,16 @@ bool GrabFrame(const wgc::GraphicsCaptureItem& item, uint32_t timeoutMs,
 // 再据此决定帧池格式与是否拒绝。没写或 --hdr auto 时这里连那次问答都不发（与这条选项存在之前
 // 逐字节相同）。问不出来（kUnknown）既不 tonemap 也不 refuse：HDR 这件事说不出结论时照 SDR 那条
 // 走，而不是猜一个（规矩 5；tonemap 因此是恒等透传，refuse 因此不拒绝它没确证过的东西）。
-bool DecideWgcPool(uint64_t hwnd, HMONITOR monitor, const HdrRequest& hdr,
+// 那一次问答的**答复本身**要留在帧上（out->displayHdrState）：它是"这一张按 8 位交付的帧，来源
+// 到底是不是 SDR"唯一的根据，而结果里那句提示（JudgeHdrPassiveNote）只认这一次问答，不认
+// "帧池反正建成了 8 位"那种倒推。
+bool DecideWgcPool(uint64_t hwnd, HMONITOR monitor, const HdrRequest& hdr, CapturedFrame* out,
                    wdx::DirectXPixelFormat* poolFormat, Diagnostic* err) {
     *poolFormat = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
     if (!hdr.given || hdr.policy == HdrPolicy::kAuto) return true;
     const DisplayHdrState st =
         monitor ? ProbeDisplayHdrForMonitor(monitor) : ProbeDisplayHdrForHwnd(hwnd);
+    out->displayHdrState = st;
     if (hdr.policy == HdrPolicy::kRefuse && st == DisplayHdrState::kHdr) {
         // 用户要的就是"别给我一张被硬压成 BGRA8 的发白图"：这块屏确实在 HDR 模式，
         // 在 StartCapture 之前就停下，一个像素都不读。
@@ -431,7 +438,7 @@ bool CaptureWindowWgc(uint64_t hwnd, uint32_t timeoutMs, const CursorRequest& cu
     ResetFrame(out);
 
     wdx::DirectXPixelFormat poolFormat = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
-    if (!DecideWgcPool(hwnd, nullptr, hdr, &poolFormat, err)) return false;
+    if (!DecideWgcPool(hwnd, nullptr, hdr, out, &poolFormat, err)) return false;
 
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(hwnd, nullptr, &itemHr);
@@ -455,7 +462,7 @@ bool CaptureScreenWgc(const ScreenInfo& screen, uint32_t timeoutMs, const Cursor
 
     const HMONITOR monitor = reinterpret_cast<HMONITOR>(screen.monitor);
     wdx::DirectXPixelFormat poolFormat = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
-    if (!DecideWgcPool(0, monitor, hdr, &poolFormat, err)) return false;
+    if (!DecideWgcPool(0, monitor, hdr, out, &poolFormat, err)) return false;
 
     HRESULT itemHr = S_OK;
     const auto item = CreateItem(0, monitor, &itemHr);

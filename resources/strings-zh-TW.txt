@@ -419,13 +419,19 @@ env.cursor_unsupported_hint	這一條說的是這台機器，與目標視窗無�
 note.cursor_channel_skipped	auto 鏈裡的 %1 兌現不了 %2 滑鼠指標，已摘除（%3），剩下的照順序試
 
 # ---- HDR 色彩處理（--hdr，判據本體在 src/HdrColor.h）----
-opt.hdr	HDR 來源怎麼處理：auto(預設，本工具一個字都不改，結果裡也不出現色彩那組鍵) / tonemap(把 HDR 影格按固定 tone mapping 對映成 8 位元 SDR 後交付) / refuse(核實來源是 HDR 就報錯，絕不交一張被硬壓成 BGRA8 的發白圖)。只有 wgc 與 duplication 兩條帶得回廣色域影格，所以 tonemap/refuse 配 printwindow / dwm / bitblt 在剖析期報 capture.hdr_unsupported，絕不該走去讀桌面像素的通道。這一條不改變授權；來源色彩空間、位元深度與實際處理寫進結果，判據見 README 與 --capabilities 的 color 段
+opt.hdr	HDR 來源怎麼處理：auto(預設，本工具一個字都不改，結果裡也不出現色彩那組鍵) / tonemap(把 HDR 影格按固定 tone mapping 對映成 8 位元 SDR 後交付) / refuse(核實來源是 HDR 就報錯，絕不交一張被硬壓成 BGRA8 的發白圖)。本建置真兌現得了 tonemap/refuse 的只有 wgc 一條，所以配 printwindow / dwm / bitblt / duplication 在剖析期報 capture.hdr_unsupported，絕不該走去讀桌面像素的通道；--capture auto 時同一條判據會把兌現不了的通道從回退鏈裡摘除（各留一條 note.hdr_channel_skipped，一條都不剩就是 env.hdr_unsupported），而 capture.hdr_refused 這類策略結論會讓整條鏈立刻停下。這一條不改變授權；來源色彩空間、位元深度與實際處理寫進結果，判據見 README 與 --capabilities 的 color 段
 cli.hdr_value	--hdr 只能寫 auto / tonemap / refuse
-cap.hdr_unsupported	%1 處理做不到：--capture %2 這條路徑帶不回廣色域影格，沒有 HDR 可處理；帶得回的是 %3
-cap.hdr_unsupported_hint	「影格帶廣色域/高亮度範圍的 HDR」只有 wgc 與桌面複製兩條帶得回（它們的來源跟隨顯示模式）。本工具不會因為這一條就改走去讀桌面像素的通道（那條也沒有更多 HDR，換來的只是一份沒人批准過的畫面）。改用 --capture wgc 或 duplication，或把這條要求去掉（--hdr auto）
+cap.hdr_unsupported	%1 處理做不到：--capture %2 這條路徑帶不回廣色域影格，沒有 HDR 可處理；兌現得了的是 %3
+cap.hdr_unsupported_not_implemented	%1 處理做不到：--capture %2 這一步本建置沒有實作，所以它交回的一張 8 位元影格不能說成「來源就是 SDR」；兌現得了的是 %3
+cap.hdr_unsupported_hint	本建置裡真兌現得了 tonemap/refuse 的只有 wgc 那一條：它在擷取之前唯讀地問一次那塊螢幕此刻的色彩空間，並據此建廣色域影格池。其餘通道做不到的原因有兩種，而本工具不會因為這一條就改走去讀桌面像素的通道（那條也沒有更多 HDR，換來的只是一份沒人批准過的畫面）：printwindow / dwm / bitblt 結構上只帶得回 8 位元 SDR；桌面複製仍用 DuplicateOutput()，擷取前不問顯示色彩空間，把它當 HDR 通道交出去是另一件後續工作。改用 --capture wgc，或把這條要求去掉（--hdr auto）
 cap.hdr_refused	來源核實是 HDR 影格（%1），依 --hdr refuse 的要求拒絕，一個像素都不落地
-cap.hdr_refused_hint	用戶要的就是別把 HDR 硬壓成一張發白的 BGRA8 圖。想要那張 SDR 版請用 --hdr tonemap（本工具按固定的浮點曲線對映之後再交），或換一條本來只交 8 位元 SDR 的通道再問一次
+cap.hdr_refused_hint	用戶要的就是別把 HDR 硬壓成一張發白的 BGRA8 圖。這一句是「你的策略」的結論，不是「這條通道不行」，所以 --capture auto 到這裡就停下、不會換一條後端再試（不然一次拒絕就會變成另一條通道交出的一張圖）。想要那張 SDR 版請用 --hdr tonemap（本工具按固定的浮點曲線對映之後再交），或把這條要求去掉（--hdr auto）
 cap.hdr_unverifiable	這條路徑帶回一個本建置認不出的廣色域影格格式（%1），無法正確對映
-cap.hdr_unverifiable_hint	認不出來源的像素格式不等於「那就按 BGRA8 硬解釋」（那正是發白圖的成因），也不等於「猜一個對映」。這一張一個像素都不落地。換 --capture wgc 或改回 --hdr auto 再試；反覆出現請把 message 裡那個格式編號原樣報給工具維護者
+cap.hdr_unverifiable_hint	認不出來源的像素格式不等於「那就按 BGRA8 硬解釋」（那正是發白圖的成因），也不等於「猜一個對映」。這一張一個像素都不落地，而回退鏈同樣停在這條結論上，不會換一條後端把它當成 8 位元交出來。換 --capture wgc 或改回 --hdr auto 再試；反覆出現請把 message 裡那個格式編號原樣報給工具維護者
 note.hdr_source_sdr	要求過 HDR 處理，但這一影格的來源核實是 8 位元 SDR，沒有 HDR 可對映
 note.hdr_source_sdr_hint	圖照常交付（tone mapping 對 SDR 來源是恆等的）。這一條只是把「我要過 HDR 處理」與「其實這一影格沒有 HDR」分開放在你眼前，別把一次靜默的通過當成「HDR 已經被正確對映過」
+note.hdr_source_unverified	要求過 HDR 處理，這一張按 8 位元交付，而來源到底是不是 HDR 並沒有核實出來
+note.hdr_source_unverified_hint	圖照常交付，但這不能當成「HDR 已經對映對了」：合成器完全可能把一幅 HDR 畫面壓成 8 位元再交給一個 B8G8R8A8 的影格池，所以一張 8 位元影格並不證明來源本來是 SDR。唯一能證明的這一問（那塊螢幕此刻的色彩空間）在這次擷取之前沒有給出答案。別把這條讀成「沒有 HDR」；核對一下顯示設定，或改用 --capture wgc 再問一次
+env.hdr_unsupported	這台機器給不出 %1 這個 HDR 處理：本來要試的是 %2，原因 %3
+env.hdr_unsupported_hint	這一條說的是本機給得出的通道，與目標視窗無關：版本與滑鼠指標兩道閘門篩過之後，鏈裡沒有一條真兌現得了這次的 HDR 要求，所以一個像素都不取、確認框也不彈。換 --capture 變不出一條兌現得了的通道，同一個目標重試也是同樣下場。想知道本機現在判到什麼，跑 --capabilities 讀 color 那一段（每條路徑的 honorsExplicitPolicy）
+note.hdr_channel_skipped	auto 鏈裡的 %1 兌現不了 %2 這個 HDR 處理，已摘除（%3），剩下的照順序試

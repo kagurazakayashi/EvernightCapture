@@ -1025,8 +1025,8 @@ $cases += @{ Name = '--hdr 写两次：最后一个生效（与 --capture 那条
 $cases += @{ Name = '-v 恒回显最终 HDR 策略与"有没有写过这条选项"（默认值问得出来）'
    A = ($ANCHOR + @('--verbose', 'out.png')); Exit = 0
    Check = { param($o) $o.input.hdr -eq 'auto' -and $o.input.hdrGiven -eq $false } }
-# tonemap / refuse 这两种明确要求只有真带得回广色域帧的通道（wgc / duplication）才谈得上：
-# 显式指定做不到的那几条（printwindow / dwm / bitblt）在解析期说不通，而且绝不换后端。
+# tonemap / refuse 这两种明确要求，本构建只有 wgc 真兑现得了：显式指定兑现不了的那几条在解析期
+# 说不通，而且绝不换后端。原因有两种、文案也不同，但同一个码 —— 调用方按 code 分支，人按 message 看懂差别。
 foreach ($m in @('dwm', 'printwindow', 'bitblt')) {
     foreach ($pol in @('tonemap', 'refuse')) {
         $cases += @{ Name = ('--hdr {0} 配 --capture {1}：解析期就拒，不换后端' -f $pol, $m)
@@ -1042,17 +1042,54 @@ foreach ($m in @('dwm', 'printwindow', 'bitblt')) {
            Check = { param($o) (Codes $o.errors) -contains 'capture.hdr_unsupported' }.GetNewClosure() }
     }
 }
-# 带得回广色域帧的两条（wgc / duplication）配任一策略都放行；auto 链也放行（落到哪条要到运行期才知道）。
-foreach ($m in @('wgc', 'duplication', 'auto')) {
+# duplication 这一条是 F07 新收紧的那一条：它的来源在 Windows 那一侧可能跟显示模式走，但本构建
+# 仍用 DuplicateOutput()、采集前不问显示色彩空间，所以不许拿一句没核实的"支持 HDR"继续放行。
+# 文案必须说"这一步没实现"，说"结构上带不回广色域帧"是假话（那正是这份契约要防的混淆）。
+foreach ($pol in @('tonemap', 'refuse')) {
+    $cases += @{ Name = ('--hdr {0} 配 --capture duplication：兑现不了就解析期拒，文案说没实现' -f $pol)
+       A = ($ANCHOR + @('--hdr', $pol, '--capture', 'duplication', 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'capture.hdr_unsupported' -and
+                                $o.errors[0].message -match 'duplication' -and
+                                $o.errors[0].message -match 'wgc' -and
+                                $o.errors[0].message -notmatch 'cannot carry a wide-gamut|带不回广色域' -and
+                                $o.errors[0].value -eq $pol }.GetNewClosure() }
+}
+# 真兑现得了的那一条（wgc）配显式策略放行；auto 也放行 —— 落到哪条通道要到运行期才知道，
+# 而运行期那一道筛的就是同一张表（下一批"摘链"的判据判它）。duplication 只配 auto 放行：
+# auto 不要求任何处理，这条选项存在之前的行为原样保留。
+foreach ($m in @('wgc', 'auto')) {
     $cases += @{ Name = ('--hdr tonemap 配 --capture {0} 在解析期放行（差别要到运行期才看得见）' -f $m)
        A = ($ANCHOR + @('--hdr', 'tonemap', '--capture', $m, '--dry-run', 'out.png')); Exit = 0
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') }.GetNewClosure() }
 }
-# --hdr 不摘链：HDR 处理是"带得回的通道去做、带不回的通道恒等透传"，不是"做不到就换一条"。
-# 所以 input.captureChain 不因 --hdr 而收窄（与 --cursor include 会收窄链是相反的一条判据）。
-$cases += @{ Name = '-v 的 input.captureChain 不因 --hdr tonemap 收窄（不摘链）'
+foreach ($m in @('wgc', 'duplication', 'dwm', 'bitblt', 'printwindow', 'auto')) {
+    $cases += @{ Name = ('--hdr auto 配 --capture {0} 照旧放行（auto 不要求任何处理）' -f $m)
+       A = ($ANCHOR + @('--hdr', 'auto', '--capture', $m, '--dry-run', 'out.png')); Exit = 0
+       Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') }.GetNewClosure() }
+}
+# --hdr 显式要求过就要摘链（F07）：回退链只留真兑现得了那要求的通道，摘不出一条就是
+# env.hdr_unsupported。这与 --cursor include 收窄链是同一条规矩，而不是相反的一条。
+$cases += @{ Name = '-v 的 input.captureChain 因 --hdr tonemap 收窄到只剩 wgc（窗口目标）'
    A = ($ANCHOR + @('--hdr', 'tonemap', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
-   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' } }
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' } }
+$cases += @{ Name = '-v 的 input.captureChain 因 --hdr refuse 收窄到只剩 wgc（窗口目标）'
+   A = ($ANCHOR + @('--hdr', 'refuse', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' } }
+$cases += @{ Name = '整屏目标同样收窄，且不因为 HDR 要求而放行别的桌面路径'
+   A = @('--monitor', 'primary', '--hdr', 'tonemap', '--capture', 'auto', '--dry-run', '--verbose',
+         'out.png'); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' } }
+# 没要求与写 auto 都不许动链：默认值真的一个字都不改（与这条选项存在之前逐字节相同）。
+foreach ($extra in @(@(), @('--hdr', 'auto'))) {
+    $cases += @{ Name = ('链不被收窄：{0}' -f $(if ($extra.Count) { '--hdr auto' } else { '没写 --hdr' }))
+       A = ($ANCHOR + @('--capture', 'auto') + @($extra) + @('--verbose', 'out.png')); Exit = 0
+       Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' }.GetNewClosure() }
+}
+# HDR 与光标两个要求同时给时取交集，链仍只剩 wgc（两道闸门串起来，不各写一份答案）。
+$cases += @{ Name = '--cursor include 与 --hdr tonemap 同时给出：交集还是 wgc'
+   A = ($ANCHOR + @('--cursor', 'include', '--hdr', 'tonemap', '--capture', 'auto', '--verbose',
+                    'out.png')); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' } }
 # 一条选项写坏了名字要能对着契约找到；帮助里必须看得见这条选项（目录是契约的唯一来源）。
 $cases += @{ Name = '--help 含 HDR 那一条选项与其三种取值'
    A = @('--help'); Exit = 3; Text = $true; Has = @('--hdr <auto|tonemap|refuse>') }

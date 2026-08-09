@@ -429,15 +429,23 @@ note.cursor_channel_skipped	auto 链里的 %1 兑现不了 %2 光标，已摘掉
 
 # ---- HDR 色彩处理（--hdr，判据本体在 src/HdrColor.h）----
 # 三种下场各说一件事：cap.hdr_unsupported 说的是"这条通道结构上带不回广色域帧"（解析期，1），
-# cap.hdr_refused 说的是"来源核实是 HDR 而用户要求别交发白图"（7），
+# cap.hdr_unsupported_not_implemented 说的是"这条通道的来源可能有广色域，但本构建没实现兑现要求
+# 那几步"（同一个码、另一句文案：桌面复制那条），cap.hdr_refused 说的是"来源核实是 HDR 而用户
+# 要求别交发白图"（7，回退链到这里就停，不换后端重跑），
 # cap.hdr_unverifiable 说的是"带回一个本构建认不出的广色域格式，不敢映射"（7）。
-opt.hdr	HDR 来源怎么处理：auto(默认，本工具一个字都不改，结果里也不出现色彩那组键) / tonemap(把 HDR 帧按固定 tone mapping 映射成 8 位 SDR 交付) / refuse(核实来源是 HDR 就报错，绝不交一张被硬压成 BGRA8 的发白图)。只有 wgc 与 duplication 两条带得回广色域帧，所以 tonemap/refuse 配 printwindow / dwm / bitblt 在解析期报 capture.hdr_unsupported，绝不改走去读桌面像素的通道。这一条不改变授权；来源色彩空间、位深与实际处理写进结果，判据见 README 与 --capabilities 的 color 段
+opt.hdr	HDR 来源怎么处理：auto(默认，本工具一个字都不改，结果里也不出现色彩那组键) / tonemap(把 HDR 帧按固定 tone mapping 映射成 8 位 SDR 交付) / refuse(核实来源是 HDR 就报错，绝不交一张被硬压成 BGRA8 的发白图)。本构建真兑现得了 tonemap/refuse 的只有 wgc 一条，所以配 printwindow / dwm / bitblt / duplication 在解析期报 capture.hdr_unsupported，绝不改走去读桌面像素的通道；--capture auto 时同一条判据会把兑现不了的通道从回退链里摘掉（各留一条 note.hdr_channel_skipped，一条都不剩就是 env.hdr_unsupported），而 capture.hdr_refused 这类策略结论会让整条链立刻停下。这一条不改变授权；来源色彩空间、位深与实际处理写进结果，判据见 README 与 --capabilities 的 color 段
 cli.hdr_value	--hdr 只能写 auto / tonemap / refuse
-cap.hdr_unsupported	%1 处理做不到：--capture %2 这条路径带不回广色域帧，没有 HDR 可处理；带得回的是 %3
-cap.hdr_unsupported_hint	"帧里带广色域/高亮范围的 HDR"只有 wgc 与桌面复制两条带得回（它们的来源跟随显示模式）。本工具不会因为这一条就改走去读桌面像素的通道（那条同样没有更多 HDR，换来的只是一份没人批准过的画面）。改用 --capture wgc 或 duplication，或把这条要求去掉（--hdr auto）
+cap.hdr_unsupported	%1 处理做不到：--capture %2 这条路径带不回广色域帧，没有 HDR 可处理；兑现得了的是 %3
+cap.hdr_unsupported_not_implemented	%1 处理做不到：--capture %2 这一步本构建没有实现，所以它交回的一张 8 位帧不能说成"来源就是 SDR"；兑现得了的是 %3
+cap.hdr_unsupported_hint	本构建里真兑现得了 tonemap/refuse 的只有 wgc 那一条：它在采集之前只读地问一次那块屏此刻的色彩空间，并据此建广色域帧池。其余通道做不到的原因有两种，而本工具不会因为这一条就改走去读桌面像素的通道（那条同样没有更多 HDR，换来的只是一份没人批准过的画面）：printwindow / dwm / bitblt 结构上只带得回 8 位 SDR；桌面复制仍用 DuplicateOutput()，采集前不问显示色彩空间，把它当 HDR 通道交出去是另一件后续工作。改用 --capture wgc，或把这条要求去掉（--hdr auto）
 cap.hdr_refused	来源核实是 HDR 帧（%1），按 --hdr refuse 的要求拒绝，一个像素都不落地
-cap.hdr_refused_hint	用户要的就是别把 HDR 硬压成一张发白的 BGRA8 图。想要那张 SDR 版请用 --hdr tonemap（本工具按固定的浮点曲线映射之后再交），或换一条本来只交 8 位 SDR 的通道再问一次
+cap.hdr_refused_hint	用户要的就是别把 HDR 硬压成一张发白的 BGRA8 图。这一句是"你的策略"的结论，不是"这条通道不行"，所以 --capture auto 到这里就停下、不会换一条后端再试（不然一次拒绝就会变成另一条通道交出的一张图）。想要那张 SDR 版请用 --hdr tonemap（本工具按固定的浮点曲线映射之后再交），或把这条要求去掉（--hdr auto）
 cap.hdr_unverifiable	这条路径带回一个本构建认不出的广色域帧格式（%1），无法正确映射
-cap.hdr_unverifiable_hint	认不出来源的像素格式不等于"那就按 BGRA8 硬解释"（那正是发白图的成因），也不等于"猜一个映射"。这一张一个像素都不落地。换 --capture wgc 或改回 --hdr auto 再试；反复出现请把 message 里那个格式编号原样报给工具维护者
+cap.hdr_unverifiable_hint	认不出来源的像素格式不等于"那就按 BGRA8 硬解释"（那正是发白图的成因），也不等于"猜一个映射"。这一张一个像素都不落地，而回退链同样停在这条结论上，不会换一条后端把它当成 8 位交出来。换 --capture wgc 或改回 --hdr auto 再试；反复出现请把 message 里那个格式编号原样报给工具维护者
 note.hdr_source_sdr	要求过 HDR 处理，但这一帧的来源核实是 8 位 SDR，没有 HDR 可映射
 note.hdr_source_sdr_hint	图照常交付（tone mapping 对 SDR 来源是恒等的）。这一条只是把"我要过 HDR 处理"与"其实这一帧没有 HDR"分开放在你眼前，别把一次静默的通过当成"HDR 已经被正确映射过"
+note.hdr_source_unverified	要求过 HDR 处理，这一张按 8 位交付，而来源到底是不是 HDR 并没有核实出来
+note.hdr_source_unverified_hint	图照常交付，但这不能当成"HDR 已经映射对了"：合成器完全可能把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池，所以一张 8 位帧并不证明来源本来是 SDR。唯一能证明的那一问（那块屏此刻的色彩空间）在这次采集之前没有给出答案。别把这条读成"没有 HDR"；核对一下显示设置，或改用 --capture wgc 再问一次
+env.hdr_unsupported	这台机器给不出 %1 这个 HDR 处理：本来要试的是 %2，原因 %3
+env.hdr_unsupported_hint	这一条说的是本机给得出的通道，与目标窗口无关：版本与光标两道闸门筛过之后，链里没有一条真兑现得了这次的 HDR 要求，所以一个像素都不取、确认框也不弹。换 --capture 变不出一条兑现得了的通道，同一个目标重试也是同一个下场。想知道这台机器现在判到什么，跑 --capabilities 读 color 那一段（每条路径的 honorsExplicitPolicy）
+note.hdr_channel_skipped	auto 链里的 %1 兑现不了 %2 这个 HDR 处理，已摘掉（%3），剩下的照顺序试

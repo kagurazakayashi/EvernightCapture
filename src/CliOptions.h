@@ -407,6 +407,17 @@ inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
 // 与 note.channel_unavailable 分开：那一条说的是"本机版本用不了这条通道"，这一条说的是
 // "这条通道能用，但它兑现不了这次的光标要求"，而剩下的那几条仍会照顺序试。
 inline constexpr const wchar_t* kNoteCursorChannelSkipped = L"note.cursor_channel_skipped";
+// 与上面那一条同一形状，而筛人的是这一次**显式要过的 HDR 处理**（判据在 src/HdrColor.h 的
+// FilterChainForHdr，登记表按内部路径写）。原因 token（ASCII、不随 --lang 变）：
+//   `window_self_drawn_8bit` / `dwm_redirection_surface_8bit` / `screen_dc_8bit`
+//                  = 这条路径结构上只带得回 8 位 SDR，没有 HDR 可映射 / 可拒绝
+//   `duplication_hdr_policy_not_implemented`
+//                  = 桌面复制那条的来源在 Windows 那一侧可能跟显示模式走，但本构建没有实现
+//                    兑现显式策略所需的那几步（仍用 DuplicateOutput()，不问显示色彩空间），
+//                    所以不敢拿它兑现用户要过的 tonemap / refuse —— 完整广色域采集是独立后续任务
+//   `not_registered` = 新增通道忘了在 HDR 登记表里加一行（漏登记 = 更严而不是更松）
+// 摘掉之后剩下的那几条仍照顺序试；一条都不剩时是 env.hdr_unsupported，一张都不取。
+inline constexpr const wchar_t* kNoteHdrChannelSkipped = L"note.hdr_channel_skipped";
 // 窗口查询（--list / --inspect）交回的是一份**当时的快照**：句柄会复用、标题会变、进程会退出，
 // 所以列表里的 hwnd / pid / 类名不是一种可以长期持有的凭证。真去截图时仍要按
 // 《窗口选择与身份一致性》那一节复核，这一条提示随每一次成功的窗口查询发出（--quiet 可抑制，
@@ -529,12 +540,17 @@ inline constexpr const wchar_t* kEnvCursorUnsupported = L"env.cursor_unsupported
 inline constexpr const wchar_t* kCursorUnverifiable = L"capture.cursor_unverifiable";
 // HDR 色彩处理（--hdr）。三条码各自的下一步不同，而共同点是**绝不交一张被硬压成 8 位 BGRA
 // 的发白图当成正确结果**（那正是这条选项要解决的问题）：
-//   capture.hdr_unsupported   显式指定的那条通道结构上带不回广色域帧（例如 --hdr tonemap 配
-//                             printwindow：窗口自绘到 8 位 DC，来源里根本没有 HDR 可映射）。
+//   capture.hdr_unsupported   显式指定的那条通道兑现不了这个要求：要么结构上带不回广色域帧
+//                             （例如 --hdr tonemap 配 printwindow：窗口自绘到 8 位 DC，来源里
+//                             根本没有 HDR 可映射），要么这一步本构建没实现、没核实
+//                             （--hdr tonemap 配 duplication：它仍用 DuplicateOutput()，采集前
+//                             不问那块屏此刻的色彩空间，所以不敢替它声称兑现）。
 //                             解析期给出，退出码 1，**不换后端**（与 --cursor include 同源）。
 //   capture.hdr_refused       --hdr refuse 且这条路径核实回来的帧确实是 HDR（FP16 scRGB 或
 //                             PQ/HLG BT.2020）。用户要的就是"别给我发白图"，所以一个像素都不
-//                             落地，退出码 7；下一步是改用 --hdr tonemap 或换一条 SDR 通道。
+//                             落地，退出码 7。它是**用户策略的结论**而不是"这条通道不行"，所以
+//                             --capture auto 的回退链到这里立刻停下、不换后端重跑
+//                             （src/FallbackChain.h）；下一步是改用 --hdr tonemap，或去掉这条要求。
 //   capture.hdr_unverifiable  这条路径交回的帧带着一个本构建认不出来、也就无法正确映射的广色域
 //                             像素格式。"认不出格式"不等于"那就按 BGRA8 硬解释"，也不等于
 //                             "按 tonemap 猜一个映射"，这一张不落地，退出码 7。
@@ -547,6 +563,16 @@ inline constexpr const wchar_t* kHdrUnverifiable = L"capture.hdr_unverifiable";
 // 它存在的意义是把"我要过 HDR 处理"与"这一张其实没有 HDR 可处理"这两件事分开放在调用方眼前，
 // 而不是拿一个静默的通过冒充"HDR 已经被正确映射过"。--quiet 可抑制。
 inline constexpr const wchar_t* kHdrSourceSdr = L"note.hdr_source_sdr";
+// 上面那一条的**根据**只到"采集之前真的问到这块此刻是 SDR"为止。一张 8 位 BGRA 帧本身不证明
+// 原始内容是 SDR（合成器可能把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池），所以那一问
+// 没有答案时不能发上面那条，改发这一条：图照常交付，但说清"HDR 这件事没核实出来"，
+// 不许把"没核实"读成"没有 HDR 可映射"（判据是 src/HdrColor.h 的 JudgeHdrPassiveNote）。
+inline constexpr const wchar_t* kHdrSourceUnverified = L"note.hdr_source_unverified";
+// 显式要过的 HDR 处理在这台机器上**没有任何一条通道兑现得了**（auto 链被筛到空）。与
+// env.cursor_unsupported 同一形状：在枚举目标、弹确认框、读像素之前给出，一个像素都不读，
+// 退出码 7。它说的不是"这条通道在本机版本上不可用"（那是 env.channel_unsupported），
+// 而是"这条通道可用、但它兑现不了这次的色彩要求"。
+inline constexpr const wchar_t* kEnvHdrUnsupported = L"env.hdr_unsupported";
 // 运行环境（这一台机器上的 Windows 版本）提供不了所要求的东西，与"这个目标截不到"是两回事。
 // 判据与三条下限各写在哪儿见 src/SystemCompat.h；两条都在枚举目标、弹确认框、读像素**之前**
 // 给出，一个像素都不读，退出码 7。分开给码的理由就是调用方的下一步不同：

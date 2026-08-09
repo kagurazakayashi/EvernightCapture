@@ -249,11 +249,15 @@ CursorChainGate FilterChainForCursor(const std::vector<CaptureMethod>& chain,
                                      const CursorRequest& request, bool screenMode,
                                      const OsVersion& os);
 
-// 两条闸门串成一份：先按本机版本筛（GateChannels），再按这一次的光标要求筛。
-// 版本那一条的错误优先（那条说的是"这条通道在这台机器上根本用不了"，与光标无关）。
-// 截图链路、-v 的 input.captureChain、以及 --capabilities 的 autoChains 都走这一份，
-// 所以"这次能试哪几条"只有一个答案。
+// 三条闸门串成一份：先按本机版本筛（GateChannels），再按这一次的光标要求筛，最后按这一次显式
+// 要过的 HDR 处理要求筛（src/HdrColor.h 的 FilterChainForHdr）。
+// 版本那一条的错误优先（那条说的是"这条通道在这台机器上根本用不了"，与光标、色彩都无关），
+// 光标那一条次之，HDR 那一条最后 —— 一次请求只交回一条最靠前能说清楚的下一步。
+// 截图链路与 -v 的 input.captureChain 走这一份，所以"这次能试哪几条"只有一个答案。
+// --capabilities 没有请求上下文（它不收 --cursor / --hdr），所以那份 autoChains 走的是只按版本筛的
+// GateChannels，并在 color.paths / cursor.paths 两段逐条写明每条路径兑现得了哪一种要求 —— 它说
+// "这台机器给得出哪些路线"，绝不冒充"已经按某一次具体请求筛过了"。
 ChannelGate GateCaptureChain(CaptureMethod requested, bool screenMode, const OsVersion& os,
-                             const CursorRequest& cursor);
+                             const CursorRequest& cursor, const HdrRequest& hdr);
 
 }  // namespace ecapture

@@ -20,9 +20,14 @@
 namespace ecapture {
 
 // 窗口目标：定位那块输出、按旋转取出窗口矩形那一大块。
-// hdr / dl：桌面纹理跟随那块输出的显示模式，HDR 时可能是 FP16 scRGB 或 10 位 PQ/HLG。
-// 没写 --hdr（或 auto）时这条路径照旧只认 B8G8R8A8（非它就报 cap.frame_format）；显式要过 HDR
-// 处理时才在拷回 CPU 那一步认得并映射广色域（判据与实现见 src/HdrColor.h 与 CopyTextureToFrame）。
+// hdr / dl：桌面纹理跟随那块输出的显示模式，HDR 时可能不是 B8G8R8A8。没写 --hdr（或写成 auto）
+// 时这条路径照旧只认 B8G8R8A8（非它就报 cap.frame_format），并把 hdr 原样交给共用的拷回那一步
+//（映射/拒绝的算术在那一侧，见 src/HdrColor.h 与 CopyTextureToFrame）。
+// 但这条通道**不算兑现得了显式 tonemap / refuse**：它仍用 IDXGIOutput1::DuplicateOutput()，
+// 采集之前不问那块屏此刻的色彩空间，也不选广色域格式，所以一张 8 位桌面帧说不出"原始内容是不是
+// HDR"。显式要过那两种策略时，它在闸门与解析期都被判成不合格候选（登记表里那条
+// kWideGamutUnverified），因此这里的 hdr 实际只会带着"没要求处理"那一份答案进来。
+// 完整的广色域采集是独立后续任务，本轮不靠一句没核实的"支持 HDR"放行。
 bool CaptureWindowDuplication(uint64_t hwnd, uint32_t timeoutMs, const DesktopPermit& permit,
                               const HdrRequest& hdr, const Deadline& dl, CapturedFrame* out,
                               Diagnostic* err);

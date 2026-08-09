@@ -7,15 +7,22 @@
       0) 离线层（build\ecapture-hdr-tests.exe）：判据本体——两张登记表的一致性、DXGI 格式与
          显示 color space 的分类（含认不出一律 unknown、不猜）、half 解码与传递函数与 tone 曲线的
          性质（黑进黑 / 单调 / white=1 恒等 / 不越界）、用已知色块与亮度梯度逐点判 ConvertWideFrameToSdrBgra8、
-         来源与形状守卫、那组结果键的合成分解，以及 HdrRequestPossible。
+         来源与形状守卫、那组结果键的合成分解、HdrRequestPossible，以及策略筛选与回退控制那一批：
+         FilterChainForHdr 的矩阵、三道闸门串起来 GateCaptureChain（HDR 与光标取交集、错误先后）、
+         ClassifyChainStop，以及 src/FallbackChain.h 那条链用假后端注入的下场。
       1) 真机 SDR 层：这台机器的显示器不支持 HDR，所以凡是"带回一幅 HDR 帧"的现场都造不出来 ——
          但**恰恰因此**这一层判的是最要紧的一条：默认与 --hdr 各策略在一张真实的 SDR 自建房窗口上
          都不改变画面（SDR 回归），并且把来源如实报成 srgb_bgra8 / sdr_passthrough，而不是假装映射过。
+      1b) 策略筛选层：--capture auto 配显式 tonemap/refuse 时，-v 的 input.captureChain 与实际执行
+          是同一条判据算出来的，链里只剩真兑现得了那要求的通道；显式点名兑现不了的那条（duplication）
+          在解析期就说做不到，并如实说"这一步没实现"而不是"结构上带不回广色域帧"。
       2) --capabilities 的 color 段：三件事分开写（compiled / status / verifiedOnThisMachine），
-         verifiedOnThisMachine 恒 no（本项目没有 HDR 屏），两份查询同源。
+         verifiedOnThisMachine 恒 no（本项目没有 HDR 屏），两份查询同源，而每条路径
+         兑现不兑现得了显式策略逐条写出来（honorsExplicitPolicy）。
 
     刻意不在本机伪造的现场（一律记未验证，见最后一节）：真 HDR 显示器上的实拍对照、--hdr refuse
-    在 HDR 帧上的拒绝、FP16 帧池那条实际出图、HLG 那条的真机下场——没有 HDR 设备就不宣称色彩验收通过。
+    在 HDR 帧上的拒绝（含"拒绝之后其余后端一次都不调用"的真机现场）、FP16 帧池那条实际出图、
+    HLG 那条的真机下场、链被筛空（env.hdr_unsupported）的真机现场——没有 HDR 设备就不宣称色彩验收通过。
 
     默认只用自建窗口 + 窗口内容那一级（--yes 免掉的那一级），一次都不弹框，也不动使用者的显示设置。
 #>
@@ -117,8 +124,9 @@ try {
         Assert-Ec $m.Success "读不出摘要：$tail"
         Assert-Ec ([int]$m.Groups[2].Value -eq 0) "HDR 离线判据有失败项：$tail"
         # 这条下限防"判据被删了还绿"：两张表一致、格式与状态分类、单点数学、色块/梯度/守卫、
-        # 三键合成、HdrRequestPossible 这六大批本就有 50 条以上。
-        Assert-Ec ([int]$m.Groups[1].Value -ge 50) "HDR 离线判据通过数不对劲（$($m.Groups[1].Value)），判据被删了？"
+        # 三键合成、HdrRequestPossible、策略筛选与回退控制（含假后端注入的那条链）这八大批
+        # 本就有 100 条以上。
+        Assert-Ec ([int]$m.Groups[1].Value -ge 100) "HDR 离线判据通过数不对劲（$($m.Groups[1].Value)），判据被删了？"
         Write-Host "  $tail"
         @($lines | Where-Object { $_ -match 'FAIL' }) | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     }
@@ -207,6 +215,75 @@ try {
     Assert-Ec ($quiet.Json.PSObject.Properties.Name -notcontains 'notes') '--quiet 没去掉 notes 段'
 
     # =========================================================================
+    Write-Host "`n=== 1b) 策略筛选：显式 tonemap/refuse 时，链与实际执行同一个答案 ==="
+    # =========================================================================
+    # 读一次 -v 的 input.captureChain（--dry-run，一个像素都不取、不弹框、不写文件）。
+    # 这一批判的是"回显与执行不是两套答案"：同一条 GateCaptureChain 算出来的那一条链。
+    function Get-Chain {
+        param(
+            [string[]]$Extra = @(),
+            [switch]$Screen
+        )
+        $argv = if ($Screen) { @('--monitor', 'primary') } else { @('--hwnd', (Get-EcHwndHex $window.Hwnd)) }
+        $argv += @('--capture', 'auto', '--dry-run', '--verbose', '--lang', 'en') + @($Extra) + @('out.png')
+        $r = Invoke-EcProcess -FilePath $Exe -TimeoutMs 30000 -Arguments $argv
+        $o = Json-Of $r
+        return [pscustomobject]@{ Exit = $r.Exit; Chain = (@($o.input.captureChain) -join ',') }
+    }
+
+    $base = Get-Chain -Extra @()
+    Assert-Ec ($base.Exit -eq 0 -and $base.Chain -eq 'wgc,dwm,printwindow,bitblt') `
+        "没写 --hdr 时链不该被动过：exit=$($base.Exit) 链=$($base.Chain)（默认值真的不动任何东西）"
+    $hAuto = Get-Chain -Extra @('--hdr', 'auto')
+    Assert-Ec ($hAuto.Chain -eq $base.Chain) `
+        "--hdr auto 时链同样不该收窄（它只被动上报）：$($hAuto.Chain)"
+    foreach ($pol in @('tonemap', 'refuse')) {
+        $narrow = Get-Chain -Extra @('--hdr', $pol)
+        Assert-Ec ($narrow.Exit -eq 0 -and $narrow.Chain -eq 'wgc') `
+            "--hdr $pol 配 auto 时窗口链必须只剩真兑现得了的那一条，实际：$($narrow.Chain)"
+        $narrowScreen = Get-Chain -Extra @('--hdr', $pol) -Screen
+        Assert-Ec ($narrowScreen.Exit -eq 0 -and $narrowScreen.Chain -eq 'wgc') `
+            "--hdr $pol 配 auto 时整屏链同样只剩 wgc（绝不因为 HDR 要求放行另一条桌面路径）：$($narrowScreen.Chain)"
+    }
+    # 显式点名兑现不了的那一条：解析期就拒，而且文案说的是"这一步没实现"，不是说"带不回广色域帧"。
+    $dup = Invoke-EcProcess -FilePath $Exe -TimeoutMs 30000 -Arguments @(
+        '--hwnd', (Get-EcHwndHex $window.Hwnd), '--hdr', 'tonemap', '--capture', 'duplication',
+        '--lang', 'en', 'out.png')
+    $dupJson = Json-Of $dup
+    Assert-Ec ($dup.Exit -eq 1 -and (@($dupJson.errors | ForEach-Object { $_.code }) -join ',') `
+               -eq 'capture.hdr_unsupported') `
+        "--hdr tonemap 配 --capture duplication 该在解析期拒（退出码 $($dup.Exit)）"
+    Assert-Ec ($dupJson.errors[0].message -match 'does not implement') `
+        "文案要如实说这一步本构建没实现，而不是说这条路径结构上带不回广色域帧：$($dupJson.errors[0].message)"
+
+    # 收窄之后真去截一张：出的还是 wgc 那一条，画面不因为筛选而变，而摘掉的那几条各留一条 note。
+    $autoTm = Invoke-Shot -Window $window -Name 'auto-tonemap' -Extra @(
+        '--capture', 'auto', '--hdr', 'tonemap', '--yes')
+    Assert-Ec ($autoTm.Exit -eq 0 -and $autoTm.Exists) `
+        "auto + tonemap 在本机该正常出图：$($autoTm.Raw.Stderr)"
+    Assert-Ec ($autoTm.Img.source -eq 'wgc' -and $autoTm.Img.path -eq 'wgc') `
+        "链收窄后实际出图的那条该是 wgc，实际 source=$($autoTm.Img.source) path=$($autoTm.Img.path)"
+    Assert-Ec ($autoTm.Notes -contains 'note.hdr_channel_skipped') `
+        "被策略摘掉的那几条要留得见（稳定码 + 原因 token），实际 notes：$($autoTm.Notes -join ',')"
+    $skipped = @($autoTm.Json.notes | Where-Object { $_.code -eq 'note.hdr_channel_skipped' })
+    Assert-Ec ($skipped.Count -eq 3 -and (($skipped.option | Sort-Object -Unique) -join ',') -eq '--hdr') `
+        "窗口那三条被摘掉时各一条 note、都挂在 --hdr 上：$($skipped.Count) 条"
+    Assert-Ec (((@($skipped | ForEach-Object { $_.backend }) | Sort-Object) -join ',') -eq
+               'bitblt,dwm,printwindow') `
+        "摘掉的是哪三条要写清楚：$(@($skipped | ForEach-Object { $_.backend }) -join ',')"
+    # 那一条"8 位帧不证明来源是 SDR"的提示：问过且答案是 SDR 才发 source_sdr，没问到答案发另一条。
+    $hasSdr = $autoTm.Notes -contains 'note.hdr_source_sdr'
+    $hasUnverified = $autoTm.Notes -contains 'note.hdr_source_unverified'
+    Assert-Ec ($hasSdr -ne $hasUnverified) `
+        "这两条互斥（问过才敢说来源是 SDR），实际：$($autoTm.Notes -join ',')"
+    Assert-Ec $hasSdr `
+        "本机这块屏问过且答案是 SDR，该发 note.hdr_source_sdr（改发未核实那一条就是回归）"
+    # 筛选没有把画面动歪：主色仍是本次那个窗口。
+    $astats = Get-EcImageStats -Path $autoTm.Path -Step 3
+    Assert-Ec ($astats.Colors -ge 12 -and (Get-EcColorDistance -A $astats.TopDominant -B $mine) -le 32) `
+        "auto + tonemap 收窄链之后画面变了（筛选不该动像素，只该动候选）"
+
+    # =========================================================================
     Write-Host "`n=== 2) 只读查询：--capabilities 的 color 段，两份查询同源 ==="
     # =========================================================================
     $cap = Invoke-EcProcess -FilePath $Exe -TimeoutMs 20000 -Arguments @('--capabilities', '--lang', 'zh-CN')
@@ -222,15 +299,29 @@ try {
     Assert-Ec ($col.encoderOutput -eq 'sdr_bgra8') "color.encoderOutput 该是 sdr_bgra8，实际 $($col.encoderOutput)"
     $colPaths = @($col.paths)
     Assert-Ec ($colPaths.Count -ge 9) "color.paths 只列了 $($colPaths.Count) 条（登记表里应有九条内部路径）"
-    $wide = @($colPaths | Where-Object { $_.capability -eq 'wide_gamut_capable' } | ForEach-Object { $_.path }) | Sort-Object
-    Assert-Ec ((($wide) -join ',') -eq 'duplication.frame,screen.duplication,screen.wgc,wgc' -or
-               ($wide -contains 'wgc')) "带得回广色域的那四条应是 wgc/screen.wgc/duplication.frame/screen.duplication，实际：$($wide -join ',')"
+    # 来源"可能带广色域"与"本构建兑现得了显式策略"是两件事，报告里要分得开（F07）：
+    # wgc 那两条两样都是，桌面复制那两条只带前一样，8 位那五条两样都没有。
+    $capable = @($colPaths | Where-Object { $_.capability -eq 'wide_gamut_capable' } | ForEach-Object { $_.path }) | Sort-Object
+    $unverified = @($colPaths | Where-Object { $_.capability -eq 'wide_gamut_unverified' } | ForEach-Object { $_.path }) | Sort-Object
+    Assert-Ec ((($capable) -join ',') -eq 'screen.wgc,wgc') `
+        "wide_gamut_capable 该只有 wgc 那两条（登记成 capable 就等于敢兑现显式策略），实际：$($capable -join ',')"
+    Assert-Ec ((($unverified) -join ',') -eq 'duplication.frame,screen.duplication') `
+        "桌面复制那两条该登记成 wide_gamut_unverified（来源可能跟显示模式走，但本构建没兑现那几步），实际：$($unverified -join ',')"
+    $honors = @($colPaths | Where-Object { $_.honorsExplicitPolicy } | ForEach-Object { $_.path }) | Sort-Object
+    Assert-Ec ((($honors) -join ',') -eq 'screen.wgc,wgc') `
+        "honorsExplicitPolicy 为真的该与上面那两条同一批（同一个判据算的，不是两份表），实际：$($honors -join ',')"
     $sdrOnly = @($colPaths | Where-Object { $_.capability -eq 'sdr_source_only' } | ForEach-Object { $_.path })
     Assert-Ec ($sdrOnly -contains 'printwindow') "printwindow 该登记成 sdr_source_only，实际 sdr-only 集合：$($sdrOnly -join ',')"
     Assert-Ec (@($capJson.caveats) -contains 'hdr_tone_mapping_not_verified_on_hdr_display') `
         'caveats 里少了"tone mapping 没在 HDR 帧上实测过"那条边界'
     Assert-Ec (@($capJson.caveats) -contains 'hdr_output_is_tone_mapped_to_sdr_bgra8') `
         'caveats 里少了"HDR 一律映射成 SDR 交付"那条边界'
+    Assert-Ec (@($capJson.caveats) -contains 'hdr_explicit_policy_only_fulfilled_by_wgc') `
+        'caveats 里少了"显式 tonemap/refuse 只有 wgc 兑现得了"那条边界（本轮收紧判据的那一条）'
+    # 没有请求上下文，所以 autoChains 报的是"只按版本筛"的那一份基准链，绝不冒充已按某次 HDR 请求筛过。
+    Assert-Ec ((@($capJson.autoChainWindow) -join ',') -eq 'wgc,dwm,printwindow,bitblt' -and
+               (@($capJson.autoChainScreen) -join ',') -eq 'wgc,duplication,bitblt') `
+        "autoChain 那两条该是没被任何请求收窄的基准链（这份查询不收 --hdr），实际：$(@($capJson.autoChainWindow) -join ',') / $(@($capJson.autoChainScreen) -join ',')"
     # 两份查询同源：--diagnostics 也带同一段（除段落取舍外字段全同）。
     $diag = Invoke-EcProcess -FilePath $Exe -TimeoutMs 20000 -Arguments @('--diagnostics', '--lang', 'zh-CN')
     $diagJson = $diag.Stdout | ConvertFrom-Json
@@ -254,6 +345,12 @@ try {
         '要有 HDR 屏、且驱动真给出一个没登记的 DXGI 宽格式才现形。认不出就拒映射这件事由离线层的 ConvertWideFrameToSdrBgra8 来源守卫判'
     Skip-Ec 'HLG BT.2020 那条的真机下场' `
         '本机没有 HDR 模式，也拿不到一幅 HLG 桌面帧；HLG 反 OETF 与 tone 曲线由离线层单点判，端到端记未验证'
+    Skip-Ec '--hdr refuse 得到拒绝之后"其余后端一次都不调用、也不写文件"的真机现场' `
+        '要有 HDR 屏才造得出"来源确是 HDR"那一次拒绝。本轮把那条走法判在离线层：src/FallbackChain.h 用假后端注入（第 0 节），当场核的是"hdr_refused 之后 called 里只有 wgc、帧是空的、原码原样交出"。真机这一条不拿一次成功的普通截图冒充'
+    Skip-Ec '桌面复制那条真带回 FP16 / 10 位桌面帧并映射的下场' `
+        '本构建的桌面复制仍用 IDXGIOutput1::DuplicateOutput()：采集前不问那块屏的色彩空间，也不选广色域格式，所以它兑现不了显式 tonemap/refuse —— 本轮把它登记成 wide_gamut_unverified 并从候选里摘掉（宁可保守拒绝，也不拿没核实过的"支持 HDR"放行）。完整的广色域采集与 10 位那一条的 PQ/HLG 之分是独立后续任务'
+    Skip-Ec '链被策略筛空（env.hdr_unsupported）的真机现场' `
+        '这台开发机上 WGC 那条不会被版本闸门挡掉，所以凑不出"链里没有任何一条合格候选"那种现场。那一条由离线层注入假通道链判（第 0 节：FilterChainForHdr 那一批），真机记未验证'
 
     Stop-EcOwnedWindows
     Assert-Ec ((Get-EcOwnedWindowCount) -eq 0) '本次登记清单没清空'

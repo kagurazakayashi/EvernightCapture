@@ -64,6 +64,12 @@ struct CapturedFrame {
     // 判据与那三个结果键的合成只有一份（src/HdrColor.h 的 MakeHdrReport）。
     FrameColorSpace sourceColorSpace = FrameColorSpace::kSrgbBgra8;
     bool toneMapped = false;
+    // 显式 --hdr 策略下，这条路径在**开始采集之前**对"这块屏此刻是不是 HDR 模式"那一次只读问答
+    // 的答复。没问过（没写 --hdr、写成 auto、或这条路径根本不问）与问不出来一律 kUnknown，
+    // 绝不折成 kSdr —— 一张 8 位 BGRA 帧本身不证明原始内容是 SDR（合成器可能把 HDR 画面压成
+    // 8 位再交给一个 B8G8R8A8 的帧池），而那一句"来源是 SDR"只能由这次问答支撑。
+    // 拿去决定留哪一条提示的判据在 src/HdrColor.h 的 JudgeHdrPassiveNote。
+    DisplayHdrState displayHdrState = DisplayHdrState::kUnknown;
 };
 
 // 帧的内存不变量与资源上限。这两条数字都是能说明白的，不是随手挑的：

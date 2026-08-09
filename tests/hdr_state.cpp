@@ -7,6 +7,13 @@
 //
 // 只用 C 风格 printf 汇报；任何一条不过就返回非 0。真机那一条（HDR 显示器上的实拍对照）
 // 一律记未验证，不在这里伪造。
+//
+// 2026-10 起这里还判第二批：显式 HDR 要求的**策略筛选与回退控制**。要的现场是"wgc 交回
+// capture.hdr_refused"与"这台机器的链里已经没有任何一条兑现得了 tonemap/refuse"—— 前者要有
+// HDR 屏、后者要降版本，本机都给不出，所以判的是生产函数本体：src/HdrColor.cpp 的
+// FilterChainForHdr、src/CursorControl.cpp 里串三道闸门的 GateCaptureChain、src/FallbackChain.h
+// 那条链（假后端按通道交回什么由测试决定，被调用过哪几条由 called 记下），以及
+// JudgeHdrPassiveNote 那一条"8 位帧不等于来源核实是 SDR"。
 #include <array>
 #include <array>
 #include <cmath>
@@ -24,8 +31,11 @@
 #include "../src/CaptureCommon.h"
 #include "../src/CaptureScope.h"
 #include "../src/CliOptions.h"
+#include "../src/CursorControl.h"   // GateCaptureChain：版本 / 光标 / HDR 三道闸门串成一份
+#include "../src/FallbackChain.h"   // auto 回退链本体（假后端注入进来判它的走法）
 #include "../src/HdrColor.h"
 #include "../src/Lang.h"
+#include "../src/SystemCompat.h"    // GateChannels（组合闸门那三道的第一道）
 #include "../src/ImageOps.h"
 
 using namespace ecapture;
@@ -122,6 +132,121 @@ double LumaOf(const uint8_t* bgra) {
     return 0.2126 * (bgra[2] / 255.0) + 0.7152 * (bgra[1] / 255.0) + 0.0722 * (bgra[0] / 255.0);
 }
 
+// ---------------------------------------------------------------------------
+// 策略筛选与回退控制那两批用的假现场（F07）
+// ---------------------------------------------------------------------------
+//
+// 本机没有 HDR 显示器，也没有一条真通道允许测试去试，所以"后端交回 capture.hdr_refused 之后
+// 其余后端一次都不调用"这一类判据只能在这里造：链是闸门筛完交出来的真链（生产函数本体），
+// 每条通道"交回什么"由这张表给，而被调用过哪几条、按什么顺序，由 called 记下来 ——
+// 那正是这些判据要看的东西，光看返回值看不出来。
+
+HdrRequest Hdr(HdrPolicy policy, bool given) {
+    HdrRequest r;
+    r.policy = policy;
+    r.given = given;
+    return r;
+}
+
+OsVersion Os(uint32_t build, bool known = true) {
+    OsVersion v;
+    v.major = 10;
+    v.minor = 0;
+    v.build = build;
+    v.known = known;
+    return v;
+}
+
+CursorRequest Cur(CursorMode mode, bool given) {
+    CursorRequest r;
+    r.mode = mode;
+    r.given = given;
+    return r;
+}
+
+// 两条完整的 auto 链（未经任何闸门）：窗口四条、整屏三条，顺序就是回退顺序。
+std::vector<CaptureMethod> WindowAll() {
+    return {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail, CaptureMethod::kPrintWindow,
+            CaptureMethod::kBitBlt};
+}
+std::vector<CaptureMethod> ScreenAll() {
+    return {CaptureMethod::kWgc, CaptureMethod::kDuplication, CaptureMethod::kBitBlt};
+}
+
+std::string BriefChain(const std::vector<CaptureMethod>& chain) {
+    std::string s;
+    for (const CaptureMethod m : chain) {
+        if (!s.empty()) s += ",";
+        for (const wchar_t* p = CaptureMethodName(m); *p; ++p)
+            s.push_back(static_cast<char>(*p));
+    }
+    return s;
+}
+
+std::string Ascii(const std::wstring& s) {
+    std::string out;
+    for (wchar_t c : s) out.push_back(static_cast<char>(c));
+    return out;
+}
+
+// 码 -> 这条失败对回退链意味着什么（判据本体在 src/FallbackChain.h）。
+std::string StopName(ChainStop stop) {
+    return stop == ChainStop::kStopWithVerdict ? "stop" : "next";
+}
+
+// 一次回退链的假后端集合。failCode 与 order 同长，空串 = 这一条成功出一帧。
+struct FakeBackends {
+    std::vector<CaptureMethod> order;
+    std::vector<std::wstring> failCode;
+    std::vector<std::wstring> failMessage;
+    std::vector<bool> isFatal;
+    std::vector<CaptureMethod> called;
+
+    FakeBackends& Fails(CaptureMethod m, const wchar_t* code, const wchar_t* message = L"",
+                        bool fatal = false) {
+        order.push_back(m);
+        failCode.push_back(code ? code : L"");
+        failMessage.push_back(message ? message : L"");
+        isFatal.push_back(fatal);
+        return *this;
+    }
+    FakeBackends& Succeeds(CaptureMethod m) { return Fails(m, L""); }
+
+    bool operator()(CaptureMethod m, CapturedFrame* out, Diagnostic* err, bool* fat) {
+        called.push_back(m);
+        for (size_t i = 0; i < order.size(); ++i) {
+            if (order[i] != m) continue;
+            if (!failCode[i].empty()) {
+                if (err) {
+                    err->code = failCode[i];
+                    err->message = failMessage[i];
+                }
+                if (fat && isFatal[i]) *fat = true;
+                return false;
+            }
+            out->width = out->height = 1;
+            out->stride = 4;
+            out->pixels.assign(4, 0xAB);
+            out->source = CaptureMethodName(m);
+            out->path = paths::kWgc;
+            return true;
+        }
+        return false;   // 链里出现没登记的通道 = 这份判据自己写坏了
+    }
+};
+
+// 用假后端跑一次链本体（判的是生产函数，不是这里重抄的走法）。
+bool RunChain(FakeBackends* fake, const std::vector<CaptureMethod>& chain, CapturedFrame* out,
+              Diagnostic* err, std::vector<Diagnostic>* notes) {
+    const Deadline dl;   // 默认 = 不设预算：这批判据只管链的走法，不管预算
+    bool fatal = false;
+    return FallbackChain(
+        chain, dl, out, err, notes, &fatal,
+        [&](CaptureMethod m, CapturedFrame* f, Diagnostic* e, bool* fat) {
+            return (*fake)(m, f, e, fat);
+        });
+}
+
 }  // namespace
 
 int main() {
@@ -142,26 +267,63 @@ int main() {
             }
         }
         Check(allCovered, "每条已登记的内部路径都在 HDR 表里有一行");
-        // 通道级那句 ChannelCarriesWideColorFrame 必须与"查这条通道的窗口路径"打表一致。
+        // 通道级那两句必须与"查这条通道的窗口路径"打表一致，而且问的是两件事：
+        //   ChannelCarriesWideColorFrame = 来源带不带得回广色域这件事（含"本构建没兑现"那一条）
+        //   ChannelHonorsHdrPolicy       = 显式 tonemap/refuse 兑不兑现得了（只有真做过那一步的）
         const CaptureMethod methods[] = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
                                          CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt,
                                          CaptureMethod::kDuplication};
         bool channelAgrees = true;
+        bool honorsAgrees = true;
         for (CaptureMethod m : methods) {
             const HdrCapability capWin = HdrCapabilityOfPath(WindowPathOf(m));
-            const bool wideViaTable = capWin == HdrCapability::kWideGamutCapable;
+            const bool wideViaTable = capWin == HdrCapability::kWideGamutCapable ||
+                                      capWin == HdrCapability::kWideGamutUnverified;
             if (wideViaTable != ChannelCarriesWideColorFrame(m)) channelAgrees = false;
+            const bool honorsViaTable = capWin == HdrCapability::kWideGamutCapable;
+            if (honorsViaTable != ChannelHonorsHdrPolicy(m)) honorsAgrees = false;
+            // 整屏那一路同类的也要一致：wgc 的两条都兑现得了，复制的两条都没兑现，那几条 8 位的
+            // 仍只是 8 位。printwindow / dwm 在屏幕目标上根本没有对应路径（解析期就被
+            // capture.unsupported 挡掉），所以那条未登记的 ScreenPathOf 不参与这一比。
+            const HdrCapability capScreen = HdrCapabilityOfPath(ScreenPathOf(m));
+            if (capScreen != HdrCapability::kUnregistered && capScreen != capWin)
+                honorsAgrees = false;
         }
-        Check(channelAgrees, "通道级『带不带广色域帧』与查窗口路径得到的登记一致");
-        // 屏幕那两条：wgc / duplication 在屏幕上仍是 wide，bitblt 仍 sdr-only。
+        Check(channelAgrees, "通道级『来源带不带得回广色域帧』与查窗口路径得到的登记一致");
+        Check(honorsAgrees,
+              "通道级『兑现得了显式 tonemap/refuse』与查表一致，且窗口/整屏两条登记同类");
+        // 现场钉死那一条容易被"顺手放开"的差别：duplication 来源可能有广色域，但它兑现不了要求。
+        Check(ChannelCarriesWideColorFrame(CaptureMethod::kDuplication) &&
+                  !ChannelHonorsHdrPolicy(CaptureMethod::kDuplication),
+              "duplication：来源可能带广色域 != 兑现得了显式策略（两句不是一句）");
+        Check(ChannelHonorsHdrPolicy(CaptureMethod::kWgc), "wgc 兑现得了显式策略");
+        // 屏幕那几条：wgc 在屏幕上仍然兑现得了，duplication 那一条登记成"没兑现"，bitblt 仍 sdr-only。
         Check(HdrCapabilityOfPath(ScreenPathOf(CaptureMethod::kWgc)) ==
                   HdrCapability::kWideGamutCapable,
-              "screen.wgc 登记成带得回广色域");
+              "screen.wgc 登记成带得回广色域且兑现得了策略");
+        Check(HdrCapabilityOfPath(ScreenPathOf(CaptureMethod::kDuplication)) ==
+                      HdrCapability::kWideGamutUnverified &&
+                  HdrCapabilityOfPath(paths::kDuplicationFrame) ==
+                      HdrCapability::kWideGamutUnverified,
+              "桌面复制那两条登记成 wide_gamut_unverified（窗口与整屏两条都是）");
+        Check(!HdrPathHonorsPolicy(ScreenPathOf(CaptureMethod::kDuplication)),
+              "桌面复制不是显式策略的合格候选（不许拿未证实的『支持 HDR』继续放行）");
+        Check(std::wstring(HdrCapabilityName(HdrCapability::kWideGamutUnverified)) ==
+                      L"wide_gamut_unverified" &&
+                  std::wstring(hdr_reason::kDupPolicyUnverified) ==
+                      L"duplication_hdr_policy_not_implemented",
+              "新增那个取值与那个原因 token 的机器名钉住（只增不改名）");
         Check(HdrCapabilityOfPath(ScreenPathOf(CaptureMethod::kBitBlt)) ==
                   HdrCapability::kSdrSourceOnly,
               "screen.bitblt 登记成只带 8 位 SDR");
         Check(HdrCapabilityOfPath(paths::kUnknown) == HdrCapability::kUnregistered,
               "未登记（含 unknown）一律 kUnregistered");
+        // 漏登记 = 更严：一条没登记的路径既不是合格候选，也说不出"为什么被筛掉"以外的原因。
+        Check(!HdrPathFulfilsPolicy(paths::kUnknown, HdrPolicy::kToneMap) &&
+                  std::wstring(HdrPolicyBlockReason(paths::kUnknown)) == L"not_registered",
+              "未登记 + 显式策略：不当候选，原因写 not_registered");
+        Check(HdrPathFulfilsPolicy(paths::kUnknown, HdrPolicy::kAuto),
+              "auto 不要求任何处理：连未登记的路径也照旧在链里（默认值不动任何东西）");
     }
 
     // ---- DXGI_FORMAT -> 来源色彩空间 / 位深 / 每像素字节 ----
@@ -377,10 +539,291 @@ int main() {
                   !HdrRequestPossible(CaptureMethod::kBitBlt, HdrPolicy::kToneMap),
               "tonemap/refuse 配 printwindow/dwm/bitblt 结构上做不到");
         Check(HdrRequestPossible(CaptureMethod::kWgc, HdrPolicy::kToneMap) &&
-                  HdrRequestPossible(CaptureMethod::kDuplication, HdrPolicy::kRefuse),
-              "tonemap/refuse 配 wgc/duplication 可行");
+                  HdrRequestPossible(CaptureMethod::kWgc, HdrPolicy::kRefuse),
+              "tonemap/refuse 配 wgc 可行");
+        Check(!HdrRequestPossible(CaptureMethod::kDuplication, HdrPolicy::kToneMap) &&
+                  !HdrRequestPossible(CaptureMethod::kDuplication, HdrPolicy::kRefuse),
+              "tonemap/refuse 配 duplication：本构建没兑现那几步，解析期就不放行（F07 收紧）");
+        Check(HdrRequestPossible(CaptureMethod::kDuplication, HdrPolicy::kAuto),
+              "duplication 配 auto 照旧放行（auto 不要求任何处理，与这条选项存在之前相同）");
         Check(HdrRequestPossible(CaptureMethod::kAuto, HdrPolicy::kToneMap),
-              "tonemap 配 auto 放行（落到哪条通道要到运行期才知道）");
+              "tonemap 配 auto 放行（落到哪条通道要到运行期才知道，判据是 FilterChainForHdr）");
+    }
+
+    // ---- FilterChainForHdr：显式要求过的策略，回退链每一步都要继续兑现它 ----
+    Section("FilterChainForHdr：没要求与 auto 一条都不动");
+    {
+        const HdrChainGate none = FilterChainForHdr(WindowAll(), Hdr(HdrPolicy::kAuto, false), false);
+        Check(BriefChain(none.chain) == "wgc,dwm,printwindow,bitblt" && none.notes.empty() &&
+                  none.error.code.empty(),
+              "没写 --hdr：窗口链原样、不发 note、不报错（默认值真的不动任何东西）");
+        const HdrChainGate autoG = FilterChainForHdr(ScreenAll(), Hdr(HdrPolicy::kAuto, true), true);
+        Check(BriefChain(autoG.chain) == "wgc,duplication,bitblt" && autoG.notes.empty() &&
+                  autoG.error.code.empty(),
+              "写了 --hdr auto：同样一条都不动（auto 只是被动上报，不要求任何处理）");
+        const HdrChainGate empty =
+            FilterChainForHdr({}, Hdr(HdrPolicy::kToneMap, true), false);
+        Check(empty.chain.empty() && empty.error.code.empty() && empty.notes.empty(),
+              "上一步（版本/光标闸门）已经给过错误时这里不补第二条（一次请求一条下一步）");
+    }
+
+    Section("FilterChainForHdr：tonemap/refuse 只留兑现得了的那几条，各留一条 note");
+    {
+        const HdrChainGate tm = FilterChainForHdr(WindowAll(), Hdr(HdrPolicy::kToneMap, true), false);
+        Check(BriefChain(tm.chain) == "wgc" && tm.error.code.empty(),
+              "窗口链 + tonemap：只剩 wgc（回退不再交出兑现不了的那几种）");
+        Check(tm.notes.size() == 3, "被摘掉的三条各留一条 note.hdr_channel_skipped");
+        bool allSkipped = true, reasons = true, shape = true;
+        for (const Diagnostic& n : tm.notes) {
+            if (n.code != codes::kNoteHdrChannelSkipped) allSkipped = false;
+            if (n.option != L"--hdr" || n.value != L"tonemap" || n.stage != stages::kCapture)
+                shape = false;
+            if (Ascii(n.message).find("window_self_drawn_8bit") != std::string::npos ||
+                Ascii(n.message).find("dwm_redirection_surface_8bit") != std::string::npos ||
+                Ascii(n.message).find("screen_dc_8bit") != std::string::npos)
+                reasons = true;
+        }
+        Check(allSkipped && shape, "note 的 code/option/value/stage 都按契约填");
+        Check(reasons, "note 里那条原因 token 看得见（8 位那三条各说自己的根据）");
+
+        const HdrChainGate sc = FilterChainForHdr(ScreenAll(), Hdr(HdrPolicy::kRefuse, true), true);
+        Check(BriefChain(sc.chain) == "wgc", "整屏链 + refuse：同样只剩 wgc");
+        bool dupReason = false, bitbltReason = false;
+        for (const Diagnostic& n : sc.notes) {
+            if (Ascii(n.message).find("duplication_hdr_policy_not_implemented") != std::string::npos)
+                dupReason = true;
+            if (Ascii(n.message).find("screen_dc_8bit") != std::string::npos) bitbltReason = true;
+        }
+        Check(sc.notes.size() == 2 && dupReason && bitbltReason,
+              "整屏那两条被摘掉：复制那条的原因写『本构建没实现』而不是『结构上带不回』");
+
+        const HdrChainGate rf = FilterChainForHdr(WindowAll(), Hdr(HdrPolicy::kRefuse, true), false);
+        Check(BriefChain(rf.chain) == "wgc" && rf.notes.size() == 3,
+              "refuse 与 tonemap 用的是同一条筛选（两条都是显式要求）");
+    }
+
+    Section("FilterChainForHdr：一条都不剩就是 env.hdr_unsupported，一张都不取");
+    {
+        const std::vector<CaptureMethod> sdrOnly = {CaptureMethod::kDwmThumbnail,
+                                                    CaptureMethod::kPrintWindow,
+                                                    CaptureMethod::kBitBlt};
+        const HdrChainGate g = FilterChainForHdr(sdrOnly, Hdr(HdrPolicy::kToneMap, true), false);
+        Check(g.chain.empty() && g.error.code == codes::kEnvHdrUnsupported,
+              "没有合格候选：链清空 + 一条 env.hdr_unsupported（绝不照能截的那几条先交一张）");
+        Check(g.error.option == L"--hdr" && g.error.value == L"tonemap" &&
+                  g.error.backend == L"dwm, printwindow, bitblt" && !g.error.hint.empty() &&
+                  g.error.stage == stages::kCapture,
+              "那条错误把要求与本来要试的哪几条都写出来，且带 hint");
+        Check(Ascii(g.error.message).find("window_self_drawn_8bit") != std::string::npos,
+              "错误里逐条原因 token 也看得见（调用方不必读源码就知道为什么）");
+    }
+
+    Section("GateCaptureChain：三道闸门串起来（版本 → 光标 → HDR），HDR 与光标取交集");
+    {
+        // 默认值那两条：没写 --cursor / --hdr 时组合结果与 GateChannels 逐字相同。
+        const ChannelGate base = GateChannels(CaptureMethod::kAuto, false, Os(19045));
+        const ChannelGate plain =
+            GateCaptureChain(CaptureMethod::kAuto, false, Os(19045), Cur(CursorMode::kDefault, false),
+                             Hdr(HdrPolicy::kAuto, false));
+        Check(BriefChain(plain.chain) == BriefChain(base.chain) && plain.notes.size() ==
+                  base.notes.size() && plain.error.code.empty(),
+              "两个要求都没写时与只过版本闸门的结果逐字相同");
+
+        // 光标 exclude（八条都做得到）+ HDR tonemap：只有 HDR 那一道摘人。
+        const ChannelGate ex =
+            GateCaptureChain(CaptureMethod::kAuto, false, Os(19045), Cur(CursorMode::kExclude, true),
+                             Hdr(HdrPolicy::kToneMap, true));
+        Check(BriefChain(ex.chain) == "wgc" && ex.error.code.empty(),
+              "exclude + tonemap：交集是 wgc（exclude 谁都能满足，收窄只来自 HDR）");
+        bool onlyHdrNotes = !ex.notes.empty();
+        for (const Diagnostic& n : ex.notes)
+            if (n.code != codes::kNoteHdrChannelSkipped) onlyHdrNotes = false;
+        Check(onlyHdrNotes, "这一份的 note 全来自 HDR 那一道（光标那道一条都没摘）");
+
+        // 光标 include（只有 wgc 做得到）+ HDR refuse：两道都只剩 wgc，note 只有一份。
+        const ChannelGate inc =
+            GateCaptureChain(CaptureMethod::kAuto, false, Os(19045), Cur(CursorMode::kInclude, true),
+                             Hdr(HdrPolicy::kRefuse, true));
+        Check(BriefChain(inc.chain) == "wgc" && inc.error.code.empty() &&
+                  !inc.notes.empty(),
+              "include + refuse：交集同样是 wgc，且不会被任何一道换成别家");
+        bool noHdrNotes = true;
+        for (const Diagnostic& n : inc.notes)
+            if (n.code == codes::kNoteHdrChannelSkipped) noHdrNotes = false;
+        Check(noHdrNotes, "光标那道已经把链收到 wgc，HDR 这道不再补摘除 note（交集不重复报）");
+
+        // 整屏那一条也一样：auto + tonemap 绝不因为"HDR 要复制那条"而放行桌面路径。
+        const ChannelGate screen =
+            GateCaptureChain(CaptureMethod::kAuto, true, Os(19045), Cur(CursorMode::kDefault, false),
+                             Hdr(HdrPolicy::kToneMap, true));
+        Check(BriefChain(screen.chain) == "wgc", "整屏目标 + tonemap：链只剩 wgc（仍然一定问人）");
+
+        // 顺序那两条：版本错误优先；版本筛过之后光标筛空时，不再给 HDR 那条错误。
+        const ChannelGate old =
+            GateCaptureChain(CaptureMethod::kAuto, false, Os(10240), Cur(CursorMode::kInclude, true),
+                             Hdr(HdrPolicy::kToneMap, true));
+        Check(old.error.code == codes::kEnvCursorUnsupported,
+              "10240 上 include 先筛空 -> 交回光标那条，不再叠一条 HDR 的（一次请求一条下一步）");
+        bool bothNotes = false, hasCursorNote = false, hasHdrNote = false;
+        for (const Diagnostic& n : old.notes) {
+            if (n.code == codes::kNoteCursorChannelSkipped) hasCursorNote = true;
+            if (n.code == codes::kNoteHdrChannelSkipped) hasHdrNote = true;
+        }
+        bothNotes = hasCursorNote;   // HDR 那一道这时链已空，不该有 note
+        Check(bothNotes && !hasHdrNote, "光标筛空时 HDR 那道不再发摘除 note");
+
+        const ChannelGate explicitDup =
+            GateCaptureChain(CaptureMethod::kDuplication, false, Os(19045),
+                             Cur(CursorMode::kDefault, false), Hdr(HdrPolicy::kToneMap, true));
+        Check(explicitDup.chain.empty() && explicitDup.error.code == codes::kEnvHdrUnsupported,
+              "运行期这一层也绝不把用户点名的 duplication 换成别家（解析期那条 capture.hdr_unsupported "
+              "才是调用方实际看到的）");
+
+        const ChannelGate unknownOs =
+            GateCaptureChain(CaptureMethod::kAuto, false, Os(0, false),
+                             Cur(CursorMode::kDefault, false), Hdr(HdrPolicy::kToneMap, true));
+        Check(unknownOs.error.code.empty() && BriefChain(unknownOs.chain) == "wgc",
+              "版本问不出来时不按版本筛，但 HDR 那道照旧筛（问不出来不等于合格）");
+    }
+
+    Section("ClassifyChainStop：策略结论与授权/身份/致命同一条线");
+    {
+        Check(StopName(ClassifyChainStop(codes::kHdrRefused)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kHdrUnverifiable)) == "stop",
+              "hdr_refused / hdr_unverifiable 是策略结论：整条链就此停下");
+        Check(StopName(ClassifyChainStop(codes::kAccessDenied)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kConsentUnavailable)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kConsentTimeout)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kConsentStale)) == "stop",
+              "授权那四条仍然终止（保留既有规则）");
+        Check(StopName(ClassifyChainStop(codes::kTargetGone)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kTargetChanged)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kTargetUnverifiable)) == "stop",
+              "身份那三条仍然终止（保留既有规则）");
+        // 负向对照：普通"这条通道不行"的下场绝不因为这次改动被误判成终止。
+        Check(StopName(ClassifyChainStop(codes::kCaptureFailed)) == "next" &&
+                  StopName(ClassifyChainStop(codes::kFrameTimeout)) == "next" &&
+                  StopName(ClassifyChainStop(codes::kWindowGone)) == "next" &&
+                  StopName(ClassifyChainStop(codes::kCursorUnverifiable)) == "next" &&
+                  StopName(ClassifyChainStop(codes::kHdrUnsupported)) == "next" &&
+                  StopName(ClassifyChainStop(std::wstring())) == "next",
+              "capture.failed / frame.timeout / window.gone / cursor_unverifiable 仍可换后端");
+    }
+
+    Section("FallbackChain + 假后端：hdr_refused 之后其余后端一次都不调用");
+    {
+        // 注意这里给的是一条"没被 HDR 闸门筛过"的完整链（wgc 之外还剩三条），因为这一判要看的是
+        // 链本体遇到策略结论时的走法：闸门那条路（只留 wgc）另有一批判据判。两者任一条漏掉，
+        // 结果都会是"用户拒绝过的东西被另一家后端交出来了"。
+        FakeBackends fb;
+        fb.Fails(CaptureMethod::kWgc, codes::kHdrRefused, L"REFUSED-ORIGINAL")
+            .Succeeds(CaptureMethod::kDwmThumbnail)
+            .Succeeds(CaptureMethod::kPrintWindow)
+            .Succeeds(CaptureMethod::kBitBlt);
+        CapturedFrame out;
+        Diagnostic err;
+        std::vector<Diagnostic> notes;
+        const bool ok = RunChain(&fb, WindowAll(), &out, &err, &notes);
+        Check(!ok, "refuse 那一路不成立");
+        Check(BriefChain(fb.called) == "wgc", "wgc 交回 hdr_refused 后，其余三条一次都没被调用");
+        Check(out.pixels.empty() && out.width == 0, "一张图都没交出（没有半张被硬压成的 8 位帧）");
+        Check(err.code == codes::kHdrRefused && err.message == L"REFUSED-ORIGINAL",
+              "原码原文交回，没有被统一包装成 capture.failed（调用方还看得见原因）");
+        Check(notes.empty(), "没有 note.capture_channel：根本没走到第二条后端");
+
+        FakeBackends fb2;
+        fb2.Fails(CaptureMethod::kWgc, codes::kHdrUnverifiable, L"UNVERIFIABLE-ORIGINAL")
+            .Succeeds(CaptureMethod::kDuplication)
+            .Succeeds(CaptureMethod::kBitBlt);
+        CapturedFrame out2;
+        Diagnostic err2;
+        std::vector<Diagnostic> notes2;
+        Check(!RunChain(&fb2, ScreenAll(), &out2, &err2, &notes2) &&
+                  BriefChain(fb2.called) == "wgc" && err2.code == codes::kHdrUnverifiable &&
+                  out2.pixels.empty(),
+              "来源认不出时同样终止整条整屏链，原码交出（不许换一家按 8 位猜着交）");
+    }
+
+    Section("FallbackChain + 假后端：普通失败照旧往下试，且只试合格的那几条");
+    {
+        // tonemap 筛完之后链里只有 wgc：它普通失败时不会有第二条后端被试到，包装那条仍说"试过 wgc"。
+        const std::vector<CaptureMethod> filtered =
+            FilterChainForHdr(WindowAll(), Hdr(HdrPolicy::kToneMap, true), false).chain;
+        FakeBackends fb;
+        fb.Fails(CaptureMethod::kWgc, codes::kFrameTimeout, L"FRAME-TIMEOUT");
+        CapturedFrame out;
+        Diagnostic err;
+        std::vector<Diagnostic> notes;
+        Check(!RunChain(&fb, filtered, &out, &err, &notes), "唯一的合格后端失败：这一张不落地");
+        Check(BriefChain(fb.called) == "wgc",
+              "tonemap 下首后端失败后没有再动 dwm/printwindow/bitblt（合格路径已经只有它）");
+        Check(err.code == codes::kCaptureFailed && err.backend == L"wgc" &&
+                  err.hint == L"FRAME-TIMEOUT",
+              "链耗尽时包成 capture.failed，但仍写着真实试过的那几条与最后那条原因");
+        Check(out.pixels.empty(), "包装那条不伴随任何交付");
+
+        // 负向对照：没要求 HDR 时，链还是四条，第一条普通失败要照旧往下试并留来路提示。
+        FakeBackends fb2;
+        fb2.Fails(CaptureMethod::kWgc, codes::kFrameTimeout, L"FRAME-TIMEOUT")
+            .Succeeds(CaptureMethod::kDwmThumbnail);
+        CapturedFrame out2;
+        Diagnostic err2;
+        std::vector<Diagnostic> notes2;
+        Check(RunChain(&fb2, WindowAll(), &out2, &err2, &notes2), "没有 HDR 要求时回退照旧成功");
+        Check(BriefChain(fb2.called) == "wgc,dwm", "首后端普通失败后试了第二条");
+        Check(notes2.size() == 1 && notes2[0].code == codes::kCaptureChannel,
+              "实际用的不是链首时留一条来路提示（这条既有规则没被动到）");
+
+        // 致命错误仍然终止整条链，且原样交出。
+        FakeBackends fb3;
+        fb3.Fails(CaptureMethod::kWgc, codes::kCaptureFailed, L"E_OUTOFMEMORY", true)
+            .Succeeds(CaptureMethod::kDwmThumbnail);
+        CapturedFrame out3;
+        Diagnostic err3;
+        std::vector<Diagnostic> notes3;
+        Check(!RunChain(&fb3, WindowAll(), &out3, &err3, &notes3) &&
+                  BriefChain(fb3.called) == "wgc" && err3.message == L"E_OUTOFMEMORY",
+              "致命（资源/设备没了）立刻终止，换后端不会有区别");
+    }
+
+    Section("FallbackChain + 假后端：授权拒绝仍然终止");
+    {
+        const wchar_t* denied[] = {codes::kAccessDenied, codes::kConsentTimeout,
+                                   codes::kConsentStale, codes::kConsentUnavailable};
+        bool allStop = true;
+        for (const wchar_t* code : denied) {
+            FakeBackends fb;
+            fb.Fails(CaptureMethod::kWgc, code, L"D").Succeeds(CaptureMethod::kDwmThumbnail);
+            CapturedFrame out;
+            Diagnostic err;
+            std::vector<Diagnostic> notes;
+            if (RunChain(&fb, WindowAll(), &out, &err, &notes) || BriefChain(fb.called) != "wgc" ||
+                err.code != code || !out.pixels.empty()) {
+                allStop = false;
+            }
+        }
+        Check(allStop, "四条授权结论各自都终止整条链、原码交出、一张都不落地");
+    }
+
+    Section("JudgeHdrPassiveNote：一张 8 位帧不证明来源是 SDR");
+    {
+        Check(JudgeHdrPassiveNote(Hdr(HdrPolicy::kToneMap, false), FrameColorSpace::kSrgbBgra8,
+                                  DisplayHdrState::kUnknown) == HdrPassiveNote::kNone,
+              "没写 --hdr：一条提示都不发（那组键也整个不出现）");
+        Check(JudgeHdrPassiveNote(Hdr(HdrPolicy::kAuto, true), FrameColorSpace::kSrgbBgra8,
+                                  DisplayHdrState::kSdr) == HdrPassiveNote::kNone,
+              "--hdr auto：只被动上报，不发提示（既有语义不变）");
+        Check(JudgeHdrPassiveNote(Hdr(HdrPolicy::kToneMap, true), FrameColorSpace::kScRgbFloat16,
+                                  DisplayHdrState::kHdr) == HdrPassiveNote::kNone,
+              "真带回广色域并映射过：不发这两条里的任何一条");
+        Check(JudgeHdrPassiveNote(Hdr(HdrPolicy::kToneMap, true), FrameColorSpace::kSrgbBgra8,
+                                  DisplayHdrState::kSdr) == HdrPassiveNote::kSourceSdr,
+              "问过且答案是 SDR：note.hdr_source_sdr（那句恒等映射才有根据）");
+        Check(JudgeHdrPassiveNote(Hdr(HdrPolicy::kRefuse, true), FrameColorSpace::kSrgbBgra8,
+                                  DisplayHdrState::kUnknown) == HdrPassiveNote::kSourceUnverified &&
+                  JudgeHdrPassiveNote(Hdr(HdrPolicy::kToneMap, true), FrameColorSpace::kSrgbBgra8,
+                                      DisplayHdrState::kHdr) == HdrPassiveNote::kSourceUnverified,
+              "没问到答案（或按 8 位帧池交付而屏是 HDR）：改发 note.hdr_source_unverified，不说成 SDR");
     }
 
     std::printf("\n共 %d 项，失败 %d 项\n", g_checks, g_failures);

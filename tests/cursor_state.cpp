@@ -61,6 +61,11 @@ CursorRequest Request(CursorMode mode, bool given) {
     return r;
 }
 
+// GateCaptureChain 现在串三道闸门（版本 / 光标 / HDR），这一份判据只管光标那一道，
+// 所以 HDR 那一个要求恒给"没写过"（默认值真的不动任何东西，链不会被它筛歪）。
+// HDR 那一道自己的矩阵在 tests\hdr_state.cpp 判。
+HdrRequest NoHdr() { return HdrRequest(); }
+
 // 把一次闸门结果的链写成 "wgc,dwm" 这种一行形状，断言与汇报都好看。
 std::string Brief(const std::vector<CaptureMethod>& chain) {
     std::string s;
@@ -357,13 +362,13 @@ void TestChainGate() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. 两条闸门串起来（版本优先，note 两份都留）
+// 5. 三道闸门串起来（版本优先，note 各份都留；这里只注入光标那一道）
 // ---------------------------------------------------------------------------
 void TestComposedGate() {
-    Section("GateCaptureChain：先按版本筛，再按光标筛；版本那条错误优先");
+    Section("GateCaptureChain：先按版本筛，再按光标筛，最后按 HDR 筛；版本那条错误优先");
     {
-        const ChannelGate g =
-            GateCaptureChain(CaptureMethod::kAuto, false, Os(10240), Request(CursorMode::kInclude, true));
+        const ChannelGate g = GateCaptureChain(CaptureMethod::kAuto, false, Os(10240),
+                                               Request(CursorMode::kInclude, true), NoHdr());
         Check(g.error.code == codes::kEnvCursorUnsupported && g.chain.empty(),
               "10240 上 auto + include：wgc 被版本挡掉，剩下的三条做不到光标 -> 光标那条错误");
         bool hasUnavailable = false, hasSkipped = false;
@@ -374,24 +379,24 @@ void TestComposedGate() {
         Check(hasUnavailable && hasSkipped,
               "两份 note 都在：哪条被版本挡掉、哪条被光标要求摘掉，分开说得清");
 
-        const ChannelGate lowOs =
-            GateCaptureChain(CaptureMethod::kWgc, false, Os(9200), Request(CursorMode::kInclude, true));
+        const ChannelGate lowOs = GateCaptureChain(CaptureMethod::kWgc, false, Os(9200),
+                                                   Request(CursorMode::kInclude, true), NoHdr());
         Check(lowOs.error.code == codes::kEnvChannelUnsupported,
               "wgc 在 9200 连通道本身都不行 -> 版本那条错误优先（不另立一条光标的错）");
         Check(lowOs.chain.empty() && lowOs.notes.empty(), "错误那条链为空，也不补 note");
 
-        const ChannelGate ok =
-            GateCaptureChain(CaptureMethod::kAuto, false, Os(19045), Request(CursorMode::kDefault, false));
+        const ChannelGate ok = GateCaptureChain(CaptureMethod::kAuto, false, Os(19045),
+                                                Request(CursorMode::kDefault, false), NoHdr());
         Check(ok.error.code.empty() && Brief(ok.chain) == "wgc,dwm,printwindow,bitblt" &&
                   ok.notes.empty(),
               "没写 --cursor 时组合结果与 GateChannels 逐字相同（默认值真的不动任何东西）");
 
-        const ChannelGate screen =
-            GateCaptureChain(CaptureMethod::kAuto, true, Os(19045), Request(CursorMode::kInclude, true));
+        const ChannelGate screen = GateCaptureChain(CaptureMethod::kAuto, true, Os(19045),
+                                                   Request(CursorMode::kInclude, true), NoHdr());
         Check(Brief(screen.chain) == "wgc", "屏幕目标的 auto 链同样只剩 wgc");
 
-        const ChannelGate explicitWgc =
-            GateCaptureChain(CaptureMethod::kWgc, false, Os(19045), Request(CursorMode::kExclude, true));
+        const ChannelGate explicitWgc = GateCaptureChain(CaptureMethod::kWgc, false, Os(19045),
+                                                         Request(CursorMode::kExclude, true), NoHdr());
         Check(Brief(explicitWgc.chain) == "wgc" && explicitWgc.error.code.empty(),
               "显式 wgc + exclude 在 19045 放行（开关设得进去）");
     }

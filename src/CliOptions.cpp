@@ -1581,12 +1581,16 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 L"--cursor", CursorModeName(opt.cursor.mode), Msg(L"cap.cursor_unsupported_hint"));
         }
 
-        // ---- HDR 处理要求与这条通道能不能带回广色域帧 ----
-        // 与 --cursor 同一类：判据是"这条路径交回的帧带不带得回广色域/高亮范围"（那张登记表的
-        // 唯一出处在 src/HdrColor.h）。printwindow / dwm / bitblt 结构上只带得回 8 位 SDR，
-        // 所以 --hdr tonemap/refuse 配它们就在解析期说做不到，退出码 1，**不换后端**（换一条
-        // 会读桌面像素的通道既没有更多 HDR 可映射，又多拍一份没人批准过的画面）。
-        // --capture auto 不判（落到哪条通道要到运行期才知道，判据在 src/HdrColor.h）。
+        // ---- HDR 处理要求与这条通道兑不兑现得了 ----
+        // 与 --cursor 同一类：判据是那张按**内部路径**登记的表（唯一出处在 src/HdrColor.h）。
+        // 两种做不到的原因分开说，因为它们给调用方的下一步不一样，而这一条错误必须说真话：
+        //   * printwindow / dwm / bitblt —— 结构上只带得回 8 位 SDR，来源里根本没有 HDR 可映射；
+        //   * duplication —— 来源在 Windows 那一侧**可能**跟显示模式走，但本构建没实现兑现显式
+        //     策略所需的那几步（仍用 DuplicateOutput()，采集前不问那块屏的色彩空间，10 位那一条
+        //     的 PQ/HLG 之分也没核实），所以不敢拿它兑现一个用户显式要过的要求。
+        // 两种都在解析期报 capture.hdr_unsupported + 退出码 1，**不换后端**（换一条会读桌面像素
+        // 的通道既没有更多 HDR 可映射，又多拍一份没人批准过的画面）。
+        // --capture auto 不在这里判（落到哪条通道要到运行期才知道，判据是 FilterChainForHdr）。
         // 这一条排在授权规则之外：它不改变"会不会弹框"，只回答"这个组合根本没法兑现"。
         if (opt.hdr.given && !HdrRequestPossible(opt.capture, opt.hdr.policy)) {
             std::wstring canDo;
@@ -1598,9 +1602,14 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 if (!canDo.empty()) canDo += L", ";
                 canDo += CaptureMethodName(m);
             }
+            // 这条路径"来源可能带广色域、而本构建没兑现"时换那一句文案：拿"结构上带不回"
+            // 去说桌面复制那条是假话，而文案与判据同源这件事本身就是这份契约的内容。
+            const bool notImplemented =
+                ChannelCarriesWideColorFrame(opt.capture) && !ChannelHonorsHdrPolicy(opt.capture);
             Err(codes::kHdrUnsupported,
-                Msgf(L"cap.hdr_unsupported", HdrPolicyName(opt.hdr.policy),
-                     CaptureMethodName(opt.capture), canDo),
+                Msgf(notImplemented ? L"cap.hdr_unsupported_not_implemented"
+                                    : L"cap.hdr_unsupported",
+                     HdrPolicyName(opt.hdr.policy), CaptureMethodName(opt.capture), canDo),
                 L"--hdr", HdrPolicyName(opt.hdr.policy), Msg(L"cap.hdr_unsupported_hint"));
         }
 

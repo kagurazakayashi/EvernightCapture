@@ -15,16 +15,27 @@
 //               真的过了一遍浮点 tone mapping / 带回一个认不出的广色域格式）
 // 三条各占一个字段，谁也不冒充谁；与 src/CursorControl.h 的 requested/effective/basis 同一种形状。
 //
-// 五条规矩（改代码前先对齐这里）：
+// 六条规矩（改代码前先对齐这里）：
 //
 // 1. **默认值一个字都不改。** 没写 --hdr（HdrRequest::given = false）时不探测显示状态、不改
 //    采集格式、不做任何映射，结果里色彩那组键一个都不出现 —— 与这条选项存在之前逐字节相同。
 //    auto 取值同样是"不启用新链路"，只是把来源色彩空间如实报出来。
 // 2. **不支持/做不到就照实说，绝不"那就硬按 BGRA8 交一张发白图当成成功"。**
-//    --hdr tonemap/refuse 配一条结构上带不回广色域帧的通道（printwindow / dwm / bitblt）在解析期
-//    报 capture.hdr_unsupported + 退出码 1，**绝不换后端**（与 --cursor include 同源）；
+//    --hdr tonemap/refuse 配一条兑现不了这个要求的通道在解析期报 capture.hdr_unsupported +
+//    退出码 1，**绝不换后端**（与 --cursor include 同源）；
 //    --hdr refuse 且核实来源是 HDR 帧时一个像素都不落地（capture.hdr_refused）；
 //    带回一个本构建认不出的广色域格式时 capture.hdr_unverifiable（认不出格式不等于猜一个映射）。
+// 2b. **显式要求过的策略，回退链每一步都要继续兑现它（判据：FilterChainForHdr）。**
+//    --capture auto 会换后端，而"换一条只带得回 8 位的后端"等于把用户的要求换成一张
+//    可能被合成器压扁的图 —— 那正是 tonemap/refuse 要防的结果，所以：
+//      * 没写 --hdr、或写成 auto     链原样交出，一条 note 都不发（规矩 1）；
+//      * 显式 tonemap / refuse      链里只留**真能兑现**那几条（目前只有 wgc 的两条路径），
+//                                   其余各摘一条并留 note.hdr_channel_skipped；
+//                                   一条都不剩 = env.hdr_unsupported（退出码 7），一张都不取；
+//      * 后端交回 capture.hdr_refused / capture.hdr_unverifiable 时，那是**用户策略的结论**
+//        而不是"这条通道不行"，回退链立刻停下并把原码原样交出去（src/FallbackChain.h）。
+//    这一条只**减**后端、绝不**加**后端：显式点名的那条通道仍然绝不自动换成别的，
+//    auto 也不会因为 HDR 要求而开始绕开桌面像素那一级的人工确认。
 // 3. **映射是确定的、可离线核对的。** FP16 scRGB 与 PQ/HLG BT.2020 到 8 位 BT.709 sRGB 的每一步
 //    （解码传递函数 → 色域矩阵 → 按亮度做 tone mapping → sRGB 编码 → alpha 直通）都是纯算术，
 //    写在 src/HdrColor.cpp，tests\hdr_state.cpp 用已知色块与亮度梯度逐条判它。浮点中间量只在
@@ -35,6 +46,10 @@
 // 5. **问不出来 ≠ 没事。** 一条路径登记成 kWideGamutCapable 而这一帧的来源格式认不出时，
 //    effective 只能写 unverified（basis=format_unrecognized），绝不折成 tone_mapped 或 sdr_passthrough
 //    （与身份复核"问不出来 ≠ 相同"、cursor.roi_unmeasurable 与 monitor_unverifiable 分家同源）。
+//    同一条规矩也管"这张交付的帧是 8 位"这一件事：它**不证明**来源本来是 SDR —— 合成器完全可能
+//    把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池。所以 note.hdr_source_sdr 只在采集之前
+//    真的问到"这块屏此刻是 SDR"时才发；问不出来就发 note.hdr_source_unverified（图照常交付，
+//    但不许把"没核实"说成"没有 HDR 可映射"），判据是 JudgeHdrPassiveNote 那一份。
 //
 // 登记表与 src/CaptureScope.cpp / src/CursorControl.h 那两张表是同一类东西：新增一条通道忘了登记
 // = 按 kUnregistered 处理（tonemap/refuse 不敢声称带得回 HDR，更严而不是更松）。两份表的一致性
@@ -125,8 +140,17 @@ inline uint32_t FrameColorSpaceBytesPerPixel(FrameColorSpace cs) {
 // 每条路径"带不带得回广色域帧"的登记表（与 CaptureScope / CursorControl 同一种形状）。
 // ---------------------------------------------------------------------------
 enum class HdrCapability {
-    // 这条路径交回的帧可能带广色域 / 高亮范围（WGC 合成面、桌面复制的桌面纹理都跟显示模式走）。
+    // 这条路径交回的帧可能带广色域 / 高亮范围，**而且本构建真的按显式 HDR 策略处理它**：
+    // 开始采集之前只读地问一次那块屏此刻的色彩空间，据此决定帧池格式（B8G8R8A8 还是 FP16 scRGB），
+    // 问出来是 HDR 而策略是 refuse 就在一个像素都不读之前停下。目前只有 wgc 那两条做得到。
     kWideGamutCapable,
+    // 这条路径的来源在 Windows 那一侧**可能**跟显示模式走（桌面复制的桌面纹理），但本构建没有
+    // 实现兑现显式 HDR 策略所需的那几步：它仍用 IDXGIOutput1::DuplicateOutput()，既不选广色域
+    // 格式、也不问那块屏此刻是不是 HDR 模式，而 10 位那一条的 PQ/HLG 之分还要靠输出的色彩空间
+    // 才能判（见 FrameColorSpaceFromDxgiFormat 那一段）。所以它交回一张 8 位 BGRA 时说不出
+    // "原始内容到底是不是 HDR"。tonemap / refuse 因此不许落到它身上 —— 保守拒绝一条没能核实的
+    // "支持 HDR"声明，而不是拿它继续放行。完整的广色域采集是独立后续任务（README/Skill 同记）。
+    kWideGamutUnverified,
     // 结构上只会带回 8 位 SDR：printwindow 让窗口自绘进 8 位 DIB、dwm 读的是 8 位重定向位图、
     // bitblt 拷的是 8 位屏幕 DC。HDR 处理对它们没有对象，所以是恒等而非"做不到就换一条"。
     kSdrSourceOnly,
@@ -142,12 +166,16 @@ inline constexpr const wchar_t* kSelfDrawn8 = L"window_self_drawn_8bit";        
 inline constexpr const wchar_t* kDwmSurface8 = L"dwm_redirection_surface_8bit";  // dwm 读重定向位图
 inline constexpr const wchar_t* kScreenDc8 = L"screen_dc_8bit";                  // bitblt 拷屏幕 DC
 inline constexpr const wchar_t* kNotRegistered = L"not_registered";
+// 被显式 HDR 策略筛掉时，桌面复制那两条写的**这一条**原因：来源可能有广色域，但本构建没实现
+// 兑现策略那几步（见 kWideGamutUnverified）。它说的是"没做/没核实"，不是"结构上不可能"。
+inline constexpr const wchar_t* kDupPolicyUnverified = L"duplication_hdr_policy_not_implemented";
 }  // namespace hdr_reason
 
 // capability 的机器名（--capabilities 用它；截图那份 JSON 写的是 effective/basis 那一组，不写它）。
 inline const wchar_t* HdrCapabilityName(HdrCapability capability) {
     switch (capability) {
         case HdrCapability::kWideGamutCapable: return L"wide_gamut_capable";
+        case HdrCapability::kWideGamutUnverified: return L"wide_gamut_unverified";
         case HdrCapability::kSdrSourceOnly: return L"sdr_source_only";
         case HdrCapability::kUnregistered: return L"unregistered";
     }
@@ -166,8 +194,8 @@ struct HdrPathEntry {
 inline constexpr HdrPathEntry kHdrTable[] = {
     {paths::kWgc, HdrCapability::kWideGamutCapable, hdr_reason::kWgcComposed},
     {paths::kScreenWgc, HdrCapability::kWideGamutCapable, hdr_reason::kWgcComposed},
-    {paths::kDuplicationFrame, HdrCapability::kWideGamutCapable, hdr_reason::kDupDesktop},
-    {paths::kScreenDuplication, HdrCapability::kWideGamutCapable, hdr_reason::kDupDesktop},
+    {paths::kDuplicationFrame, HdrCapability::kWideGamutUnverified, hdr_reason::kDupDesktop},
+    {paths::kScreenDuplication, HdrCapability::kWideGamutUnverified, hdr_reason::kDupDesktop},
     {paths::kPrintWindow, HdrCapability::kSdrSourceOnly, hdr_reason::kSelfDrawn8},
     {paths::kDwmThumbnail, HdrCapability::kSdrSourceOnly, hdr_reason::kDwmSurface8},
     {paths::kDwmScreen, HdrCapability::kSdrSourceOnly, hdr_reason::kScreenDc8},
@@ -200,20 +228,61 @@ inline const wchar_t* HdrReasonOfPath(const wchar_t* path) {
     return hdr_reason::kNotRegistered;
 }
 
-// 这条**通道**（结构层面，不看本机版本、不看目标）带不带得回广色域帧。auto 不算通道。
-// 与上面那张表必须一致，判据写在 tests\hdr_state.cpp（对每个通道取 WindowPathOf/ScreenPathOf 查表核对）。
+// 这条**通道**（结构层面，不看本机版本、不看目标）的来源带不带得回广色域帧这件事。auto 不算通道。
+// 它说的是 Windows 那一侧的可能性，**不是**"本工具真的按显式策略处理它"（那一条见
+// ChannelHonorsHdrPolicy）。与上面那张表必须一致：判据写在 tests\hdr_state.cpp，对每个通道取
+// WindowPathOf / ScreenPathOf 查表核对，两种取值（capable / unverified）都算"带得回"。
 inline constexpr bool ChannelCarriesWideColorFrame(CaptureMethod method) {
     return method == CaptureMethod::kWgc || method == CaptureMethod::kDuplication;
 }
 
-// 这一次的 HDR 策略由这条通道（结构层面）做不做得到。auto 恒成立；tonemap / refuse 只有那条
-// 真带得回广色域帧的通道才有意义，配 printwindow / dwm / bitblt 在解析期就该说做不到（退出码 1，
-// 不换后端）。--capture auto 不在这里判：它最终落到哪条通道要到运行期才知道，而那两条带得回广色域
-// 帧的通道（wgc / duplication）都在回退链里，所以 auto 放行（与 --cursor include 配 auto 同源）。
-// 解析层只判这一条：它与本机版本、与目标窗口都无关，所以在 --dry-run 下也成立。
+// 这条**通道**在显式 tonemap / refuse 下真兑现得了要求吗（结构 + 本构建实现两层；auto 不算通道）。
+// 只有 wgc 那两条：它在开始采集之前问过那块屏的色彩空间，也真的据此建过广色域帧池。
+// 桌面复制那两条在这里是 false —— 不是"来源不可能带广色域"，而是"这一步本构建没做、没核实"，
+// 所以不许拿它兑现一个用户显式要过的要求（登记表 kWideGamutUnverified 那条注释写了差在哪几步）。
+inline constexpr bool ChannelHonorsHdrPolicy(CaptureMethod method) {
+    return method == CaptureMethod::kWgc;
+}
+
+// 这条**内部路径**在显式策略下是不是合格候选（唯一判据，登记表读出来，不在调用方另写通道名单）。
+// auto 恒成立：它不要求任何处理，所以任何一条都算兑现（规矩 1）。
+inline bool HdrPathHonorsPolicy(const wchar_t* path) {
+    return HdrCapabilityOfPath(path) == HdrCapability::kWideGamutCapable;
+}
+inline bool HdrPathHonorsPolicy(const std::wstring& path) {
+    return HdrPathHonorsPolicy(path.c_str());
+}
+inline bool HdrPathFulfilsPolicy(const wchar_t* path, HdrPolicy policy) {
+    if (policy == HdrPolicy::kAuto) return true;
+    return HdrPathHonorsPolicy(path);
+}
+
+// 这一条路径被显式策略筛掉时那一个稳定的原因 token（ASCII，进 note.hdr_channel_skipped 的 message
+// 与调用方分支；与 message 不同，它不随 --lang 变）。只有被筛掉的路径才会走到这里，所以合格的
+// 那两种取值都落进"说不清"（新增取值忘了登记 = 更严而不是更松，与 kUnregistered 同一条规矩）。
+inline const wchar_t* HdrPolicyBlockReason(const wchar_t* path) {
+    switch (HdrCapabilityOfPath(path)) {
+        case HdrCapability::kSdrSourceOnly:
+            // 结构上只带得回 8 位 SDR，原因就用登记表那一句（window_self_drawn_8bit 那种）。
+            return HdrReasonOfPath(path);
+        case HdrCapability::kWideGamutUnverified:
+            return hdr_reason::kDupPolicyUnverified;
+        case HdrCapability::kWideGamutCapable:
+        case HdrCapability::kUnregistered:
+            return hdr_reason::kNotRegistered;
+    }
+    return hdr_reason::kNotRegistered;
+}
+
+// 这一次的 HDR 策略由这条通道做不做得到（解析期那一道，与本机版本、与目标都无关，所以
+// --dry-run 下也成立）。auto 恒成立；tonemap / refuse 只有**真兑现得了**的那条通道（wgc）放行，
+// 配 printwindow / dwm / bitblt / duplication 在解析期就该说做不到（退出码 1，不换后端）。
+// --capture auto 不在这里判：它最终落到哪条通道要到运行期才知道，判据是 FilterChainForHdr 那一份
+//（规矩 2b）—— 解析期放行 auto，运行期把不合格的那几条摘掉，两边共用同一张登记表。
 inline bool HdrRequestPossible(CaptureMethod method, HdrPolicy policy) {
     if (policy == HdrPolicy::kAuto) return true;
-    return ChannelCarriesWideColorFrame(method) || method == CaptureMethod::kAuto;
+    if (method == CaptureMethod::kAuto) return true;
+    return ChannelHonorsHdrPolicy(method);
 }
 
 // ---------------------------------------------------------------------------
@@ -289,8 +358,11 @@ inline HdrReport MakeHdrReport(const HdrRequest& request, const std::wstring& pa
             return report;
         case FrameColorSpace::kSrgbBgra8:
         default:
-            // 来源就是 8 位 SDR。分两种根据：这条路径结构上带不回 HDR（printwindow 那几条），
-            // 还是这条路径带得回 HDR 而这一帧恰好是 SDR（wgc / duplication 在 SDR 显示上）。
+            // 这一帧是按 8 位 BGRA sRGB 交付的。两种根据分开写：这条路径结构上带不回 HDR
+            //（printwindow 那几条，来源那一级由登记表断言），还是这条路径按 8 位帧池取回了
+            // 一张（wgc 与桌面复制）。后者**不**等于"核实过原始内容是 SDR"—— 那一问的答案在
+            // CapturedFrame::displayHdrState，由 JudgeHdrPassiveNote 拿去决定留哪一条提示；
+            // 这个键只说交付那一份的形状与这条路径的登记根据，不替那次问答背书。
             report.effective = hdr_effective::kSdrPassthrough;
             report.basis = HdrCapabilityOfPath(path) == HdrCapability::kSdrSourceOnly
                                ? hdr_basis::kPathSdrSource
@@ -317,6 +389,52 @@ DisplayHdrState DisplayHdrStateOfDxgiColorSpace(uint32_t dxgiColorSpaceType);
 // （不调 ChangeDisplaySettings / SetDisplayConfig）。任何一步问不出来就返回 kUnknown。
 DisplayHdrState ProbeDisplayHdrForHwnd(uint64_t hwnd);
 DisplayHdrState ProbeDisplayHdrForMonitor(void* hmonitor);
+
+// ---------------------------------------------------------------------------
+// 显式要求过 HDR 处理、而这一张交回的是 8 位 SDR：该留哪一条提示（判据只有这一份）
+// ---------------------------------------------------------------------------
+//
+// "我要过 HDR 处理"与"这一张其实没有 HDR 可处理"是两件事，得摆在调用方眼前（规矩 5 那一条的
+// 延伸）。第三种下场是这件更重要的差别：**没核实过**。一张 8 位 BGRA 帧并不证明原始内容是 SDR
+// —— 合成器完全可能把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池，所以那句"来源是 SDR"
+// 只能在采集之前真的问到"这块屏此刻是 SDR"时才算，否则只能说"这件事没核实出来"。
+// 两种都是提示（图照常交付、退出码不变），不是错误，也不是静默通过。
+enum class HdrPassiveNote {
+    kNone,             // 不该发提示：没要求过、要求的是 auto（只被动上报），或这一张真带回了广色域来源
+    kSourceSdr,        // note.hdr_source_sdr：核实过这块屏是 SDR，所以那个处理确实是恒等的
+    kSourceUnverified, // note.hdr_source_unverified：这一张是 8 位交付，而来源是不是 HDR 没核实出来
+};
+
+inline HdrPassiveNote JudgeHdrPassiveNote(const HdrRequest& request, FrameColorSpace source,
+                                          DisplayHdrState displayState) {
+    if (!request.given || request.policy == HdrPolicy::kAuto) return HdrPassiveNote::kNone;
+    if (source != FrameColorSpace::kSrgbBgra8) return HdrPassiveNote::kNone;
+    return displayState == DisplayHdrState::kSdr ? HdrPassiveNote::kSourceSdr
+                                                 : HdrPassiveNote::kSourceUnverified;
+}
+
+// ---------------------------------------------------------------------------
+// 通道链的 HDR 闸门（实现同样在 src/HdrColor.cpp：它要产出诊断文案，所以读 Lang）
+// ---------------------------------------------------------------------------
+
+struct HdrChainGate {
+    std::vector<CaptureMethod> chain;   // 还能兑现这一次 HDR 要求的那几条，按原顺序
+    Diagnostic error;                   // 非空 = 一条都不试、不弹框、不落地
+    std::vector<Diagnostic> notes;      // 被摘掉的那几条，各一条 note.hdr_channel_skipped
+};
+
+// 按这一次的显式 HDR 要求筛通道链（规矩 2b）。判据与 FilterChainForCursor 同源：
+//   * 只**减**不加：这里从不把一条通道换进链里，也不引入任何"映射过就算免确认"的旁路 ——
+//     会读桌面像素的那几条照样一定问人（--capture auto + --hdr tonemap 落在整屏那条 wgc 路径上
+//     时仍然要人点头，ScreenPathOf(kWgc) 是桌面路径）。
+//   * 没写 --hdr、或写成 auto -> 链原样交出、一条 note 都不发（规矩 1：默认值不动任何东西）。
+//   * 链里做不到的那几条 -> 摘掉并各留一条 note，剩下照旧回退；一条都不剩 = env.hdr_unsupported，
+//     一张都不取、确认框也不弹。绝不"那就照能截的那几条先交出再说"。
+//   * 显式指定的那条通道不经过这里（GateChannels 给它一条 env 错误、解析层给它
+//     capture.hdr_unsupported），所以"要哪个就要哪个"这条规矩不被筛选取代。
+// screenMode 必须传进来：同一个通道在两种目标上走的是不同的内部路径，而这张表登记的是路径。
+HdrChainGate FilterChainForHdr(const std::vector<CaptureMethod>& chain, const HdrRequest& request,
+                               bool screenMode);
 
 // ---------------------------------------------------------------------------
 // 浮点中间量与 tone mapping 的纯算术（实现与逐点判据在 src/HdrColor.cpp / tests\hdr_state.cpp）

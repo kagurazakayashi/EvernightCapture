@@ -5,8 +5,10 @@
 #include <vector>
 
 #include "CaptureCommon.h"   // CapturedFrame 的真身 + CaptureError
+#include "CaptureScope.h"    // WindowPathOf / ScreenPathOf：通道落到哪条内部路径，只有一份答案
 #include "Deadline.h"
 #include "ImageOps.h"
+#include "Lang.h"            // HDR 闸门那一步要产出诊断文案
 
 namespace ecapture {
 namespace {
@@ -274,6 +276,89 @@ DisplayHdrState DisplayHdrStateOfDxgiColorSpace(uint32_t cs) {
         default:
             return DisplayHdrState::kUnknown;  // 认不出就当没答案，不猜 HDR 也不猜 SDR
     }
+}
+
+// ---------------------------------------------------------------------------
+// 通道链的 HDR 闸门（规矩 2b：显式要求过的策略，回退链每一步都要继续兑现它）
+// ---------------------------------------------------------------------------
+namespace {
+
+std::wstring BriefHdrChannels(const std::vector<CaptureMethod>& items) {
+    std::wstring s;
+    for (const CaptureMethod m : items) {
+        if (!s.empty()) s += L", ";
+        s += CaptureMethodName(m);
+    }
+    return s;
+}
+
+}  // namespace
+
+HdrChainGate FilterChainForHdr(const std::vector<CaptureMethod>& chain, const HdrRequest& request,
+                               bool screenMode) {
+    HdrChainGate gate;
+    gate.chain = chain;
+
+    // 没写 --hdr，或写成 auto：一条通道都不筛、一条 note 都不发。这条选项存在之前的行为就是
+    // "照 B8G8R8A8 那条路线取帧"，而 auto 只被动上报 —— 默认值必须真的不动任何东西（规矩 1）。
+    if (!request.given || request.policy == HdrPolicy::kAuto) return gate;
+    if (chain.empty()) return gate;   // 上一步（版本 / 光标闸门）已经给过错误了，这里不再补一条
+
+    const wchar_t* wanted = HdrPolicyName(request.policy);
+    std::vector<CaptureMethod> kept;
+    std::vector<CaptureMethod> dropped;
+    std::vector<std::wstring> reasons;
+
+    for (const CaptureMethod m : chain) {
+        // 判据按**内部路径**查那张登记表（同一个通道在窗口与整屏两种目标上走的是不同路径），
+        // 不在这里另写一份"哪条通道支持 HDR"的名单。
+        const wchar_t* path = screenMode ? ScreenPathOf(m) : WindowPathOf(m);
+        if (HdrPathFulfilsPolicy(path, request.policy)) {
+            kept.push_back(m);
+            continue;
+        }
+        dropped.push_back(m);
+        reasons.push_back(HdrPolicyBlockReason(path));
+    }
+
+    for (size_t i = 0; i < dropped.size(); ++i) {
+        Diagnostic d;
+        d.code = codes::kNoteHdrChannelSkipped;
+        d.message = Msgf(L"note.hdr_channel_skipped", CaptureMethodName(dropped[i]), wanted,
+                         reasons[i]);
+        d.option = L"--hdr";
+        d.value = wanted;
+        d.backend = CaptureMethodName(dropped[i]);
+        d.stage = stages::kCapture;
+        gate.notes.push_back(std::move(d));
+    }
+
+    if (!kept.empty()) {
+        gate.chain = std::move(kept);
+        return gate;
+    }
+
+    // 一条都不剩：这一次一个像素都不取、确认框也不弹。绝不"那就照能截的那几条先交一张 8 位图
+    // 再说"—— 那样交出去的图在色彩这件事上根本不是用户要的那一种，而看起来却像一张正常图。
+    Diagnostic d;
+    d.code = codes::kEnvHdrUnsupported;
+    d.message = Msgf(L"env.hdr_unsupported", wanted, BriefHdrChannels(dropped),
+                     [&] {
+                         std::wstring s;
+                         for (const std::wstring& r : reasons) {
+                             if (!s.empty()) s += L", ";
+                             s += r;
+                         }
+                         return s;
+                     }());
+    d.option = L"--hdr";
+    d.value = wanted;
+    d.backend = BriefHdrChannels(chain);
+    d.hint = Msg(L"env.hdr_unsupported_hint");
+    d.stage = stages::kCapture;
+    gate.error = std::move(d);
+    gate.chain.clear();
+    return gate;
 }
 
 }  // namespace ecapture

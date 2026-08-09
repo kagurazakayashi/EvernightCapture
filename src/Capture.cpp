@@ -29,6 +29,7 @@
 #include "CursorControl.h"   // 光标能力的闸门与 requested/effective/basis 那三个键的合成（判据在那个头文件）
 #include "Deadline.h"
 #include "Encoder.h"
+#include "FallbackChain.h"   // auto 那条回退链本体与"换后端有没有意义"的判据（离线判据注入假后端）
 #include "FileSave.h"
 #include "ImageOps.h"
 #include "Lang.h"
@@ -220,6 +221,9 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const R
         case CaptureMethod::kBitBlt:
             return CaptureWindowBitBlt(hwnd, wait, *auth.permit, out, err);
         case CaptureMethod::kDuplication:
+            // hdr 照旧交给它，但**只有没要求过处理的那一路真会用到**：显式 tonemap / refuse 时
+            // 这条通道在闸门（以及解析期那一关）就被判成"本构建兑现不了"，不会成为候选。
+            // 它自己也不问那块屏此刻的色彩空间，所以交回的 8 位帧不声称来源是 SDR。
             return CaptureWindowDuplication(hwnd, wait, *auth.permit, hdr, dl, out, err);
         case CaptureMethod::kAuto:
             break;  // auto 由 CaptureWithMethod 展开成回退链
@@ -299,80 +303,13 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
     return false;
 }
 
-// auto 的回退链：按顺序试到第一个成功的通道。实际用的不是链首时留一条 note，
-// 让调用方知道画面来路不同。
-// 三条规矩：
-//   * 被拒绝（访问被拒 / 用户不让）不是继续换后端的理由 —— 换一条照样不该给，
-//     多问一次只是多扰一次，直接把这条错误交出去。
-//   * 后端抛出异常时按异常性质决定：致命（资源或设备没了）立刻终止整条链，
-//     可恢复的才继续往下试。
-//   * 预算已经用尽就不再试下一条：回退链最容易把"一次截图"变成"四次各拿一份完整超时"，
-//     而 --timeout-ms 要管的就是这种重复领取。
-template <typename Try>
-bool FallbackChain(const std::vector<CaptureMethod>& chain, const Deadline& dl, CapturedFrame* out,
-                   Diagnostic* err, std::vector<Diagnostic>* notes, bool* fatal, Try tryOne) {
-    std::wstring tried;
-    Diagnostic last{};
-    for (const CaptureMethod m : chain) {
-        if (dl.Spent()) {
-            if (err) *err = BudgetSpent(dl, codes::kCaptureTimeout, stages::kCapture,
-                                         CaptureMethodName(m));
-            return false;
-        }
-        CapturedFrame attempt;
-        Diagnostic attemptErr{};
-        const wchar_t* backend = CaptureMethodName(m);
-        const bool ok = CallBackend(stages::kCapture, backend,
-                                    [&] { return tryOne(m, &attempt, &attemptErr); }, &attemptErr,
-                                    fatal);
-        if (ok) {
-            *out = std::move(attempt);
-            if (m != chain.front() && notes) {
-                notes->push_back(Diagnostic{
-                    codes::kCaptureChannel,
-                    Msgf(L"note.capture_channel", CaptureMethodName(chain.front()), CaptureMethodName(m)),
-                    L"--capture", L"auto", std::wstring(), std::wstring(), backend, stages::kCapture});
-            }
-            return true;
-        }
-        if (attemptErr.code == codes::kAccessDenied ||
-            attemptErr.code == codes::kConsentUnavailable ||
-            attemptErr.code == codes::kConsentTimeout || attemptErr.code == codes::kConsentStale) {
-            // consent_timeout 也在这里：到点没人答同样是这一关的终局。漏了它，auto 链会把每条
-            // 通道都撞一遍同一堵"已被拒绝"的墙，最后把真实原因吞成 capture.failed ——
-            // 调用方看到的就是"机器不行"，而真相是"没人同意"。
-            if (err) *err = std::move(attemptErr);
-            return false;   // 授权这一关的结果不换后端重跑：拒绝就是拒绝，位置变了就重新确认
-        }
-        if (attemptErr.code == codes::kTargetGone ||
-            attemptErr.code == codes::kTargetChanged ||
-            attemptErr.code == codes::kTargetUnverifiable) {
-            if (err) *err = std::move(attemptErr);
-            // 身份这一关的结果同样不换后端重跑：换一条通道也读不到一个已经不存在的目标，
-            // 而"再试一次"在这里意味着用另一条通道去截一个没被人批准过的新对象。
-            return false;
-        }
-        if (fatal && *fatal) {
-            if (err) *err = std::move(attemptErr);
-            return false;   // 致命错误：换后端不会有区别
-        }
-        if (!tried.empty()) tried += L", ";
-        tried += backend;
-        last = std::move(attemptErr);
-    }
-    if (err) {
-        // backend 记的是"真实试过的那几条"，不是请求值 auto —— 调用方要据此判断该重试还是换通道
-        Diagnostic d{codes::kCaptureFailed, Msgf(L"cap.auto_failed", tried), L"--capture", L"auto",
-                     last.message, last.target, tried, stages::kCapture};
-        d.hresult = last.hresult;
-        d.win32 = last.win32;
-        *err = std::move(d);
-    }
-    return false;
-}
+// auto 的回退链本体在 src/FallbackChain.h（连同"这一关换后端有没有意义"那一条判据）：
+// 提到那里是为了让离线判据能注入假后端逐条判"策略结论之后其余后端一次都不调用"，
+// 而不是只在注释里声称。这里留下的两件事是它消费的链（已经过三道闸门筛好）与异常边界。
 
-// --capture 分派。chain 是"这一次真正可以试的通道"（已经过通道闸门按本机 Windows 版本筛过；
-// 见 SystemCompat.h）：显式指定一条时它就只有那一条，auto 时是回退链减去被版本挡掉的那几条。
+// --capture 分派。chain 是"这一次真正可以试的通道"（已经过通道闸门按本机 Windows 版本、
+// 这一次的光标要求与显式要过的 HDR 处理要求筛过；见 SystemCompat.h 与 src/CursorControl.h、
+// src/HdrColor.h）：显式指定一条时它就只有那一条，auto 时是回退链减去被挡掉的那几条。
 // 显式指定的那条绝不回退：用户要哪个就要哪个。
 // 交给这里的不是裸句柄，而是选定那一刻的快照与查询层（WindowTarget）—— 每一次尝试之前
 // 都要照它复核一遍，所以通道手里没有"跳过复核直接取像素"的那条路可走。
@@ -390,11 +327,17 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const R
                            },
                            err, fatal);
     }
-    return FallbackChain(chain, dl, out, err, notes, fatal,
-                         [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl,
-                                                      cursor, hdr, frame, e);
-                         });
+    return FallbackChain(
+        chain, dl, out, err, notes, fatal,
+        [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e, bool* fat) {
+            return CallBackend(
+                stages::kCapture, CaptureMethodName(m),
+                [&] {
+                    return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl, cursor,
+                                             hdr, frame, e);
+                },
+                e, fat);
+        });
 }
 
 bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
@@ -412,11 +355,17 @@ bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
                            },
                            err, fatal);
     }
-    return FallbackChain(chain, dl, out, err, notes, fatal,
-                         [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e) {
-                             return CaptureScreenOneChannel(gate, targetKey, wanted, m, timeoutMs,
-                                                            dl, cursor, hdr, frame, e);
-                         });
+    return FallbackChain(
+        chain, dl, out, err, notes, fatal,
+        [&](CaptureMethod m, CapturedFrame* frame, Diagnostic* e, bool* fat) {
+            return CallBackend(
+                stages::kCapture, CaptureMethodName(m),
+                [&] {
+                    return CaptureScreenOneChannel(gate, targetKey, wanted, m, timeoutMs, dl,
+                                                   cursor, hdr, frame, e);
+                },
+                e, fat);
+        });
 }
 
 // 把已经拿到的错误补上"哪个目标、哪一步"。通道填过的 backend 不改：
@@ -656,10 +605,12 @@ CaptureOutcome RunCapture(const Options& opt) {
     // --dry-run 不取帧，所以这一关不替它下结论（它那条"这次会挑到哪几条通道"的答案在 -v 的
     // input.captureChain 与 input.osBuild 里，问能力不必等到要截图的时候）。
     const OsVersion os = ProbeOsVersion();
-    // 两条闸门串成一份（GateChannels 按本机版本筛，FilterChainForCursor 按这次的光标要求筛）：
-    // --capture auto 时做不到的那几条在这里就摘掉并各留一条 note，显式指定的那条做不到时
-    // 一条错误、链为空 —— **绝不**替用户换成另一条通道（尤其不会换成会读桌面像素的那几条）。
-    const ChannelGate caps = GateCaptureChain(opt.capture, opt.ScreenMode(), os, opt.cursor);
+    // 三条闸门串成一份（GateChannels 按本机版本筛，FilterChainForCursor 按这次的光标要求筛，
+    // FilterChainForHdr 按这次显式要过的 HDR 处理要求筛）：--capture auto 时兑现不了的那几条
+    // 在这里就摘掉并各留一条 note，显式指定的那条做不到时一条错误、链为空 ——
+    // **绝不**替用户换成另一条通道（尤其不会换成会读桌面像素的那几条）。
+    const ChannelGate caps =
+        GateCaptureChain(opt.capture, opt.ScreenMode(), os, opt.cursor, opt.hdr);
     if (!opt.dryRun) {
         if (!caps.error.code.empty()) {
             outcome.errors.push_back(caps.error);
@@ -935,7 +886,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         std::optional<Diagnostic> uniformNote;   // 单色质量提示：等这张图真交出去了再送
         std::optional<Diagnostic> clippedNote;   // 区域丢失提示：同上，没交出去就不提示
         std::optional<Diagnostic> cropMappingNote;   // 屏幕原点核实不出来：同上
-        std::optional<Diagnostic> hdrNote;       // 要求过 HDR 处理而来源其实是 SDR：同上
+        std::optional<Diagnostic> hdrNote;       // 要求过 HDR 处理而这一张按 8 位交付：同上
         std::vector<uint8_t> encoded;
         try {
             CapturedFrame frame;
@@ -1009,15 +960,29 @@ CaptureOutcome RunCapture(const Options& opt) {
                 // 传进去的 frame.sourceColorSpace 是编码之前那一份来源事实（wide 帧映射后仍保留映射前
                 // 那一份）。没写 --hdr 时 written=false，那组键一个都不出现，这条流与之前逐字节相同。
                 img.hdr = MakeHdrReport(opt.hdr, img.path, frame.sourceColorSpace);
-                // 明确要过 HDR 处理（tonemap / refuse）而这一帧的来源核实是 SDR：这不是错误（图照常交），
-                // 但"我要过 HDR 处理"与"其实没有 HDR 可处理"是两件事，要放在调用方眼前，
+                // 明确要过 HDR 处理（tonemap / refuse）而这一张是按 8 位交付的：这不是错误（图照常交），
+                // 但"我要过 HDR 处理"与"这一张其实没有 HDR 可处理"是两件事，要放在调用方眼前，
                 // 而不是拿一个静默的通过冒充"HDR 已经被正确映射"。auto 不提示（它本就只是被动上报）。
-                if (opt.hdr.given && opt.hdr.policy != HdrPolicy::kAuto &&
-                    frame.sourceColorSpace == FrameColorSpace::kSrgbBgra8) {
-                    hdrNote = Diagnostic{codes::kHdrSourceSdr, Msg(L"note.hdr_source_sdr"),
-                                         L"--hdr", HdrPolicyName(opt.hdr.policy),
-                                         Msg(L"note.hdr_source_sdr_hint"), t.Tag(), img.source,
-                                         stages::kCapture};
+                // 留哪一条由 JudgeHdrPassiveNote 判：那句"来源是 SDR"只能由**采集之前真的问到
+                // 这块屏此刻是 SDR**来支撑（frame.displayHdrState），一张 8 位帧自己不算证据 ——
+                // 问不出来时改发 note.hdr_source_unverified，而不是把没核实说成没有 HDR。
+                switch (JudgeHdrPassiveNote(opt.hdr, frame.sourceColorSpace,
+                                            frame.displayHdrState)) {
+                    case HdrPassiveNote::kSourceSdr:
+                        hdrNote = Diagnostic{codes::kHdrSourceSdr, Msg(L"note.hdr_source_sdr"),
+                                             L"--hdr", HdrPolicyName(opt.hdr.policy),
+                                             Msg(L"note.hdr_source_sdr_hint"), t.Tag(), img.source,
+                                             stages::kCapture};
+                        break;
+                    case HdrPassiveNote::kSourceUnverified:
+                        hdrNote = Diagnostic{
+                            codes::kHdrSourceUnverified, Msg(L"note.hdr_source_unverified"),
+                            L"--hdr", HdrPolicyName(opt.hdr.policy),
+                            Msg(L"note.hdr_source_unverified_hint"), t.Tag(), img.source,
+                            stages::kCapture};
+                        break;
+                    case HdrPassiveNote::kNone:
+                        break;
                 }
                 // 从整幅桌面帧里裁出目标的通道（duplication / 拷屏幕的 bitblt）会报告实际截到的
                 // 那块矩形：请求的矩形没被完整截到时，图照常交付但要说清楚，绝不能默认"这就是
