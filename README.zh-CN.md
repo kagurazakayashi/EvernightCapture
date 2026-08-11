@@ -11,19 +11,33 @@
 </div>
 
 基于 Windows.Graphics.Capture 的一整套取图通道，入口是 `ECAPTURE.EXE`——单个可执行文件，静态链接 CRT，
-目标机器不需要装 VC++ 运行时。输出对程序友好：除 `--help`/`--version` 外一律 JSON，退出码稳定，
-诊断带稳定的 `code`，所以既适合人敲，也适合被脚本和 AI 调用。
+目标机器不需要装 VC++ 运行时。输出对程序友好：`--help`、`--version` 与"一个条件都没给"这三种情形是纯文本，
+其余一律 JSON；退出码稳定，诊断带稳定的 `code`，所以既适合人敲，也适合被脚本和 AI 调用。
 
 当前版本 **0.4.0**：`--capture` 的取值全部可用（`wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`），
-`--monitor` 提供整块屏幕截图与"按屏过滤窗口"。曾实现过的 `magnification` 已删除（理由见 AGENTS.md）。
+`--monitor` 提供整块屏幕截图与"按屏过滤窗口"。更早的构建里还有一条 `magnification` 通道，已经删除：Windows 11 的
+`magnification.dll` 不再导出 `MagGetImage`，这条路线因此没有离屏读图的入口，只能把放大镜控件窗口摆到屏幕上抢 z 序，
+而拿到的画面与 `bitblt` 已经交回的等价——代价换不到收益。这段依据记在 `src/CliOptions.h` 的注释里。
+
+## 先看哪里
+
+| 想弄清的事 | 看哪一节 |
+| --- | --- |
+| `--yes` 究竟免掉了哪一次确认，哪些是任何开关都免不掉的 | [截图授权与 --yes](#截图授权与---yes) |
+| 图片字节走哪条流、JSON 走哪条流，以及哪种 shell 保得住那些字节 | [输出形式](#输出形式)、[标准输出图片字节的 shell 差别](#标准输出图片字节的-shell-差别) |
+| 期限预算怎么在整个请求里共用，以及它打断不了什么 | 《执行期限与会阻塞的调用》 |
+| 稳定的 `code`、`stage`、退出码与部分成功 | [退出码](#退出码) |
+| 什么是编进这个构建的、本机现在让不让走、什么才是真测过 | [系统支持](#系统支持)、《只读的能力查询》 |
+| 本仓库在这台机器上还没判清楚的问题 | [边界与未验证项](#边界与未验证项) |
+| 哪条测试判的是哪条规矩 | [构建与测试](#构建与测试) |
 
 ## 特性
 
 - **按条件筛窗口**：句柄 / 进程 ID / 映像名 / 完整路径 / 标题（精确、包含、正则）/ 窗口类名，不同选项之间 AND、同一选项写多次 OR
 - **六条取图通道**：被遮挡的窗口也能截（`wgc` / `dwm` / `printwindow`），或者故意只拷屏幕上可见的像素（`bitblt` / `duplication`）
 - **多窗口一次截完**：`--all` 每个命中窗口各存一张，配合 `%i` 之类占位符命名
-- **窗口内部裁剪**：`--roi x,y,w,h` 从交付的整窗图像里留一块，`--client-area` 只留客户区。坐标说的是**这张图像自己的像素**（左上角 = (0,0)，物理像素，不按 DPI 缩放），永远不会被当成桌面绝对坐标；放不下的矩形是拒绝，而不是往里挪、裁到边上为止、或退回整窗交出。裁剪排在取帧之后，所以它不改变人批准过的那一片：会从屏幕上取样的那几条照样一定问人，`--yes` 不会因为最后只留一小块而生效
-- **等比缩小**：`--scale max-width=N,max-height=N,max-pixels=N` 把交付的这张图缩到天花板之内，而且一定等比：三条天花板取最紧的那一条算出一个比例，宽高各自向下取整，也**绝不放大**（本来就在天花板之内的原样交付，`scaleApplied=false`）。插值策略只有一种，而且是可预测的整数映射（最近邻）。顺序是先裁（`--roi` / `--client-area`）后缩、再编码，所以缩的是裁完的那一块，`scaleFromWidth` / `scaleFromHeight` 说的是**那张**图，而 `cropRect` / `cropScreenRect` 一字不改。缩放排在授权之后，所以请求的风险等级一点没变：会读桌面像素的那几条照样一定问人，`--yes` 不会因为最后交的是张小图而生效，一帧大到过不了帧形状检查的也缩不回来
+- **窗口内部裁剪**：`--roi x,y,w,h` 从交付的整窗图像里留一块，`--client-area` 只留客户区。坐标说的是**这张图像自己的像素**（左上角 = (0,0)，物理像素，不按 DPI 缩放），永远不会被当成桌面绝对坐标；放不下的矩形是拒绝，绝不往里挪、裁到边上为止或退回整窗交出。完整规则见下文《窗口内部裁剪（`--roi` / `--client-area`）》
+- **等比缩小**：`--scale max-width=N,max-height=N,max-pixels=N` 用三条天花板里最紧的那一条算出的**同一个比例**把图等比缩进上限，宽高各自向下取整，**绝不放大**，插值只有最近邻这一种可预测的整数映射。顺序是先裁后缩，所以缩的是裁完的那一块。完整规则见下文《等比缩小（`--scale`）》
 - **截图授权**：凡是真要取帧的截图，连可靠的窗口通道也一样，先弹模态确认框；`--yes` 只免掉"帧绑在所选窗口本身、
   不从桌面采样"那一条层的确认——任何会拍到桌面像素的路径一定要人答，没有开关能跳过
 - **目标身份会复核**：选定目标那一刻记下句柄、归属进程、该进程的创建时间、窗口类名与当初的选择条件，在每一次取帧尝试之前、
@@ -67,7 +81,9 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite D:\shots\one.png
 # 每个命中窗口各一张，文件名带序号
 ECAPTURE.EXE --pid 12345 --title-contains 报告 --all "D:\shots\rpt_%i.png"
 
-# 图片字节走标准输出（此时 JSON 改走 stderr）
+# 图片字节走标准输出（此时 JSON 改走 stderr）：cmd 与 PowerShell 7.4 起能保证字节无损，
+# Windows PowerShell 5.1 会把图片和 JSON 一起弄坏，在那里请默认改用 --out 写文件
+# （判据见下文《标准输出图片字节的 shell 差别》一节）
 ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
 
 # 截单个窗口又不想被问：--yes 只对"只取所选窗口画面"的那条路径有效
@@ -128,7 +144,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --yes, -y                                   跳过"只取所选窗口画面"那条路径的确认框。不保证目标一定有画面，也不忽略权限、受保护内容、错误或覆盖保护；任何会从屏幕上取样的路径（bitblt、duplication、整屏任何通道、dwm 的屏幕退路）一定会弹框，这个开关跳不过。写 --yes=false 表示明确要问
 
 执行期限（自动处理那一段的总预算；人工确认另算，到点按拒绝处理）
-  --timeout-ms <ms>                           自动处理阶段的总预算（毫秒）：从选定目标开始，条件求值、后端重试、取帧、编码、写文件共用这一份剩余时间，任何一步都不会重新领一份完整预算。不给或写 0 = 不设总预算，此时每次隔离调用仍受内置上限（5000 毫秒）约束。人工确认的等待不算在这里，见 --consent-timeout-ms。预算用尽时那一张不落地，按阶段报 match.timeout / capture.timeout / io.timeout
+  --timeout-ms <ms>                           自动处理阶段的总预算（毫秒）：从选定目标开始，条件求值、后端重试、取帧、编码、写文件共用这一份剩余时间，任何一步都不会重新领一份完整预算。不给或写 0 = 不设总预算，此时每次隔离调用仍受内置上限（5000 毫秒）约束。人工确认的等待不算在这里，见 --consent-timeout-ms。预算用尽时，尚未开始的阶段被拒绝、那一张不落地（已经提交完成的文件不会被回滚），按阶段报 match.timeout / capture.timeout / io.timeout
   --consent-timeout-ms <ms>                   确认框最多等多久（毫秒）。不给或写 0 = 一直等人回答。到点按"拒绝"处理，绝不按"默认同意"处理，报 capture.consent_timeout。这段等待单独计时，不占 --timeout-ms 那份自动预算；点"是"之后那约 1 秒的关闭动画缓冲也算在这一级，不会为了赶期限而省掉
 
 输出
@@ -211,6 +227,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 ```
 
 - `--title` 是整串相等、`--title-contains` 是子串匹配，两者**区分大小写**；`--class` / `--process` / `--exe` 忽略大小写。
+- **问不出来的条件永远不算命中。** 系统不肯交出标题或进程信息（`denied` / `failed`）的那扇窗口，就是不满足需要这项
+  信息的条件；`--title-regex` 求值中途抛异常时，已经收集到的全部命中一起丢弃，交回的是这条失败（预算花在这一步是
+  `match.timeout`，跑它的辅助进程没能回来是 `capture.worker_failed`——两种退出码都是 `7`），而不是一份只求值了一半的
+  候选列表。
 - 枚举默认跳过不可见窗口和零尺寸窗口；**最小化的窗口截不到**，只在 `hint` 里单独说明。
 - 命中多个又没给消歧选项时不会随便挑一个，而是报 `match.ambiguous_window`（退出码 5），
   `hint` 里按叠放次序列出全部候选。
@@ -264,7 +284,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 `hwnd` / `pid` / `title` / `class` / `image` 整个不出现——调用方按 `monitor` 是否存在区分两种图。
 写出 `--cursor` 时，每张图另外带 `cursorRequested` / `cursorEffective` / `cursorBasis`——要的是哪一种、
 这条路径实际交回的是哪一种、这个结论凭什么。没写这条选项时三个键一个都不出现，这正是"默认不要求"
-与这条选项存在之前逐字节相同的那一条保证，判据见[画面里的鼠标指针](#画面里的鼠标指针cursor)。
+与这条选项存在之前逐字节相同的那一条保证，判据见
+《画面里的鼠标指针》。
 
 两种图都带 `source`，写的是真正出图的那条通道（`--capture auto` 回退成功时它是链上命中的那一条，不是 `auto`）；
 也都带 `path` / `scope` / `rect`——整屏那种是 `screen.wgc` / `screen.bitblt` / `screen.duplication`，
@@ -318,7 +339,8 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 4. 通道：默认全部写 stdout、stderr 保持空；一旦图片占用标准输出（显式 `--out -`，或根本没给输出路径），
    JSON 整体改走 stderr，两个通道永不混流。连渲染结果本身都出异常时的兜底诊断也一律走 stderr（那时
    无法确定图片是否已经占了 stdout）。**结果送不到约定那条流就是失败**：退出码变成 `8`，即使另一条流
-   写成功也不改回原来的值——调用方按约定流读，读不到就是没拿到。
+   写成功也不改回原来的值——调用方按约定流读，读不到就是没拿到。至于某种 shell 能不能把那些图片字节
+   原样带出去，是另一件事，见[标准输出图片字节的 shell 差别](#标准输出图片字节的-shell-差别)。
 5. `captured` 等于 `images` 条数；一个窗口一张图，`--monitor all` 则一块屏一张图。
    **标准输出一次只能交付一张图**：命中多个目标（`--all` 或多个屏幕）又要写 stdout 时，整批在弹确认框和
    取第一帧之前就被拒（`cli.stdout_multiple_targets` + 退出码 1），一张都不截、一个文件都不写。判据是
@@ -330,12 +352,21 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    `dwm.screen`（同一通道的屏幕退路）取的是屏幕。那条退路只在缩略图这一步真的失败时才走，**不会因为
    画面正好是单色就走** —— 纯色窗口照样是窗口的画面。
 7. **保存**：整批最终输出路径在取第一帧之前（也在任何确认框之前）一次算好。两个目标算出同一个名字时报
-   `io.output_collision`（退出码 8），整批一张都不截、一个文件都不写 —— 既不替调用方改名，也不让第二张盖掉第一张。
+   `io.output_collision`（退出码 8，`stage=plan`），整批一张都不截、一个文件都不写 —— 既不替调用方改名，也不让第二张盖掉第一张。
    每张图先写目标目录下唯一的临时文件，写全并刷新之后才改名成目标名，所以写失败不会清空也不会删掉旧文件。
    `--no-overwrite` 时"目标在不在"由那一次不许替换的改名当场判定（`io.file_exists`），不做有竞态的预检。
+   **格式与文件名**：`--format` 取 `png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif`，且优先于扩展名；不给 `--format`
+   时由扩展名决定（`.tif` 与 `.tiff` 都算 TIFF），扩展名也认不出时退回 png。名字**没有**扩展名时补上该编码自己的
+   扩展名（`.png` / `.jpg` / `.bmp` / `.tif` / `.gif`），并且每批发一条 `note.output_extension_appended`；已经有
+   扩展名的名字绝不会被改写，所以 `--out shot.png --format jpeg` 就是把 JPEG 字节原样写进 `shot.png`。
+   `webp` 与 `ico` 不接受（`cli.invalid_format`）：本 SDK 没有它们的编码器，`--capabilities` 于是把它们报成
+   `compiled: false`，而不是让调用方自己猜。
 8. 每一步的失败诊断还带着它自己的坐标，只在这一步真拿到了值时才出现：`target`（哪个目标，窗口是
-   `0x…` 句柄、屏幕是设备名）、`backend`（哪条通道）、`stage`（`consent` / `capture` / `encode` / `write` /
-   `stdout`）、`hresult`（`0x80070005` 这样的原值）、`win32`（`GetLastError` 的原值）。`message` 随 `--lang`
+   `0x…` 句柄、屏幕是 `DISPLAY1` 这样的设备名）、`backend`（哪条通道）、`stage`（`parse` / `match` / `plan` /
+   `consent` / `capture` / `encode` / `write` / `stdout` / `report` 九取其一，和 code 一样只追加不改名：`match.*`
+   那组写 `match`，整批输出名的判据 `io.output_collision` 与 `cli.stdout_multiple_targets` 写 `plan`，帧在编码器里
+   出的错写 `encode`；命令行解析期的错误**根本不带** `stage`）、`hresult`（`0x80070005` 这样的原值）、
+   `win32`（`GetLastError` 的原值）。`message` 随 `--lang`
    变，这几个不变。授权这一关的错自成一类：`capture.access_denied` 是有人答了"否"或把框关掉，
    `capture.consent_unavailable` 是这台机器根本没有可交互的桌面、框弹不出来——两者都是退出码 `6`，都带
    `stage=consent`、`target`、`backend`（通道）和 `value`（那条路径），也都不是技术性的访问被拒
@@ -345,6 +376,40 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    单色帧也不会被断言成"没截到"：图照常交付，另外留一条 `note.frame_uniform`（把那个颜色、那条通道、
    那个目标写清楚）。只有 `duplication` 还会因为单色拒绝一帧，而且必须两条一起成立——这一帧没有任何
    present 记录，且整幅只有一个颜色。
+
+### 标准输出图片字节的 shell 差别
+
+`--out -` 要的是同时两条流：stdout 走 PNG/JPEG 字节，stderr 走整份 JSON。工具自己一条都不做转换——
+图片字节是用 `WriteFile` 写在裸句柄上的，文字从不进入那条流——所以坏掉的文件永远是 shell 造成的，
+不是这个工具造成的。这两条流也**不是同一种数据**：JSON 是文本，shell 重新编码一次并不影响它；图片是字节流，
+被替换掉一个字节文件就废了。因此第一个要问的问题就是某种 shell 保不保得住原生命令的字节流：
+
+| Shell | 把原生命令的 stdout 重定向到文件 | 怎么办 |
+| --- | --- | --- |
+| `cmd.exe` | 逐字节无损（`1>` / `2>` 就是重接真正的文件句柄） | 照写就行 |
+| PowerShell 7.4 起 | 逐字节无损——7.4 把重定向操作符改成保留原生命令 stdout 的字节流（官方文档写明的改动；本机 7.6.2 实测 256 字节原样往返） | 照写就行 |
+| PowerShell 7.0 – 7.3 | stdout 仍按文本解码后进管道 | 用 `cmd /c`，或 `--out <文件>` |
+| Windows PowerShell 5.1 | **会弄坏**：字节先按文本解码、再以 UTF-16LE 写出，所以 NUL 与所有 ≥ 0x80 的字节在落文件之前就已经丢了；连 `2>` 出来的 stderr 文件也要套上它自己的错误记录格式（`node : ` 那样的前缀、脚本位置、一个 BOM）。实测 256 字节变成 522 字节 | 用 `--out <文件>`，或 `cmd /c`，或 `Start-Process -RedirectStandardOutput … -RedirectStandardError …`（本机实测无损，因为句柄是系统接上去的） |
+
+```cmd
+:: cmd.exe：图片走 stdout、JSON 走 stderr，两条都逐字节无损
+ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
+```
+
+```powershell
+# 只在 PowerShell 7.4+ 用。同样这两行在 Windows PowerShell 5.1 会把 256 字节变成一个 522 字节的
+# UTF-16LE 文件，任何解码器都不认（本机实测）。
+ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
+
+# 5.1 下真要从管道里取图时的等价写法：
+Start-Process -FilePath ECAPTURE.EXE -ArgumentList '--process','notepad.exe','--out','-' `
+  -NoNewWindow -Wait -RedirectStandardOutput D:\shots\snap.png -RedirectStandardError D:\shots\result.json
+```
+
+`2>&1`（以及 `*>`）在这几种 shell 里都不行：两条流一合并，shell 就把结果当字符串数据处理，图片字节必坏。
+而 5.1 把原生命令的 stderr 套成它自己的错误记录，是发生在进入管道的那一刻，所以分开写 `1>` 和 `2>` 也救不回
+那份 JSON。既要图又要 JSON 就分两个文件收，或者干脆要一个文件、把 JSON 留在 stdout——那本来就是默认，也是这个
+工具设计所绕着走的那条路。
 
 ## 窗口内部裁剪（`--roi` / `--client-area`）
 
@@ -385,10 +450,9 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 
 ### 裁剪不改变人批准过的那一片
 
-裁剪排在取帧**之后**，这正是它不能用来碰到从没摆上桌面的画素的理由：确认框上给人看的是整个目标，该走哪一级判据
-仍然按 `images[].path` 决定（见[截图授权与 --yes](#截图授权与---yes)），会从屏幕上取样的那几条照样一定问人。
-`--yes` 不会因为「最后只留一小块」而开始生效 —— `bitblt` 或 `duplication` 上的 `--roi 0,0,8,8` 与整屏截图一样
-会被拒绝，如果被拒的话。窗口内容那三条（`wgc`、`printwindow`、`dwm.thumbnail`）才是 `--yes` 管得着的，这一点没变。
+裁剪排在取帧**之后**，这正是它不能用来碰到从没摆上桌面的画素的理由：该走哪一级判据仍然只由 `images[].path` 决定，
+所以 `--roi 0,0,8,8` 配一条桌面取样路径问的是一次整屏截图同样的问题，`--yes` 管着的照旧只有窗口内容那三条
+（见[截图授权与 --yes](#截图授权与---yes)）。
 
 ### 结果里写了什么
 
@@ -441,12 +505,14 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
   `(floor(x*scaleFromWidth/width), floor(y*scaleFromHeight/height))`。没有浮点采样，也不按通道挑算法。
 - **先裁、后缩、再编码。** `scaleFromWidth` / `scaleFromHeight` 是**裁之后**那张图的尺寸（不是整窗图），`cropRect` /
   `cropScreenRect` 一字不改，`width` / `height` 是最终尺寸。单色质量提示判的是交付出去那张（也就是缩过的）。
-- **授权那一层一点不动。** 缩放排在授权之后，它不是降低请求风险等级的办法：桌面像素那条配 `--scale max-width=8`，即使给了
-  `--yes` 也照样弹框，也没有哪个开关会因为最后交的是小图而开始生效。它同样不是绕开既有上限的办法——一帧大到过不了帧形状检查的
+- **授权那一层一点不动。** 缩放排在授权之后，它不是降低请求风险等级的办法：判据仍然只由 `images[].path` 决定，
+  所以桌面像素那条配 `--scale max-width=8`，即使给了 `--yes` 也照样弹框（见[截图授权与 --yes](#截图授权与---yes)）。
+  它同样不是绕开既有上限的办法——一帧大到过不了帧形状检查的
   根本到不了这一步，`--roi` 仍按未缩的那张图判。
 - **只有写过这一条时**，`scaleMethod` / `scaleApplied` / `scaleFromWidth` / `scaleFromHeight` 才出现；没写 `--scale` 时这四个键
   一个都没有（不是 `null`、`0` 或 `false`），所以那条流与之前逐字节相同。
-- 编码那一层没动：`png`、`jpeg`、`bmp` 写下的都是缩过之后的尺寸（见 `.\tests\scale.ps1`）。
+- 编码那一层没动：`.\tests\scale.ps1` 在真机上判的是 `png`、`bmp`、`jpeg` 三种格式写下的都是缩过之后的尺寸。
+  `tiff` 与 `gif` 用的是同一个编码调用、不同的 encoder id，不在这条判据覆盖的范围里。
 
 本机未验证：单边超过 16384 的帧的真机现场（造不出一扇那么大的窗口，而且那种帧本来也过不了帧形状检查——这条由离线层判）、
 HDR 与缩放同时生效（这台开发机开不了 HDR）、跨屏混合 DPI（只接了一块屏）。
@@ -456,16 +522,16 @@ HDR 与缩放同时生效（这台开发机开不了 HDR）、跨屏混合 DPI�
 不给输出路径与显式写 `--out -` 是**同一个请求**：图片按 png 走 stdout，JSON 整份走 stderr，而每条诊断都是
 那一步真实产生的那一条。
 
-| | 旧行为 | 现在的行为 |
-| --- | --- | --- |
-| 没给输出路径时失败 | 整段换成一条 `cli.missing_output` + 退出码 1，`images` 与 `notes` 清空、真实原因不外泄（例外只有 `cli.stdout_multiple_targets` 与确认被拒） | 原样的 code 与原样的退出码：`match.no_window`（4）、`match.ambiguous_window`（5）、`capture.access_denied`（6）、`capture.failed`（7）、`io.write_failed`（8）、`cli.invalid_number`（1）…… |
-| 没给输出路径时的部分成功 | 看不见（`images` 被整段丢掉） | 已经送到 stdout 的图仍在 `images` 里，`captured` 照实计数 |
-| `cli.missing_output` | 退出码 1 | 不再发出。这条 code 仍留在清单里，为的是它不被挪作别的含义 |
-| "本次没给输出路径"这句话 | 一个 code | 只在"补上文件名确实绕得开这次故障"的那一条上作为 `hint` 出现：隐式 stdout 且 `io.write_failed` + `stage=stdout`。写 `--out -` 的人本来就选定了这条管道，所以那句 hint 不出现 |
+- 这条路上回来的就是真实的 code 与真实的退出码，原样不动：`match.no_window`（4）、`match.ambiguous_window`（5）、
+  `capture.access_denied`（6）、`capture.failed`（7）、`io.write_failed`（8）、`cli.invalid_number`（1）……更早的构建
+  会把它们整段换成一条 `cli.missing_output` + 退出码 `1`，同时清空 `images` 与 `notes`，既藏起了原因也丢掉了已经
+  交付的图；那套改写已经取消。`cli.missing_output` 不再发出，但这条 code 仍留在清单里占位，为的是它不被挪作别的含义。
+- 已经送到 stdout 的图仍留在 `images` 里，`captured` 照实计数，所以这条路上部分成功照样看得见。
+- "本次没给输出路径"现在只是一条 `hint`，而且只在点名一个文件确实绕得开这次故障时才出现：隐式 stdout 路线上的
+  `io.write_failed` + `stage=stdout`。写 `--out -` 的人本来就选定了这条管道，那句 hint 在那里不出现。
 
 怎么分支：读 `errors[].code`（以及它的 `stage` / `target` / `backend` / `hresult` / `win32`），
-既不要只看退出码，也不要根据"有没有给 `--out`"推断原因。code 只追加不改名，所以按旧行为写出来的调用方
-仍然能用——它只是再也读不到一条假原因。
+既不要只看退出码，也不要根据"有没有给 `--out`"推断原因。
 
 ## 退出码
 
@@ -504,7 +570,7 @@ HDR 与缩放同时生效（这台开发机开不了 HDR）、跨屏混合 DPI�
 | --- | --- | --- |
 | 各条路线的 API 历史下限 | 任何一张图 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | 微软为这条路线**实际调用**的那个接口所写的下限。编码器（WinRT `BitmapEncoder`）六条通道、五种格式共用；`wgc` 走的是 `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor`，那是 Windows 10 版本 1903 才有的互操作接口——`Windows.Graphics.Capture` 这个命名空间本身确实是 1803 出现的，但本工具没有"让用户在系统选择器里点一下"那条退路 |
 | 本工具声明的下限 | 64 位 Windows 10 版本 1903（内部版本 18362）或更新 | 上面那几道里最高的那一条，因为默认通道要真能截到窗口需要它；不是"某条路线碰到的最老的那个 API" |
-| 已实测的版本 | Windows 10 版本 22H2（内部版本 19045），x64 | `tests\` 下所有真机判据都只跑在这一台机器上 |
+| 已实测的版本 | Windows 10 版本 22H2（内部版本 19045），x64 | `tests\` 下所有真机判据都只跑在这一台机器上。`--capabilities` 拿**本机环境与这份记录比对**，比对结果就叫 `verifiedOnThisMachine`：判的是"这台机器的内部版本与架构等于那套被测过的环境"，不是"这一台设备曾被逐台实测过" |
 
 10240 到 18361 之间的那些版本能装载这个 exe，也能截图（工具是按每条路线各自的下限筛通道，而不是整体拒开），
 但那既不在声明支持之列、也从来没有实测过，请按"预期可用、未验证"对待。
@@ -551,9 +617,13 @@ ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原
 
 三条规矩：
 
-* **三件事分开写。** `compiled` 说的是这个二进制里有没有实现那条路线；`status` 说的是本机现在的判据
-  （版本下限 + 屏幕拓扑）让不让走；`verifiedOnThisMachine` 说的是**本项目**有没有在这一模一样的系统上
-  实测过（只有开发机那一台，见上表）。三者互不冒充。
+* **三件事分开写。** `compiled` 说的是这个二进制里有没有实现那条路线；`status` 说的是本机自己那份证据
+  （版本下限 + 屏幕拓扑）此刻让不让走；`verifiedOnThisMachine` 是一次**环境比对，不是一台设备的实测记录**：
+  只有本机内部版本与架构都等于本项目跑真机判据的那套环境（内部版本 19045、x64）时才写 `yes`，任何一半问不出来
+  就写 `unknown`，其余一律 `no`——所以一台 26100 的机器读到的是 `no`，并因此多出一条
+  `this_environment_not_tested` caveat。`os.matchesTestedEnvironment` 就是同一条判据。三者互不冒充：
+  `available` + `verifiedOnThisMachine: no` 的意思是"这个构建在本机走得通这条路线，而本项目只在另一种版本上证过
+  它"；而 `yes` 也照样不保证某一扇窗口一定截得到。
 * **问不出来就说问不出来。** 每一条事实都是 `yes` / `no` / `unknown` 三值之一，`unknown` 既不折成"能"
   也不折成"不能"，也不整个键消失。版本没问出来时所有 `status` 都是 `unverified`，而 `autoChainWindow`
   仍然原样列出全部四条——不筛就是没筛，不是"都支持"。
@@ -568,13 +638,13 @@ ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原
 | `session` | 是否接在控制台会话上、是否远程桌面、有没有可用的屏幕拓扑与有几块屏、本进程是否被提升过、`consentDialogExpected`（推出来的，`consentDialogProbed: false` 明说没真去弹框） |
 | `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登记路径按 `desktop` 处理，外加整份内部路径登记表（每条带 `scope` 与 `consentWithoutYes` / `consentWithYes`）——就是《截图授权与 --yes》那张表的机器可读版本 |
 | `backends` | 每条路线：`compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`，以及它在窗口目标与屏幕目标上各走哪条内部路径（`dwm` 那条屏幕退路也在，所以 `--yes` 的适用范围不会被人读大） |
-| `formats` | 每种格式：`compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` 恒为 `unknown`，因为这一层不去实测编码器（实测就是"用一次编码来探测能力"，与"不靠截屏探测"是同一条理由）；曾经列过但没有编码器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里，好让调用方拿到确定答案 |
+| `formats` | 每种格式：`compiled` / `status` / `reason` / `minBuild` / `registered`，`png` / `jpeg` / `bmp` / `tiff` / `gif` 各一行（五种都已编进这个构建，而且全都走同一个 WinRT `BitmapEncoder` 调用，只是 encoder id 不同）。`registered` 恒为 `unknown`，因为这一层不去实测编码器（实测就是"用一次编码来探测能力"，与"不靠截屏探测"是同一条理由）；曾经列过但没有编码器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里，好让调用方拿到确定答案 |
 | `cursor` | `--cursor` 这一条的故事：`default`（不给这条选项时的下场）、三种取值、那唯一一条开关写成 `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine`，然后每条已登记的内部路径一行（`capability` 是 `settable` / `excludes_cursor` / `unregistered`，加 `reason` 与 `include` / `exclude` 各三值 `yes` / `no` / `unknown`），末尾 `pointerShapeCompositing: "never"` 与 `pixelRetouching: "never"`。没登记的路径读 `unknown` 而不是猜一个答案 |
-| `color` | `--hdr` 这一条的故事：`default`（不给这条选项时的下场）、三种取值（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 说的是"这个构建带不带得回广色域帧 + 映射怎么做"，**不**去问那块屏此刻是不是 HDR 模式（reason 是 `hdr_display_mode_not_probed`）；`verifiedOnThisMachine` 恒为 `no`（本项目没有 HDR 屏，不宣称色彩验收通过）。每条已登记的内部路径一行（`capability` 是 `wide_gamut_capable` / `sdr_source_only` / `unregistered`），外加 `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR 一律映射成 8 位 SDR 交付，不出 HDR 原生图） |
+| `color` | `--hdr` 这一条的故事：`default`（不给这条选项时的下场）、三种取值（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 说的是"这个构建带不带得回广色域帧 + 映射怎么做"，**不**去问那块屏此刻是不是 HDR 模式（reason 是 `hdr_display_mode_not_probed`）；`verifiedOnThisMachine` 恒为 `no`（本项目没有 HDR 屏，不宣称色彩验收通过）。每条已登记的内部路径一行，`capability` 是 `wide_gamut_capable`（只有 `wgc` / `screen.wgc`）/ `wide_gamut_unverified`（`duplication.frame` / `screen.duplication`：那块桌面纹理**可能**回来 FP16 或 10 位，但本构建在 `DuplicateOutput` 之前从不问显示器的色彩空间，所以既证明不了拿到的是什么，也兑现不了任何策略）/ `sdr_source_only`（其余只能带回 8 位 DC 的那几条）/ `unregistered`；另外逐行给 `honorsExplicitPolicy`——只有那两条 `wgc` 是 `true`，这正是"本构建只有 `wgc` 兑现得了 `tonemap` / `refuse"` 的机器可读写法。外加 `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR 一律映射成 8 位 SDR 交付，不出 HDR 原生图） |
 | `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 逐条比对这两处 |
 | `limits` | 单边像素上限、整帧字节上限、`--timeout-ms` 上限、隔离调用内置上限、WGC 帧池重建次数、编号与 PID 上限、`stdoutTargetsMax: 1`、JPEG 质量区间 |
 | `privacy` | 自述这份查询没做的事：不采集画面、不弹框、不上传、不枚举用户文件、不读环境变量、不含用户名、不含路径 |
-| `caveats` | 稳定的 ASCII token，列"这份报告没有断言什么"：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及按本机情况追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恒有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（光标那几个字段只说得到设置与来源那一层，说不到"这一张图里看得见或看不见指针"），以及恒有的 `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8`（HDR 的映射数学离线判过但没有 HDR 屏实测，且 HDR 一律被映射成 8 位 SDR 交付） |
+| `caveats` | 稳定的 ASCII token，列"这份报告没有断言什么"：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及按本机情况追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恒有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（光标那几个字段只说得到设置与来源那一层，说不到"这一张图里看得见或看不见指针"），以及恒有的 `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR 的映射数学离线判过但没有 HDR 屏实测，HDR 一律被映射成 8 位 SDR 交付，而明确写出来的 `tonemap` / `refuse` 要求在本构建里只有那两条 `wgc` 路径兑现得了） |
 
 两份文档由**同一个**判据函数（`src/EnvReport.cpp` 的 `BuildEnvReport`）算出，只差段落取舍：
 `--diagnostics` 固定带 `build` 那一段（PE 链接时间戳、机器类型、映像大小、子系统），`--capabilities` 只在
@@ -594,15 +664,11 @@ ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原
 
 ### 结构化的窗口发现与检查（`--list` / `--inspect`）
 
-在这两条命令之前，调用方（尤其是 AI）想知道"这批条件到底命中了哪些窗口"只有两条路，而两条都不对：
-`--dry-run` 把每个候选写成**一行给人看的话**塞在 `note.dry_run` 里
-（`hwnd=0x… pid=… 1261x614+681+22 class=… title=…`），要用的就得从这句里把句柄、矩形、标题再解析出来 ——
-而工具从没承诺过这句话的形状稳定，标题里有一个空格或一个 `|` 就解析错位。另一条是真去截一张图：它要求一个输出
-路径、会按截图那一级弹确认框，还会把"命中多扇"报成错误 —— 那对"我要截一批图"是合理的结论，对"我先看一眼"
-完全是帮倒忙。
-
-这两条命令就是这个问题的只读出口。它们跑的是与截图**同一套**条件求值（同一选项写多次取并集、不同选项取交集、
-`--monitor` 按屏过滤，用了 `--title-regex` 或 `--timeout-ms` 时照旧整步进辅助进程），但不产任何图片：
+`--dry-run` 对"这批条件会命中哪些窗口"的回答，是每个候选**一行给人看的话**塞在 `note.dry_run` 里
+（`hwnd=0x… pid=… 1261x614+681+22 class=… title=…`）——这种散文形状从没被承诺过保持稳定，调用方要用的话就得从
+一句里把句柄、矩形、标题再解析回来。这两条命令就是同一个问题的结构化答案。它们跑的是与截图**同一套**条件求值
+（同一选项写多次取并集、不同选项取交集、`--monitor` 按屏过滤，用了 `--title-regex` 或 `--timeout-ms` 时照旧整步
+进辅助进程），但不产任何图片：
 
 ```powershell
 ECAPTURE.EXE --list --process notepad.exe                    # 每个命中的窗口，结构化
@@ -775,8 +841,8 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
     永远和确认框上列出的矩形在同一套坐标里——绝不出现第二次翻转。实际转了多少写在 `images[].rotation`。
     两种形状都对不上的纹理直接判 `capture.frame_invalid`，而不是照裁不误。
   - **落在哪块显卡适配器上。** 先枚举全部适配器与输出、在这张表里定位目标，然后在**拥有该输出的那个
-    适配器**上创建 D3D11 设备——这正是 `DuplicateOutput` 的要求。由第二块显卡驱动的屏幕因此可达，
-    旧的"先试默认适配器"盲区已经消除。这条路径没有 WARP 退路：软件设备不拥有任何物理输出，只会交回
+    适配器**上创建 D3D11 设备——这正是 `DuplicateOutput` 的要求。由第二块显卡驱动的屏幕因此也够得着。
+    这条路径没有 WARP 退路：软件设备不拥有任何物理输出，只会交回
     一幅空的帧却仍然报告正确的尺寸。
   - **一个目标只对应一块输出。** 横跨两块屏（或挂出屏幕边缘）的窗口，取的是它与重叠面积最大的那块
     输出相交的区域，其余部分*不在*图里。这表现为 `capturedRect` != `requestedRect`、`clipped` 和
@@ -853,14 +919,20 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 对色彩**一个字都不改**：不探测显示状态、不改采集格式、不做映射，结果里也不出现色彩那组键 —— 输出与
 这条选项存在之前逐字节相同。
 
-哪条路线带得回广色域帧，判据同样是**它的像素从哪来**，不是通道名字。那份登记表在 `src/HdrColor.h`，
-按 `images[].path` 一行一条：
+哪条路线带得回广色域帧、哪条真兑现得了明确写出来的策略，是两个不同的问题，判据与别处同源：**它的像素从哪来**，
+不是通道名字。那份登记表在 `src/HdrColor.h`，按 `images[].path` 一行一条，`--capabilities` 把它打成 `color.paths`，
+每行带 `capability` 与 `honorsExplicitPolicy`：
 
-- `wgc` / `screen.wgc` / `duplication.frame` / `screen.duplication` 带得回（它们的来源跟随显示模式：
-  WGC 可以按 FP16 scRGB 线性交回，桌面复制交回的桌面纹理可能是 FP16 scRGB，也可能是 10 位
-  ST.2084 (PQ) / HLG BT.2020）。
+- `wgc` / `screen.wgc` —— `wide_gamut_capable`、`honorsExplicitPolicy: true`。来源跟随显示模式，而这条路径会读回
+  自己实际拿到的格式（FP16 scRGB 线性，或 8 位 BGRA），所以它说得出是哪一种、也映射得了。本构建里兑现
+  `tonemap` / `refuse` 的只有这两条。
+- `duplication.frame` / `screen.duplication` —— `wide_gamut_unverified`、`honorsExplicitPolicy: false`。那块桌面纹理
+  *可能*回来 FP16 scRGB，也可能回来 10 位 ST.2084 (PQ) / HLG BT.2020，但本构建在 `DuplicateOutput` 之前从不问
+  显示器的色彩空间，所以它证明不了自己拿到的是什么，也就承诺不了任何策略。在这里要 `tonemap` / `refuse` 得到的
+  是拒绝，而不是一个含糊的答案。
 - `printwindow`（窗口自绘进 8 位 DC）、`dwm.thumbnail` / `dwm.screen`、`bitblt.screen` / `screen.bitblt`
-  结构上只带得回 8 位 SDR，所以对它们而言 HDR 处理没有对象，是恒等而不是"做不到就换一条"。
+  —— `sdr_source_only`、`honorsExplicitPolicy: false`。它们结构上只带得回 8 位 SDR，所以对它们而言 HDR 处理没有
+  对象，是恒等而不是"做不到就换一条"。
 
 三条取值：
 
@@ -873,10 +945,13 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 
 由这张表推出两条规矩，与光标那一条同源：
 
-- **做不到的那条就拒绝，不偷偷改道。** `--hdr tonemap` / `refuse` 配 `printwindow` / `dwm` / `bitblt`
-  在解析期就是 `capture.hdr_unsupported`（退出码 `1`），**不换后端**（换成会读桌面像素的那条既没有更多
-  HDR 可映射，交回的也是一份没人批准过的画面）。`--capture auto` 不在解析期判（落到哪条通道要到运行期
-  才知道，而那两条带得回广色域帧的通道都在链里）。
+- **做不到的那条就拒绝，不偷偷改道。** 点名 `printwindow` / `dwm` / `bitblt` / `duplication` 其中一条并要
+  `--hdr tonemap` / `refuse`，在解析期就是 `capture.hdr_unsupported`（退出码 `1`），**不换后端**（换成会读桌面像素的
+  那条既没有更多 HDR 可映射，交回的也是一份没人批准过的画面）。`--capture auto` 时这条要求改去收窄回退链——用的
+  就是 `FilterChainForHdr` 那一条判据，与 `-v` 回显 `input.captureChain` 时是同一个函数，所以 `auto` 配 `tonemap`
+  只剩 `wgc`：每条被摘掉的通道各留一条 `note.hdr_channel_skipped`，一条不剩时整次以 `env.hdr_unsupported`
+  （退出码 `7`）停下，而不是交出一张没映射过的帧。而一次取回来是 `capture.hdr_refused` 的结果会让整条链当场停下——
+  绝不换后端重试，因为换个后端只会换来另一张同样没被批准的画面。
 - **认不出就是认不出。** 带回一个本构建认不出的广色域像素格式时是 `capture.hdr_unverifiable`（退出码 `7`），
   既不硬按 BGRA8 解释，也不"猜一个映射"；`--hdr refuse` 且核实来源是 HDR 时是 `capture.hdr_refused`
   （退出码 `7`）。三条都在编码之前给出，都不落地。
@@ -924,11 +999,16 @@ tone mapping 的数学由离线判据用已知色块与亮度梯度逐点判（`
 给出时筛的是**窗口**，出的仍是窗口图，按上面窗口那两行走。
 
 - **桌面路径没有任何旁路**：`--yes`、`--quiet`、环境变量、stdin、调用者是谁，都跳不过它——分级就是为了这一件事。
-- 一次确认可以覆盖本次请求里明确列出的那一批目标，所以多个后端、多个窗口不会各问一遍。但授权绝不跨请求缓存，
-  也不会扩大到框上没列出的目标，"同意截窗口画面"更不等于"同意截桌面"：`--capture auto` 配 `--yes` 可以不打扰人
-  地走完窗口那几条，可一进桌面路径就必须再问一次。
-- 一旦有人答"否"、框被关掉、或者根本没有可交互的桌面，本次请求剩下的截图就停了：不换后端、不重试、不再问第二遍，
-  已经完成的图留在 `images` 里。
+- 一次确认可以覆盖本次请求里明确列出的那一批目标，所以多个后端、多个窗口不会各问一遍。但这份许可是一个**快照**
+  而不是一项长期授权：它绑的就是对话框上列出的那些目标连同当时展示的区域、整批改好的绝对输出名、以及屏幕拓扑的
+  指纹，而且复核两次——签发之前一次（框开着的时候拓扑挪过位，那就是一次新的提问，不是复用旧答案），以及每一次
+  真要采样像素之前一次（那块区域必须还在批准过的范围之内）。授权绝不跨请求缓存，也绝不扩大到框上没列出的目标，
+  "同意截窗口画面"更不等于"同意截桌面"：`--capture auto` 配 `--yes` 可以不打扰人地走完窗口那几条，
+  可一进桌面路径就必须再问一次。
+- 有人答"否"、框被关掉（点 `X` 与按 `Esc` 都是答"否"，不是悄悄走掉）、`--consent-timeout-ms` 之内没人回答，
+  或者根本没有可交互的桌面——这四种结局都会停掉**同一次请求**剩下的部分：`auto` 回退链剩下的那几条一起停，
+  不只是剩下的 `--all` 目标；不换后端、不重试、不再问第二遍，已经完成的图留在 `images` 里。
+  人的回答是一条边界，不是"再换条路试试，总有一条能问出来"的提示。
 - 目标区域挪动过、或者屏幕拓扑变了，覆盖它的授权当场作废并重新问一次；已经绑在旧区域上的那一帧给
   `capture.consent_stale`（退出码 `7`，重新选目标再截）。
 - 确认框的默认焦点在"否"上，内容列出目标及其区域、将要走的那条路径、每张图展开后的绝对路径（或"标准输出"）、
@@ -938,7 +1018,7 @@ tone mapping 的数学由离线判据用已知色块与亮度梯度逐点判（`
   绝不会因为"弹不出框"就放行。答"否"给 `capture.access_denied` + `6`，弹不出框给新的稳定码
   `capture.consent_unavailable` + `6`；两者都带 `stage=consent`、`target`、`backend`，`value` 写的是那条路径。
 - 被人拒绝就是被人拒绝：`capture.access_denied`（`stage=consent`）+ 退出码 `6`，与有没有给输出路径无关。
-  省略 `--out` 就等于 `--out -`，授权结果不因它而变，见[不给输出路径（兼容性说明）](#不给输出路径兼容性说明)。
+  省略 `--out` 就等于 `--out -`，授权结果不因它而变，见《不给输出路径（兼容性说明）》。
 - 多块屏 + 写 stdout（`--monitor all --out -`）在任何弹框之前就被拒：一次确认换不来"每块屏一张图挤进同一条流"。
   只有一块屏时 `--monitor all` 是一个目标，那条路仍然按单张走 stdout。
 - 说清楚边界：这就是一个 `MessageBox`。它是给合作式自动化（人或 AI）准备的误点防护，既证明不了按下按钮的是人，
@@ -987,24 +1067,37 @@ tone mapping 的数学由离线判据用已知色块与亮度梯度逐点判（`
 （含 `--title-regex`）、`auto` 回退链、等帧、编码、最后那次提交，花的都是**同一份**预算：没有任何一步、也没有
 批次里任何一个后续目标能重新领一份完整预算，所以四条后端不可能各等 2 秒、两个目标也不可能各再等一遍。不给或写
 `0` 就是不设总预算；即便如此每次隔离调用仍受一个内置的 5000 ms 上限约束——这本是旧的 `timeoutMs` 参数该做到的事。
-预算用尽时，受影响的那张图**不会**写出——条件求值阶段把预算耗尽给 `match.timeout`（`stage=match`），取帧与编码
-阶段给 `capture.timeout`（`stage=capture`，编码也算在这一级），写文件/标准输出阶段给 `io.timeout`
-（`stage=write` / `stdout`，退出码 `8`）；批次里剩下的目标不再开始，已经写完的图仍留在 `images` 里。所以部分完成
-的一批和局部截图失败表现完全一致：退出码非 0，凡是已经落地的都照样交付。
+预算用尽时，**尚未开始的阶段被拒绝、那一张不落地**——条件求值阶段把预算耗尽给 `match.timeout`（`stage=match`），
+帧始终没来给 `capture.timeout` 且 `stage=capture`，而预算死在编码器里时同样是 `capture.timeout`、只是
+`stage=encode`（没有 `encode.timeout` 这么一条码，把两者分开的就是这个 stage），写文件/标准输出那一步没能开始则给
+`io.timeout`（`stage=write` / `stdout`，退出码 `8`）；批次里剩下的目标不再开始，已经写完的图仍留在 `images` 里。
+所以部分完成的一批和局部截图失败表现完全一致：退出码非 0，凡是已经落地的都照样交付。
+
+这道闸门是刻意做成"开工之前拦一道"的，而诚实的边界正是它的另一面：原子写文件没有取消点，改名提交之后也不再复核
+预算，所以预算**在提交过程中**到期的那一张照样会落地。超时不回滚、也不删除任何东西——磁盘上那个文件存在，是因为
+调用方要求过它，悄悄把它删掉等于再写一次没人要的东西。
 
 等一个人是**另一条**时钟：`--consent-timeout-ms <ms>` 只给确认框设上限，绝不动自动处理那份预算（人走开了不等于
-"机器慢"）。到了时间没人回答，本次请求就按**拒绝**处理——`capture.consent_timeout`、退出码 `6`——绝不当成同意，
-批次剩下的部分也就像有人明确答"否"之后那样停下。不给或写 `0` 还是一直等，和从前一样。点"是"之后那约 1 秒的缓冲
-是为了把对话框的关闭动画挡在画面之外，它属于人工那一阶段，绝不会为了赶期限而被省掉：被限制的是"等一个回答"，
-不是"回答之后等画面安定"。
+"机器慢"）；这段时间确实被从自动预算里暂停出来了，所以一次漫长的阅读不会把那张图自己的期限花掉。到了时间没人回答，
+本次请求就按**拒绝**处理——`capture.consent_timeout`、退出码 `6`、`stage=consent`——绝不当成同意，
+批次剩下的部分也就像有人明确答"否"之后那样停下。不给或写 `0` 还是一直等，和从前一样。这道限期是**轮询**到的，
+不是抢占那个对话框：到期要等下一个等待片段才看得见，而且对话框还有约 3 秒的关闭宽限，所以框可能比写出来的数字多留
+一小会儿。点"是"之后那约 1 秒的缓冲是为了把对话框的关闭动画挡在画面之外，它同样属于人工那一阶段，绝不会为了赶期限
+而被省掉：被限制的是"等一个回答"，不是"回答之后等画面安定"。
 
 **阻塞到底堵在哪。** `PrintWindow` 是给目标窗口发一个绘制请求、再等它自己的线程；`--capture printwindow` 和
 `dwm` 的回读干的就是这件事，而这个调用内部没有能拿来核对期限的打断点。`std::regex` 也一样：像 `(a+)+$` 这种
 模式去匹配一个长标题可能回溯好几分钟，而对模式限长度并不是执行期限。这些调用现在都跑在同一个 `ECAPTURE.EXE`
 拉起的辅助进程里，父进程通过一条私有管道把已经解析好的一个任务递给它；期限一到，父进程就停掉**它自己的**那个
 辅助进程并报出超时。目标应用的窗口绝不会被杀掉，也没有哪个辅助进程能活得比父进程久（一个"关闭即结束"的作业对象，
-加一次断管检查，再加一个空闲看门狗）。而这**不**改变的事：辅助进程只会读单个窗口自己的画面、或列举顶层窗口，
-它从不采样桌面像素、也从不写文件，所以每一条桌面路径照旧要走上面那套授权——没有 `--worker` 这个选项，
+加一次断管检查，再加一个空闲看门狗）。
+
+收尾那条边界和期限本身同样重要，因为管道恰好会在不对的时机答复。连接时要分清三种情形：辅助进程已经连上了
+（没有待取消的 I/O）、写操作同步就完成了、以及返回了 `ERROR_IO_PENDING`。`CancelIoEx` 只是**请求**取消，所以父进程
+要等完成被上报，并让每一个 `OVERLAPPED` 连同它的事件一直活到那一刻；完成迟迟不来时，给那个辅助进程约 2 秒自行退出，
+之后才 `TerminateProcess`，而这段宽限跑在请求预算**之外**。判完之后才出现的回包绝不读取：一条来晚了的消息既不能把
+已经报出的超时改写成成功，也不能作为图片交付出去。而这**不**改变的事：辅助进程只会读单个窗口自己的画面、或列举顶层
+窗口，它从不采样桌面像素、也从不写文件，所以每一条桌面路径照旧要走上面那套授权——没有 `--worker` 这个选项，
 `--yes` 的任何规矩也都没有变松。
 
 把限度说成限度：这份预算只在能打断的地方、以及靠停掉辅助进程起作用。原子写文件、被人停止读取的 stdout 管道、
@@ -1046,6 +1139,46 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 `0x…` 句柄、`HRESULT` 数值一律不变，调用方按 `code` 分支即可。文案是 exe 自带的嵌入资源
 （`resources/strings-<语言>.txt` 按语言编成四份 `RCDATA`），所以离线也能切语言。
 
+## 边界与未验证项
+
+这里集中回答"这个工具**不**承诺什么"。各功能小节解释的是每条界线为什么存在；下面这份清单才是自动化调用方
+应当当成残余风险的东西，而不是一条 bug。
+
+**设计边界，不是缺陷：**
+
+- 确认框就是一个普通的 `MessageBox`。它是协作式的误点防护：既分辨不出按下按钮的是人还是脚本，也不是操作系统的
+  安全边界。它保证的是——照这套规矩走的调用方，每条桌面路径至少会被问上一次。
+- 复核与取帧永远不是同一个原子操作。身份与拓扑的复核把 HWND 被换走的那道窗口缩小了，并没有把它关上：Windows
+  没有可等待的句柄，也没有"钉住一扇窗口不让它消失"的公开 API。
+- 期限预算只在能打断的地方、以及靠停掉辅助进程起作用。预算在原子提交过程中到期的那张文件照样落地——超时
+  既不回滚也不删除。确认的限期是轮询出来的（约 3 秒关闭宽限），不是抢占。
+- `cursorEffective` 只说得到"这个会话被设成画指针"或"这块来源里没有指针"这一层。本 SDK 的会话接口没有只读的
+  `IsCursorVisible`，所以关于指针在像素上可见与否一句都不声称，也从不把光标画进帧里或从帧里抹掉。
+- `--hdr tonemap` 交出的永远是 8 位 SDR（`encoderOutput: "sdr_bgra8"`）：本构建没有 HDR 原生或 10 位输出路线；
+  而明确写出来的 `tonemap` / `refuse` 要求在本构建里只有那两条 `wgc` 路径兑现得了——duplication 那一面是
+  `wide_gamut_unverified`，所以那里得到的是拒绝而不是猜。
+- `duplication` 一次只取一块输出：横跨两块屏的窗口取的是它与重叠面积最大的那块输出相交的那一块，其余部分回来时
+  带着 `clipped` 与 `note.capture_clipped`。把一扇窗口跨适配器拼起来没有实现。远程桌面与虚拟显卡经常一整帧都拿不到。
+- DRM 与受保护内容恒为黑屏，某些播放器驱动级的黑框在有的通道前能活下来。单色结果只是报出来（`note.frame_uniform`）
+  并照常交付，绝不被当成失败而拒绝。
+- 声明的支持下限（内部版本 18362）与实测过的那套环境（内部版本 19045、x64）是两个不同的数，而
+  `verifiedOnThisMachine` 拿本机比对的是后一个：那是一次环境匹配，不是逐台设备的实测记录。这个二进制在 Windows 7
+  上根本装载不了，在 Windows 8.1 上装得了却没有编码器可用。
+
+**照实记为未验证，而不是推导出来**（下面每一行都是那条测试在这台开发机上报出的 SKIP /"未验证"，没有一条被
+声称是通过）：
+
+| 本机判不了的 | 原因，以及这条缺口记在哪儿 |
+| --- | --- |
+| 真 HDR 帧的实拍、真 HDR 帧上 `refuse` 的结局、FP16 帧池出图、HLG 的端到端 | 没接 HDR 屏；映射数学离线判（`tests\hdr.ps1`、`build\ecapture-hdr-tests.exe`），`color.verifiedOnThisMachine` 恒为 `no` |
+| HDR 配 `--scale`，以及 `--roi` / `--scale` 的跨屏混合 DPI | 只接了一块屏，也没有 HDR 模式可开（`tests\scale.ps1`、`tests\crop.ps1`） |
+| 交付帧单边超过 16384 的真机现场；旋转过的面板；热插拔拔掉一台显示器 | 造不出那么大一扇窗口，而测试绝不会去重排或旋转显示器（`tests\image.ps1`、`tests\dup.ps1`） |
+| 刻意安排 `HWND` / PID 被回收，以及身份在真实确认框那一段的窗口期 | 那意味着要结束别人的进程，而框的回答得由人来给（`tests\identity.ps1` 需要 `-SimulateConsent`） |
+| 像素级"这张图里看得见/看不见指针"；低于内部版本 19041 的机器 | SDK 给不出像素级的答案，而这台机器比 19041 更新（`tests\cursor.ps1`） |
+| 19045 以外的 Windows 版本 · ARM64 · Server · 远程桌面 · 没有可交互桌面的会话 · 真的缺某个编码器 | 这里安排不出第二套操作系统；这些判据改用注入的假版本在离线层判（`tests\compat.ps1`、`tests\capabilities.ps1`） |
+| `tiff` 与 `gif` 在 `--scale` 下的下场，以及其他只与编码器有关的行为 | `tests\scale.ps1` 判的是 `png` / `bmp` / `jpeg`；那两种共用编码调用却没被这条判据覆盖 |
+| `--capabilities` 用"真的产出一张图"来探测能力，以及确认框真的被显示出来过 | 这两种探测就等于去动手做它只想报告的那件事（`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`） |
+
 ## 给 AI / 脚本的调用指南
 
 工具就是为程序化调用设计的，按下面这套约定走最省事。项目里还带了一份教 AI 用它的 skill：
@@ -1066,32 +1199,36 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
    对它们也没有任何作用。它们交回的是快照：真去截图仍要复核目标身份，所以请把**刚做完的一次** `--inspect`
    里的句柄传给截图，而不是缓存早前那一轮的。详见上文《结构化的窗口发现与检查》一节。
 2. **按 `errors[].code` 分支，不要匹配 `message` 文字**（那随 `--lang` 变），也不要拿"有没有给 `--out`"当原因——
-   省略它那条路与 `--out -` 报的是同样的码。常用的几条：
-   `match.no_window`（4，条件太窄或目标最小化）、`match.ambiguous_window`（5，从 `hint` 的候选里挑）、
-   `match.index_out_of_range` / `match.monitor_out_of_range`（1，`hint` 列了全部候选）、
-   `match.monitor_unknown_id`（4，`--screens` 之前交回的标识此刻不在桌面上）、
-   `match.monitor_ambiguous_id`（5，同一标识命中多块屏，工具不替你挑一块）、
-   `match.monitor_id_unverifiable`（7，屏幕身份这一问整条没答案），另有 `cli.monitor_selector_empty` /
-   `cli.monitor_selector_kind`（1，`--monitor` 的标识写法）与 `capture.monitor_unverifiable`（7，取帧之前的
-   身份复核问不出来，同样不退回去照名字截）。要按标识点名一块屏请先跑 `--screens`，别猜编号。
-   `cli.invalid_format`（1）、`cli.stdout_multiple_targets`（1，多个目标要共用
-   同一条 stdout）、`capture.failed`（7）、`capture.frame_timeout`（7，等帧超时）、
-   `capture.window_gone`（7，目标已经没了，该重新枚举）、`capture.frame_invalid`（7，交回来的帧内存形状不合法）、
-   `capture.consent_unavailable`（6，这个会话没有可交互的桌面，没人能同意）、
-   `capture.consent_stale`（7，确认之后目标挪了位置，要重新选目标并再问一次）、
-   `io.write_failed`（8，目录不存在或提交失败）、`io.file_exists`（8，配合 `--no-overwrite`）、
-   `io.output_collision`（8，两个目标算出同一个输出名，整批没截图也没写文件）。
-   其中有两条说的不是这个目标、而是**这一台机器**，重试同一个窗口对它们没有任何意义：`env.os_too_old`
-   （7，本机 Windows 内部版本低于所有格式共用的那唯一一套编码器所在的下限——换 `--capture` 也不会变好）与
-   `env.channel_unsupported`（7，你显式指定的那条通道要更新的版本——换一条通道或改用 `auto` 才有意义，而工具
-   不会自己把你指定的那条顶替掉）。`note.channel_unavailable` 说的是 `auto` 链里被去掉的那一条，而剩下的几条
-   仍然可能截成交功。先问一句"这台机器给得出哪几条通道"不必截图：`--verbose` 的 `input.osBuild` 与
-   `input.captureChain` 就是它。那几道下限、声明范围与实测范围见[系统支持](#系统支持)。
-   每条错误还带 `target` / `backend` / `stage` / `hresult` / `win32`（见上一节），拿到多少写多少，
+   省略它那条路与 `--out -` 报的是同样的码。自动化调用方真正会撞上的那些码：
+
+   | 码 | 退出码 | 下一步 |
+   | --- | --- | --- |
+   | `cli.invalid_number`、`cli.invalid_value`、`cli.invalid_format`、`cli.unknown_option`、`cli.unknown_language`、`cli.crop_conflict`、`cli.query_conflict`、`cli.window_query_conflict`、`cli.monitor_conflict`、`cli.monitor_selector_empty`、`cli.monitor_selector_kind`、`cli.stdout_multiple_targets` | 1 | 改命令行——一个都没截、一个框都没弹、一个文件都没写 |
+   | `match.index_out_of_range`、`match.monitor_out_of_range`、`match.roi_out_of_range` | 1 | `hint` 列了全部候选；请求的那块裁剪按选定那一刻的目标就是放不下 |
+   | `match.no_window` | 4 | 条件太窄，或者目标是最小化窗口（最小化的窗口永远截不到） |
+   | `match.ambiguous_window`、`match.monitor_ambiguous_id` | 5 | 命中的不止一个，而工具不替你挑——用 `--index` / `--topmost-match` / `--all` 消歧，或用 `--screens` 交回的标识 |
+   | `match.monitor_unknown_id` | 4 | 那个标识此刻不在桌面上；再跑一次 `--screens` |
+   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable` | 6 | 这是人的边界：答了"否"（或框被关掉）、限期之内没人回答、或者根本没有可交互的桌面。本次请求剩下的部分已经没有去尝试——再问一次是一个**新请求**，不是一次重试 |
+   | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7 | 先读 `stage`（`match` / `capture` / `encode`）再决定下一步；通常该重跑一次 `--list` / `--screens`，而不是换一条 `--capture` |
+   | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported` | 7 | 是**这一台机器**给不出所要求的东西——见下面那段 |
+   | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout` | 8 | 把目录建出来，或换一个撞不了的名字；`io.file_exists` 是 `--no-overwrite` 正在尽职 |
+   | `capture.hdr_unsupported`、`capture.cursor_unsupported`、`capture.unsupported` | 1 | 这一对选项在解析期就被拒了，在任何确认框之前 |
+
+   那四个 `env.*` 说的是这台机器而不是那个目标，所以重试同一个窗口毫无意义：`env.os_too_old` 是本机 Windows 内部版本
+   低于所有格式共用的那唯一一套编码器所在的下限（换 `--capture` 也不会变好），`env.channel_unsupported` /
+   `env.hdr_unsupported` / `env.cursor_unsupported` 是你明确写出的那道要求，这个构建加这套系统满足不了——工具不会
+   为了把报错消掉而替你换一条通道。`note.channel_unavailable` 说的是 `auto` 链里被去掉的那一条，而剩下的几条仍然
+   可能截成交功。先问一句"这台机器给得出哪几条通道"不必截图：`--verbose` 的 `input.osBuild` 与
+   `input.captureChain` 就是它。那几道下限与实测范围见[系统支持](#系统支持)。
+   每条错误还带 `target` / `backend` / `stage` / `hresult` / `win32`（见上面的输出规则），拿到多少写多少，
    不必从 `message` 里抠。
 3. **读流要分情况**：给 `--out <文件>` 时 JSON 在 stdout、stderr 是空的，直接解析就行；用 `--out -` 或没给输出路径时
-   图片字节占了 stdout，JSON 整体改到 stderr。stdout 一次只交付一张图，多个目标请写到文件。PowerShell 5.1 里
-   `2>&1` 会把 stderr 包装成错误记录，想同时拿图片和 JSON 就 `1>`/`2>` 分开重定向。
+   图片字节占了 stdout，JSON 整体改到 stderr。stdout 一次只交付一张图，多个目标请写到文件。在 shell 里也要把两条流
+   分开，并知道自己用的 shell 会对字节做什么：`cmd` 与 PowerShell 7.4 起保留原生命令 stdout 的字节流，
+   Windows PowerShell 5.1 不保留（stdout 按文本重新编码，原生 stderr 还要经它自己的错误记录渲染），所以从 5.1 调用
+   就请要一个文件，或用 `Start-Process -RedirectStandardOutput` / `-RedirectStandardError`，或把命令放进 `cmd /c` 里跑。
+   对图片而言 `2>&1` 永远不是答案。判据与实测数字见
+   [标准输出图片字节的 shell 差别](#标准输出图片字节的-shell-差别)。
 4. **别把非 0 退出码当全盘失败**：部分成功时 `captured` 大于 0 而退出码是 7，已经落地的图照样可用；
    `images[].source` / `path` / `scope` 分别告诉你那张图出自哪条通道、走了哪条内部路径、像素是窗口自己的还是屏幕上的。
 5. **退出码 0 不等于画面是对的**：受保护内容、某些播放器驱动会在成功返回的同时给你黑帧。工具自己
@@ -1112,32 +1249,35 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 
 ## 构建与测试
 
-| 命令 | 用途 |
+| 命令 | 这条测什么 |
 | --- | --- |
 | `.\build.ps1` | Release 构建，产物 `build\ecapture.exe`；`-Config Debug`、`-Clean` 可选 |
-| `.\tests\cli.ps1` | 746 例输出契约断言（含 `--yes` 与 `--no-overwrite` 的每种布尔写法、查询与截图选项互斥那一组）+ 通道分离 + 省略 `--out` 与 `--out -` 的等价对拍 + 多语言检查（一律 `--dry-run`，不截图） |
-| `.\tests\capabilities.ps1` | 能力与诊断查询（`--capabilities` / `--diagnostics`）：离线跑 `build\ecapture-capabilities-tests.exe`（注入假探针判"一块屏都没有""版本正好低于某条下限""版本问不出来""某个编码器没登记""`--yes` 的适用范围与登记表一致""两份查询共享同一批判据"）；真机层判查询确实不弹框（期限就是判据）、不落地、`os` / `arch` / 通道链与 WMI 及 `--dry-run -v` 两处独立值同源、文档全 ASCII 且不随 `--lang` 变、不含用户名与任何路径。无图形会话、更低版本、编码器缺失、ARM64 / Server / 远程桌面这几项本机造不出，一律记未验证 |
-| `.\tests\streams.ps1` | 真机标准流与结构化结果：单目标写 stdout 时图与 JSON 各归其位、多目标写 stdout 整批被拒、判据是实际命中的目标数、多屏被拒且确认框根本不弹、诊断的定位字段、批次中途失败保留前面已成功的图、结果送不到约定那条流时报 8，以及省略 `--out` 与显式 `--out -` 在成功 / 无匹配 / 歧义 / 非法参数 / 后端失败 / 被拒绝 / 写入断管七个场景上的机器语义对拍（只截自建的窗口） |
+| `.\tests\cli.ps1` | 输出契约本身：解析期错误与退出码、`--yes` 与 `--no-overwrite` 的每种布尔写法、查询与截图选项互斥那几组、双流分离、省略 `--out` 与 `--out -` 的等价对拍，以及四种文案语言。一律只跑 `--dry-run`——不截图、不写文件 |
+| `.\tests\windows.ps1` | `--list` / `--inspect`：分页、可见性策略、逐字段的可读性、文档形状、隐私、歧义，以及这条查询真的什么都没碰（离线层 `build\ecapture-windows-tests.exe`，真机层用自建窗口） |
+| `.\tests\screens.ps1` | `--screens` 与 `--monitor=device:` / `id:`：每种身份各稳到哪一层、交回来的选择器真的选到那一块面板，而认不出的标识绝不会悄悄退化成主屏 |
+| `.\tests\capabilities.ps1` | `--capabilities` / `--diagnostics` 对着一组假探针跑（一块屏都没有、正好低于某条下限、版本问不出来、某个编码器没登记、`--yes` 的适用范围对上登记表、两份查询出自同一批判据）；真机一层判这条查询不会卡在框上、不落地、与 WMI 及 `--dry-run -v` 各自问来的值同源，且全 ASCII 所以 `--lang` 改不动它 |
+| `.\tests\streams.ps1` | 标准流与结构化结果的可靠性：单目标写 stdout 时图与 JSON 各归其位、算出多个目标的整批在弹框之前就被拒、判据用的是实际命中的目标数、批次中途失败时已经截到的图留在 `images`、结果送不到约定那条流就是退出码 `8`，以及省略 `--out` 与显式 `--out -` 在成功 / 无匹配 / 歧义 / 非法参数 / 后端失败 / 被拒绝 / 写入断管七个场景上的对拍（只截自建的窗口） |
 | `.\scripts\check-lang.ps1` | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源 |
-| `.\tests\invoker.ps1` | 离线检查共享的测试进程调用器：argv 引号、双流同时输出、二进制不被转码、卡死的子进程、每次运行各自的临时目录（不截图） |
-| `.\tests\build-path.ps1` | 构建路径判据：离线一层验临时批处理正文只能是 ASCII、VS 环境导入失败在跑 cmake 之前就报错；真机一层在含中文、空格、括号、百分号的目录里跑 Release / Debug / RelWithDebInfo 与 `-Clean`，再把 `%TEMP%` 换成中文目录构建一次（不截图；`-OfflineOnly` 只跑离线那层） |
-| `.\tests\smoke.ps1` | 真机冒烟：截自己建的测试窗口 → 校验 PNG 尺寸与像素内容 |
-| `.\tests\image.ps1` | 帧校验：离线层手工摆像素排布（竖条纹 / 棋盘 / alpha / 行末填充 / 超限与短缓冲区 / 
-  越界裁剪），真机层验单色窗口的质量提示与来路 |
-| `.\tests\dup.ps1` | Desktop Duplication 多屏适配检查：离线层（`build\ecapture-dup-tests.exe`，源码 `tests\dup_state.cpp`）向生产几何判据注入四种旋转——像素判据对照测试自己那份"先旋转整幅帧、再裁剪"的朴素实现——外加负坐标、裁剪后/被裁掉的矩形、一张伪造的双适配器输出表（目标在第二块适配器上、没有输出、适配器被拔掉）以及"那台显示器在确认之后变了"的情形；真机层判确认框必须弹（`--yes` 免不掉桌面路径）、在真实图片上核对 `requestedRect` / `capturedRect` / `clipped` / `rotation`、在每块屏上做四角方位探针，并验证每一块屏都可达。绝不重新排列或旋转显示器：旋转面板与热拔插的判据在机器提供不了该情形时如实记 SKIP（未验证） |
-| `.\tests\compat.ps1` | 系统支持检查。离线层（`build\ecapture-compat-tests.exe`，源码 `tests\compat_state.cpp`）把假版本注入生产能力判据本体：每道下限两侧各判一次、显式指定的通道被挡下时绝不换成别的、auto 链少的是哪一条、以及版本问不出来时一条都不筛。真机层（不截任何图）：探测到的内部版本与 WMI 独立问来的那份相同（说明探测没被版本伪装）、回显的通道链与该版本自相一致、`--dry-run` 不因环境判据报错、四语帮助都带上下限与 `env.*` 那两条码，以及发布版二进制确实导入了 Windows 8 才有的 winrt / job 那批 API Set 契约（装载下限的说法就靠它）。凡是需要另一台 Windows 版本的判据一律记未验证，不拿文档推导冒充实测 |
-| `.\tests\save.ps1` | 真机文件保存与覆盖保护：每种 `--no-overwrite` 布尔写法对真实文件的效果、整批输出名规划与撞名检测（`%p` / `%n` / `%d` / `%t` / `%%` / 未知 `%x` / 大小写 / 清洗 / 截断）、原子提交（目标被占用、目标名是目录、目录不存在、写到一半被硬杀）、并发禁止覆盖 |
-| `.\tests\channels.ps1` | 真机通道对比：六条通道 + 遮挡对照，目标与遮挡物都是自建的窗口。窗口内容那几条带 `--yes` 跑，一旦弹框就判失败；`bitblt` / `duplication` 取的是桌面像素，它们的画面判据要 `-SimulateConsent` 才跑，不给就如实记 SKIP（未验证） |
-| `.\tests\consent.ps1` | 截图授权分级：离线一层用注入的假应答器与假屏幕布局把 `ConsentGate` 整台状态机跑完（`build\ecapture-consent-tests.exe`，源码 `tests\consent_state.cpp`）；真机一层把所有确认框一律代答"否"，判哪些路径必须弹、拒绝之后报什么（`code` / `stage` / `target` / `value`）、有没有落地，以及 `images[].path` / `scope` / `rect` 对不对。绝不代人答"是" |
-| `.\tests\isolation.ps1` | 真机资源隔离：同名的既有进程保持存活且不被当成目标、并发两轮互不串、异常退出只清理自身 |
-| `.\tests\identity.ps1` | 目标身份与 Z 序选择判据。离线层（`build\ecapture-identity-tests.exe`，注入假查询层）：句柄被另一个进程占用、PID 相同但那是另一个进程、类名换了、当初的条件不再成立、每一问各自问不出来，以及两档复核各问哪几问与短路顺序。真机层（只用自建窗口）：健康目标一次都不误伤、批次中途目标被销毁确实报 `capture.target_gone`、改了名而 `--title` 条件不再成立确实报 `capture.target_changed`、改名而条件仍成立就照常出图、`--topmost-match` / `--bottommost-match` 对着当下的 Z 序判（先建但置顶的那扇赢，正是"最后创建"那种读法会挑错的情形）。句柄与 PID 何时被回收没法安排现场（那要结束别人的进程），确认框那一段又要代人点"是"，两者一律记未验证而不伪造通过 |
-| `.\tests\hdr.ps1` | HDR 色彩处理（`--hdr`）：离线一层（`build\ecapture-hdr-tests.exe`，源码 `tests\hdr_state.cpp`）判两张登记表说的是同一批路径、DXGI 格式与显示 color space 的分类（认不出一律 unknown、不猜）、half 解码与传递函数与 tone 曲线的性质（黑进黑、单调、white=1 恒等、不越界）、用已知色块与亮度梯度逐点判 `ConvertWideFrameToSdrBgra8`、来源与形状守卫、以及那组结果键的合成与 `HdrRequestPossible`。真机一层只用自建窗口 + `--yes` 的窗口内容那一级（本机非 HDR）：判没写 `--hdr` 时那组键一个都不出现、`--hdr auto` 把来源如实报成 `srgb_bgra8` / `sdr_passthrough` 且不发提示、`tonemap` / `refuse` 在 SDR 上是恒等透传并各留一条 `note.hdr_source_sdr`、`--quiet` 抑制不掉那组键，以及每张图的尺寸/主色/颜色数与不写 `--hdr` 时一致（HDR 处理没把 SDR 图弄歪）。`--capabilities` 的 `color` 段：`verifiedOnThisMachine` 恒为 `no`、每条路径带不带广色域、两份查询同源。真 HDR 帧上的实拍对照、`refuse` 在 HDR 上拒绝、FP16 帧池出图、HLG 真机下场本机造不出，一律记未验证 |
-| `.\tests\cursor.ps1` | 光标包含与排除（`--cursor`）：离线一层（`build\ecapture-cursor-tests.exe`，源码 `tests\cursor_state.cpp`）按假版本与假通道链判那张按路径登记的能力表、两份表说的是同一批路径、链按光标要求收窄（19041 那道门槛两侧各判一次、版本问不出来时只按结构筛）、requested/effective/basis 的合成，以及直接调用解析层判"include 配做不到的通道在解析期就拒"；另有一条源码级守卫（`src/` 里出现取指针形状、把光标画进帧里、动使用者鼠标那类调用就红）。真机一层只用自建窗口：判 wgc 那条开关真的设进去也读回来、三种要求各截一张且画面仍是本次那扇窗口（尺寸 + 签名色）、没写 `--cursor` 时那三个键一个都不出现、`--quiet` 抑制不掉它们、`auto` + `include` 收窄后实际出图那条确实是 `wgc`、被拒的那几种不落地也不弹框，以及要求光标没把授权松动（桌面那两条照样弹框、只探测不代答）。像素级"看得见/看不见指针"、低于 19041 的机器、要人点头的桌面实截一律记未验证 |
-| `.\tests\crop.ps1` | 窗口内部裁剪（`--roi` / `--client-area`）：离线层（`build\ecapture-crop-tests.exe`，源码 `tests\crop_state.cpp`）把交付图像的尺寸、它的屏幕原点问没问到、客户区量没量到注进生产判据本体，逐条判贴边、越界一条像素、零宽零高、相加绕回、单边上限、客户区整块落在图像之外，以及负坐标的屏；真机层用自建的带边框窗口（WS_OVERLAPPEDWINDOW，于是窗口矩形 / 客户区矩形 / 可见边框矩形三者各不相同），拿三条独立的 Win32 问答对照 `cropRect` / `cropScreenRect` / `fullWidth` / `fullHeight`，与一张不裁剪的图逐点比像素，判「越界的请求在弹框与写文件之前就被挡掉」「目标被改小之后同一条矩形失效」「桌面像素那条即使 `--roi` 只要一小块、给了 `--yes` 也照样弹框」（测试一侧只看不点）。跨屏混合 DPI 与「预检通过之后、帧交回来之前那一瞬被改小」本机造不出，一律记未验证 |
-| `.\tests\scale.ps1` | 等比缩小（`--scale`）：离线层（`build\ecapture-image-tests.exe`，源码 `tests\image_state.cpp`）把源尺寸与请求注进生产判据本体，逐条判「不放大」、三条天花板取最紧、向下取整、各边至少 1 像素、16384x16384 的像素预算、最近邻映射逐点对拍、「只缩不放」、坏帧形状与带填充的行；真机层用自建的带边框窗口，拿 `--roi` 造出横块与竖块：不写 `--scale` 时尺寸与像素一个都不动、天花板比图大时不放大（`scaleApplied: false`）、交付尺寸等于按同一个比例算出的尺寸、`scaleFromWidth` / `scaleFromHeight` 说的是**裁之后**那张图（顺序判据）、缩放图与「只裁不缩」那张在映射到的像素上相等、`cropRect` / `cropScreenRect` 不被改写、3x2 的图变成 1x1、`png` / `bmp` / `jpeg` 三种格式写下的都是缩过的尺寸、`--quiet` 里那组键藏不掉并被 `-v` 回显、一批里每张都缩。还判「桌面像素那条配极小 `--scale`、给了 `--yes` 也照样弹框」（测试一侧只看不点）。单边超过 16384 的帧、HDR 与缩放同时生效、跨屏混合 DPI 本机造不出，一律记未验证 |
-| `.\tests\screen.ps1` | 真机整屏测试：三条屏幕通道（都属于桌面路径，每一条都必须弹框）+ 红块定位 + 阴性对照。只有加了 `-SimulateConsent` 才会代答确认框，且只该在专门腾给测试的桌面上这么用；不给时凡是要答框的判据记 SKIP（未验证） |
-| `.\tests\window_shot.bat` | 给人跑的批处理：编译测试窗口程序 → 逐通道截图（框由人自己点）→ 整屏那一步 → 打开截图目录 → 只结束自己起的那个 PID |
-| `.\scripts\mkreadme.ps1` | 用各语言 `--help` 的原样输出重生成四份 README 的帮助段 |
+| `.\tests\invoker.ps1` | 共享的那个测试进程调用器本身：argv 引号规则、两条流同时排空、二进制不被转码、卡死的子进程、每次运行各自的临时目录 |
+| `.\tests\build-path.ps1` | 在含中文、空格、括号与 `%` 的目录里（外加中文 `%TEMP%`）构建，以及临时批处理的正文始终只能是 ASCII |
+| `.\tests\smoke.ps1` | 端到端：截自己建的测试窗口，校验 PNG 尺寸与像素内容 |
+| `.\tests\image.ps1` | 帧形状校验与像素操作，对着手工摆出的排布逐条判（竖条纹 / 棋盘 / alpha / 行末填充 / 超限与短缓冲区 / 越界裁剪），真机一层再判单色窗口的质量提示与来路 |
+| `.\tests\wgc.ps1` | WGC 的实时尺寸：内容尺寸对着纹理尺寸、帧池重建，以及绝不把被裁掉的帧当成整窗交付（离线层 `build\ecapture-wgc-tests.exe`，真机一层自己改窗口大小） |
+| `.\tests\dup.ps1` | 桌面复制：四种旋转对着生产几何判据各判一次、一张伪造的双适配器输出表、真实图片上的 `requestedRect` / `capturedRect` / `clipped` / `rotation`，以及"那台显示器在确认之后变了"那几种情形。测试绝不重排或旋转显示器 |
+| `.\tests\compat.ps1` | 那几道版本下限：把假的 Windows 内部版本注入生产能力判据本体，判被挡下的显式通道绝不会被顶替、`auto` 链少的是哪一条，以及发布版二进制确实导入了 Windows 8 那个年代的 WinRT / job API Set 契约 |
+| `.\tests\save.ps1` | 文件交付：每种 `--no-overwrite` 布尔写法对着真实文件的效果、整批输出名规划与撞名检测、原子提交对着被占用的目标 / 目标是目录 / 目录不存在 / 写到一半被硬杀，以及并发的禁止覆盖竞态 |
+| `.\tests\channels.ps1` | 六条通道对着自己建的窗口跑，外加遮挡对照。窗口内容那几条带 `--yes` 跑，一旦弹框就判失败；`bitblt` / `duplication` 的画面判据要 `-SimulateConsent` 才跑 |
+| `.\tests\consent.ps1` | 那张授权分级表，以及一次拒绝是怎么传播的：离线一层对着注入的假应答器把 `ConsentGate` 整台状态机跑完，真机一层把所有确认框一律代答"否"——哪些路径必须弹、拒绝之后报什么、有没有落地。绝不代人答"是" |
+| `.\tests\isolation.ps1` | 归属：同名的既有进程保持存活且绝不被当成目标、并发两轮互不串、被中断的一轮只清理自身 |
+| `.\tests\identity.ps1` | 两档身份复核按各自发生的顺序问哪几问、`capture.target_gone` / `capture.target_changed`，以及 Z 序选择（`--topmost-match` / `--bottommost-match`） |
+| `.\tests\hdr.ps1` | `--hdr`：DXGI 格式与显示器 color space 的分类（认不出的一律留 `unknown`、不猜）、tone 曲线的那几条性质、`ConvertWideFrameToSdrBgra8` 逐点判、那组结果键，以及本机诚实的 SDR 现场（没写这条选项时那些键不出现，对 SDR 帧提出处理要求时留一条 `note.hdr_source_sdr`） |
+| `.\tests\cursor.ps1` | `--cursor`：那张按路径登记的能力表、回退链在 19041 那道门槛两侧各怎么收窄、`cursorRequested` / `cursorEffective` / `cursorBasis` 是怎么合成的，以及一条源码级扫描——`src/` 里一旦出现在取指针形状、把光标画进帧里、动使用者鼠标那类调用就判红 |
+| `.\tests\crop.ps1` | `--roi` / `--client-area`：几何对着三条独立问出来的 Win32 事实判、也对着像素内容判，越界的请求在弹框与写文件之前就被挡掉，以及桌面路径上哪怕只裁一小块照样一定弹框 |
+| `.\tests\scale.ps1` | `--scale`：绝不放大、取最紧的那条天花板、向下取整、最近邻映射逐点对拍、先裁后缩的顺序（`scaleFromWidth` / `scaleFromHeight` 说的是裁完那张），以及 `png` / `bmp` / `jpeg` 写下的都是缩过的尺寸 |
+| `.\tests\timeout.ps1` | 期限与辅助进程：一份后续步骤只能花掉剩余部分的预算，辅助进程的线路协议对任何不合形状的回包一律拒绝、而不是"看起来像成功"，以及那个辅助模式拒绝被当成公开选项启动 |
+| `.\tests\screen.ps1` | 整屏截图对着三条桌面路径跑（每一条都必须弹框），外加红块定位与阴性对照。只有 `-SimulateConsent` 会代答确认框，而且只该在专门腾给测试的桌面上这么用 |
+| `.\tests\window_shot.bat` | 给人走的流程：编译一扇测试窗口 → 逐通道截图（框由人自己点）→ 整屏那一步 |
+| `.\scripts\mkreadme.ps1` | 用各语言 `--help` 的原样输出重生成四份 README 的帮助段；`-Check` 只判不改写，过期的段落就是这样被抓出来的 |
 
 所有桌面测试的目标窗口一律是自家的：`tests\helper\ec_window.cs` 编到本次运行的临时目录里，测试握着它的
 PID 与 HWND，因此既不按进程名去找目标、也不按进程名批量收尾，删除的也只有自己建的那个目录。
