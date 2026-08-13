@@ -1,11 +1,15 @@
 // 异步管道 I/O 生命周期（WorkerIo）的离线判据。
 //
 // 为什么单独一个编译单元：这里判的是"取消请求返回之后、内核什么时候才真正放手"
-// 这类**事件顺序**问题 —— 超时、取消受理、取消与完成竞争、ERROR_NOT_FOUND、等待失败、
-// 对端提前结束，每一条都要精确控制"第几次等待返回什么、取消回了什么错、结果什么时候可取"。
+// 这类**事件顺序**问题 —— 超时、取消受理、取消与完成竞争、ERROR_NOT_FOUND（它不是完成证据）、
+// 等到了事件却仍报未完成、等待失败、对端提前结束，每一条都要精确控制"第几次等待返回什么、
+// 取消回了什么错、结果什么时候可取"。
 // 真命名管道给不出这种可控顺序（它只给一个真实结局），而发布版 ECAPTURE.EXE 里
 // 不许有任何能注入假 I/O 的开关。所以判生产状态机本体（src/WorkerIo.cpp），
 // 只把它与 Win32 之间那条接缝换成脚本化的假后端。
+// 唯一不在这里判的一条是"进程正常退出时谁碰了仍未确认终态的记录"：那要看到 CRT 收尾之后的
+// 状态，用本次判据自己的假后端判不了（它本身也是观察对象，先于被测资源析构就读到垃圾），
+// 所以由本测试 exe 以 --io-exit 模式另起一个子进程记录关闭/归属次序（见判据十三）。
 //
 // 每条判据都在三类断言上同时钉住：
 //   1) 对外结局（done / timedOut / gle / transferred）与改造前的契约一致；
@@ -15,7 +19,10 @@
 // 只用 C 风格的 printf 汇报，判据写在断言里；任何一条不过就返回非 0。
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <deque>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -262,7 +269,8 @@ void CheckUnresolvedHandoffToRegistry() {
 }
 
 // ---------------------------------------------------------------------------
-// 判据七：CancelIoEx 回 ERROR_NOT_FOUND —— 必须查完成状态，不能当"没这回事"
+// 判据七：CancelIoEx 回 ERROR_NOT_FOUND —— 它只是"没找到可取消的请求"，不是完成证据。
+// 三个子情形按"完成通知到底来没来"分开钉住：来了就确认收尾，没来就绝不就地释放。
 // ---------------------------------------------------------------------------
 void CheckCancelNotFound() {
     {   // 子情形 1：请求刚好完成（事件已置起）
@@ -278,17 +286,94 @@ void CheckCancelNotFound() {
               "NOT_FOUND 分支用一次零等待探事件，不白等宽限");
         Check(be.eventsClosed.size() == 1 && !HasPendingOps(kH4), "该情形资源一次清理、不留记录");
     }
-    {   // 子情形 2：这个 OVERLAPPED 根本不曾入队（对端提前结束的幽灵连接就长这样）
+    {   // 子情形 2：零等待探不到的那一瞬间还没完成，宽限内才置起 —— 仍然确认得到终态
         FakeBackend be;
         be.waits.push_back({WAIT_TIMEOUT, 0});
-        be.waits.push_back({WAIT_TIMEOUT, 0});   // 零等待探事件也没置起
+        be.waits.push_back({WAIT_TIMEOUT, 0});    // 零等待探测：事件还没置起
+        be.waits.push_back({WAIT_OBJECT_0, 0});   // 宽限内等到了
         be.cancels.push_back({false, ERROR_NOT_FOUND});
+        be.fetches.push_back({false, 0, ERROR_OPERATION_ABORTED});
         const IoStep s = RunOverlappedOp(be, kH5, 64, 1000, 500, PendingReadIssued(nullptr, 0x44), nullptr);
-        Check(s.timedOut && !s.unresolved,
-              "NOT_FOUND 且事件从未置起：内核不引用任何东西，按终态走，不拖幽灵记录");
-        Check(!HasPendingOps(kH5), "幽灵操作不进登记表，句柄不会被白白收养");
-        Check(be.eventsClosed.size() == 1 && be.doubleClose == 0, "幽灵操作资源照样一次清理");
-        Check(be.fetchCalls == 0 && be.unexpected == 0, "对没有入队的操作不去取结果");
+        Check(s.timedOut && !s.done && !s.unresolved,
+              "NOT_FOUND 后完成通知迟到：宽限内确认后照样就地收尾，不拖进登记表");
+        Check(be.waitMsSeen.size() == 3 && be.waitMsSeen[1] == 0 && be.waitMsSeen[2] == 500,
+              "先零等待探一次、再按宽限上限确认：两段各有上限，不是无限等");
+        Check(be.eventsClosed.size() == 1 && be.doubleClose == 0 && !HasPendingOps(kH5),
+              "该情形资源一次清理、不留记录");
+    }
+    {   // 子情形 3（本次缺陷本体）：NOT_FOUND 且完成通知始终没到。
+        // 基线把 DrainOnce(0) 的失败结果丢掉就 MarkTerminal —— 等于拿"取消说没这回事"
+        // 当完成证据，把内核可能还在引用的 OVERLAPPED 与缓冲区当场释放。
+        FakeBackend be;
+        be.waits.push_back({WAIT_TIMEOUT, 0});
+        be.waits.push_back({WAIT_TIMEOUT, 0});   // 零等待探不到
+        be.waits.push_back({WAIT_TIMEOUT, 0});   // 宽限也没等到
+        be.cancels.push_back({false, ERROR_NOT_FOUND});
+        const IoStep s = RunOverlappedOp(be, kH4, 64, 1000, 500, PendingReadIssued(nullptr, 0x55), nullptr);
+        Check(s.timedOut && s.unresolved && !s.done,
+              "NOT_FOUND 且没等到完成：如实 unresolved，外层仍照预算走人不空等");
+        Check(HasPendingOps(kH4), "取消返回值不是完成证据：整份资源移交登记表继续看管");
+        Check(be.eventsClosed.empty() && be.eventsAlive() == 1,
+              "未确认终态前事件一个都不关（资源仍可能被内核引用）");
+        Check(be.fetchCalls == 0 && be.cancelCalls == 1, "一次取消、没等到事件就不去取结果");
+        // 完成通知终于来了：登记表认领、确认终态、一次清理（不是把每条操作都变成积压）
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.fetches.push_back({false, 0, ERROR_OPERATION_ABORTED});
+        Check(DrainPendingOps(kH4, 500) == 0 && !HasPendingOps(kH4),
+              "之后的完成通知一到，登记表确认终态并清空");
+        Check(be.eventsClosed.size() == 1 && be.doubleClose == 0 && be.eventsAlive() == 0,
+              "认领之后恰好清理一次");
+        Check(be.unexpected == 0, "整条 NOT_FOUND 保守路径没有计划外调用");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 判据七之二：等待到了事件，GetOverlappedResult 却仍报未完成 —— ERROR_IO_INCOMPLETE
+// 不是终态。既不许当场释放资源，也不许把之后迟到的取回结果冒充成功交付。
+// （真机上这一档只在"完成事件被别的来源置起"这类病理事件顺序下出现，
+//   假后端是用来判保守行为的模型，不是真机实测到的时序 —— 见判据报告。）
+// ---------------------------------------------------------------------------
+void CheckIoIncompleteIsNotTerminal() {
+    {   // 首段等待就到了却仍报未完成：继续请求取消，宽限内确认才算终态
+        FakeBackend be;
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.cancels.push_back({true, 0});
+        be.fetches.push_back({false, 0, ERROR_IO_INCOMPLETE});
+        be.fetches.push_back({false, 0, ERROR_OPERATION_ABORTED});
+        std::vector<uint8_t> out;
+        const IoStep s = RunOverlappedOp(be, kH1, 64, 1000, 500, PendingReadIssued(nullptr, 0xC1), &out);
+        Check(!s.done && !s.timedOut && !s.unresolved && s.gle == ERROR_IO_INCOMPLETE,
+              "IO_INCOMPLETE 不被写成成功、也不冒充超时：如实带上最初那个未完成码");
+        Check(out.empty(), "未完成的取回不向调用方交出任何数据");
+        Check(be.cancelCalls == 1 && be.fetchCalls == 2,
+              "第一次确认没到终态就请求取消、再确认一次（不是一次事件就收尾）");
+        Check(be.eventsClosed.size() == 1 && be.doubleClose == 0 && !HasPendingOps(kH1),
+              "第二次确认（ABORTED）才算终态：一次清理、不留记录");
+    }
+    {   // 取消之后仍报未完成：不是终态，整份移交登记表
+        FakeBackend be;
+        be.waits.push_back({WAIT_TIMEOUT, 0});
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.cancels.push_back({true, 0});
+        be.fetches.push_back({false, 0, ERROR_IO_INCOMPLETE});
+        const IoStep s = RunOverlappedOp(be, kH2, 64, 1000, 500, PendingReadIssued(nullptr, 0xC2), nullptr);
+        Check(s.timedOut && s.unresolved && !s.done, "取消后仍报未完成：unresolved，资源不外放");
+        Check(HasPendingOps(kH2) && be.eventsClosed.empty(),
+              "没确认终态就事件不关、记录留在登记表");
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.fetches.push_back({false, 0, ERROR_OPERATION_ABORTED});
+        Check(DrainPendingOps(kH2, 500) == 0 && be.eventsClosed.size() == 1 && !HasPendingOps(kH2),
+              "之后真正收尾时登记表认领并一次清理");
+    }
+    {   // 对照组：取回明确失败（断管）就是终态，允许就地释放 —— 别把保守做过头变成积压
+        FakeBackend be;
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.fetches.push_back({false, 0, ERROR_BROKEN_PIPE});
+        const IoStep s = RunOverlappedOp(be, kH3, 64, 1000, 500, PendingReadIssued(nullptr, 0xC3), nullptr);
+        Check(!s.done && !s.unresolved && s.gle == ERROR_BROKEN_PIPE,
+              "明确的失败（断管）就是终态：原样上报、不当未决拖着");
+        Check(be.eventsClosed.size() == 1 && !HasPendingOps(kH3), "该路径就地一次清理");
     }
 }
 
@@ -433,7 +518,193 @@ void CheckAlreadyConnectedWithSpentBudget() {
           "预算已尽时已连接分支不进入任何等待（等待只对确有挂起操作的路径有意义）");
 }
 
+// ---------------------------------------------------------------------------
+// 判据十三：进程正常退出这条路径上，登记表里仍未确认终态的记录不会被谁析构掉。
+//
+// 为什么用独立子进程：这件事判的是"CRT 收尾时静态对象的析构次序"，在同一次判据里用
+// 普通的假后端判不了 —— 那个假后端本身也是这次判据的观察对象，它先于被测资源销毁时，
+// 读到的计数根本分不清是谁干的（甚至可能是已销毁对象上的垃圾）。所以这里由测试 exe
+// 自己以 --io-exit 模式再跑一份子进程：
+//   * 后端是一段只有标量成员的静态存储对象，没有析构函数，进程收尾时仍然可读；
+//     文件里带一个魔数当哨兵，读出来不对就说明观察点落在了已析构的对象上；
+//   * 观察点写在 atexit 回调里，且这条回调在任何 WorkerIo 使用之前登记 —— MSVC 的收尾
+//     按登记逆序执行，静态对象的析构是在各自构造时登记的，因此"最早登记"的这个回调
+//     最后跑，看到的就是"进程收尾全部做完"之后的状态；
+//   * 子进程正常从入口返回（不是被 TerminateProcess），才走得到这一段收尾。
+// 现场由两条操作组成：一条正常完成（证明修复没把每条操作都变成积压），一条始终确认不了
+// 终态（留在登记表里）。父进程只核对子进程写出的关闭/归属次序，不参与它的内存管理。
+// ---------------------------------------------------------------------------
+constexpr int kExitMagic = 0x517ACE;
+// 登记表按句柄值归组，这里用两个假句柄值：一条正常完成、一条故意留成未确认终态。
+const HANDLE kExitTerminalHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xEE01));
+const HANDLE kExitRetainedHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xEE02));
+
+// 活到进程最后一刻的后端：只有标量成员，可平凡析构，收尾之后读它依然是定义良好的。
+class ExitProbeBackend final : public IoBackend {
+public:
+    int magic = kExitMagic;
+    int opened = 0;
+    int closes = 0;
+    int targetsClosed = 0;
+    int immediateWaitsLeft = 0;   // 大于 0 时等待回"事件已置起"，回完就一律超时
+    int closesRunEnd = 0;
+    int pendingRunEnd = 0;
+
+    HANDLE OpenEvent(DWORD*) override {
+        ++opened;
+        return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xF000 + opened));
+    }
+    void CloseEvent(HANDLE) override { ++closes; }
+    DWORD WaitFor(HANDLE, DWORD, DWORD*) override {
+        if (immediateWaitsLeft > 0) {
+            --immediateWaitsLeft;
+            return WAIT_OBJECT_0;
+        }
+        return WAIT_TIMEOUT;
+    }
+    bool Cancel(HANDLE, OVERLAPPED*, DWORD*) override { return true; }
+    bool Fetch(HANDLE, OVERLAPPED*, size_t* transferred, DWORD*) override {
+        if (transferred) *transferred = 0;
+        return true;
+    }
+    void CloseTargetHandle(HANDLE) override { ++targetsClosed; }
+};
+
+// 静态存储期 + 可平凡析构：CRT 收尾不会销毁它，atexit 回调读它才站得住。
+ExitProbeBackend g_exitProbe;
+const wchar_t* g_exitEvidencePath = nullptr;
+
+void WriteExitEvidence(const char* line) {
+    if (g_exitEvidencePath == nullptr) return;
+    const HANDLE h = CreateFileW(g_exitEvidencePath, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD put = 0;
+    WriteFile(h, line, static_cast<DWORD>(std::strlen(line)), &put, nullptr);
+    CloseHandle(h);
+}
+
+// 进程收尾全部做完之后跑的最后一个观察点：直接问生产入口"那条记录还归登记表管吗"，
+// 以及"收尾阶段有没有又多关一个事件"。
+void DumpExitEvidence() {
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "magic=%d opened=%d closesRunEnd=%d pendingRunEnd=%d closesTeardown=%d "
+                  "pendingTeardown=%d targetsClosed=%d\n",
+                  g_exitProbe.magic, g_exitProbe.opened, g_exitProbe.closesRunEnd,
+                  g_exitProbe.pendingRunEnd, g_exitProbe.closes,
+                  HasPendingOps(kExitRetainedHandle) ? 1 : 0, g_exitProbe.targetsClosed);
+    WriteExitEvidence(line);
+}
+
+// 子进程的下场（wmain 的 --io-exit 模式经薄封装调进来）：不打印、不起判据，
+// 只造出现场然后正常退出。
+int ExitPeerMain(const wchar_t* evidencePath) {
+    g_exitEvidencePath = evidencePath;
+    // 必须在任何 WorkerIo 使用之前登记，理由见上面那段说明。
+    if (std::atexit(&DumpExitEvidence) != 0) return 7;
+
+    // 现场一：一条正常完成的操作 —— 事件该在这场运行里就关掉，收尾不留积压。
+    g_exitProbe.immediateWaitsLeft = 1;
+    RunOverlappedOp(g_exitProbe, kExitTerminalHandle, 64, 1000, 500,
+                    PendingReadIssued(nullptr, 0xE1), nullptr);
+
+    // 现场二：一条确认不了终态的操作 —— 取消已受理、宽限（这里是零）也等不到，整份移交登记表，
+    // 然后什么都不主动做：让进程正常退出，看谁会在收尾时碰它。
+    const IoStep s = RunOverlappedOp(g_exitProbe, kExitRetainedHandle, 64, 0, 0,
+                                     PendingReadIssued(nullptr, 0xE2), nullptr);
+    if (!s.unresolved) return 6;
+    g_exitProbe.pendingRunEnd = HasPendingOps(kExitRetainedHandle) ? 1 : 0;
+    g_exitProbe.closesRunEnd = g_exitProbe.closes;
+    return 0;   // 正常返回：走 CRT 收尾，静态析构与 atexit 都会跑
+}
+
+// 从证据文本里取一个十进制字段（不用 scanf 家族：MSVC 把它们标成弃用，会污染构建输出）。
+bool ReadEvidenceField(const char* text, const char* key, long* out) {
+    const std::string prefix = std::string(key) + "=";
+    const char* at = std::strstr(text, prefix.c_str());
+    if (at == nullptr) return false;
+    const char* digits = at + prefix.size();
+    char* end = nullptr;
+    *out = std::strtol(digits, &end, 10);
+    return end != digits;
+}
+
+void CheckExitOrderInSubprocess() {
+    wchar_t exe[MAX_PATH] = {};
+    const DWORD nameLen = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    Check(nameLen > 0 && nameLen < MAX_PATH, "退出次序判据：取到测试 exe 自己的路径");
+    if (nameLen == 0 || nameLen >= MAX_PATH) return;
+
+    wchar_t dir[MAX_PATH] = {};
+    wchar_t file[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, dir) == 0 || GetTempFileNameW(dir, L"ecio", 0, file) == 0) {
+        Check(false, "退出次序判据：建不出临时证据文件");
+        return;
+    }
+
+    std::wstring cmd = std::wstring(L"\"") + exe + L"\" --io-exit \"" + file + L"\"";
+    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
+    mutableCmd.push_back(L'\0');
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &si, &pi)) {
+        Check(false, "退出次序判据：子进程起不来");
+        DeleteFileW(file);
+        return;
+    }
+    // 有界等待：子进程只做两次状态机调用就正常退出。等不到就是它卡住了，只结束我们自己起的这个。
+    const DWORD wr = WaitForSingleObject(pi.hProcess, 30000);
+    DWORD code = 0;
+    if (wr == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &code);
+    if (wr != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 9);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    Check(wr == WAIT_OBJECT_0 && code == 0,
+          "退出次序判据：子进程自己正常退出（没卡住、没在收尾阶段崩溃）");
+
+    char buf[512] = {};
+    size_t got = 0;
+    const HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD rd = 0;
+        if (ReadFile(h, buf, static_cast<DWORD>(sizeof(buf) - 1), &rd, nullptr)) got = rd;
+        CloseHandle(h);
+    }
+    DeleteFileW(file);
+    Check(got > 0, "退出次序判据：读得到子进程在收尾之后写出的关闭/归属次序");
+
+    long magic = -1, opened = -1, closesRunEnd = -1, pendingRunEnd = -1;
+    long closesTeardown = -1, pendingTeardown = -1, targetsClosed = -1;
+    int fields = 0;
+    fields += ReadEvidenceField(buf, "magic", &magic) ? 1 : 0;
+    fields += ReadEvidenceField(buf, "opened", &opened) ? 1 : 0;
+    fields += ReadEvidenceField(buf, "closesRunEnd", &closesRunEnd) ? 1 : 0;
+    fields += ReadEvidenceField(buf, "pendingRunEnd", &pendingRunEnd) ? 1 : 0;
+    fields += ReadEvidenceField(buf, "closesTeardown", &closesTeardown) ? 1 : 0;
+    fields += ReadEvidenceField(buf, "pendingTeardown", &pendingTeardown) ? 1 : 0;
+    fields += ReadEvidenceField(buf, "targetsClosed", &targetsClosed) ? 1 : 0;
+    Check(fields == 7, "退出次序判据：证据文件的字段齐全");
+    Check(magic == kExitMagic,
+          "退出次序判据：观察点用的后端在收尾时仍未析构（读到的不是已销毁对象上的垃圾）");
+    Check(pendingRunEnd == 1,
+          "负向对照：运行末尾确实有一条未确认终态的记录留在登记表里");
+    Check(closesRunEnd == 1 && opened == 2,
+          "正常完成那条在运行中就关掉了事件：修复没把每条操作都变成积压");
+    Check(closesTeardown == closesRunEnd,
+          "收尾之后再没关过事件：登记表没在析构里销毁那条未决记录（内核可能还在引用的资源一个都没放手）");
+    Check(pendingTeardown == 1,
+          "收尾之后那条记录仍归登记表所有，等系统随进程统一回收");
+    Check(targetsClosed == 0, "没被收养的句柄不会被登记表关掉");
+}
+
 }  // namespace
+
+// isolation_state.cpp 的 wmain 在 --io-exit 模式下调进来：那一份子进程就是判据十三的现场。
+int RunWorkerIoExitPeerMode(const wchar_t* evidencePath) { return ExitPeerMain(evidencePath); }
 
 int RunWorkerIoStateChecks(int* checksOut, int* failuresOut) {
     std::printf("异步管道 I/O 生命周期（WorkerIo）离线判据\n");
@@ -444,11 +715,13 @@ int RunWorkerIoStateChecks(int* checksOut, int* failuresOut) {
     CheckCancelCompletionRace();
     CheckUnresolvedHandoffToRegistry();
     CheckCancelNotFound();
+    CheckIoIncompleteIsNotTerminal();
     CheckWaitFailed();
     CheckAdoptedHandle();
     CheckZeroAndClamp();
     CheckAlreadyConnected();
     CheckAlreadyConnectedWithSpentBudget();
+    CheckExitOrderInSubprocess();
     if (checksOut) *checksOut = g_checks;
     if (failuresOut) *failuresOut = g_failures;
     return g_failures;

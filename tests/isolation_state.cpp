@@ -509,22 +509,28 @@ void CheckDeadlinePause() {
 
 }  // namespace
 
-// worker_io_state.cpp 提供：异步管道 I/O 生命周期的注入式判据（回报本层检查数与失败数）。
+// worker_io_state.cpp 提供：异步管道 I/O 生命周期的注入式判据（回报本层检查数与失败数），
+// 以及判"进程正常退出时未决资源不会被析构"那个子进程现场的下场（--io-exit 模式）。
 // worker_connect_state.cpp 提供：Worker 连接时序的真命名管道判据（F03：抢先连接不得误报成
 // 超时），以及它判据五那个"外部客户端"傀儡进程的下场（--f03-peer 模式）。
 namespace ecapture {
 int RunWorkerIoStateChecks(int* checksOut, int* failuresOut);
+int RunWorkerIoExitPeerMode(const wchar_t* evidencePath);
 int RunWorkerConnectStateChecks(int* checksOut, int* failuresOut);
 int RunWorkerConnectPeerMode(const wchar_t* pipeName);
 }
 
 #include <cwchar>
 
-// 傀儡模式要拿宽字符 argv（管道名按原样送达），所以入口用 wmain 而不是 main。
+// 傀儡模式要拿宽字符 argv（管道名与证据文件路径按原样送达），所以入口用 wmain 而不是 main。
 int wmain(int argc, wchar_t* argv[]) {
     // 判据五的傀儡模式：不起判据、不打印，只连管、握手、等测试方收尾（见 worker_connect_state.cpp）。
     if (argc == 3 && std::wcscmp(argv[1], L"--f03-peer") == 0) {
         return ecapture::RunWorkerConnectPeerMode(argv[2]);
+    }
+    // WorkerIo 退出次序判据的子进程：造好未决现场后正常退出，把收尾时的观察值写进证据文件。
+    if (argc == 3 && std::wcscmp(argv[1], L"--io-exit") == 0) {
+        return ecapture::RunWorkerIoExitPeerMode(argv[2]);
     }
 
     std::printf("隔离执行消息格式（WorkerProtocol）与执行期限（Deadline）离线判据\n");

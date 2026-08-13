@@ -23,8 +23,10 @@ public:
     PendingOperation& operator=(const PendingOperation&) = delete;
 
     ~PendingOperation() {
+        // 只有"已确认终态"的对象才允许走到这里：登记表只在 TrySettle 返回 true 之后删除记录，
+        // RunOverlappedOp 只在终态分支释放自己那份。未确认终态的对象由永不析构的登记表
+        // （或它那段免分配的兜底槽位）持到进程结束，交给系统统一回收 —— 见 Registry::Get。
         CloseEventOnce();
-        // buf_ 与 ov_ 随对象一起析构：能走到这里说明操作已终态（登记表只在终态后删除记录）。
     }
 
     // 被登记表接管时置真，调用方据此不再删除自己这份指针。
@@ -66,38 +68,33 @@ public:
         // kSyncDone 与 kPending 都从等事件起步：同步完成时事件已由系统置起，
         // 这次等待会立即返回（与原实现一致，不多等一轮）。
         const DWORD wait = backend_.WaitFor(event_, waitMs, &gle);
-        if (wait == WAIT_OBJECT_0) {
-            FetchInto(step);
+        if (wait == WAIT_OBJECT_0 && FetchConfirmed(step)) {
             MarkTerminal();
             return step;
         }
         if (wait == WAIT_TIMEOUT) {
             step.timedOut = true;
-        } else {
+        } else if (wait == WAIT_FAILED) {
             step.gle = gle;   // WAIT_FAILED：这是本条操作的最初故障，后面不许覆盖
         }
 
-        // 到这里操作必定未终态。请求取消，再确认终态。CancelIoEx 的三种回话：
+        // 到这里必定还没确认终态：要么没等到事件，要么等到了但系统仍报这条没收尾。
+        // 请求取消，再确认终态。CancelIoEx 的三种回话：
         //   * TRUE：取消已排入，操作将以 ABORTED / 竞争获胜 / 其他错误收尾，事件必定置起
         //     —— 在宽限内等它；等不到就把整份资源移交登记表，绝不空手放手。
-        //   * FALSE + ERROR_NOT_FOUND：没找到可取消的请求。两种可能 —— 操作刚好完成
-        //     （事件应已置起），或这个 OVERLAPPED 根本不曾真正入队（历史缺陷：调用方把
-        //     ERROR_PIPE_CONNECTED 这种"早已连上"当成发起；现在 ConnectStartOf 已把四类
-        //     分开，此分支留作防御）。各用一次 0 等待探一下事件：置起→取结果收尾；
-        //     没置起→内核不引用任何东西，同样按终态处理。不许把"取消没成"直接当"结束了"，
-        //     也不许让幽灵记录进登记表白白收养句柄。
-        //   * 其他 FALSE：取消没被受理，操作按还在飞行处理 —— 走宽限排干那一条。
+        //   * FALSE + ERROR_NOT_FOUND：只说明"此刻没找到可取消的这条请求"，它**不是完成证据**。
+        //     两种可能 —— 操作刚好完成（事件应已置起），或这个 OVERLAPPED 根本不曾真正入队
+        //     （历史缺陷：调用方把 ERROR_PIPE_CONNECTED 这种"早已连上"当成发起；现在
+        //     ConnectStartOf 已把四类分开，真机走不到幽灵那支，但下面的保守处理不靠这个前提）。
+        //     先用一次零等待探事件：置起并确认收尾就按终态走、不白等宽限；探不到就照
+        //     "还在飞行"处理 —— 继续走宽限排干那一条，仍然确认不了就整份移交登记表。
+        //     代价是疑似幽灵记录也会占一条登记（这条句柄上多一个收养等待者），换来的是
+        //     "取消说没这回事"绝不被当成可以放心释放。
+        //   * 其他 FALSE：取消没被受理，操作按还在飞行处理 —— 同样走宽限排干那一条。
         DWORD cancelGle = 0;
         const bool cancelRequested = backend_.Cancel(hFile_, &ov_, &cancelGle);
-        if (!cancelRequested && cancelGle == ERROR_NOT_FOUND) {
-            DrainOnce(0);   // 结果不进对外结局：预算在那次超时/失败上已经定性
-            MarkTerminal();
-            return step;
-        }
-        if (DrainOnce(graceMs)) {
-            MarkTerminal();
-            return step;
-        }
+        if (!cancelRequested && cancelGle == ERROR_NOT_FOUND && SettleWithin(0)) return step;
+        if (SettleWithin(graceMs)) return step;
         registered_ = true;
         step.unresolved = true;
         return step;
@@ -106,17 +103,26 @@ public:
     // 登记表的收尾通道：确认终态则关闭事件并返回 true（记录随即可删）。
     // 取回的结果（多半是 ERROR_OPERATION_ABORTED，竞争获胜时是正常完成）都不再改写
     // 对外结局 —— 预算在那次超时就已经花掉了，这里只负责把资源安全放手。
-    bool TrySettle(DWORD waitMs) {
+    bool TrySettle(DWORD waitMs) { return SettleWithin(waitMs); }
+
+private:
+    // 有界地确认一次终态：等到完成事件 -> 取回完成状态。返回 true 表示内核已确认这条请求
+    // 收尾（正常完成、ERROR_OPERATION_ABORTED 或其他明确失败都算 —— 请求不再被内核引用），
+    // 于是关闭事件、OVERLAPPED 与缓冲区这才允许被回收。
+    // 等到超时、等待失败、或 GetOverlappedResult 仍报未完成（ERROR_IO_INCOMPLETE /
+    // ERROR_IO_PENDING：事件被别的来源置起，或取消还在排队）都不算确认，返回 false，
+    // 资源继续由调用方或登记表看管。ERROR_IO_INCOMPLETE 从来不是终态。
+    bool SettleWithin(DWORD waitMs) {
         if (terminal_) return true;
         DWORD gle = 0;
         if (backend_.WaitFor(event_, waitMs, &gle) != WAIT_OBJECT_0) return false;
         size_t transferred = 0;
-        backend_.Fetch(hFile_, &ov_, &transferred, &gle);
+        const bool ok = backend_.Fetch(hFile_, &ov_, &transferred, &gle);
+        if (!ok && (gle == ERROR_IO_INCOMPLETE || gle == ERROR_IO_PENDING)) return false;
         MarkTerminal();
         return true;
     }
 
-private:
     void MarkTerminal() {
         terminal_ = true;
         CloseEventOnce();
@@ -129,10 +135,12 @@ private:
         }
     }
 
-    // 事件已置起之后取结果。只用于"取消之前"那条首次完成路径：
-    // 超时/取消之后的确认走 DrainOnce + TrySettle，那里的取回结果不再改写对外结局
-    // （预算已尽，不把取消边缘上回来的半截数据冒充成功），但只要确认了终态就允许安全释放。
-    void FetchInto(IoStep& step) {
+    // 事件已置起之后取回结果，并把"这条请求是否已经收尾"回报给调用方。
+    // 只用于取消之前那次首段等待：之后的确认走 SettleWithin，那里的取回结果不再改写
+    // 对外结局（预算已尽，不把取消边缘上回来的半截数据冒充成功交付）。
+    // 返回 true = 系统确认请求已收尾（成功，或 ABORTED / 断管这类明确失败），资源可以释放；
+    // false = 仍报未完成（ERROR_IO_INCOMPLETE / ERROR_IO_PENDING），这不是终态证据。
+    bool FetchConfirmed(IoStep& step) {
         size_t transferred = 0;
         DWORD gle = 0;
         const bool ok = backend_.Fetch(hFile_, &ov_, &transferred, &gle);
@@ -141,17 +149,10 @@ private:
             // 防御性钳制：真实 API 承诺不超过给定缓冲；假后端或未来的调用方给错时，
             // 宁可少报也不能让 transferred 指向缓冲区之外的内存。
             step.transferred = std::min(transferred, buf_.size());
-        } else if (step.gle == 0) {
-            step.gle = gle;
+            return true;
         }
-    }
-
-    bool DrainOnce(DWORD graceMs) {
-        DWORD gle = 0;
-        if (backend_.WaitFor(event_, graceMs, &gle) != WAIT_OBJECT_0) return false;
-        size_t transferred = 0;
-        backend_.Fetch(hFile_, &ov_, &transferred, &gle);
-        return true;
+        if (step.gle == 0) step.gle = gle;   // 首错如实带上，之后不许被收尾覆盖
+        return gle != ERROR_IO_INCOMPLETE && gle != ERROR_IO_PENDING;
     }
 
     IoBackend& backend_;
@@ -165,52 +166,85 @@ private:
 
 // ---------------------------------------------------------------------------
 // 进程级登记表：排干宽限内进不了终态的操作住在这里。
-// 记录只在确认终态后才删除；进程退出时仍进不了终态的记录**故意不删** ——
-// 那是内核仍在引用的 OVERLAPPED/事件/缓冲，提前释放就是本次要修的缺陷本身。
-// 每条记录上限一份 64 KiB 块缓冲加一个事件句柄，进程退出时由系统统一回收，规模有界。
+// 记录只在确认终态后才删除。登记表本身**故意永不析构**：函数内静态对象会在进程正常退出时
+// 跑析构，把仍未确认终态的记录一并销毁 —— 那等于关掉内核可能还在等的事件、释放内核可能
+// 还在写的 OVERLAPPED 与缓冲区，正是本模块要防的缺陷（光改注释拦不住 CRT 的收尾次序）。
+// 换成堆上这份"进程生命周期对象"之后，退出路径上没有任何代码再去碰这些资源：未确认终态
+// 的那份随进程由系统统一回收，已确认终态的记录照旧在收尾排干与成功路径里即时回收，
+// 不会把每条操作都变成积压。规模有界：每条记录至多一份块缓冲加一个事件句柄，
+// 且这里只装"还没确认终态"的操作。
 // ---------------------------------------------------------------------------
 class Registry {
 public:
     static Registry& Get() {
-        static Registry r;
-        return r;
+        static Registry* const r = new Registry();   // 故意不 delete，理由见类注释
+        return *r;
     }
 
+    // 接管一份还没确认终态的资源，所有权在这里绝不会遗失、也绝不会顺手释放：
+    //   1) 优先登记进按句柄归组的表（正常路径，之后由 Drain 认领）；
+    //   2) 那张表要堆分配，极端内存压力下可能装不下 —— 退化为占用一段免分配的固定槽位，
+    //      照样保住"有人在管"：HasPending 查得到、Drain 认领得了、收养的句柄照样等它；
+    //   3) 连槽位都占满时才故意弃管 —— 依然绝不释放，只是没人再替它确认终态、
+    //      HasPending 也会漏报这一条。走到 3) 需要同一条句柄上积压超过 kRetainedCapacity
+    //      条未终态操作且此刻正好分配失败；生产一次交易里 I/O 是顺序进行的，实际到不了，
+    //      但这是内存耗尽下唯一不造成"内核往已释放内存写"的选择，如实记录在这里。
     void Add(PendingOperation* op) {
         std::lock_guard<std::mutex> lk(m_);
-        ops_[op->file()].push_back(std::unique_ptr<PendingOperation>(op));
-        // 记下这条记录用的后端：被收养句柄最终清空时，要经由同一个后端关闭句柄
-        // （生产即 CloseHandle，测试以计数核对"恰好一次"）。同一句柄只可能挂一个后端。
-        backendOf_[op->file()] = &op->backend();
+        if (TryRegister(op)) return;
+        for (PendingOperation*& slot : retained_) {
+            if (slot == nullptr) {
+                slot = op;
+                return;
+            }
+        }
     }
 
     bool HasPending(HANDLE hFile) {
         std::lock_guard<std::mutex> lk(m_);
         const auto it = ops_.find(hFile);
-        return it != ops_.end() && !it->second.empty();
+        if (it != ops_.end() && !it->second.empty()) return true;
+        return CountRetained(hFile) != 0;
     }
 
-    // 返回该句柄上仍未进终态的操作数；全清空且句柄已被收养时，顺带关掉句柄。
+    // 返回该句柄上仍未进终态的操作数（表里的加上兜底槽位里的）；
+    // 全清空且句柄已被收养时，顺带关掉句柄。
     DWORD Drain(HANDLE hFile, DWORD waitMs) {
         std::lock_guard<std::mutex> lk(m_);
+        // 先记下这条句柄用的是哪个后端：记录清完之后就问不到了。被收养的句柄要由
+        // 同一个后端关闭（生产即 CloseHandle，测试以计数核对"恰好一次"）。
+        IoBackend* be = BackendFor(hFile);
         const auto it = ops_.find(hFile);
-        if (it == ops_.end()) return 0;
-        auto& list = it->second;
-        for (auto entry = list.begin(); entry != list.end();) {
-            if ((*entry)->TrySettle(waitMs)) {
-                entry = list.erase(entry);   // 析构只发生在确认终态之后
-            } else {
-                ++entry;
+        if (it != ops_.end()) {
+            auto& list = it->second;
+            for (auto entry = list.begin(); entry != list.end();) {
+                if ((*entry)->TrySettle(waitMs)) {
+                    delete *entry;   // 析构只发生在确认终态之后：事件、OVERLAPPED、缓冲区
+                    entry = list.erase(entry);
+                } else {
+                    ++entry;
+                }
+            }
+            if (list.empty()) ops_.erase(it);
+        }
+        for (PendingOperation*& slot : retained_) {
+            PendingOperation* op = slot;
+            if (op == nullptr || op->file() != hFile) continue;
+            if (op->TrySettle(waitMs)) {
+                slot = nullptr;
+                delete op;
             }
         }
-        if (list.empty()) {
+        DWORD left = 0;
+        const auto rest = ops_.find(hFile);
+        if (rest != ops_.end()) left += static_cast<DWORD>(rest->second.size());
+        left += static_cast<DWORD>(CountRetained(hFile));
+        if (left == 0) {
             const bool wasAdopted = adopted_.erase(hFile) != 0;
-            auto be = backendOf_.extract(hFile);
-            ops_.erase(it);
-            if (wasAdopted && be) be.mapped()->CloseTargetHandle(hFile);
-            return 0;
+            backendOf_.erase(hFile);
+            if (wasAdopted && be != nullptr) be->CloseTargetHandle(hFile);
         }
-        return static_cast<DWORD>(list.size());
+        return left;
     }
 
     void Adopt(HANDLE hFile) {
@@ -219,12 +253,55 @@ public:
     }
 
 private:
+    // 免分配兜底槽位的容量：登记表堆分配失败时仍要保住未决资源的所有权与可查性。
+    static constexpr size_t kRetainedCapacity = 8;
+
     Registry() = default;
 
+    // 前提：已持锁。成功接管返回 true；所需的堆内存分配不出来时，把已经插进去的那条退回、
+    // 返回 false —— 两种结果都不释放 op，也不留下"表里认得它但没人负责"的中间状态。
+    bool TryRegister(PendingOperation* op) {
+        const HANDLE h = op->file();
+        try {
+            ops_[h].push_back(op);
+            backendOf_[h] = &op->backend();
+            return true;
+        } catch (...) {
+            const auto it = ops_.find(h);
+            if (it != ops_.end()) {
+                if (!it->second.empty() && it->second.back() == op) it->second.pop_back();
+                if (it->second.empty()) ops_.erase(it);
+            }
+            return false;
+        }
+    }
+
+    // 前提：已持锁。
+    size_t CountRetained(HANDLE hFile) const {
+        size_t n = 0;
+        for (PendingOperation* op : retained_) {
+            if (op != nullptr && op->file() == hFile) ++n;
+        }
+        return n;
+    }
+
+    // 前提：已持锁。表里没有（例如这条住在兜底槽位）时，向还没清空的记录本身问后端。
+    IoBackend* BackendFor(HANDLE hFile) {
+        const auto be = backendOf_.find(hFile);
+        if (be != backendOf_.end()) return be->second;
+        for (PendingOperation* op : retained_) {
+            if (op != nullptr && op->file() == hFile) return &op->backend();
+        }
+        return nullptr;
+    }
+
     std::mutex m_;
-    std::map<HANDLE, std::vector<std::unique_ptr<PendingOperation>>> ops_;
+    std::map<HANDLE, std::vector<PendingOperation*>> ops_;
     std::map<HANDLE, IoBackend*> backendOf_;
     std::set<HANDLE> adopted_;
+    // 裸指针 + 不 new 不 delete：对象住在"永不析构"的登记表里，退出时没人碰这些槽位，
+    // 里面未确认终态的资源就照上面的方案由系统随进程回收。
+    PendingOperation* retained_[kRetainedCapacity] = {};
 };
 
 }  // namespace
@@ -252,7 +329,12 @@ StartResult ConnectStartOf(const BOOL r) {
 
 IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD waitMs,
                        DWORD cancelGraceMs, const IssueFn& issue, std::vector<uint8_t>* outBuf) {
-    PendingOperation* op = new PendingOperation(backend, hFile, bufCap);
+    // 本地这份所有权由 unique_ptr 兜住，异常路径也不会把资源丢掉。能交给它析构的前提是
+    // "这条操作已确认终态"：Execute 的分支穷尽保证了没确认终态的那条一定带着 registered()
+    // = true 回来，走下面的移交；done = true 的那条必然已确认终态（复制回调用方所需的
+    // 内存分配失败时也还在这一档里），所以这里既不会早放、也不会漏放。
+    std::unique_ptr<PendingOperation> owned(new PendingOperation(backend, hFile, bufCap));
+    PendingOperation* op = owned.get();
     const IoStep step = op->Execute(waitMs, cancelGraceMs, issue);
     IoStep result = step;
     if (result.done && result.transferred > 0 && outBuf) {
@@ -260,9 +342,10 @@ IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD 
                        op->buffer().begin() + static_cast<long long>(result.transferred));
     }
     if (op->registered()) {
-        Registry::Get().Add(op);   // 后端与句柄的登记在 Add 内完成
-    } else {
-        delete op;   // 终态：事件已在 MarkTerminal 关过，这里只回收内存
+        // 没确认终态：整份（事件 + OVERLAPPED + 缓冲区）交给登记表继续看管。
+        // 先松手再接管，任何一步抛出都不会出现两个所有者同时想释放它。
+        owned.release();
+        Registry::Get().Add(op);
     }
     return result;
 }
