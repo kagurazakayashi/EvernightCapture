@@ -259,7 +259,9 @@ $cases = @(
        Errors = @('cli.invalid_value') }
     @{ Name = 'exe 只有文件名 -> note'; A = @('--exe','a.exe','--dry-run','out.png'); Exit = 4
        Notes = @('note.exe_path_looks_like_name') }
-    @{ Name = '正则非法'; A = @('--title-regex','[bad(','out.png'); Exit = 1; Errors = @('cli.invalid_regex') }
+    @{ Name = '正则非法（解析层不编译，由受约束的匹配阶段判出）'; A = @('--title-regex','[bad(','out.png'); Exit = 1; Errors = @('cli.invalid_regex')
+       Check = { param($o) $o.errors[0].stage -eq 'match' -and $o.errors[0].option -eq '--title-regex' -and
+                            $o.captured -eq 0 -and $o.errors[0].message -and $o.errors[0].hint } }
     @{ Name = '不给输出路径 -> 按 --out - 处理（PNG 写标准输出）'
        A = ($ANCHOR + @('-v')); Exit = 0; ToStderr = $true; Notes = @('note.output_defaulted_stdout')
        Check = { param($o) $o.input.output -eq '-' -and $o.input.toStdout -eq $true -and
@@ -1783,6 +1785,9 @@ $PROBE = @(
     @{ Name = '屏幕编号越界'; A = @('--monitor', '99', '--dry-run', 'out.png'); Exit = 1 },
     @{ Name = '整屏不支持的通道'; A = @('--monitor', 'primary', '--capture', 'dwm', 'out.png'); Exit = 1 },
     @{ Name = 'all 与窗口条件冲突'; A = @('--monitor', 'all', '--class', 'Shell_TrayWnd', 'out.png'); Exit = 1 },
+    # 正则语法现在由匹配执行层判（父进程不预编译）：四语的 message/hint 都要有，
+    # 而 code 与退出码必须逐字一致（stage=match 也是机器可读部分，不随语言变）。
+    @{ Name = '正则语法不合（匹配阶段判出）'; A = @('--title-regex', '[bad(', 'out.png'); Exit = 1 },
     @{ Name = '期限取值非法'; A = @('--class', 'Shell_TrayWnd', '--timeout-ms', 'abc', 'out.png'); Exit = 1 },
     @{ Name = '正则条件走到匹配阶段（合法的表达式不是参数错）'; A = @('--title-regex', '(a+)+$', '--dry-run', 'out.png'); Exit = 4 },
     # 数值与语言这一节的写法：换语言只能换文字，被拒的写法与退出码必须四种语言完全一致

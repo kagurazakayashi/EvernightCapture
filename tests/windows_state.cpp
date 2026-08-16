@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <utility>
 #include <vector>
@@ -308,6 +309,81 @@ void TestCombinedConditions() {
     recheckCheap.pids.push_back(pub.pid);
     Check(!MakeWindowIdentity(pub, recheckCheap, false).selectionNeedsRecheck,
           "只靠 PID/句柄/类名认出的目标：不重跑条件（kCheap 那四问已覆盖）");
+}
+
+// ---------------------------------------------------------------------------
+// 正则编译的职责划分（R02）：解析层不碰正则库，编译只发生在受约束的匹配执行层
+//
+// 旧实现在解析期（父进程、任何 Deadline 建立之前）就完整构造一遍 std::wregex 来
+// "验语法"：那一步既没有期限也没有隔离，--timeout-ms 与内置隔离上限都管不到它。
+// 现在解析层只记原文与判重，这里判的是这份拆分的两端：
+//   * 语法不合的模式**不是**解析错误（父进程没编译的最好证据就是它照常通过解析），
+//     而取值原文、判重 note 与同类多条的规范化职责一切照旧；
+//   * CompileConditions（生产函数本体，也就是隔离调用里跑的那一份）把语法不合交回
+//     kRegexInvalid 与带机器码的 ASCII 细节——"编不出来"是整个求值作废，而不是
+//     "当成不匹配"。
+// 危险模式"编得慢/跑得凶"的那条现场不拿墙钟数字当判据（本仓库不伪造性能复现）：
+// 它由 tests\windows.ps1 与 tests\timeout.ps1 在带外层时限的受控子进程里判。
+// ---------------------------------------------------------------------------
+ParseResult ParseArgs(std::initializer_list<std::wstring> args) {
+    // ParseCommandLine 要的是"活着的 wchar_t* 数组"：先把取值存下来再取指针。
+    std::vector<std::wstring> store(args);
+    std::vector<wchar_t*> argv;
+    argv.reserve(store.size());
+    for (auto& s : store) argv.push_back(s.data());
+    return ParseCommandLine(static_cast<int>(argv.size()), argv.data());
+}
+
+void TestParseDefersRegexCompile() {
+    Section("正则编译职责：解析层记原文，匹配层判语法");
+
+    const ParseResult bad = ParseArgs({L"ECAPTURE", L"--title-regex", L"[bad(", L"out.png"});
+    Check(bad.ok && bad.errors.empty(),
+          "语法不合的模式不再是解析错误（父进程不构造正则）");
+    Check(bad.options.match.titleRegexes.size() == 1 &&
+              bad.options.match.titleRegexes[0] == L"[bad(",
+          "取值原样落进 MatchOptions（解析层只管 token 与规范化）");
+
+    // 同一条模式在匹配执行层被拒绝：编译点只有这一处，而它的下场是整个求值作废。
+    const Predicate rejected = Compile(bad.options.match);
+    Check(!rejected.compiled && rejected.status == BlockedStatus::kRegexInvalid,
+          "匹配层编不出来：kRegexInvalid，而不是\"当成不匹配\"");
+    Check(rejected.detail.rfind("regex_error code=", 0) == 0,
+          "机器细节里带着 regex_error 的 code（旧解析期文案给出的那份信息没有丢）");
+
+    // 规范化职责一样没动：判重仍是一条取值 + 一条 note，同类多条仍全部记下（OR）。
+    const ParseResult dup = ParseArgs({L"ECAPTURE", L"--title-regex", L"a", L"--title-regex", L"a",
+                                       L"out.png"});
+    Check(dup.ok && dup.options.match.titleRegexes.size() == 1,
+          "同一条正则写两次：只留一条");
+    Check(HasCode(dup.warnings, codes::kDuplicateValue),
+          "重复取值仍记 note.duplicate_value");
+    const ParseResult pair = ParseArgs({L"ECAPTURE", L"--title-regex", L"a", L"--title-regex", L"b",
+                                        L"out.png"});
+    Check(pair.ok && pair.options.match.titleRegexes.size() == 2,
+          "同类两条正则：都记下（同类 OR 语义不变）");
+
+    // --help / --version 的早返回不因模式语法而变：解析层本来就不编译，执行层还没开工。
+    const ParseResult help = ParseArgs({L"ECAPTURE", L"--help", L"--title-regex", L"[bad("});
+    Check(help.options.showHelp && help.errors.empty(), "--help 早返回：语法不合也不是参数错");
+    const ParseResult ver = ParseArgs({L"ECAPTURE", L"--version", L"--title-regex", L"[bad("});
+    Check(ver.options.showVersion && ver.errors.empty(), "--version 早返回：同样不判语法");
+
+    // 编译成立而**求值**被本机正则库上限挡下的那一类：原因码与"编译被拒"分开，
+    // 半套命中列表不许交回（整次作废由 MatchesWindow 置 fault、EnumerateMatches 清空命中，
+    // 真机那一条见 tests\timeout.ps1 第 9(b) 节——这里判的是码的形状，不是墙钟数字）。
+    MatchOptions nested;
+    nested.titleRegexes.push_back(L"(a+)+$");
+    const Predicate compiled = Compile(nested);
+    Check(compiled.compiled, "(a+)+$ 编得出来（失控发生在求值，不在编译）");
+    RegexFault fault;
+    const WindowInfo bomb = WithTitle(0x9AB, L"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!");
+    Check(!MatchesWindow(compiled.c, bomb, &fault), "失控模式：这一条候选不算命中");
+    Check(fault.hit && fault.status == BlockedStatus::kRegexTooComplex,
+          "被正则库的上限挡下：原因码是 kRegexTooComplex（与 kRegexInvalid 分开）");
+
+    // ParseCommandLine 会把语言切回系统显示语言；这份套件按英文跑，恢复它。
+    SetLanguage(Language::kEn);
 }
 
 // ---------------------------------------------------------------------------
@@ -808,6 +884,7 @@ int main() {
 
     TestMachineWords();
     TestCombinedConditions();
+    TestParseDefersRegexCompile();
     TestListIsNeverAmbiguous();
     TestInspectNeedsUniqueTarget();
     TestPagination();

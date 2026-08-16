@@ -214,6 +214,22 @@ try {
         Assert-Ec ($dryRx.Exit -eq 4 -and (Codes $dryRx.Json.errors) -contains 'match.no_window') `
             "dry-run（正则不成立）：exit=$($dryRx.Exit) codes=[($(Codes $dryRx.Json.errors) -join ','))]"
 
+        # ---- 正则语法现在由匹配阶段判（R02：父进程不再预编译"验语法"）----
+        # 解析层原样记串；唯一的编译点在受约束的匹配执行层（有期限，要隔离时在辅助进程）。
+        # 编不过的模式在**枚举窗口之前**整次作废：不列任何窗口、不出伪成功列表，
+        # 也不弹框、不取帧（窗口查询这一路本来就一个像素都不取）。
+        $badRx = Invoke-Wq -Arguments @('--list', '--title-regex', '[bad(')
+        Assert-Ec ($badRx.Exit -eq 1 -and (Codes $badRx.Json.errors) -contains 'cli.invalid_regex') `
+            "语法不合的模式在查询这一路该回 cli.invalid_regex + 退出码 1：exit=$($badRx.Exit) codes=[($(Codes $badRx.Json.errors) -join ','))]"
+        Assert-Ec ($badRx.Json.errors[0].stage -eq 'match') `
+            "语法这一判的 stage 该是 match：$($badRx.Json.errors[0].stage)"
+        Assert-Ec (@($badRx.Json.windows).Count -eq 0 -and $badRx.Json.pagination.matched -eq 0) `
+            "编译不过时不许交出伪成功的列表（windows 必须空、matched 必须 0）"
+        # --inspect 同一条判据：即使别的 selector 同时给齐，编译不过也轮不到渲染那扇窗口。
+        $badInsp = Invoke-Wq -Arguments @('--inspect', '--hwnd', $soloHex, '--title-regex', '[bad(')
+        Assert-Ec ($badInsp.Exit -eq 1 -and (Codes $badInsp.Json.errors) -contains 'cli.invalid_regex') `
+            "inspect（语法由匹配阶段判）：exit=$($badInsp.Exit) codes=[($(Codes $badInsp.Json.errors) -join ','))]"
+
         # ---- 无匹配：一个都不成立的条件也是空列表 + 0 ----
         $none = Invoke-Wq -Arguments @('--list', '--class', "ec-wq-none-$stag")
         Assert-Ec ($none.Exit -eq 0 -and $none.Json.contract -eq 'windowquery' -and
@@ -468,6 +484,9 @@ try {
             "--list 的求值预算花完时该按同一条码与退出码 7：exit=$($to.Exit) codes=[($(Codes $to.Json.errors) -join ','))]"
         Assert-Ec ($to.Json.errors[0].stage -eq 'match') `
             "这一条的 stage 该是 match：$($to.Json.errors[0].stage)"
+        # 预算花在编译/求值这一步时，交回的只能是失败：列不出"当时碰巧数到的那几条"。
+        Assert-Ec (@($to.Json.windows).Count -eq 0 -and $to.Json.pagination.matched -eq 0) `
+            "--list 预算耗尽时不许同时交出伪成功列表"
         # 截图那一份 hint 讲的是"换一条不会卡住的取图通道"，而一次窗口查询根本没有通道可换：
         # 交回那句等于给调用方一条做不到的下一步，所以这一路换成查询自己的说法。
         $hint = [string]$to.Json.errors[0].hint

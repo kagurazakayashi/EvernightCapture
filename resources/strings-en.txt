@@ -48,7 +48,7 @@ opt.process	Image file name (no path), case-insensitive; without an extension .e
 opt.exe	Full image path, case-insensitive
 opt.title	Window title, exact match
 opt.title-contains	Window title contains this substring
-opt.title-regex	Window title regular-expression match (ECMAScript), validated while parsing
+opt.title-regex	Window title regular-expression match (ECMAScript), validated at match time
 opt.class	Window class name, case-insensitive, e.g. Notepad / CabinetWClass
 opt.index	Take the n-th window, 1-based decimal, ordered by visibility and z-order
 opt.topmost-match	Take the topmost matched window in the current z-order
@@ -92,11 +92,10 @@ cli.process_path_hint	--exe "D:\App\notepad.exe"
 cli.exe_empty	--exe must not be empty
 cli.exe_no_path	--exe value has no path separator and looks like a bare file name; use --process if that is what you meant
 cli.class_empty	--class must not be empty
-cli.regex_invalid	--title-regex pattern is invalid (regex_error code=%1): %2
 cli.regex_hint	ECMAScript syntax; a quantifier needs something to repeat, and [ inside a character class must be paired
 cli.regex_too_complex	The regex exceeded this machine's backtracking complexity limit, so the match did not finish
 cli.regex_too_complex_hint	The pattern itself is valid. Use --title-contains for substring matching, or pin down the deterministic part and drop nested quantifiers ((a+)+ becomes a+). When the library enforces its own limit, raising --timeout-ms does not help: %1
-cli.regex_late	The regular expression failed to compile again at this stage
+cli.regex_late	The --title-regex pattern was rejected at compile time by this machine's regex library (syntax is decided in the match stage, not pre-compiled while parsing)
 cli.index_value	--index is a 1-based decimal ordinal
 cli.roi_value	--roi wants four decimal integers separated by commas: x,y,w,h
 cli.roi_value_hint	Each of the four accepts only 0-9: no spaces, signs, decimal points, exponents (1e3), underscores or 0x. x and y may be 0, w and h are at least 1, none above 16384. Example: --roi 0,0,200,120 (exactly four fields as well - one missing or a trailing comma is this same error)

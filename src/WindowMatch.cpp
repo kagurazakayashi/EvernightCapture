@@ -129,10 +129,12 @@ bool CompileConditions(const MatchRequest& req, CompiledConditions* out,
         try {
             c.titleRegexes.emplace_back(expr, std::regex_constants::ECMAScript);
         } catch (const std::regex_error& e) {
-            // 语法在解析期已经挡过一遍；走到这里说明这台机器的标准库拒绝编译它。
-            // 只把机器码与 ASCII 细节交回去，本地化文案由父进程拼。
+            // 语法就是在这里判的：解析层（CliOptions.cpp）不构造正则，这一步跑在受约束的
+            // 匹配执行层里——有期限、要隔离时还在辅助进程，慢与拒都由那一道边界兜住。
+            // 细节带上 regex_error 的机器码（ASCII），本地化文案由父进程拼。
             *status = BlockedStatus::kRegexInvalid;
-            *detail = AsciiDetail(e.what());
+            *detail = "regex_error code=" + std::to_string(static_cast<int>(e.code())) + " " +
+                      AsciiDetail(e.what());
             return false;
         }
     }

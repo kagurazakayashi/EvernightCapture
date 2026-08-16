@@ -1,8 +1,9 @@
 #pragma once
 // EvernightCapture - 命令行参数定义与解析
 //
-// 本文件（以及本阶段的全部代码）只负责"条件输入"：解析、校验、回显。
-// 窗口查找与 Windows.Graphics.Capture 截图尚未实现。
+// 本文件只负责"条件输入"：token、取值与规范化；回显由 Report 层读这里的结构。
+// 窗口查找、身份复核与取帧都已实现（src/WindowMatch.* 与 src/Capture.*），不在解析层跑；
+// 其中最贵的正则编译也不在这里发生——解析层不碰正则库（见 --title-regex 那一段）。
 
 #include <cstdint>
 #include <optional>
@@ -330,6 +331,9 @@ inline constexpr const wchar_t* kUnknownOption = L"cli.unknown_option";
 inline constexpr const wchar_t* kMissingValue = L"cli.missing_value";
 inline constexpr const wchar_t* kSwitchTakesNoValue = L"cli.switch_takes_no_value";
 inline constexpr const wchar_t* kInvalidNumber = L"cli.invalid_number";
+// --title-regex 的模式在本机正则库编译不过 / 求值撞上回溯上限。写法上仍属"用法错"
+//（退出码 1，EX_USAGE），但发出点已不在解析层：语法在受约束的匹配执行层（辅助进程 +
+// 期限）编译时判，所以带 stage=match 与 backend=match，而且是在枚举窗口、弹框、取帧之前。
 inline constexpr const wchar_t* kInvalidRegex = L"cli.invalid_regex";
 inline constexpr const wchar_t* kInvalidValue = L"cli.invalid_value";
 inline constexpr const wchar_t* kInvalidFormat = L"cli.invalid_format";

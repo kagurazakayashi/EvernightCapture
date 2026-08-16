@@ -4,8 +4,10 @@
 // 同时给了 --monitor 时，只在所选那块屏的矩形范围内找窗口。
 //
 // 这一步拆成两半是有意为之：
-//   * 求值（EnumerateMatches）里有一次跨进程取标题，还有 --title-regex 的回溯匹配 ——
-//     两者都没有中断点，需要期限时把它整半交给辅助进程（见 Worker.h）。
+//   * 求值（EnumerateMatches）里有正则库的编译、一次跨进程取标题，还有 --title-regex 的
+//     回溯匹配 —— 三者都没有中断点，需要期限时把它整半交给辅助进程（见 Worker.h）。
+//     解析层不预先编译"验语法"（CliOptions.cpp 的 --title-regex）：这里就是唯一的编译点，
+//     预算与隔离管不管得到，取决于调用方走 EnumerateMatches 还是 IsolatedMatch。
 //   * 消歧（SelectFromHits）只对着已经拿到手的列表做决定，纯计算，在哪跑都一样。
 
 #include <cstdint>

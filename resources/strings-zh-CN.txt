@@ -52,7 +52,7 @@ opt.process	映像文件名（不含路径），忽略大小写；无扩展名�
 opt.exe	映像完整路径，忽略大小写
 opt.title	窗口标题精确匹配
 opt.title-contains	窗口标题包含子串
-opt.title-regex	窗口标题正则匹配，ECMAScript 语法，解析期即校验
+opt.title-regex	窗口标题正则匹配，ECMAScript 语法，匹配期即校验
 opt.class	窗口类名，忽略大小写，如 Notepad / CabinetWClass
 opt.index	取第 n 个窗口，从 1 开始（十进制），按可见性/叠放次序排序
 opt.topmost-match	取 Z 序最靠前的命中窗口（此刻盖在最上面的那一个；与创建时间无关）
@@ -98,11 +98,10 @@ cli.process_path_hint	--exe "D:\App\notepad.exe"
 cli.exe_empty	--exe 不能为空
 cli.exe_no_path	--exe 取值不含路径分隔符，看起来只是文件名；若只要文件名请改用 --process
 cli.class_empty	--class 不能为空
-cli.regex_invalid	--title-regex 正则表达式无效 (regex_error code=%1): %2
 cli.regex_hint	ECMAScript 语法；量词前要有可重复项，字符类里的 [ 需要配对
 cli.regex_too_complex	正则的回溯复杂度超过本机正则库的上限，这次匹配没有跑完
 cli.regex_too_complex_hint	语法本身没问题。改成子串匹配 --title-contains，或把模式里能确定下来的部分前移、去掉嵌套量词（例如 (a+)+ 换成 a+）。库的上限挡下来时加大 --timeout-ms 不会有帮助：%1
-cli.regex_late	正则在该阶段重新编译失败
+cli.regex_late	--title-regex 的正则被本机正则库在编译时拒绝（语法由匹配阶段判定，不在解析层预编译）
 cli.index_value	--index 是从 1 开始的十进制序号
 cli.roi_value	--roi 要写 x,y,w,h 四个十进制数，用逗号分隔
 cli.roi_value_hint	四条都只认 0-9：不要空白、正负号、小数点、指数（1e3）、下划线与 0x 前缀。x 与 y 可以是 0，w 与 h 至少 1，每一条都不超过 16384。例：--roi 0,0,200,120（段数也要正好四条，少一段或多写一个逗号都算这一条）

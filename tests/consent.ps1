@@ -226,6 +226,28 @@ try {
         Write-Host ("  {0,-38} 不弹框，exit={1}" -f $c.Name, $r.Exit) -ForegroundColor DarkGray
     }
 
+    # R02：--title-regex 的语法判定搬进受约束的匹配执行层（父进程不预编译"验语法"）。
+    # 那一层不管走到哪个下场——本机正则库拒绝编译，还是预算先花完——都发生在**选定目标之前**：
+    # 不该弹框、不该取帧、不该留下文件，也不该有"半个成功的列表"。
+    $rxBadOut = Get-EcRunFile -RunDir $run -Name 'rx_bad.png'
+    $argvRxBad = @('--title-regex', '[bad(', '--yes', '--out', $rxBadOut)
+    $r = Invoke-EcConsentShot -Exe $Exe -Arguments $argvRxBad -ExpectNoDialog
+    Assert-Ec (-not $r.Dialog) '正则语法不合也弹了确认框（语法该在选目标之前判完）'
+    $o = Json-Of $r
+    Assert-Ec ($r.Exit -eq 1 -and $o.captured -eq 0 -and ((Codes $o.errors) -contains 'cli.invalid_regex')) `
+        "正则语法不合该回 cli.invalid_regex + 退出码 1：exit=$($r.Exit) codes=[($(Codes $o.errors) -join ',')]"
+    Assert-Ec (-not (Test-Path -LiteralPath $rxBadOut)) '正则语法不合却落地了文件'
+
+    $rxSpentOut = Get-EcRunFile -RunDir $run -Name 'rx_spent.png'
+    $argvRxSpent = @('--title-regex', 'x', '--yes', '--out', $rxSpentOut, '--timeout-ms', '1')
+    $r = Invoke-EcConsentShot -Exe $Exe -Arguments $argvRxSpent -ExpectNoDialog
+    Assert-Ec (-not $r.Dialog) '正则匹配的预算耗尽也弹了确认框'
+    $o = Json-Of $r
+    Assert-Ec ($r.Exit -eq 7 -and $o.captured -eq 0 -and
+                (((Codes $o.errors) -contains 'match.timeout') -or ((Codes $o.errors) -contains 'capture.timeout'))) `
+        "预算耗尽该是期限码 + 退出码 7 + captured=0：exit=$($r.Exit) codes=[($(Codes $o.errors) -join ',')]"
+    Assert-Ec (-not (Test-Path -LiteralPath $rxSpentOut)) '预算耗尽却写出了文件'
+
     # 整批输出名撞车是同一类：%n 用同标题的两个目标算出同一个名字 -> 问人之前就报 io.output_collision
     $collideOut = Get-EcRunFile -RunDir $run -Name 'collide_%n.png'
     $argvCollide = @('--hwnd', $pair0, '--hwnd', $pair1, '--all', '--yes', '--out', $collideOut)

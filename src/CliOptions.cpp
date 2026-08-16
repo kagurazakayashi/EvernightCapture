@@ -5,7 +5,6 @@
 #include <functional>
 #include <iterator>
 #include <limits>
-#include <regex>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -1040,18 +1039,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             return;
         }
         if (name == L"title-regex") {
-            try {
-                std::wregex probe(value, std::regex_constants::ECMAScript);
-                (void)probe;
-            } catch (const std::regex_error& e) {
-                std::wstring detail;
-                for (const char* p = e.what(); p && *p; ++p)
-                    detail.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
-                Err(codes::kInvalidRegex,
-                    Msgf(L"cli.regex_invalid", static_cast<int>(e.code()), detail), L"--title-regex",
-                    value, Msg(L"cli.regex_hint"));
-                return;
-            }
+            // 解析层只记原文与判重，**不构造正则**：旧实现在这里（父进程、任何 Deadline 建立
+            // 之前）完整编译一遍来"验语法"，而那一步既没有期限也没有隔离——--timeout-ms 与
+            // 内置隔离上限都管不到它。语法由受约束的匹配执行层在辅助进程里编译时判
+            //（CompileConditions，见 WindowMatch.h）：语法不合照实回 cli.invalid_regex、
+            // 退出码仍是 1，只是 stage 变成 match，且一个像素都不取、不弹框。
             PushUnique(&opt.match.titleRegexes, value, L"--title-regex", &warnings);
             return;
         }

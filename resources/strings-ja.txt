@@ -47,7 +47,7 @@ opt.process	イメージファイル名（パスなし）、大文字小文字�
 opt.exe	イメージの完全パス、大文字小文字を区別しない
 opt.title	ウィンドウタイトル完全一致
 opt.title-contains	ウィンドウタイトルに部分文字列を含む
-opt.title-regex	ウィンドウタイトルを正規表現で一致（ECMAScript 構文、解析時に検証）
+opt.title-regex	ウィンドウタイトルを正規表現で一致（ECMAScript 構文、照合段階で検証）
 opt.class	ウィンドウクラス名、大文字小文字を区別しない。例 Notepad / CabinetWClass
 opt.index	n 番目のウィンドウを選ぶ。1 始まりの 10 進、表示可否と Z 順で並ぶ
 opt.topmost-match	現在の Z 順で最上位の一致ウィンドウを選ぶ（作成日時ではない）
@@ -91,11 +91,10 @@ cli.process_path_hint	--exe "D:\App\notepad.exe"
 cli.exe_empty	--exe は空にできません
 cli.exe_no_path	--exe の値にパス区切り文字がなく、ファイル名のように見えます。ファイル名だけなら --process を使ってください
 cli.class_empty	--class は空にできません
-cli.regex_invalid	--title-regex の正規表現が不正です (regex_error code=%1): %2
 cli.regex_hint	ECMAScript 構文。量子の前には繰り返し対象が必要で、文字クラス内の [ は対応する ] が必要です
 cli.regex_too_complex	正規表現のバックトラック複雑度がこの機のライブラリの上限を超え、照合は完了しませんでした
 cli.regex_too_complex_hint	パターンの構文自体は正しくありません。部分一致なら --title-contains を使い、確定できる部を前に移して入れ子の量詞を外してください（(a+)+ は a+ へ）。ライブラリ自身の上限で止まっている場合、--timeout-ms を大きくしても解決しません：%1
-cli.regex_late	正規表現はこの段階で再コンパイルに失敗しました
+cli.regex_late	--title-regex の正規表現はこの機の正規表現ライブラリに照合段階のコンパイルで拒否されました（構文はここで判定され、解析層では事前コンパイルしません）
 cli.index_value	--index は 1 始まりの 10 進番号です
 cli.roi_value	--roi には x,y,w,h の 4 つの 10 進数をカンマ区切りで指定してください
 cli.roi_value_hint	4 つとも 0-9 のみ：空白、正負記号、小数点、指数（1e3）、下線、0x は認めません。x と y は 0 可、w と h は 1 以上、いずれも 16384 まで。例：--roi 0,0,200,120（区切りもちょうど 4 つ、1 つ足りない場合もカンマを 1 つ多く書いた場合もこのエラーです）

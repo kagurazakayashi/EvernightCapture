@@ -524,11 +524,13 @@ Diagnostic BlockedToDiagnostic(BlockedStatus status, DWORD gle, HRESULT hr,
             d.message = Msg(L"cap.dwm.host_zero");
             break;
         case BlockedStatus::kRegexInvalid:
+            // 本机正则库拒绝这条模式——语法就是在这里（受约束的匹配执行层）第一次判的，
+            // 解析层不构造正则。码沿用 cli.invalid_regex、退出码仍是 1，stage/backend 说 match。
             d.code = codes::kInvalidRegex;
             d.option = L"--title-regex";
             d.value = std::wstring();
             d.message = Msg(L"cli.regex_late");
-            d.hint = WideFromAscii(detail);
+            d.hint = Msg(L"cli.regex_hint") + L" (" + WideFromAscii(detail) + L")";
             break;
         case BlockedStatus::kRegexTooComplex:
             // 语法没错，是这台机器的正则库不肯把它跑完。加大 --timeout-ms 不会有帮助

@@ -98,7 +98,7 @@ enum class BlockedStatus : uint32_t {
     kRegisterThumb = 6,      // DwmRegisterThumbnail 失败
     kUpdateProps = 7,        // DwmUpdateThumbnailProperties 失败
     kHostRectEmpty = 8,      // 宿主窗口自己的矩形量不出来
-    kRegexInvalid = 9,       // 正则编不出来（解析期已挡过一遍，正常走不到这里）
+    kRegexInvalid = 9,       // 本机正则库拒绝编译（语法就在这里判：解析层不预编译，见 CliOptions.cpp）
     kBadTask = 10,           // 交来的任务不合法（尺寸 / 条数超限）
     kInternal = 11,          // 那一步抛了异常（ASCII 细节在 detail）
     kHostPrintWindowFailed = 12,  // 对宿主窗口的 PrintWindow 两次都返回 FALSE（dwm 通道）
