@@ -231,6 +231,8 @@ cap.worker.spawn_failed	輔助程序沒能啟動，這次取圖沒有執行
 cap.worker.spawn_failed_hint	printwindow 與 dwm 的讀回在本工具的輔助程序裡執行（那種呼叫會同步等目標視窗，沒有中斷點）。啟動失敗通常是權限、原則或殺軟攔截：%1
 cap.worker.channel_failed	與輔助程序的管道斷了，這次取圖沒有拿到結果
 cap.worker.channel_failed_hint	輔助程序可能被外部結束或自己崩了（它最後的退出碼是 %1；60 以上表示它按綁定校驗拒絕執行，-1 表示當時還在跑）。父程序只結束自己起的那一個程序，不碰目標應用
+cap.worker.handshake_failed	輔助程序已經啟動，但沒有在啟動握手期限內接上管道，這次取圖沒有執行
+cap.worker.handshake_failed_hint	這條期限只管「起來了卻沒人把任務交到手」那一段（本工具內置 %1 毫秒），它不是你的 --timeout-ms，加大 --timeout-ms 對一件根本沒開始的事沒有幫助。父程序只結束自己起的那一個程序，不碰目標應用
 cap.worker.protocol_failed	輔助程序交回的消息不合本協議，結果已丟棄
 cap.worker.protocol_failed_hint	nonce 或協議版本對不上時整條作廢：寧可報失敗，也不把別人的或殘缺的結果當成這一次的的成功
 cap.worker.bad_task	交給輔助程序的任務不合法，未執行

@@ -2,6 +2,7 @@
 #include "Worker.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -41,13 +42,17 @@ constexpr uint32_t kReapGraceMs = 2000u;    // 交回结果后给辅助进程的
 // "操作确实结束"，否则 OVERLAPPED/事件/缓冲就成了悬空引用。有这条上限，
 // 就不许有人把它说成"无限等待"；也不许有人拿"预算到点"当理由跳过它。
 constexpr uint32_t kCancelDrainGraceMs = 2000u;
-// 辅助进程没人交任务（或卡住）时自己退出的时限。必须明显大于 kMaxTaskWaitMs：
-// 父进程还在等的那条任务不能被这道兜底掐掉，否则"期限还没到，结果先没了"。
-constexpr uint32_t kWorkerIdleMs = 30000u;
+// 上面这两段是"父进程愿意多等一会儿"的收尾宽限，不是期限；四类期限本身
+// （总预算 / 默认隔离上限 / 启动握手段 / 辅助进程执行段）的分工与换算都在 WorkerTiming.h。
+// 辅助进程自己那两段的等待上限用 GetTickCount64 数：它不受显示语言、时区与校时影响，
+// 而执行段那一截本来就带 kDeliverGraceMs 抵消与父进程 QPC 时钟之间的粒度差。
 
-// 一次隔离调用的结局。四类失败给四条不同的诊断：调用方要能分清
-// "辅助进程没起来"、"起来了但管道没接上"、"接上了而消息不对"和"到点了还没结果"。
-enum class Call { kDone, kTimedOut, kSpawnFailed, kChannelFailed, kProtocolFailed };
+// 一次隔离调用的结局。五类失败给五条不同的诊断：调用方要能分清
+// "辅助进程没起来"、"起来了却没在握手段之内接上管道"、"接上了而中途断掉"、
+// "消息形状不对"和"到点了还没结果"。前四类是本工具自己的机制故障（共用
+// capture.worker_failed），最后一条才是期限真的烧光（match.timeout / capture.timeout）
+// —— 把前者说成后者，就是教调用方去加大一个根本不解这个问题的数字。
+enum class Call { kDone, kTimedOut, kSpawnFailed, kHandshakeFailed, kChannelFailed, kProtocolFailed };
 
 uint64_t MakeNonce() {
     // rand_s 是加密质量的随机数；拿不到时用 QPC + PID + 栈地址兜底（同一次运行里仍唯一，
@@ -322,7 +327,8 @@ Call Transaction::Start(uint16_t kind, const std::vector<uint8_t>& task, const D
 
     if (!AssignProcessToJobObject(job_.get(), process_.get())) {
         gle_ = GetLastError();
-        TerminateProcess(process_.get(), 9);   // 是我起的进程，结束它不碰任何人家的
+        // 挂不进作业就绝不放它跑：那条"父进程退了我就没电"的保证对它不成立，只能当场收回。
+        TerminateProcess(process_.get(), static_cast<uint32_t>(kHelperExitReaped));
         return Call::kSpawnFailed;
     }
     ResumeThread(thread_.get());
@@ -336,14 +342,23 @@ Call Transaction::Start(uint16_t kind, const std::vector<uint8_t>& task, const D
     //   * 同步成功：事件已由系统置起，等待立即返回；
     //   * ERROR_IO_PENDING：确有挂起操作，按剩余预算等，到点按 F02 的机制安全取消；
     //   * 其他错误：如实上报通道故障，不做免检。
-    // 预算沿用整次交易的剩余量（WaitTimeout(dl)），连接成功与否都不重新领一份。
+    // 连接成功与否都不重新领一份预算：这一段花掉的仍然是那一份总预算里的毫秒。
+    // 连管这一步只肯等"启动/握手"那一段（HandshakeWaitMs 已经把它压进这一笔交易的剩余预算之内）。
+    // 把整份剩余预算压在连管上有两个错：一个根本没起来的辅助进程会烧光用户的期限，
+    // 而且报出来的还是"期限耗尽"——调用方照这个码只会去加大 --timeout-ms，而加大它不解这件事。
     const Step connect = workerio::RunOverlappedOp(
-        workerio::Win32Backend(), pipe_.get(), 0, WaitTimeout(dl), kCancelDrainGraceMs,
+        workerio::Win32Backend(), pipe_.get(), 0, HandshakeWaitMs(dl), kCancelDrainGraceMs,
         [&](OVERLAPPED& ov, uint8_t*, uint32_t) {
             return workerio::ConnectStartOf(ConnectNamedPipe(pipe_.get(), &ov));
         },
         nullptr);
-    if (connect.timedOut) return Call::kTimedOut;
+    if (connect.timedOut) {
+        // 同一次"没等到连接"分两种下场，各归各的类：预算真的花完了才算期限耗尽，
+        // 否则算"辅助进程没接上来"这条机制故障。
+        if (ClassifyHandshakeTimeout(dl) == HandshakeFault::kBudgetSpent) return Call::kTimedOut;
+        gle_ = ERROR_TIMEOUT;   // 握手段到点，预算还剩着：下面翻成 handshake_failed 那条诊断
+        return Call::kHandshakeFailed;
+    }
     if (!connect.done) { gle_ = connect.gle; return Call::kChannelFailed; }
 
     DWORD peerPid = 0;
@@ -415,7 +430,9 @@ void Transaction::Finish() {
     }
     if (process_) {
         if (WaitForSingleObject(process_.get(), kReapGraceMs) != WAIT_OBJECT_0) {
-            TerminateProcess(process_.get(), 9);   // 只结束我自己起的这一个进程
+            // 只结束我自己起的这一个进程；退出码写成"父进程收尸"这一档，
+            // 好让 hint 里的数与辅助进程自己的判断分得开。
+            TerminateProcess(process_.get(), static_cast<uint32_t>(kHelperExitReaped));
             WaitForSingleObject(process_.get(), 1000);
         }
     }
@@ -442,8 +459,9 @@ Diagnostic CallToDiagnostic(Call call, const Deadline& dl, const wchar_t* timeou
     if (call == Call::kTimedOut) return BudgetSpent(dl, timeoutCode, stage, backend);
 
     Diagnostic d;
-    // 这三类失败都是"本工具自己的执行环境坏了"（起不来 / 管道断 / 消息不合），
-    // 与"目标窗口不肯给"、"通道取不到画面"是三种不同的下一步，所以各给一条码。
+    // 这四类失败都是"本工具自己的执行环境坏了"（起不来 / 起来了却没连上来 / 管道断 / 消息不合），
+    // 与"目标窗口不肯给"、"通道取不到画面"、"期限真的烧光"是几种不同的下一步。它们共用
+    // capture.worker_failed 这一条稳定码（调用方据此分支"机制故障"），文案各说各的那一段。
     d.code = codes::kWorkerFailed;
     d.option = L"--capture";
     d.value = backend ? backend : std::wstring();
@@ -454,6 +472,12 @@ Diagnostic CallToDiagnostic(Call call, const Deadline& dl, const wchar_t* timeou
         case Call::kSpawnFailed:
             d.message = Msg(L"cap.worker.spawn_failed");
             d.hint = Msgf(L"cap.worker.spawn_failed_hint", Win32ErrorText(gle));
+            break;
+        case Call::kHandshakeFailed:
+            // 进程起来了（管道都建好了），但它在握手段之内没把连接建起来。
+            // 这条绝不是 capture.timeout：加大 --timeout-ms 对一件根本没发生的事没有帮助。
+            d.message = Msg(L"cap.worker.handshake_failed");
+            d.hint = Msgf(L"cap.worker.handshake_failed_hint", kHandshakeMs);
             break;
         case Call::kChannelFailed:
             d.message = Msg(L"cap.worker.channel_failed");
@@ -557,17 +581,17 @@ Diagnostic BlockedToDiagnostic(BlockedStatus status, DWORD gle, HRESULT hr,
     return d;
 }
 
-Deadline IsolatedWaitFor(const Deadline& dl) {
-    // 给了 --timeout-ms 就照剩余预算等（用户明确要多少就给他多少，不再另加一道内置上限）；
-    // 没给就用内置上限 —— 这条上限顶替的正是过去被忽略的那个等待参数。
-    return dl.Enabled() ? dl : Deadline::FromTotalMs(kIsolatedCallMs);
-}
+// IsolatedWaitFor / HandshakeWaitMs / TaskBudgetMs / 辅助进程自己的阶段模型
+// 都在 WorkerTiming.cpp：那几条是纯换算，离线判据判的就是它们本体。
 
 namespace {
 
 // 一次完整的隔离调用：起辅助进程、交任务、收应答。失败原因已经翻成本地化诊断。
-Call Transact(uint16_t kind, const Task& task, const Deadline& dl, Reply* reply, Diagnostic* err,
+Call Transact(uint16_t kind, Task task, const Deadline& dl, Reply* reply, Diagnostic* err,
               const wchar_t* timeoutCode, const wchar_t* stage, const wchar_t* backend) {
+    // 随任务交下去的那一笔预算 = 这一笔交易此刻还剩的预算（换算与判界见 WorkerTiming.h）。
+    // 取"剩余"而不是"总额"：一次运行仍然只有一份预算，辅助进程不会在这里重新领到一整份。
+    task.budgetMs = TaskBudgetMs(dl);
     std::vector<uint8_t> payload;
     if (!EncodeTask(task, &payload)) {
         *err = CallToDiagnostic(Call::kProtocolFailed, dl, timeoutCode, stage, backend,
@@ -895,21 +919,78 @@ void RunTask(const Task& task, Reply* reply) {
     }
 }
 
-// 兜底看门狗：管道断了、父进程被结束、或者卡在任何一步上太久，自己都退出。
-// 有了它，"辅助进程遗留"就不只依赖作业那一条机制。
-DWORD CALLBACK IdleWatchdogProc(LPVOID) {
-    Sleep(kWorkerIdleMs);
-    ExitProcess(9);   // 到点就把整个辅助进程结束掉：这条线程不存在"正常返回"
+// "一个字节都没能交回"那条出口：绑定校验之外的一切管道/协议故障都走这里。
+// 退出码只给排障的人看（父进程把它写进 hint），不是对外契约（见 Worker.h）。
+[[noreturn]] void ExitWithoutReply() { ExitProcess(static_cast<uint32_t>(kHelperExitProtocol)); }
+
+// ---------------------------------------------------------------------------
+// 辅助进程自己的兜底看门狗：把 WorkerTiming.h 那条三段期限的纯算式接在真线程与真时钟上。
+// 它挡的是"父进程已经卡死、没人来收尸"这一种遗留。父进程正常在等的那一段不会被它掐掉：
+// 执行段用的那一笔预算取的是父进程交出任务**之前**的剩余量，而它从看到任务才开始数，
+// 所以它只会晚于父进程自己放弃的那一刻，永远不会更早。
+// 三段里只有"等任务"那一段与预算无关（那一刻手里还没有预算可谈），它的上限就是 kHandshakeMs，
+// 与父进程肯等连接的时长是同一个常数 —— 同一段含义、两个观察者、一个数，不是两套互相覆盖的常量。
+// ---------------------------------------------------------------------------
+
+// 看门狗线程与主线程之间共享的只有这两样：当前阶段，以及进入执行段时发布的那笔预算。
+// 用静态存储而不是线程参数：RunWorkerMode 返回到进程真正退出之间还有一小段，把参数放在调用方
+// 栈上等于让那条线程往已经失效的栈上读。这两个数没有生命周期问题，也不出本进程。
+std::atomic<HelperPhase> g_helperPhase{HelperPhase::kAwaitTask};
+std::atomic<uint32_t> g_helperBudgetMs{0};
+
+DWORD CALLBACK HelperWatchdogProc(LPVOID) {
+    HelperPhase phase = HelperPhase::kAwaitTask;
+    uint64_t phaseTick = GetTickCount64();   // 进入当前这一段时的读数：换段就重新锚一次
+    for (;;) {
+        const HelperPhase observed = g_helperPhase.load(std::memory_order_acquire);
+        if (observed != phase) {
+            // 重新锚点用的是"看到"的那一刻，可能比主线程"进入"的那一刻晚一个小轮询间隔。
+            // 晚只会让辅助进程比自己该退的时候多活一会儿，方向是安全的（早才会误杀）。
+            phase = observed;
+            phaseTick = GetTickCount64();
+        }
+        HelperLimits limits;
+        // 这里再夹一次上限：协议解码已经判过界，这一道防的是"哪怕交下来的数被改坏，
+        // 辅助进程也不会拿到一个无界的自尽期限"。这几毫秒不进任何对外承诺。
+        limits.taskBudgetMs = std::min<uint64_t>(g_helperBudgetMs.load(std::memory_order_relaxed),
+                                                 kMaxWorkerBudgetMs);
+        const HelperVerdict verdict =
+            JudgeHelperWatchdog(phase, limits, GetTickCount64() - phaseTick);
+        if (verdict.exitNow) {
+            // 到点就把整个辅助进程结束掉：结束的是我自己，不是目标应用
+            // （目标窗口只是收到过一次没人等的绘制请求，它自己不受影响）。
+            ExitProcess(static_cast<uint32_t>(verdict.exitCode));
+        }
+        if (verdict.pollMs == 0) return 0;   // 应答已经交回：本进程正在自己退出，这条线程收工
+        Sleep(verdict.pollMs);
+    }
 }
 
-void RunIdleWatchdog() {
+void RunHelperWatchdog() {
     // 只用 Win32 建这条线程，不用 std::thread：后者在建不出来时抛 std::system_error，而 worker
     // 模式最开头没有东西接得住它，没人接就是 terminate。建不出来当场退出 —— 宁可这一次隔离调用
     // 失败，也不带着"没有人在计时"的状态去等一个可能永远不来的任务。
-    const HANDLE thread = CreateThread(nullptr, 0, IdleWatchdogProc, nullptr, 0, nullptr);
-    if (!thread) ExitProcess(9);
-    CloseHandle(thread);   // 关句柄不影响线程本身，进程活着时它就一直睡到点
+    const HANDLE thread = CreateThread(nullptr, 0, HelperWatchdogProc, nullptr, 0, nullptr);
+    if (!thread) ExitWithoutReply();
+    CloseHandle(thread);   // 关句柄不影响线程本身，进程活着时它就一直数到自己那一段的期限
 }
+
+// 任务到手 -> 执行段；应答交回（或交回失败）-> 不再挂任何自尽期限。
+// 先写预算再写阶段（release），看门狗按 acquire 读阶段：它看到新阶段时，预算一定已经看得见。
+// 收尾用 RAII：RunWorkerMode 里每一条 return 与异常退栈都算"交回这一步已经走完"，
+// 不需要人在每个出口前记得补一句，也不会在还没交回时就先把时钟拆掉。
+class DeliveryScope {
+public:
+    explicit DeliveryScope(uint32_t budgetMs) {
+        g_helperBudgetMs.store(budgetMs, std::memory_order_relaxed);
+        g_helperPhase.store(HelperPhase::kRunning, std::memory_order_release);
+    }
+    ~DeliveryScope() {
+        g_helperPhase.store(HelperPhase::kDelivered, std::memory_order_release);
+    }
+    DeliveryScope(const DeliveryScope&) = delete;
+    DeliveryScope& operator=(const DeliveryScope&) = delete;
+};
 
 // 辅助进程不许往调用方的标准流写一个字节（父进程可能正用同一条 stdout 交付 PNG）。
 // 这里把三条标准句柄换成 NUL，而**不**用 FreeConsole()：实测从 ConPTY 型终端（Windows Terminal
@@ -923,8 +1004,8 @@ void SilenceStandardHandles() {
         const HANDLE nul = CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE,
                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                        FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (nul == INVALID_HANDLE_VALUE) ExitProcess(9);
-        if (!SetStdHandle(kinds[i], nul)) ExitProcess(9);
+        if (nul == INVALID_HANDLE_VALUE) ExitWithoutReply();
+        if (!SetStdHandle(kinds[i], nul)) ExitWithoutReply();
         // 这份句柄就此交给进程生命周期：不 CloseHandle（关了等于把刚设好的标准句柄也关掉，
         // 之后一次误写反而可能落到别的对象上）。辅助进程由 ExitProcess 一次带走所有句柄。
     }
@@ -932,7 +1013,7 @@ void SilenceStandardHandles() {
     FILE* replaced = nullptr;
     if (freopen_s(&replaced, "NUL", "r", stdin) != 0 || freopen_s(&replaced, "NUL", "w", stdout) != 0 ||
         freopen_s(&replaced, "NUL", "w", stderr) != 0) {
-        ExitProcess(9);
+        ExitWithoutReply();
     }
 }
 
@@ -944,7 +1025,8 @@ bool LooksLikeWorkerInvocation(const wchar_t* firstArg) {
 
 int RunWorkerMode(int argc, wchar_t* const* argv) {
     // 第一件事是给自己装上计时器：从这里往后的任何一步卡住，都有人负责把进程结束掉。
-    RunIdleWatchdog();
+    // 装上的那条线只数"这一段的期限到了没有"，各段管什么见上面的看门狗与 WorkerTiming.h。
+    RunHelperWatchdog();
     // 唯一的输出通道是那条绑定过的管道；标准流先接到 NUL（原因见 SilenceStandardHandles）。
     SilenceStandardHandles();
 
@@ -955,14 +1037,20 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
 
     HANDLE pipe = CreateFileW(args.pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (pipe == INVALID_HANDLE_VALUE) return 9;
+    if (pipe == INVALID_HANDLE_VALUE) ExitWithoutReply();
 
     Task task;
     uint16_t kind = 0;
     if (!ReadTaskBlocking(pipe, args.nonce, &task, &kind)) {
         CloseHandle(pipe);
-        return 9;
+        ExitWithoutReply();
     }
+
+    // 任务到手：看门狗从"等任务那一段"换到"执行那一段"，执行段的期限就是父进程随任务
+    // 交下来的那一笔剩余预算（DecodeTask 已经判过 [1, 上限]）加上交回宽限。
+    // 握手段那 30 秒到这一刻让位 —— 一笔用户显式接受的 60 秒任务，不会在第 30 秒被自己掐掉。
+    // 作用域结束（含异常退栈）就把阶段记为"应答已经交回"，此后不再挂任何自尽期限。
+    const DeliveryScope delivery{task.budgetMs};
 
     // 矩形坐标必须与物理像素一致，否则 PrintWindow 之后的裁剪会截偏（与父进程同一套规矩）
     EnsureDpiAware();
@@ -985,7 +1073,7 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
         tiny.status = BlockedStatus::kBadTask;
         if (!EncodeReply(tiny, &payload)) {
             CloseHandle(pipe);
-            return 9;
+            return kHelperExitProtocol;
         }
     }
     const Header h{kMagic, kProtocolVersion, kind, static_cast<uint32_t>(payload.size()),
@@ -993,7 +1081,7 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
     std::vector<uint8_t> framed;
     if (!EncodeHeader(h, &framed)) {
         CloseHandle(pipe);
-        return 9;
+        return kHelperExitProtocol;
     }
     framed.insert(framed.end(), payload.begin(), payload.end());
 
@@ -1001,7 +1089,7 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
     const BOOL ok = WriteFile(pipe, framed.data(), static_cast<DWORD>(framed.size()), &written,
                               nullptr);
     CloseHandle(pipe);
-    return (ok && written == framed.size()) ? 0 : 9;
+    return (ok && written == framed.size()) ? 0 : kHelperExitProtocol;
 }
 
 }  // namespace ecapture

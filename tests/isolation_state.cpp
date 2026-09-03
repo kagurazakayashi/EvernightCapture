@@ -23,6 +23,7 @@
 #include "../src/Deadline.h"
 #include "../src/Lang.h"
 #include "../src/WorkerProtocol.h"
+#include "../src/WorkerTiming.h"
 
 namespace {
 
@@ -48,6 +49,9 @@ std::vector<uint8_t> SampleTaskPayload() {
     t.kind = kTaskMatchWindows;
     t.hwnd = 0x1234;
     t.waitMs = 700;
+    // 这一笔交易交下去的剩余预算：判据里固定取 4000（既不是内置上限也不是它的上限，
+    // 免得日后哪条改动正好和某个常量撞上，把"原样送达"这条判据变成同义反复）
+    t.budgetMs = 4000;
     t.match.titles = {L"报告", L"a title with \"quotes\" and D:\\shots\\rpt.png"};
     t.match.titleRegexes = {L"^(a+)+b"};
     t.match.classes = {L"Shell_TrayWnd"};
@@ -122,6 +126,9 @@ void CheckTask() {
     Check(DecodeTask(payload.data(), payload.size(), &back), "任务能原样读回");
     Check(back.kind == kTaskMatchWindows && back.hwnd == 0x1234 && back.waitMs == 700,
           "任务里的标量字段一致");
+    // 随任务交下去的那一笔预算必须原样抵达：辅助进程自己的执行段期限就由它决定，
+    // 这里丢一位数字就等于把"用户接受的 40 秒"改成别的秒数。
+    Check(back.budgetMs == 4000, "任务的预算字段原样送达（辅助进程的执行段就看这个数）");
     Check(back.match.titleRegexes.size() == 1 && back.match.titleRegexes[0] == L"^(a+)+b",
           "正则原样送达（不改动语法）");
     Check(back.match.titles.size() == 2 && back.match.titles[0] == L"报告" &&
@@ -151,6 +158,7 @@ void CheckTask() {
     // 未知任务种类
     Task badKind;
     badKind.kind = 99;
+    badKind.budgetMs = 4000;   // 预算给合法值：这条判的要还是"种类没登记过"，不是预算
     std::vector<uint8_t> blob;
     Check(!EncodeTask(badKind, &blob) || !DecodeTask(blob.data(), blob.size(), &ignored),
           "没登记过的任务种类读不回来");
@@ -159,6 +167,7 @@ void CheckTask() {
     Task slow;
     slow.kind = kTaskDwmThumbnail;
     slow.waitMs = kMaxTaskWaitMs + 1;
+    slow.budgetMs = 4000;
     std::vector<uint8_t> slowBlob;
     Check(EncodeTask(slow, &slowBlob) && !DecodeTask(slowBlob.data(), slowBlob.size(), &ignored),
           "超出上限的等待时长在解码时被拒");
@@ -166,6 +175,7 @@ void CheckTask() {
     // 空矩形不是合法屏幕
     Task emptyScreen;
     emptyScreen.kind = kTaskMatchWindows;
+    emptyScreen.budgetMs = 4000;
     emptyScreen.onScreens = {RECT{0, 0, 0, 0}};
     std::vector<uint8_t> esBlob;
     Check(EncodeTask(emptyScreen, &esBlob) && !DecodeTask(esBlob.data(), esBlob.size(), &ignored),
@@ -174,11 +184,53 @@ void CheckTask() {
     // 条数超限
     Task many;
     many.kind = kTaskMatchWindows;
+    many.budgetMs = 4000;
     for (uint32_t i = 0; i < kMaxListItems + 1; ++i) many.match.titles.push_back(L"x");
     std::vector<uint8_t> manyBlob;
     const bool encoded = EncodeTask(many, &manyBlob);
     Check(!encoded || !DecodeTask(manyBlob.data(), manyBlob.size(), &ignored),
           "条件条数超出上限时不会被接受");
+
+    // 预算字段本身也是外部输入：0 在这份格式里不表示"不限"，表示"没有期限"，
+    // 那种交易压根不该起辅助进程；超过公开期限上限的数说明两边不是同一份代码。
+    // 两端都判（发送端拦下、接收端也拒收），因为坏掉的发起方同样是这条路要防的对象。
+    Task noBudget;
+    noBudget.kind = kTaskPrintWindow;
+    noBudget.budgetMs = 0;
+    std::vector<uint8_t> zeroBlob;
+    Task roundTrip;
+    Check(!EncodeTask(noBudget, &zeroBlob), "预算为 0 的任务在发送端就编不出来");
+    noBudget.budgetMs = kMaxWorkerBudgetMs + 1;
+    Check(!EncodeTask(noBudget, &zeroBlob), "预算超过公开期限上限的任务在发送端就编不出来");
+    // 手工把合法任务里的预算段改成 0 / 改成超限：解码必须拒收，不许"当成没告诉我就照默认跑"
+    std::vector<uint8_t> tampered = payload;
+    const size_t budgetAt = 2 + 2 + 8 + 4;   // kind(2) + 保留(2) + hwnd(8) + waitMs(4) 之后那 4 字节
+    uint32_t bytesAtOffset = 0;
+    if (payload.size() >= budgetAt + 4) std::memcpy(&bytesAtOffset, payload.data() + budgetAt, 4);
+    // 这条是后面那些"按字节破坏"的锚点：偏移对不上就说明字段布局变了，
+    // 那时改到的不是预算段，下面那两条拒收判据就成了判别的东西（假绿）。
+    Check(bytesAtOffset == 4000,
+          "样例任务里预算字段就落在这个偏移上（改了字段布局要先看这条，再改下面那几条）");
+    for (int byte = 0; byte < 4; ++byte) tampered[budgetAt + byte] = 0;
+    Check(!DecodeTask(tampered.data(), tampered.size(), &roundTrip),
+          "预算被改成 0 的任务整条作废（0 不是'不限'的暗号）");
+    std::vector<uint8_t> bigBudget = payload;
+    bigBudget[budgetAt] = 0xFF;
+    bigBudget[budgetAt + 1] = 0xFF;
+    bigBudget[budgetAt + 2] = 0xFF;
+    bigBudget[budgetAt + 3] = 0xFF;
+    Check(!DecodeTask(bigBudget.data(), bigBudget.size(), &roundTrip),
+          "预算超出上限的任务整条作废（不许拿它换一个更长的自尽期限）");
+    // 上限本身必须能往返：它是 --timeout-ms 的上限，不是随手写的一个数
+    Task maxed;
+    maxed.kind = kTaskPrintWindow;
+    maxed.budgetMs = kMaxWorkerBudgetMs;
+    std::vector<uint8_t> maxBlob;
+    Check(EncodeTask(maxed, &maxBlob) && DecodeTask(maxBlob.data(), maxBlob.size(), &roundTrip) &&
+              roundTrip.budgetMs == kMaxWorkerBudgetMs,
+          "预算取到上限时照样能往返（判界用的是边界值而不是拍脑袋的中间值）");
+    Check(kMaxWorkerBudgetMs == static_cast<uint32_t>(ecapture::cli_limits::kMaxTimeoutMs),
+          "辅助进程的最长寿命就是 --timeout-ms 的上限（同一份权威，没有第二道秒表）");
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +559,164 @@ void CheckDeadlinePause() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 一次隔离调用领到的是哪一段时间（父进程侧换算，判的是 WorkerTiming.cpp 本体）
+// ---------------------------------------------------------------------------
+void CheckIsolatedTiming() {
+    using ecapture::ClassifyHandshakeTimeout;
+    using ecapture::Deadline;
+    using ecapture::HandshakeFault;
+    using ecapture::HandshakeWaitMs;
+    using ecapture::IsolatedWaitFor;
+    using ecapture::kHandshakeMs;
+    using ecapture::kIsolatedCallMs;
+    using ecapture::TaskBudgetMs;
+
+    FakeClock c;
+    const auto now = [&c]() { return c.ms; };
+
+    // 没有显式预算：由内置上限代替用户决定这一次等多久（它顶替的正是过去被忽略的那个等待参数）
+    const Deadline noBudget = Deadline::FromTotalMs(0, now);
+    Check(!noBudget.Enabled(), "换算的输入确实没设总预算");
+    const Deadline defaulted = IsolatedWaitFor(noBudget);
+    Check(defaulted.Enabled() && defaulted.TotalMs() == kIsolatedCallMs,
+          "没给 --timeout-ms 时，一次隔离调用领到内置上限那一份");
+    // 未启用预算的那条输入绝不许在这两步上退化成"不限"：上游被改坏时宁可报机制故障
+    Check(HandshakeWaitMs(noBudget) == kHandshakeMs, "没有预算时连管也只看握手段上限，不等 INFINITE");
+    Check(TaskBudgetMs(noBudget) == kIsolatedCallMs, "没有预算时交下去的数就是内置上限，不是 0 也不是无限");
+
+    // 显式 40 秒：原样成为这一次隔离调用的期限。这一条是"辅助进程自己的秒表截断显式预算"
+    // 那个缺陷的正面判据 —— 只要还剩任何一个和预算无关的固定秒数压在执行段上，这里就红。
+    c.ms = 0;
+    const Deadline dl40 = Deadline::FromTotalMs(40000, now);
+    const Deadline wait40 = IsolatedWaitFor(dl40);
+    Check(wait40.Enabled() && wait40.TotalMs() == 40000, "显式 40 秒原样送达，没有被任何内置上限压小");
+    Check(TaskBudgetMs(wait40) == 40000, "交出任务那一刻的预算是 40000 毫秒");
+    // 握手段自己有上限，不会把整份剩余压在"等它连上来"这一件事上
+    Check(HandshakeWaitMs(wait40) == kHandshakeMs, "连管的等待有它自己的那一段，不吞掉整份剩余预算");
+
+    // 领的是"剩余"不是"总额"：前面的步骤烧掉的毫秒，这里照样要扣
+    c.ms += 5000;
+    Check(wait40.RemainingMs() == 35000, "烧掉 5 秒之后剩 35 秒（一次运行只有一份预算）");
+    Check(TaskBudgetMs(wait40) == 35000, "随任务交下去的预算 = 交出那一刻的剩余");
+    Check(HandshakeWaitMs(wait40) == kHandshakeMs, "剩余仍大于握手段时，连管只等到握手段上限");
+
+    // 剩余比握手段还短时，连管最多只肯等到剩余 —— 握手段不许反过来把预算放大
+    c.ms += 34000;
+    Check(wait40.RemainingMs() == 1000, "预算只剩 1000 毫秒");
+    Check(HandshakeWaitMs(wait40) == 1000, "剩余不足握手段时，连管按剩余收口（不放大成 30 秒）");
+    Check(TaskBudgetMs(wait40) == 1000, "交下去的预算同样是那 1000 毫秒");
+
+    // 到点之后：连管那次"没等到"要能分清是预算烧光还是辅助进程没接上来
+    c.ms += 1000;
+    Check(wait40.RemainingMs() == 0 && wait40.Spent(), "预算烧穿");
+    Check(HandshakeWaitMs(wait40) == 0, "预算烧穿之后连管一刻也不等（不是握手段那 30 秒）");
+    Check(ClassifyHandshakeTimeout(wait40) == HandshakeFault::kBudgetSpent,
+          "预算已尽的那次到点算期限耗尽，不算机制故障");
+    Check(TaskBudgetMs(wait40) == 1, "预算为 0 时交下去的也不是 0（协议里 0 不合法，那条交易根本不该起）");
+
+    // 同一笔预算还剩着一半时到点：那是"辅助进程没接上来"，加大 --timeout-ms 不解这件事
+    c.ms = 0;
+    const Deadline dl60 = Deadline::FromTotalMs(60000, now);
+    const Deadline wait60 = IsolatedWaitFor(dl60);
+    Check(wait60.Enabled() && wait60.TotalMs() == 60000,
+          "显式 60 秒也一样原样送达（30 秒那种固定秒表在这里不存在）");
+    c.ms += kHandshakeMs + 1;
+    Check(!wait60.Spent() && wait60.RemainingMs() > 29000, "握手段到点时预算还剩得多");
+    Check(ClassifyHandshakeTimeout(wait60) == HandshakeFault::kHelperSilent,
+          "预算还剩着却没连上来：算辅助进程没接上来，不算用户的期限太短");
+
+    // 交下去的数永远不超过公开期限的上限：哪怕有人把总预算设得比它还大
+    c.ms = 0;
+    const Deadline over = Deadline::FromTotalMs(ecapture::cli_limits::kMaxTimeoutMs + 5000ull, now);
+    Check(TaskBudgetMs(over) == kMaxWorkerBudgetMs, "交下去的预算有界，不随总预算绕回");
+    Check(HandshakeWaitMs(over) == kHandshakeMs, "再大的总预算也不会让连管等多一秒钟");
+}
+
+// ---------------------------------------------------------------------------
+// 辅助进程自己的三段期限模型（执行段看的是交下来的预算，不是任何固定秒数）
+// ---------------------------------------------------------------------------
+void CheckHelperWatchdog() {
+    using ecapture::HelperLimits;
+    using ecapture::HelperPhase;
+    using ecapture::JudgeHelperWatchdog;
+    using ecapture::kDeliverGraceMs;
+    using ecapture::kHandshakeMs;
+    using ecapture::kHelperExitNoTask;
+    using ecapture::kHelperExitOverBudget;
+    using ecapture::kIsolatedCallMs;
+    using ecapture::kWatchdogPollMs;
+
+    const auto judge = [](HelperPhase phase, const HelperLimits& lim, uint64_t elapsed) {
+        return JudgeHelperWatchdog(phase, lim, elapsed);
+    };
+
+    HelperLimits lim;              // handshakeMs / deliverGraceMs 取内置默认
+    lim.taskBudgetMs = 40000;      // 父进程交出任务那一刻还剩 40 秒
+
+    // 正面判据（原缺陷的形状）：一笔显式接受的 40 秒任务，第 30 秒必须还活着
+    Check(!judge(HelperPhase::kRunning, lim, 30000).exitNow,
+          "40 秒的预算跑到第 30 秒：辅助进程不许自己退出（这一条钉住那个固定秒表）");
+    Check(!judge(HelperPhase::kRunning, lim, 35000).exitNow,
+          "35 秒才完成的隔离任务不该被提前结束（用户允许的正是这一段）");
+    Check(!judge(HelperPhase::kRunning, lim, 39999).exitNow, "预算之内最后一毫秒还在等结果");
+    Check(!judge(HelperPhase::kRunning, lim, kHandshakeMs + 5000).exitNow,
+          "超过 30 秒这个数本身不构成退出理由");
+
+    // 到点的那一条：预算 + 交回宽限，退出码是执行段那一档
+    const auto graceEnd = judge(HelperPhase::kRunning, lim, 40000 + kDeliverGraceMs - 1);
+    Check(!graceEnd.exitNow, "宽限之内还在把应答写完：不退出");
+    const auto runningEnd = judge(HelperPhase::kRunning, lim, 40000 + kDeliverGraceMs);
+    Check(runningEnd.exitNow && runningEnd.exitCode == kHelperExitOverBudget,
+          "预算加宽限到点才退出，退出码指执行段（与等任务那一档分得开）");
+
+    // 默认上限那一条：兜底就是 5000 + 宽限，不是"再等 30 秒"
+    HelperLimits withDefault;
+    withDefault.taskBudgetMs = kIsolatedCallMs;
+    Check(!judge(HelperPhase::kRunning, withDefault, kIsolatedCallMs + kDeliverGraceMs - 1).exitNow,
+          "默认隔离上限之内不退出");
+    const auto defaultEnd = judge(HelperPhase::kRunning, withDefault,
+                                  kIsolatedCallMs + kDeliverGraceMs);
+    Check(defaultEnd.exitNow && defaultEnd.exitCode == kHelperExitOverBudget,
+          "默认隔离上限到点就退出：执行段只认交下来的预算，没有第二个秒表");
+
+    // 等任务那一段：与预算无关，因为它手上还没有预算可谈
+    Check(!judge(HelperPhase::kAwaitTask, lim, kHandshakeMs - 1).exitNow, "握手段之内不退出");
+    const auto awaitEnd = judge(HelperPhase::kAwaitTask, lim, kHandshakeMs);
+    Check(awaitEnd.exitNow && awaitEnd.exitCode == kHelperExitNoTask,
+          "长时间没人交任务：按握手段自己退出，码与执行段那一档不同");
+    // 阴性对照：任务预算给到 24 小时也不会把"压根没交任务"这一段变成无限
+    HelperLimits huge;
+    huge.taskBudgetMs = kMaxWorkerBudgetMs;
+    const auto hugeAwait = judge(HelperPhase::kAwaitTask, huge, kHandshakeMs);
+    Check(hugeAwait.exitNow && hugeAwait.exitCode == kHelperExitNoTask,
+          "大预算不延长等任务那一段：两段的期限各判各的，不互相覆盖");
+    Check(!judge(HelperPhase::kRunning, huge, 3600000).exitNow,
+          "真给到一小时的预算跑到一小时之内：还在等结果");
+    Check(judge(HelperPhase::kRunning, huge, kMaxWorkerBudgetMs + kDeliverGraceMs).exitNow,
+          "最大的那一笔也照样有到点的时候（不给任务无条件无限的时间）");
+
+    // 交回完成之后不再挂任何自尽期限：进程正自己退出，没有第四个时钟在等
+    const auto delivered = judge(HelperPhase::kDelivered, lim, kMaxWorkerBudgetMs * 3ull);
+    Check(!delivered.exitNow && delivered.pollMs == 0,
+          "应答已交回：既不退出也不留下待办轮询（线程收工）");
+
+    // 轮询有界，且贴近边界时按本段剩余收窄 —— 它不是第五条期限
+    Check(judge(HelperPhase::kRunning, lim, 0).pollMs <= kWatchdogPollMs,
+          "复查间隔有上限");
+    Check(judge(HelperPhase::kAwaitTask, lim, kHandshakeMs - 50).pollMs == 50,
+          "离到点只剩 50 毫秒时睡 50 毫秒，不会睡过头把退出延后一整个间隔");
+    Check(judge(HelperPhase::kRunning, lim, 40000 + kDeliverGraceMs - 1).pollMs <= 1,
+          "执行段贴近边界时同样收窄");
+
+    // 阴性对照：预算与宽限都是 0 时判"当场到点"，绝不当成"不限"放行
+    HelperLimits nothing;
+    nothing.taskBudgetMs = 0;
+    nothing.deliverGraceMs = 0;
+    Check(judge(HelperPhase::kRunning, nothing, 0).exitNow,
+          "0 预算 0 宽限：按到点处理，不按'没有期限'处理（协议里 0 本来就不合法）");
+}
+
 }  // namespace
 
 // worker_io_state.cpp 提供：异步管道 I/O 生命周期的注入式判据（回报本层检查数与失败数），
@@ -533,12 +743,14 @@ int wmain(int argc, wchar_t* argv[]) {
         return ecapture::RunWorkerIoExitPeerMode(argv[2]);
     }
 
-    std::printf("隔离执行消息格式（WorkerProtocol）与执行期限（Deadline）离线判据\n");
+    std::printf("隔离执行消息格式（WorkerProtocol）、执行期限（Deadline）与隔离时钟换算离线判据\n");
     CheckHeader();
     CheckTask();
     CheckReply();
     CheckDeadline();
     CheckDeadlinePause();
+    CheckIsolatedTiming();
+    CheckHelperWatchdog();
     // 异步管道 I/O 生命周期（WorkerIo + 注入假后端）判据在 worker_io_state.cpp，
     // 连接时序（真命名管道）判据在 worker_connect_state.cpp；三层计数并进来打同一行摘要，
     // 真机脚本按最后一行核对总数。

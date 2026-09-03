@@ -219,12 +219,15 @@ bool DecodeHeader(const uint8_t* data, size_t size, Header* out) {
 // ---------------------------------------------------------------------------
 
 bool EncodeTask(const Task& task, std::vector<uint8_t>* out) {
+    // 预算这一项在发送端就先判：0 在这份格式里不表示"不限"，而是"父进程没交出可用的期限"，
+    // 那种交易本来就不该起辅助进程。宁可在开工之前失败，也不让子进程拿着 0 自己决定活多久。
+    if (task.budgetMs == 0 || task.budgetMs > kMaxWorkerBudgetMs) return false;
     std::vector<uint8_t> b;
     PutU16(&b, task.kind);
     PutU16(&b, 0);   // 对齐用，保留
     PutU64(&b, task.hwnd);
     PutU32(&b, task.waitMs);
-    PutU32(&b, 0);
+    PutU32(&b, task.budgetMs);
 
     PutNumberList(&b, task.match.hwnds);
     PutNumberList(&b, task.match.pids);
@@ -259,13 +262,16 @@ bool DecodeTask(const uint8_t* data, size_t size, Task* out) {
     size_t left = size;
     Task t;
     uint16_t pad16 = 0;
-    uint32_t pad32 = 0;
     if (!TakeU16(&p, &left, &t.kind)) return false;
     if (!TakeU16(&p, &left, &pad16) || pad16 != 0) return false;
     if (!TakeU64(&p, &left, &t.hwnd)) return false;
     if (!TakeU32(&p, &left, &t.waitMs)) return false;
     if (t.waitMs > kMaxTaskWaitMs) return false;   // 不许用等待时长把辅助进程按在原地
-    if (!TakeU32(&p, &left, &pad32) || pad32 != 0) return false;
+    // 这笔交易的剩余预算：0 不合法（那不是"不限"，那是没有期限），超过 --timeout-ms
+    // 的上限同样不合法（两边的代码不是同一份，或者发起方已经坏了）。整条作废，
+    // 不"照着看起来能跑的样子"继续 —— 辅助进程自己的存活时间只能由这个数决定。
+    if (!TakeU32(&p, &left, &t.budgetMs)) return false;
+    if (t.budgetMs == 0 || t.budgetMs > kMaxWorkerBudgetMs) return false;
 
     if (!TakeNumberList(&p, &left, &t.match.hwnds)) return false;
     if (!TakeNumberList(&p, &left, &t.match.pids)) return false;

@@ -34,9 +34,18 @@
     连打十二轮，并在一个父进程里连做几笔半途超时的交易、采样运行期句柄数，钉住
     "取消之后必须等内核松手才释放资源、而且这个等待有界"。
 
+    第 11/12 节是"辅助进程自己的时钟"那一条的真父子判据。第 11 节用 --no-redirect（没有 DWM
+    缓存面，绘制请求只能发给窗口自己的线程）加 --block-print-ms 造出"一笔隔离任务真的要跑
+    30 秒以上"的现场，判父命令带着图回来，而不是在第 30 秒把自己的辅助进程丢掉 —— 这一条要
+    真等 30 秒以上，全脚本只此一处，因为它判的对象就是时长本身。第 12 节在辅助进程还在干活时
+    只结束父命令自己（不用 taskkill /T，否则判据空转），判那份 KILL_ON_JOB_CLOSE 的作业把
+    辅助进程一起带走、目标窗口照旧活着。这两条在本机 PrintWindow 不等目标线程时都如实记未验证，
+    不拿离线算术结论冒充真父子实测（离线层判的是执行段只看交下来的预算那部分算式）。
+    默认整跑因此要多等约一分半（这两节各要真等 30 秒以上，而且第 12 节要等到能抓着一个还在
+    干活的辅助进程）；只想快跑离线层与前几节就请加 -SkipLong。
+
     隐私规矩不动：辅助进程只做"读某个窗口自己的画面"和"把顶层窗口列一遍"，桌面像素那几条
-    照旧要弹框；本脚本代答确认框时一律只答"否"（拒绝不拍到任何东西）。
-    默认只有一条会弹框的判据：确认框到点自己关（期限取 400 ms，没代人决定，也没拍到任何东西）。
+    照旧要弹框；本脚本代答确认框时一律只答"否"（拒绝不拍到任何东西）。    默认只有一条会弹框的判据：确认框到点自己关（期限取 400 ms，没代人决定，也没拍到任何东西）。
     那条框是真弹在人手上的：若有人在 400 ms 之内就碰了它（点"是"或点"否"），这条判据的前提
     "没人回答"不成立，记 SKIP 说明原因，不会算通过，也不会算失败——测试侧绝不代答"是"。
     要跑那两条需要往框上点"否"的判据，请显式加 -Consent。
@@ -44,12 +53,14 @@
     .\tests\timeout.ps1
     .\tests\timeout.ps1 -SkipProtocol   # 跳过离线层
     .\tests\timeout.ps1 -Consent        # 加上它才跑那两条要代答"否"的确认框判据
+    .\tests\timeout.ps1 -SkipLong       # 跳过第 11/12 节：那两条真父子判据各要真等 30 秒以上
     .\tests\timeout.ps1 -Keep           # 保留临时目录以便人眼看
 #>
 param(
     [string]$Exe,
     [switch]$SkipProtocol,
     [switch]$Consent,
+    [switch]$SkipLong,
     [switch]$Keep
 )
 
@@ -144,10 +155,11 @@ try {
         $m = [regex]::Match($tail, '共 (\d+) 项检查，失败 (\d+)')
         Assert-Ec ($m.Success) "离线判据的摘要读不出来：$tail"
         Assert-Ec ([int]$m.Groups[2].Value -eq 0) '离线判据里有失败项'
-        # 三层离线判据的构成（当前 87 + 86 + 31 = 204）：消息格式与期限、异步管道 I/O 生命周期
-        # （含"进程正常退出时未决资源不被析构"的独立子进程判据）、F03 连接时序（含真命名管道判据）。
-        # 只许增不许减
-        Assert-Ec ([int]$m.Groups[1].Value -ge 150) "离线判据的检查数不对劲（$($m.Groups[1].Value)），是不是被删了"
+        # 三层离线判据的构成（当前 135 + 86 + 31 = 252）：消息格式与期限（含"隔离调用领哪一段、
+        # 连管等多久、随任务交下去的预算怎么判界、辅助进程三段期限各自什么时候到点"）、
+        # 异步管道 I/O 生命周期（含"进程正常退出时未决资源不被析构"的独立子进程判据）、
+        # F03 连接时序（含真命名管道判据）。只许增不许减
+        Assert-Ec ([int]$m.Groups[1].Value -ge 200) "离线判据的检查数不对劲（$($m.Groups[1].Value)），是不是被删了"
         Write-Host "  $tail" -ForegroundColor DarkGray
     }
 
@@ -497,8 +509,121 @@ try {
             '这两条要往确认框上点一下；按约定不代点真实确认。加 -Consent 才跑（只代答"否"）'
     }
 
+    if ($SkipLong) {
+        Skip-Ec '真父子的两条长判据（显式长预算按期完成 / 父进程消失时作业回收）' `
+            '调用方给了 -SkipLong：这两节各要真等 30 秒以上；默认是跑的，离线层只判算式那半'
+    } else {
+        # =========================================================================
+        Write-Host "`n=== 11) 真父子：显式长预算（超过 30 秒）的隔离任务按期完成 ==="
+        # =========================================================================
+        # 这一节判的就是"辅助进程自己那一道与预算无关的固定秒表"的形状：旧实现一起来就无条件睡满
+        # 30 秒然后结束自己，父进程还在等同一条任务 —— 于是用户批准的 60 秒里，凡是真要跑过 30 秒
+        # 的那一笔，结果先没了（报成机制故障或期限耗尽，两种都是假的）。
+        # 现场靠 --no-redirect 的窗口造：那种窗口没有 DWM 缓存面，PrintWindow 只能把绘制请求发给
+        # 窗口自己的线程，而那条线程用 --block-print-ms 故意坐在里面不返回。
+        # 这一条要真等到 30 秒以上（整个脚本只此一处），因为它判的对象就是"时长"本身；
+        # 同一件事的算术部分（执行段的期限只来自交下来的那一笔预算）在离线层已经逐毫秒判过，
+        # 不需要在这里再等一遍。
+        $blockMs = 36000          # 明显长于旧那道 30 秒；两次 PrintWindow 也还在预算之内
+        $longBudgetMs = 90000     # 用户显式接受的时长：远大于 30 秒
+        $classLong = "ec-to-long-$tag"
+        $longWin = Start-EcWindow -RunDir $run -Class $classLong -Title "长预算窗口 $tag" `
+            -Rect '160,160,640,500' -Seed 27 -MaxLifeSeconds 900 `
+            -ExtraArgs @('--no-redirect', '--block-print-ms', [string]$blockMs)
+        $hLong = Get-EcHwndHex $longWin.Hwnd
+        $pLong = Get-EcRunFile -RunDir $run -Name 'long_budget.png'
+        $r = Invoke-Ec @('--hwnd', $hLong, '--capture', 'printwindow', '--yes', '--out', $pLong,
+                        '--timeout-ms', [string]$longBudgetMs)
+        $o = Json-Of $r
+        Write-Host ("  这一笔：用时 {0} ms，exit={1}，captured={2}" -f `
+                    $r.DurationMs, $r.Exit, @($o.captured)[0]) -ForegroundColor DarkGray
+        if ($r.DurationMs -lt 5000) {
+            # 这台机器的 PrintWindow 没把请求等下去（与第 4 节记的是同一个现象）：
+            # "一笔任务真的跑过 30 秒"这个前提在这里造不出来，只能如实记未验证，不能假装判过。
+            Assert-Ec ($r.Exit -eq 0 -and $o.captured -eq 1) `
+                "很快就返回了却仍然失败（exit=$($r.Exit)）：$($r.Stderr)"
+            Skip-Ec '显式长预算的隔离任务在第 30 秒之后按期完成' `
+                "本机 PrintWindow 没有等目标线程（$($r.DurationMs) ms 就返回），造不出`"一笔任务真的跑过 30 秒`"的现场。执行段只看交下来的预算这一条已在离线层逐毫秒判过；这一节要的是时长本身，不能用离线结论冒充真父子实测"
+        } else {
+            # 走到了这里就是目标线程真的把那一次 PrintWindow 拖住了：父命令必须带着图回来，
+            # 而不是在第 30 秒把自己的辅助进程丢掉。
+            Assert-Ec ($r.Exit -eq 0 -and $o.captured -eq 1) `
+                "跑过 30 秒的隔离任务被提前结束了（exit=$($r.Exit)，用时 $($r.DurationMs) ms）：$($r.Stderr)"
+            Assert-Ec ($r.DurationMs -gt 30000) `
+                "这一笔其实没有越过 30 秒那道坎（$($r.DurationMs) ms），换不到`"不再被截断`"这个结论"
+            Assert-Ec ($r.DurationMs -lt ($longBudgetMs + 10000)) `
+                "父命令比自己接受的预算还多跑了一整档（$($r.DurationMs) ms）"
+            Assert-Ec (Test-Path -LiteralPath $pLong) '长预算那一次按期完成却没落文件'
+            # 画面内容不在这里核对：那扇窗口的 WM_PRINT 处理只是坐着不画，画出来的形状归第 2 节判
+            Write-Host ("  这一笔真跑了 {0} ms：越过旧那道固定 30 秒秒表，结果照样交回" -f $r.DurationMs)
+        }
+        Assert-Ec (@(Wait-EcIdleHelpers).Count -eq 0) '长预算那一轮的辅助进程留到了现在'
+        Assert-Ec ([EcHarnessWin]::IsWindow($longWin.Hwnd)) '长预算那一轮把目标窗口牵连掉了'
+        Assert-Ec (Test-EcProcessAlive -ProcessId $longWin.Pid) '长预算那一轮结束了目标应用的进程'
+        Stop-EcWindow -Window $longWin
+
+                # =========================================================================
+        Write-Host "`n=== 12) 真父子：父进程消失时，作业把还在干活的辅助进程一起带走 ==="
+        # =========================================================================
+        # 第 7 节判的是"父进程还在、管道断了"那一路（父侧从断管立刻脱身，收尸由父进程自己做）。
+        # 这一节判的是另一条：父进程本身没了。收掉辅助进程的不是我们的代码，而是那份
+        # KILL_ON_JOB_CLOSE 的作业 —— 那份句柄是内核在父进程退出时关的，离线层判不了它，
+        # 只能用真父子现场判。
+        # 现场用批的：一个进程八扇同类窗口，--all 就是八笔先后开的隔离交易，每一笔都要起一个
+        # 辅助进程并让它在里面泵 DWM 合成 —— 于是"父进程名下正有一个辅助进程在干活"这件事
+        # 在这个窗口里是常态而不是运气，抓取用不到第 11 节那种 30 秒以上的等待。
+        $classGone = "ec-to-gone-$tag"
+        $goneWin = Start-EcWindow -RunDir $run -Class $classGone -Title "父进程消失批 $tag" `
+            -Rect '700,160,1160,500' -Seed 28 -Windows 8 -MaxLifeSeconds 900
+        $dirGone = Get-EcRunFile -RunDir $run -Name 'parent_gone'
+        New-Item -ItemType Directory -Force -Path $dirGone | Out-Null
+        $script:EcOrphanHelper = $null
+        $script:EcOrphanGate = (Get-Date).AddMilliseconds(400)
+        $probeOrphan = {
+            param($p)
+            # 400 毫秒之前不抓：进程自己起步那一下还没有交易在飞。
+            if ((Get-Date) -lt $script:EcOrphanGate) { return '' }
+            foreach ($kid in @(Get-EcChildPids -ProcessId ([int]$p.Id))) {
+                $proc = Get-Process -Id $kid -ErrorAction SilentlyContinue
+                if (-not $proc) { continue }
+                $path = ''
+                try { $path = $proc.Path } catch { $path = '' }
+                if ($path -ne $Exe) { continue }
+                $script:EcOrphanHelper = $kid
+                # 只结束父命令自己。不用 Stop-EcProcessTree / taskkill /T：那会顺手把辅助进程
+                # 一起杀掉，于是"作业替我们收尾"这件事根本没被检验过（判据空转）。
+                try { $p.Kill(); [void]$p.WaitForExit(5000) } catch { }
+                return 'killed-parent'
+            }
+            return ''
+        }
+        $r = Invoke-Ec @('--pid', [string]$goneWin.Pid, '--all', '--capture', 'dwm', '--yes',
+                        '--out', (Join-Path $dirGone 'gone_%i.png'), '--timeout-ms', '60000') `
+                  -probe $probeOrphan -probeMs 30000
+        if (-not $script:EcOrphanHelper) {
+            # 抓不着就如实记未验证：这一节判的是"父进程没了之后内核替我们收尾"，
+            # 没有还在飞的辅助进程就没有可判的对象，不能拿"没报错"当成判过。
+            Skip-Ec '父进程消失时由作业回收还在干活的辅助进程' `
+                '八笔隔离交易里都没在父命令名下抓到一个还在跑的辅助进程（这一轮的每一笔都交回得太快）。作业句柄随父进程退出由内核关闭这一条机制本轮没有被改动过，但也没被实测到'
+        } else {
+            $gone = $false
+            $deadline = (Get-Date).AddSeconds(8)
+            while ((Get-Date) -lt $deadline) {
+                if (-not (Test-EcProcessAlive -ProcessId $script:EcOrphanHelper)) { $gone = $true; break }
+                Start-Sleep -Milliseconds 100
+            }
+            Assert-Ec $gone ("父进程已经退出，它名下的辅助进程 {0} 还活着（作业那条兜底没起作用）" -f $script:EcOrphanHelper)
+            Assert-Ec (@(Wait-EcIdleHelpers).Count -eq 0) '父进程消失之后仍留着本工具自己的进程'
+            Assert-Ec (Test-EcProcessAlive -ProcessId $goneWin.Pid) '父进程消失时结束了目标应用的进程'
+            Assert-Ec ([EcHarnessWin]::IsWindow($goneWin.Hwnd)) '父进程消失时把目标窗口一起牵连掉了'
+            Write-Host ("  辅助进程 {0} 随父进程一起消失，目标进程 {1} 照旧活着" -f `
+                       $script:EcOrphanHelper, $goneWin.Pid)
+        }
+        Stop-EcWindow -Window $goneWin
+    }
+
     # =========================================================================
-    Write-Host "`n=== 11) 期限覆盖不到的系统调用（如实记未验证，不假装已强制） ==="
+    Write-Host "`n=== 13) 期限覆盖不到的系统调用（如实记未验证，不假装已强制） ==="
     # =========================================================================
     Skip-Ec '写文件与写标准输出开工之后的期限抢占' `
         '原子写与 WriteFile 没有可取消的中间点，本机也没有满盘/只读卷可用。实现只在开工之前判预算、完工之后核用时，这条边界写在 README 与 AGENTS.md'

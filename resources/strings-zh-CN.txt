@@ -237,6 +237,8 @@ cap.worker.spawn_failed	辅助进程没能启动，这次取图没有执行
 cap.worker.spawn_failed_hint	printwindow 与 dwm 的读回在本工具的辅助进程里执行（那种调用会同步等目标窗口，没有中断点）。启动失败通常是权限、策略或杀软拦截：%1
 cap.worker.channel_failed	与辅助进程的管道断了，这次取图没有拿到结果
 cap.worker.channel_failed_hint	辅助进程可能被外部结束或自己崩了（它最后的退出码是 %1；60 往上表示它按绑定校验拒绝执行，-1 表示当时还在跑）。父进程只结束自己起的那一个进程，不碰目标应用
+cap.worker.handshake_failed	辅助进程已经启动，但没有在启动握手期限内接上管道，这次取图没有执行
+cap.worker.handshake_failed_hint	这条期限只管"起来了却没人把任务交到手"那一段（本工具内置 %1 毫秒），它不是你的 --timeout-ms，加大 --timeout-ms 对一件根本没开始的事没有帮助。父进程只结束自己起的那一个进程，不碰目标应用
 cap.worker.protocol_failed	辅助进程交回的消息不合本协议，结果已丢弃
 cap.worker.protocol_failed_hint	nonce 或协议版本对不上时整条作废：宁可报失败，也不把别人的或残缺的结果当成这一次的成功
 cap.worker.bad_task	交给辅助进程的任务不合法，未执行

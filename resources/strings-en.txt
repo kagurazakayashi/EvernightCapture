@@ -231,6 +231,8 @@ cap.worker.spawn_failed	The helper process could not be started, so this capture
 cap.worker.spawn_failed_hint	printwindow and the dwm read-back run inside a helper process of this tool (those calls wait for the target window and have no interrupt point). A failure here usually means a policy, permission or antivirus blocked it: %1
 cap.worker.channel_failed	The pipe to the helper process broke; this capture got no result
 cap.worker.channel_failed_hint	The helper may have been killed externally or crashed on its own (its last exit code was %1; 60 and up means it refused on the binding checks, -1 means it was still running). The parent only ever terminates the process it started, never the target application
+cap.worker.handshake_failed	The helper process started but never connected to the pipe within the startup handshake window; this capture did not run
+cap.worker.handshake_failed_hint	That window only covers "started, but nobody handed over a task" (%1 ms, built into this tool). It is not your --timeout-ms, and raising --timeout-ms does not help something that never began. The parent only ever terminates the process it started, never the target application
 cap.worker.protocol_failed	The helper sent a message that does not match this protocol; the result was discarded
 cap.worker.protocol_failed_hint	A mismatching nonce or protocol version invalidates the whole message: better a reported failure than someone else's or a truncated result counted as this run's success
 cap.worker.bad_task	The task handed to the helper process is not valid and was not executed
