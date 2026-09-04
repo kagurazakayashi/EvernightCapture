@@ -28,6 +28,7 @@
 #include "CropGeometry.h"
 #include "CursorControl.h"   // 光标能力的闸门与 requested/effective/basis 那三个键的合成（判据在那个头文件）
 #include "Deadline.h"
+#include "Delivery.h"   // 交付那一步的接缝与记账（开工前判预算、完工后核预算，两件事分开）
 #include "Encoder.h"
 #include "FallbackChain.h"   // auto 那条回退链本体与"换后端有没有意义"的判据（离线判据注入假后端）
 #include "FileSave.h"
@@ -490,6 +491,21 @@ bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
     return true;
 }
 
+// 生产用的那一个出口：真文件（同目录临时文件 + 原子改名，见 FileSave.h）与真标准输出。
+// 这里不加任何判断与重试 —— 交付这件事的判据只有一份，写在 src/Delivery.h；这一层只是
+// 把那两个调用接上，异常照旧往外飞，由每个目标那一层边界接住。
+class RealOutputSink final : public OutputSink {
+public:
+    bool SaveFile(const std::wstring& path, const std::vector<uint8_t>& bytes, bool overwrite,
+                  Diagnostic* err) override {
+        return SaveFileAtomic(path, bytes, overwrite, err);
+    }
+    bool EmitBytes(const std::vector<uint8_t>& bytes, uint64_t* emitted,
+                   DWORD* ioError) override {
+        return EmitStdoutBytes(bytes, ioError, emitted);
+    }
+};
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -793,6 +809,12 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 哪怕一张都没写成，stdout 也不会冒出文字。
     if (opt.output == L"-") ClaimStdout();
 
+    // 交付那一步的三件事：整批共用的那一份预算（不是一个目标一份）、真的出口（文件 / 标准输出），
+    // 以及量 elapsedMs 的那把时钟。时钟必须与下面每个目标开工时记的 started 同一把，否则
+    // images[].elapsedMs 会跟着预算那把 QPC 一起漂；预算本身仍是 Deadline 里那份，不在这里另领。
+    RealOutputSink sink;
+    const DeliveryRun delivery{&dl, &sink, [] { return GetTickCount64(); }};
+
     for (size_t i = 0; i < targets.size(); ++i) {
         Target& t = targets[i];
         const ULONGLONG started = GetTickCount64();
@@ -883,7 +905,9 @@ CaptureOutcome RunCapture(const Options& opt) {
         Diagnostic targetErr;
         bool fatal = false;
         bool ok = false;
-        bool recorded = false;   // stdout 那条纹路里结果条目已提前入列，末尾不再重复入列
+        // 交付那一段的结论与"这一张的账是不是已经在那里记完"（见 src/Delivery.h）。
+        DeliveryStep step;
+        bool settled = false;
         std::optional<Diagnostic> uniformNote;   // 单色质量提示：等这张图真交出去了再送
         std::optional<Diagnostic> clippedNote;   // 区域丢失提示：同上，没交出去就不提示
         std::optional<Diagnostic> cropMappingNote;   // 屏幕原点核实不出来：同上
@@ -1038,106 +1062,62 @@ CaptureOutcome RunCapture(const Options& opt) {
                                  &targetErr, &fatal);
             }
 
-            // 提交这一步（写文件 / 写标准输出）同样不许重新领一份预算：预算已经用尽就在这里
-            // 停下，帧被丢掉而不落地。已经取到的像素在磁盘写坏之前丢弃，比"先写了再说"干净。
-            // 这一关是**开工之前**的判定：真开始写之后，磁盘写与被人堵住的管道都没有中断点，
-            // 期限对它们只能在完工之后核对 —— 这条边界写在 README 与 AGENTS.md 里。
-            if (ok && dl.Spent()) {
-                const bool toStdout = img.file == L"-";
-                targetErr = BudgetSpent(dl, codes::kIoTimeout,
-                                        toStdout ? stages::kStdout : stages::kWrite, backend);
-                targetErr.option = L"--out";
-                targetErr.value = img.file;
-                ok = false;
-                stage = toStdout ? stages::kStdout : stages::kWrite;
-            }
+            // 交付这一段（写文件 / 写标准输出）整个交给 DeliverImage：开工之前判一次预算、
+            // 完工之后再核一次，交付事实与期限合规分开记账（那三段各做什么、为什么必须分开，
+            // 判据本体写在 src/Delivery.h）。异常不在那里接：真抛出来就是"这一张没落地、
+            // 账也一页没记"，由下面那层通用错误路接手 —— 与它还在这一段之内时同一出口。
+            if (ok) {
+                stage = img.file == L"-" ? stages::kStdout : stages::kWrite;
+                DeliveryTarget dtarget;
+                dtarget.file = img.file;
+                dtarget.tag = t.Tag();
+                dtarget.backend = backend;
+                dtarget.overwrite = opt.overwrite;
+                dtarget.implicitStdout = opt.outputImplicitStdout;
 
-            if (ok && img.file == L"-") {
-                stage = stages::kStdout;
-                DWORD ioError = 0;
-                // 结果条目先构造好，再发图片字节：发出去了这一张就算成，
-                // 发不出去就撤回来，captured 与实际到达 stdout 的字节不会互相打脸。
-                img.bytes = encoded.size();
-                img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
-                outcome.images.push_back(img);
-                recorded = true;
+                PendingImage pending;
+                pending.startedClockMs = started;
+                pending.image = std::move(img);
+                // 质量提示的先后顺序与这一段存在之前一致；送不送由交付那一步判（图没落地就不提示）。
+                if (clippedNote) pending.notes.push_back(std::move(*clippedNote));
+                if (cropMappingNote) pending.notes.push_back(std::move(*cropMappingNote));
+                if (hdrNote) pending.notes.push_back(std::move(*hdrNote));
+                if (uniformNote) pending.notes.push_back(std::move(*uniformNote));
 
-                ok = EmitStdoutBytes(encoded, &ioError);
-                if (!ok) {
-                    outcome.images.pop_back();
-                    recorded = false;
-                    // 这一条是"缺少显式输出路径"唯一还需要说出来的地方：本次没给 --out，
-                    // 图片就得整张挤过 stdout 这条管道，管道坏了把它写成文件就能绕开。
-                    // 给了 --out - 的人本来就选定了这条道，所以那里不补这句话。
-                    std::wstring hint;
-                    if (opt.outputImplicitStdout) hint = Msg(L"cli.missing_output_hint");
-                    targetErr = Diagnostic{codes::kWriteFailed, Msg(L"io.stdout_failed"),
-                                           L"--out", L"-", std::move(hint), t.Tag(), backend,
-                                           stages::kStdout};
-                    targetErr.win32 = ioError;
-                }
-            } else if (ok) {
-                stage = stages::kWrite;
-                Diagnostic writeErr;
-                ok = CallBackend(stage, backend,
-                                 [&] {
-                                     return SaveFileAtomic(img.file, encoded, opt.overwrite,
-                                                           &writeErr);
-                                 },
-                                 &writeErr, &fatal);
-                if (!ok) targetErr = std::move(writeErr);
+                CallBackend(
+                    stage, backend,
+                    [&] {
+                        step = DeliverImage(delivery, dtarget, std::move(pending), encoded,
+                                            &outcome);
+                        return step.delivered;
+                    },
+                    &targetErr, &fatal);
+                settled = step.recorded;
             }
         } catch (...) {
             // 走到这里说明上面那几层边界之外还有东西抛（例如 std::vector 扩容失败）：
             // 同样只作废这一个目标，除非它确实是整机级别的资源问题。
             FillFromCurrentException(&targetErr, stage, CaptureMethodName(opt.capture), &fatal);
-            ok = false;
+            settled = false;   // 那一段根本没走完，账不能算记过
         }
 
-        if (!ok) {
-            if (recorded) outcome.images.pop_back();   // 字节没到 stdout，那张不算
+        if (!settled) {
+            // 这一张没走完成功的交付：要么在进交付段之前就停了（取帧 / 裁剪 / 缩放 / 编码那几段
+            // 的错误），要么交付那一段抛了异常被上面接住。两种都在这里记一条，backend 已被
+            // 那两层填过的不改（它写的是自己那条真实路径，比这里能推断出的更准）。
+            // 交付那一段自己记过账的（含"图已落地但预算才跨"那一种）不在这里重复入账。
             TagTarget(&targetErr, t, stage);
             outcome.errors.push_back(std::move(targetErr));
-            if (fatal || gate.Refused()) {
-                // 致命错误，或者已经有人在确认框上答过"否"（包括根本弹不出框）：
-                // 剩下那些目标不再换后端、不再重试，也不再问第二次 —— 直接停在这里。
-                // 前面已经写出的图与这条诊断都留着，调用方看得到"停在哪、为什么停"。
-                break;
-            }
-            continue;
         }
-
-        if (recorded) {   // stdout 那条路已经入过列
-            if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
-            if (cropMappingNote) outcome.notes.push_back(std::move(*cropMappingNote));
-            if (hdrNote) outcome.notes.push_back(std::move(*hdrNote));
-            if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
-            continue;
-        }
-        // 到这里这一张是真交出去了（文件已提交，或字节已达标准输出），质量提示这时才有意义
-        if (clippedNote) outcome.notes.push_back(std::move(*clippedNote));
-        if (cropMappingNote) outcome.notes.push_back(std::move(*cropMappingNote));
-        if (hdrNote) outcome.notes.push_back(std::move(*hdrNote));
-        if (uniformNote) outcome.notes.push_back(std::move(*uniformNote));
-        img.bytes = encoded.size();
-        img.elapsedMs = static_cast<uint32_t>(GetTickCount64() - started);
-        outcome.images.push_back(std::move(img));
+        // 致命错误，或者已经有人在确认框上答过"否"（包括根本弹不出框）：
+        // 剩下那些目标不再换后端、不再重试，也不再问第二次 —— 直接停在这里。
+        // 前面已经写出的图与这条诊断都留着，调用方看得到"停在哪、为什么停"。
+        // 交付完成之后预算才跨的那一张不会停在这里：它已经落地，下一个目标会在开工之前
+        // 被上面那份共用预算挡下来，不会再领一笔预算继续干活。
+        if (fatal || gate.Refused()) break;
     }
 
-    if (outcome.images.empty()) {
-        const std::wstring& code =
-            outcome.errors.empty() ? std::wstring() : outcome.errors.front().code;
-        outcome.exitCode = code == codes::kAccessDenied || code == codes::kConsentUnavailable ||
-                             code == codes::kConsentTimeout
-                         ? EX_DENIED
-                         : code == codes::kWriteFailed || code == codes::kFileExists ||
-                                 code == codes::kIoTimeout
-                             ? EX_IO_FAILED
-                             : EX_CAPTURE_FAILED;
-    } else {
-        // 部分成功：图片已写出，但有目标失败 -> 用截图失败码提示调用方看 errors
-        outcome.exitCode = outcome.errors.empty() ? EX_OK : EX_CAPTURE_FAILED;
-    }
+    outcome.exitCode = OutcomeExitCode(outcome);
     return outcome;
 }
 

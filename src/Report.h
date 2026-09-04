@@ -58,8 +58,11 @@ std::wstring VersionText();
 bool EmitStdout(const std::wstring& text);
 bool EmitStderrRaw(const std::wstring& text);
 // 图片字节写 stdout；ioError 回收 GetLastError 原值（断管与磁盘满是两种故障，别混成一句话）。
+// emittedBytes 回收**实际发出去**的字节数：返回 false 时它可能是 0（一个字节都没出去），
+// 也可能停在中间（管道里留下的是半张图）。这两种现场调用方要分得开，不能都当成"什么都没写"。
 // 第一次写之前就把 stdout 声明为图片专用，此后 EmitStdout 一律返回 false 而不再写它。
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError = nullptr);
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError = nullptr,
+                     uint64_t* emittedBytes = nullptr);
 
 // stdout 是否已被图片字节占用（或明确将要用它发图）。为真时结果 JSON 只能走 stderr。
 void ClaimStdout();

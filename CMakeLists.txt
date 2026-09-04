@@ -52,6 +52,7 @@ add_executable(ecapture
   src/WinrtApartment.cpp
   src/OutputPlan.cpp
   src/FileSave.cpp
+  src/Delivery.cpp
   src/Consent.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
@@ -580,4 +581,44 @@ target_link_libraries(ecapture-hdr-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-hdr-tests PROPERTIES OUTPUT_NAME "ecapture-hdr-tests")
 set_property(TARGET ecapture-hdr-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 交付那一步与"期限合规"分开记账的离线判据（由 tests\delivery.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一批判据要的现场是"最后一张图的磁盘写跨过了时限""标准输出的
+# 字节全部到达之后预算才用尽""半段流留在管道里""改名那一瞬间撞了 --no-overwrite"—— 时间点与
+# 故障都排在一次真实写入的两端，真机上要么安排不出来（本机没有一块能被测试变慢的盘，也不许
+# 为了造慢盘去改用户的存储设置），要么根本要拿别人的应用当管道对面。所以把交付那一步的编排本体
+#（src/Delivery.cpp 的 DeliverImage / OutcomeExitCode）连同**生产的原子写**（src/FileSave.cpp）
+# 一起链进来，出口与时钟从测试注入：文件走真磁盘（于是"磁盘上到底有没有这张图、多少字节、
+# 旧文件有没有被破坏"是现场量出来的，不是判据里抄的），标准输出走内存管道（半段流就是半段）。
+# 这里不链取帧通道、不链编码器、不弹框：进来的已经是编好的字节。链接项一个图形库都不需要。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-delivery-tests
+  tests/delivery_state.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
+  src/Delivery.cpp
+  src/FileSave.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
+  src/WindowMatch.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-delivery-tests PRIVATE resources src)
+target_compile_features(ecapture-delivery-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-delivery-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-delivery-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-delivery-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-delivery-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-delivery-tests PROPERTIES OUTPUT_NAME "ecapture-delivery-tests")
+set_property(TARGET ecapture-delivery-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

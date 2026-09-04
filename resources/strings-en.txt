@@ -183,6 +183,9 @@ io.open_failed_hint	Does the parent directory exist? Is the path valid (%1)
 io.dir_missing	Output directory does not exist - create it first
 io.write_interrupted	Write to file interrupted
 io.stdout_failed	Failed to write to stdout
+io.stdout_partial	Stdout write interrupted: %1 of %2 bytes were emitted, so this image was not delivered - the pipe holds a truncated stream
+io.timeout_delivered	The image was delivered in full (%1 bytes), but the automatic budget of %2 ms had run out when that write finished (%3 ms elapsed)
+io.timeout_delivered_hint	What already landed on disk (or reached stdout) is not rolled back and stays in images; this only says the batch did not finish inside the budget. Raise --timeout-ms, or pick an output that does not wait that long to commit: move the target folder onto a local disk, or have whatever reads stdout ready first
 io.output_collision	Several targets resolve to the same output name; nothing was captured or written
 io.output_collision_hint	Targets %1 and %2 both resolve to %3; put a placeholder that tells them apart (%i or %h) into --out
 io.temp_failed	Cannot create the temporary file in the output directory

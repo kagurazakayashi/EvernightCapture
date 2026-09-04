@@ -189,6 +189,9 @@ io.open_failed_hint	父目录是否存在？路径是否合法（错误码 %1）
 io.dir_missing	输出目录不存在，请先建好目录
 io.write_interrupted	写文件中断
 io.stdout_failed	写标准输出失败
+io.stdout_partial	写标准输出中断：已发出 %1 / %2 字节，这一张没有完整交付（管道里留下的是一段残缺的流）
+io.timeout_delivered	图已完整交付（%1 字节），但这一次交付结束时自动预算 %2 ms 已用尽（实际用时 %3 ms）
+io.timeout_delivered_hint	已经落地的这一张不会被回滚，也不会从 images 里消失；这条说的只是这一批没在预算内结束。加大 --timeout-ms，或换一条不在提交那一步等很久的输出：目标目录挪到本地盘，或先把读走标准输出的那一方准备好
 io.output_collision	多个目标算出同一个输出名，整批没有截图也没有写文件
 io.output_collision_hint	第 %1 张与第 %2 张都要写到 %3；请在 --out 里加上能区分目标的占位符（如 %i 或 %h）
 io.temp_failed	无法在输出目录下创建临时文件

@@ -183,6 +183,9 @@ io.open_failed_hint	上層目錄是否存在？路徑是否合法（錯誤碼 %1
 io.dir_missing	輸出目錄不存在，請先建立目錄
 io.write_interrupted	寫檔案中斷
 io.stdout_failed	寫標準輸出失敗
+io.stdout_partial	寫標準輸出中斷：已發出 %1 / %2 位元組，這一張沒有完整交付（管線裡留下的是一段殘缺的流）
+io.timeout_delivered	圖已完整交付（%1 位元組），但這一次交付結束時自動預算 %2 ms 已用盡（實際用時 %3 ms）
+io.timeout_delivered_hint	已經落地（或已全部抵達標準輸出）的這一張不會被撤回，也不會從 images 裡消失；這條說的只是這一批沒在預算內結束。加大 --timeout-ms，或換一條不會在提交那一步等很久的輸出：目標目錄搬到本機磁碟，或先把讀走標準輸出的那一方準備好
 io.output_collision	多個目標算出同一個輸出名，整批沒有截圖也沒有寫檔案
 io.output_collision_hint	第 %1 張與第 %2 張都要寫到 %3；請在 --out 裡加上能區分目標的佔位符（如 %i 或 %h）
 io.temp_failed	無法在輸出目錄下建立暫存檔案

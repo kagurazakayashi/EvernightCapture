@@ -583,7 +583,8 @@ void ClaimStdout() { g_stdoutClaimed = true; }
 
 bool StdoutClaimed() { return g_stdoutClaimed; }
 
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError) {
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError, uint64_t* emittedBytes) {
+    if (emittedBytes) *emittedBytes = 0;
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!handle || handle == INVALID_HANDLE_VALUE) {
         // 句柄本身就取不到：这里 GetLastError 早就不是失败原因了，照实报"句柄无效"
@@ -601,10 +602,13 @@ bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError) {
             // 立刻取错误码：断管 / 磁盘满 / 句柄失效在这一步是三种不同的故障，
             // 调用方要靠它区分，晚一步就被后续 API 覆盖了。
             if (ioError) *ioError = GetLastError();
+            // 已经排出去的那一段收不回来：把它照实交回去，别让调用方以为管道还是干净的。
+            if (emittedBytes) *emittedBytes = ok ? offset + written : offset;
             return false;
         }
         offset += written;
     }
+    if (emittedBytes) *emittedBytes = offset;
     return true;
 }
 
