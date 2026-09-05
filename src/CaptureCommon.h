@@ -56,19 +56,21 @@ struct CapturedFrame {
     bool cursorStateKnown = false;
     bool cursorInFrame = false;
 
-    // HDR 色彩（--hdr）：pixels 交回来时那份**来源**色彩空间（编码之前的原样）。最常见的
-    // B8G8R8A8 那条恒为 kSrgbBgra8、toneMapped 为 false —— 与这条选项存在之前逐字节相同。
-    // 只有会带回广色域帧的两条通道（wgc / 桌面复制）在某次真带回 FP16/10 位帧时才写成别的值，
-    // 而那是被 --hdr tonemap 就地映射成 8 位 BGRA 之后仍然保留"映射前来源"那一份，供结果报告。
-    // toneMapped 只在确实过了一遍浮点 tone mapping 时为 true（SDR 透传不置它）。
-    // 判据与那三个结果键的合成只有一份（src/HdrColor.h 的 MakeHdrReport）。
+    // HDR 色彩（--hdr）：下面这三件是**三个独立的事实**，各自由唯一的那一步写，合成结果里那组键
+    // 时谁也不替谁作保（判据与合成只有一份，src/HdrColor.h 的 MakeHdrReport）：
+    //   sourceColorSpace 取帧那一步从 GPU 纹理描述里读回的内存布局（编码之前的原样）。最常见的
+    //     B8G8R8A8 那条恒为 kSrgbBgra8、toneMapped 为 false —— 与这条选项存在之前逐字节相同。
+    //     只有会带回广色域帧的两条通道（wgc / 桌面复制）在某次真带回 FP16 / 10 位帧时才写成别的值，
+    //     而那是被 --hdr tonemap 就地映射成 8 位 BGRA 之后仍然保留"映射前来源"那一份，供结果报告。
+    //   toneMapped 只在确实过了一遍浮点 tone mapping 时为 true（SDR 透传不置它）——"已映射"那一句
+    //     唯一的来源就是这里，不是 sourceColorSpace 写着广色域。
+    //   displayHdrState 显式 --hdr 策略下，这条路径在**开始采集之前**对"这块屏此刻是不是 HDR 模式"
+    //     那一次只读问答的答复。没问过（没写 --hdr、写成 auto、或这条路径根本不问）与问不出来一律
+    //     kUnknown，绝不折成 kSdr —— 一张 8 位 BGRA 帧本身不证明原始内容是 SDR（合成器可能把 HDR
+    //     画面压成 8 位再交给一个 B8G8R8A8 的帧池），而那一句"来源是 SDR"只能由这次问答或这条路径
+    //     结构上带不回广色域帧来支撑。拿去决定留哪一条提示的判据在 JudgeHdrPassiveNote。
     FrameColorSpace sourceColorSpace = FrameColorSpace::kSrgbBgra8;
     bool toneMapped = false;
-    // 显式 --hdr 策略下，这条路径在**开始采集之前**对"这块屏此刻是不是 HDR 模式"那一次只读问答
-    // 的答复。没问过（没写 --hdr、写成 auto、或这条路径根本不问）与问不出来一律 kUnknown，
-    // 绝不折成 kSdr —— 一张 8 位 BGRA 帧本身不证明原始内容是 SDR（合成器可能把 HDR 画面压成
-    // 8 位再交给一个 B8G8R8A8 的帧池），而那一句"来源是 SDR"只能由这次问答支撑。
-    // 拿去决定留哪一条提示的判据在 src/HdrColor.h 的 JudgeHdrPassiveNote。
     DisplayHdrState displayHdrState = DisplayHdrState::kUnknown;
 };
 

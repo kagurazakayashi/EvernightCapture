@@ -476,6 +476,10 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // verifiedOnThisMachine 恒为 no：本项目没有能开 HDR 的显示器，tone mapping 的数学离线判过，
     // 但"真在一幅 HDR 帧上跑通"没有实测过——写 yes 或 unknown 都会把这件事说歪。
     r.hdr.verifiedOnThisMachine = Tri::kNo;
+    // 那条曲线的名字与它适用的那三种来源。这一句**不是**"这种布局就按这种 HDR 解"的对照表：
+    // PQ / HLG 那两条只在调用方拿得出可靠的输出色彩空间时才适用（DXGI 不把传递函数放进像素
+    // 格式里），而那一句在本构建里没有人给得出，所以 10 位包一律是不可核实，见
+    // caveat::kHdrLayoutIsNotColorSpace。
     r.hdr.toneMapping = L"fixed_extended_reinhard_scrgb_pq_hlg";
     r.hdr.floatIntermediateFrame = L"per_pixel_registers";
     r.hdr.encoderOutput = L"sdr_bgra8";
@@ -551,6 +555,9 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // 这一条与 color.paths 那一段逐路径的 honorsExplicitPolicy 同源：显式要过 tonemap/refuse 时，
     // 兑现得了的只有 WGC 那两条路径，桌面复制那两条本构建没实现那几步（所以会被摘出 auto 链）。
     r.caveats.push_back(caveat::kHdrPolicyWgcOnly);
+    // 这一条守着 color.toneMapping 那一句被读歪的可能：那张曲线表只在**给了可靠输出色彩空间**
+    // 的时候适用，本构建不从像素布局倒推色彩空间（10 位包不等于 PQ）。
+    r.caveats.push_back(caveat::kHdrLayoutIsNotColorSpace);
     if (!probe.buildIdKnown) r.caveats.push_back(caveat::kBuildIdUnavailable);
     if (r.matchesVerifiedEnv == Tri::kNo) r.caveats.push_back(caveat::kNotTestedHere);
     if (r.matchesVerifiedEnv == Tri::kUnknown) r.caveats.push_back(caveat::kTestedEnvUnknown);

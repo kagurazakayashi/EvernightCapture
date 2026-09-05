@@ -119,6 +119,14 @@ inline constexpr const wchar_t* kHdrOutputIsSdr = L"hdr_output_is_tone_mapped_to
 // 因此 --capture auto 配显式策略时它会被摘出链，显式点名它时解析期就报 capture.hdr_unsupported；
 // 完整的广色域采集是独立后续任务。这一条与 color.paths 里逐路径的 honorsExplicitPolicy 同源。
 inline constexpr const wchar_t* kHdrPolicyWgcOnly = L"hdr_explicit_policy_only_fulfilled_by_wgc";
+// HDR 的边界四：**像素布局本身不等于色彩空间，本构建也不从布局去猜色彩空间。**
+// color.toneMapping 那一句说的是"给了可靠的输出色彩空间时按哪条曲线映射"，不是一张"这种布局
+// 就按这种 HDR 解"的对照表：DXGI 把 PQ / HLG / 宽色域 SDR 那一句放在输出的 color space 上，
+// 不放在像素格式里，所以 10 位打包那一种布局在本构建里既不会被默认当成 ST.2084 (PQ)，也不会
+// 被折成 SDR —— 它连同认不出布局的任何格式一起是 capture.hdr_unverifiable，而结果里那一格写
+// unverified（见 images[].hdrEffective / hdrBasis）。
+inline constexpr const wchar_t* kHdrLayoutIsNotColorSpace =
+    L"hdr_pixel_layout_is_not_a_color_space";
 }  // namespace caveat
 
 // 本项目**唯一实测过**这套工具的环境。README《系统支持》与 AGENTS.md 里"已实测"记的就是它，

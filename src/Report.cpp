@@ -165,10 +165,14 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         // （与这条选项存在之前的输出逐字节相同）。五个键各说一件事、谁也不冒充谁：
         //   hdrRequested      要求的策略：auto / tonemap / refuse
         //   hdrEffective      这一帧实际经历的处理：sdr_passthrough / tone_mapped / unverified
-        //   hdrBasis          这个结论凭什么（来源那条路径登记成什么、这一帧来源核实成什么）
-        //   sourceColorSpace  编码之前那一份来源色彩空间（映射过的 wide 帧保留映射前那一份）
-        //   sourceBitDepth    来源每通道位数（8 / 10 / 16），认不出来时整个键不出现
-        // 与 cursor* / rect / capturedRect / cropRect 同一性质：这是内容判据，--quiet 不许藏。
+        //   hdrBasis          这个结论凭什么（三条来源各管各的：内存布局、那次只读问答、
+        //                     那份"真过了映射"的记录，再加这条路径在登记表上的那一句）
+        //   sourceColorSpace  编码之前那一份来源布局（映射过的 wide 帧保留映射前那一份）；
+        //                     布局认得出而色彩空间说不出时是 rgb10a2_unverified
+        //   sourceBitDepth    来源每通道位数（8 / 10 / 16），连布局都认不出时整个键不出现
+        // "核实不出来源是不是 HDR"这一件就写在 hdrEffective=unverified 这一格里，不靠任何提示补：
+        // notes 整段会被 --quiet 去掉，而这一组键是内容判据，跟 cursor* / rect / capturedRect /
+        // cropRect 同一性质，--quiet 不许藏。取值全是 ASCII 机器名，不随 --lang 变。
         if (img.hdr.written) {
             j.Key(L"hdrRequested").Value(img.hdr.requested);
             j.Key(L"hdrEffective").Value(img.hdr.effective);

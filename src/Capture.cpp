@@ -982,15 +982,23 @@ CaptureOutcome RunCapture(const Options& opt) {
                                               frame.cursorInFrame);
                 // HDR 那组键也在这里一次算完（判据与取值都在 src/HdrColor.h）：requested 是要求的策略，
                 // effective 是这一帧**实际**经历的处理，basis 说这个结论凭什么，再加来源色彩空间与位深。
-                // 传进去的 frame.sourceColorSpace 是编码之前那一份来源事实（wide 帧映射后仍保留映射前
-                // 那一份）。没写 --hdr 时 written=false，那组键一个都不出现，这条流与之前逐字节相同。
-                img.hdr = MakeHdrReport(opt.hdr, img.path, frame.sourceColorSpace);
+                // 三份事实各自交上来，谁也不替谁作保：frame.sourceColorSpace 是取帧那一步读回的内存
+                // 布局（编码之前那一份；wide 帧映射后仍保留映射前那一份），frame.toneMapped 是映射
+                // 函数自己记下的"这一帧真过了浮点那条链路"，frame.displayHdrState 是采集之前那次
+                // 只读问答的答复（没问过与问不出来都是 kUnknown）。"这张帧是 8 位"不证明来源是 SDR，
+                // 所以那一格说不说 sdr_passthrough 只看后面两份，不看这一帧自己的形状。
+                // 没写 --hdr 时 written=false，那组键一个都不出现，这条流与之前逐字节相同。
+                img.hdr = MakeHdrReport(opt.hdr, img.path, frame.sourceColorSpace, frame.toneMapped,
+                                       frame.displayHdrState);
                 // 明确要过 HDR 处理（tonemap / refuse）而这一张是按 8 位交付的：这不是错误（图照常交），
                 // 但"我要过 HDR 处理"与"这一张其实没有 HDR 可处理"是两件事，要放在调用方眼前，
                 // 而不是拿一个静默的通过冒充"HDR 已经被正确映射"。auto 不提示（它本就只是被动上报）。
                 // 留哪一条由 JudgeHdrPassiveNote 判：那句"来源是 SDR"只能由**采集之前真的问到
                 // 这块屏此刻是 SDR**来支撑（frame.displayHdrState），一张 8 位帧自己不算证据 ——
                 // 问不出来时改发 note.hdr_source_unverified，而不是把没核实说成没有 HDR。
+                // 这一条与上面那一组键说的是同一件事，但它是说给人听的：notes 整段会被 --quiet 去掉，
+                // 所以"没核实"那一句必须由 MakeHdrReport 那一份自己写进 hdrEffective / hdrBasis，
+                // 不能靠这里补（提示藏得掉，机器字段藏不掉）。
                 switch (JudgeHdrPassiveNote(opt.hdr, frame.sourceColorSpace,
                                             frame.displayHdrState)) {
                     case HdrPassiveNote::kSourceSdr:

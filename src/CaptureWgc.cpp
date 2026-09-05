@@ -418,8 +418,9 @@ bool DecideWgcPool(uint64_t hwnd, HMONITOR monitor, const HdrRequest& hdr, Captu
     if (hdr.policy == HdrPolicy::kRefuse && st == DisplayHdrState::kHdr) {
         // 用户要的就是"别给我一张被硬压成 BGRA8 的发白图"：这块屏确实在 HDR 模式，
         // 在 StartCapture 之前就停下，一个像素都不读。
-        CaptureError(err, L"wgc",
-                     Msgf(L"cap.hdr_refused", FrameColorSpaceName(FrameColorSpace::kScRgbFloat16)),
+        // 那一个参数位写的是**这一问的答复**，不是一种像素格式：这一刻还没取过帧，所以本工具
+        // 说不出这一帧会是什么布局，拿"帧池本来会建成 FP16"去填那一格就是说没有来源的话。
+        CaptureError(err, L"wgc", Msgf(L"cap.hdr_refused", hdr_reason::kDisplayInHdrMode),
                      Msg(L"cap.hdr_refused_hint"), codes::kHdrRefused);
         return false;
     }

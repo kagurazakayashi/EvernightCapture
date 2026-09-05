@@ -5,14 +5,19 @@
     三层各判各的，都不靠"真有一台 HDR 显示器"这种本机给不出的现场：
 
       0) 离线层（build\ecapture-hdr-tests.exe）：判据本体——两张登记表的一致性、DXGI 格式与
-         显示 color space 的分类（含认不出一律 unknown、不猜）、half 解码与传递函数与 tone 曲线的
+         显示 color space 的分类（两张表的期望值都从 SDK 的枚举符号取，而且**像素布局不等于色彩
+         空间**：10 位包不默认成 PQ、认不出一律 unknown、不猜）、half 解码与传递函数与 tone 曲线的
          性质（黑进黑 / 单调 / white=1 恒等 / 不越界）、用已知色块与亮度梯度逐点判 ConvertWideFrameToSdrBgra8、
-         来源与形状守卫、那组结果键的合成分解、HdrRequestPossible，以及策略筛选与回退控制那一批：
+         来源与形状守卫、那组结果键的合成分解（三份事实各有一个来源：内存布局 / 那次只读问答 /
+         那份真过了映射的记录），HdrRequestPossible，以及策略筛选与回退控制那一批：
          FilterChainForHdr 的矩阵、三道闸门串起来 GateCaptureChain（HDR 与光标取交集、错误先后）、
          ClassifyChainStop，以及 src/FallbackChain.h 那条链用假后端注入的下场。
       1) 真机 SDR 层：这台机器的显示器不支持 HDR，所以凡是"带回一幅 HDR 帧"的现场都造不出来 ——
          但**恰恰因此**这一层判的是最要紧的一条：默认与 --hdr 各策略在一张真实的 SDR 自建房窗口上
-         都不改变画面（SDR 回归），并且把来源如实报成 srgb_bgra8 / sdr_passthrough，而不是假装映射过。
+         都不改变画面（SDR 回归），而那一组键说的是各自有根据的那件事：问过且答 SDR 才是
+         sdr_passthrough，没做过那次问答的 --hdr auto 自己就写 unverified，结构上带不回广色域帧的
+         那条路径写 path_sdr_source —— 既不假装映射过，也不拿"这一帧是 8 位"冒充核实过内容，
+         而 --quiet 去掉 notes 之后这些字段仍然在原位说话。
       1b) 策略筛选层：--capture auto 配显式 tonemap/refuse 时，-v 的 input.captureChain 与实际执行
           是同一条判据算出来的，链里只剩真兑现得了那要求的通道；显式点名兑现不了的那条（duplication）
           在解析期就说做不到，并如实说"这一步没实现"而不是"结构上带不回广色域帧"。
@@ -166,16 +171,21 @@ try {
     Assert-Ec ($pstats.Colors -ge 12) "基线画面只有 $($pstats.Colors) 种颜色，可能是空帧或发白图"
     Assert-Ec ((Get-EcColorDistance -A $pstats.TopDominant -B $mine) -le 32) '基线主色不是本次窗口的'
 
-    # --hdr auto：那组键出现，但如实报"这条路径带回的是 8 位 SDR"，且不发 note（auto 只被动上报）。
+    # --hdr auto：那组键出现，但只如实报这一帧的内存布局。auto 那一路**不做**采集前的那次显示
+    # 问答，所以"来源是 SDR"那一句没有根据，hdrEffective 自己就写 unverified（旧写法在这里
+    # 固定写 sdr_passthrough，等于拿一个 8 位帧的形状冒充核实过内容，而 auto 又不发任何提示）。
+    # 画面与像素一个字节都不动（规矩 1）。
     $auto = Invoke-Shot -Window $window -Name 'hdr-auto' -Extra @('--capture', 'wgc', '--hdr', 'auto', '--yes')
     Assert-Ec ($auto.Exit -eq 0 -and $auto.Exists) "--hdr auto 退出码 $($auto.Exit)"
     $af = Get-HdrFields $auto.Img
-    Assert-Ec ($af.Requested -eq 'auto' -and $af.Effective -eq 'sdr_passthrough') `
+    Assert-Ec ($af.Requested -eq 'auto' -and $af.Effective -eq 'unverified') `
         "--hdr auto 那组键不对劲：$($af.Requested)/$($af.Effective)/$($af.Basis)"
     Assert-Ec ($af.SourceColorSpace -eq 'srgb_bgra8' -and $af.HasBitDepth -and $af.SourceBitDepth -eq 8) `
         "--hdr auto 来源应报成 srgb_bgra8 / 8 位，实际 $($af.SourceColorSpace) / $($af.SourceBitDepth)"
-    Assert-Ec ($af.Basis -eq 'delivered_bgra8_sdr') "wgc 上带回 SDR，basis 该是 delivered_bgra8_sdr，实际 $($af.Basis)"
+    Assert-Ec ($af.Basis -eq 'bgra8_source_unverified') `
+        "wgc 上按 8 位交付而那次问答没做过，basis 该是 bgra8_source_unverified，实际 $($af.Basis)"
     Assert-Ec ($auto.Notes -notcontains 'note.hdr_source_sdr') '--hdr auto 不该发"来源是 SDR"那条提示（它只被动上报）'
+    Assert-Ec ($auto.Notes -notcontains 'note.hdr_source_unverified') '--hdr auto 也不发那条替代提示（它本就只被动上报）'
     # 画面与基线一致：auto 没有动采集格式。
     $apng = Get-PngSize -Path $auto.Path
     Assert-Ec ($apng.Width -eq $wW -and $apng.Height -eq $wH) "--hdr auto 改了图尺寸：$($apng.Width)x$($apng.Height)"
@@ -213,6 +223,28 @@ try {
     Assert-Ec ($qf.Requested -eq 'tonemap' -and $qf.Effective -eq 'sdr_passthrough') `
         '--quiet 把色彩那组键也藏了（它是内容判据，不是提示）'
     Assert-Ec ($quiet.Json.PSObject.Properties.Name -notcontains 'notes') '--quiet 没去掉 notes 段'
+    # 这一条守着本轮修的那个形状：一条可以 --quiet 藏掉的提示，修不了一个已经写歪的机器字段。
+    # auto 那一路本来就一条提示都不发，所以"来源没核实"那一句只能由 hdrEffective 自己说 ——
+    # 而 --quiet 之后它仍然在原位。
+    $quietAuto = Invoke-Shot -Window $window -Name 'quiet-auto' -Extra @(
+        '--capture', 'wgc', '--hdr', 'auto', '--yes', '--quiet')
+    Assert-Ec ($quietAuto.Exit -eq 0) "--hdr auto 配 --quiet 退出码 $($quietAuto.Exit)"
+    $qaf = Get-HdrFields $quietAuto.Img
+    Assert-Ec ($qaf.Requested -eq 'auto' -and $qaf.Effective -eq 'unverified' -and
+               $qaf.Basis -eq 'bgra8_source_unverified') `
+        "--quiet 之后机器字段仍要说出没核实，实际：$($qaf.Requested)/$($qaf.Effective)/$($qaf.Basis)"
+    Assert-Ec ($quietAuto.Json.PSObject.Properties.Name -notcontains 'notes') `
+        '--quiet 没去掉 notes 段（那组键留得住而提示整段去掉，正是这一判的现场）'
+
+    # 结构上带不回广色域帧的那条路径（printwindow 让窗口自绘进 8 位 DIB）：那一句"来源是 SDR"
+    # 由登记表撑着，不需要那次显示问答，所以 --hdr auto 下也敢写 sdr_passthrough ——
+    # 与上面 wgc 那一条的区别正是"根据来自哪一层"。仍然一次框都不弹（窗口内容那一级）。
+    $pw = Invoke-Shot -Window $window -Name 'printwindow-auto' -Extra @(
+        '--capture', 'printwindow', '--hdr', 'auto', '--yes')
+    Assert-Ec ($pw.Exit -eq 0 -and $pw.Exists) "--capture printwindow --hdr auto 退出码 $($pw.Exit)"
+    $pf2 = Get-HdrFields $pw.Img
+    Assert-Ec ($pf2.Effective -eq 'sdr_passthrough' -and $pf2.Basis -eq 'path_sdr_source') `
+        "printwindow 那一条 basis 该说这条路径结构上带不回 HDR，实际：$($pf2.Effective)/$($pf2.Basis)"
 
     # =========================================================================
     Write-Host "`n=== 1b) 策略筛选：显式 tonemap/refuse 时，链与实际执行同一个答案 ==="
@@ -318,6 +350,8 @@ try {
         'caveats 里少了"HDR 一律映射成 SDR 交付"那条边界'
     Assert-Ec (@($capJson.caveats) -contains 'hdr_explicit_policy_only_fulfilled_by_wgc') `
         'caveats 里少了"显式 tonemap/refuse 只有 wgc 兑现得了"那条边界（本轮收紧判据的那一条）'
+    Assert-Ec (@($capJson.caveats) -contains 'hdr_pixel_layout_is_not_a_color_space') `
+        'caveats 里少了"像素布局本身不等于色彩空间（10 位包不默认成 PQ）"那条边界（本轮修格式误判的那一条）'
     # 没有请求上下文，所以 autoChains 报的是"只按版本筛"的那一份基准链，绝不冒充已按某次 HDR 请求筛过。
     Assert-Ec ((@($capJson.autoChainWindow) -join ',') -eq 'wgc,dwm,printwindow,bitblt' -and
                (@($capJson.autoChainScreen) -join ',') -eq 'wgc,duplication,bitblt') `

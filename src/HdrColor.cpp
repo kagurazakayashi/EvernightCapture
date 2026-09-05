@@ -4,7 +4,12 @@
 #include <cstring>
 #include <vector>
 
-#include "CaptureCommon.h"   // CapturedFrame 的真身 + CaptureError
+#include "CaptureCommon.h"   // CapturedFrame 的真身 + CaptureError（也带来 windows.h）
+// SDK 的枚举符号是这两张分类表的唯一编号来源（dxgi.h 连带 dxgiformat.h 与 dxgicommon.h）。
+// 头文件里那两个函数签名只收 uint32_t，所以解析层与只链纯算术那份判据的目标都不必被拖进
+// DXGI 头，而真正做分类的这一段用的却是符号本身 —— 历史上这一条按手抄编号写过一次：
+// 10 位包被写成 61（那是 R8_UNORM），于是每像素字节数与映射两头都错位。
+#include <dxgi.h>
 #include "CaptureScope.h"    // WindowPathOf / ScreenPathOf：通道落到哪条内部路径，只有一份答案
 #include "Deadline.h"
 #include "ImageOps.h"
@@ -93,6 +98,29 @@ void DecodeR10Pixel(uint32_t packed, bool hlg, double* outRel, double* alpha) {
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// 一帧的内存格式 -> 叫得出名字的来源色彩空间（唯一一份分类；编号只从 SDK 符号来）
+// ---------------------------------------------------------------------------
+
+FrameColorSpace FrameColorSpaceFromDxgiFormat(uint32_t dxgiFormat) {
+    switch (dxgiFormat) {
+        case static_cast<uint32_t>(DXGI_FORMAT_B8G8R8A8_UNORM):
+            return FrameColorSpace::kSrgbBgra8;
+        case static_cast<uint32_t>(DXGI_FORMAT_R16G16B16A16_FLOAT):
+            return FrameColorSpace::kScRgbFloat16;
+        // 10 位打包：布局是这一句能给的全部事实。PQ / HLG / 还是某种宽色域 SDR 写在输出的
+        // color space 上，不写在像素格式里，所以这里说不出色彩空间，也绝不默认按某一种 HDR 交
+        // （那个默认值本身就是"拿错的映射去解一幅图"，而按 4 字节搬一个不是 10 位包的格式
+        // 还会读越界 —— 上一版就是这么错的）。
+        case static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM):
+            return FrameColorSpace::kRgb10A2Unverified;
+        // 其余一切都不叫名字：DXGI_FORMAT_R8_UNORM（61，单通道 8 位）、那三种 10 位包的
+        // UINT / XR_BIAS 变体、各种 YUV 与类型无格式，以及认不出的任何编号。
+        default:
+            return FrameColorSpace::kUnknown;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 单点数学（都是纯函数，tests\hdr_state.cpp 逐点判它们）
@@ -258,23 +286,44 @@ bool ConvertWideFrameToSdrBgra8(CapturedFrame* frame, const Deadline* dl, Diagno
 // ---------------------------------------------------------------------------
 
 DisplayHdrState DisplayHdrStateOfDxgiColorSpace(uint32_t cs) {
-    // HDR 那几个 color space（ST 2084/PQ 与 HLG，含 narrow 与 xCCR 变体）→ kHdr。
+    // 只有带 ST.2084(PQ) 或 HLG 那一条传递函数的才是 HDR（编号同样只从 SDK 符号来）。
+    // 上一版这一条也是手抄编号，而且抄错得比格式那张更实用：它把 2 / 5 / 17 当成 HDR（那三条
+    // 其实是 G22 的 studio-range 与 BT.2020 宽色域 **SDR**），又把 13 / 14 那两条真 PQ 的当成
+    // SDR。宽色域 SDR 面板答 HDR 会让 --hdr refuse 在没有 HDR 的机器上拒掉一张正常图。
     switch (cs) {
-        case 2u:   // DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
-        case 5u:   // DXGI_COLOR_SPACE_RGB_NARROW_G2084_NONE_P2020
-        case 12u:  // DXGI_COLOR_SPACE_RGB_FULL_G_HLG_NONE_P2020
-        case 16u:  // DXGI_COLOR_SPACE_RGB_XCCR_G2084_NONE_P2020
-        case 17u:  // DXGI_COLOR_SPACE_RGB_XCCR_G_HLG_NONE_P2020
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020):
             return DisplayHdrState::kHdr;
-        case 0u:   // RGB_FULL_G22_NONE_P709（sRGB）
-        case 1u:   // RGB_FULL_G10_NONE_P709（scRGB，SDR 配置里也用它）
-        case 3u:   // RGB_NARROW_G22_NONE_P709
-        case 4u:   // RGB_NARROW_G10_NONE_P709
-        case 6u: case 7u: case 8u: case 9u: case 10u: case 11u:  // 各种 601/709 非 HDR
-        case 13u: case 14u: case 15u:
+        // SDK 里有名字的其余显示色彩空间：G22（sRGB / BT.709 / BT.601 / BT.2020 的 full 与
+        // studio range，RGB 与 YCbCr 两种取向）、G10（scRGB 的那种配置）与 G24。原色是
+        // BT.2020 不等于 HDR —— 传递函数才是那一问的答案。
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_FULL_G22_NONE_P709_X601):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P601):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_TOPLEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P709):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_LEFT_P2020):
+        case static_cast<uint32_t>(DXGI_COLOR_SPACE_YCBCR_STUDIO_G24_TOPLEFT_P2020):
             return DisplayHdrState::kSdr;
         default:
-            return DisplayHdrState::kUnknown;  // 认不出就当没答案，不猜 HDR 也不猜 SDR
+            // 认不出就当没答案（规矩 5）：DXGI_COLOR_SPACE_RESERVED 与 DXGI_COLOR_SPACE_CUSTOM
+            // 都不是一句"这块屏此刻是什么"，既不折成 HDR 也不折成 SDR。
+            return DisplayHdrState::kUnknown;
     }
 }
 

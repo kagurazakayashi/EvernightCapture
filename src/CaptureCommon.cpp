@@ -103,8 +103,11 @@ bool CopyTextureBoxToFrame(ID3D11Device* device, ID3D11Texture2D* src, uint32_t 
             }
             return false;
         }
-        // tonemap：认得出来的广色域格式才继续，认不出的一律 hdr_unverifiable（不硬解释）。
-        if (srcCs == FrameColorSpace::kUnknown) {
+        // tonemap：只有**叫得出色彩空间**的那三种广色域格式才继续映射。连布局都认不出
+        // （kUnknown）与布局认得出而输出色彩空间没有来源（kRgb10A2Unverified）都一律
+        // hdr_unverifiable：认不出不等于"那就硬解释"，而按一套没核实过的传递函数去解一幅图
+        // 与按 BGRA8 硬解释是同一类错误。
+        if (!FrameColorSpaceIsHdr(srcCs)) {
             CaptureError(err, channel, Msgf(L"cap.hdr_unverifiable", static_cast<uint64_t>(desc.Format)),
                          Msg(L"cap.hdr_unverifiable_hint"), codes::kHdrUnverifiable);
             return false;

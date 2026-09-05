@@ -28,6 +28,13 @@
 #endif
 #include <windows.h>
 
+// 这两张分类表的期望值都从 SDK 的符号取，而不是测试里再手抄一份编号（判据本体在
+// src/HdrColor.cpp 用的也是同一批符号，但期望值那一侧独立写着符号名）。DXGI_FORMAT_* 与
+// DXGI_COLOR_SPACE_* 就是微软定义的那两个枚举；下面另外把几个关键编号（24 / 61 / 87 / 10）
+// 也按数字钉一次，这样"符号还在而编号被换掉"那种 SDK 变化也会在这里现形，而不是悄悄把
+// 一次分类改动带过去。
+#include <dxgi.h>
+
 #include "../src/CaptureCommon.h"
 #include "../src/CaptureScope.h"
 #include "../src/CliOptions.h"
@@ -100,6 +107,10 @@ CapturedFrame ScRgbFrame(std::vector<std::array<float, 4>> rgba) {
 }
 
 // 造一帧 R10G10B10A2：每像素一个 uint32（R/G/B 各 10 位 + A 2 位），行距 = width*4。
+// 这里直接写 sourceColorSpace = kPqBt2020 是**合法但需要前提**的：那一个前提是调用方另外给出了
+// 可靠的输出色彩空间（PQ / HLG 之分不在像素格式里，见 FrameColorSpaceFromDxgiFormat 那一段）。
+// 这一份判据测的是映射数学本体，所以那份前提由这里代给；本构建的取帧路径自己给不出它，
+// 因此那条路的下场是 rgb10a2_unverified + hdr_unverifiable，不是这里这一段。
 CapturedFrame R10Frame(const std::vector<std::array<uint32_t, 4>>& rgba10) {
     CapturedFrame f;
     const uint32_t w = static_cast<uint32_t>(rgba10.size());
@@ -327,42 +338,121 @@ int main() {
     }
 
     // ---- DXGI_FORMAT -> 来源色彩空间 / 位深 / 每像素字节 ----
+    // 期望值的编号来自 SDK 符号本身，而"这个符号等于几"另外钉一次：两张表都不许再靠手抄的
+    // 数字（上一版就是手抄错的：10 位包被写成 61，而 61 其实是 R8_UNORM）。
     Section("来源格式分类");
     {
-        Check(FrameColorSpaceFromDxgiFormat(87u) == FrameColorSpace::kSrgbBgra8,
-              "87=B8G8R8A8_UNORM -> srgb_bgra8");
-        Check(FrameColorSpaceFromDxgiFormat(10u) == FrameColorSpace::kScRgbFloat16,
-              "10=R16G16B16A16_FLOAT -> scrgb_float");
-        Check(FrameColorSpaceFromDxgiFormat(61u) == FrameColorSpace::kPqBt2020,
-              "61=R10G10B10A2_UNORM -> pq_bt2020");
-        Check(FrameColorSpaceFromDxgiFormat(999u) == FrameColorSpace::kUnknown,
+        Check(static_cast<uint32_t>(DXGI_FORMAT_B8G8R8A8_UNORM) == 87u &&
+                  static_cast<uint32_t>(DXGI_FORMAT_R16G16B16A16_FLOAT) == 10u &&
+                  static_cast<uint32_t>(DXGI_FORMAT_R10G10B10A2_UNORM) == 24u &&
+                  static_cast<uint32_t>(DXGI_FORMAT_R8_UNORM) == 61u,
+              "SDK 编号对照：87=BGRA8、10=FP16 RGBA、24=10 位包、61=R8_UNORM（不是 10 位包）");
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_B8G8R8A8_UNORM) ==
+                  FrameColorSpace::kSrgbBgra8,
+              "B8G8R8A8_UNORM -> srgb_bgra8");
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_R16G16B16A16_FLOAT) ==
+                  FrameColorSpace::kScRgbFloat16,
+              "R16G16B16A16_FLOAT -> scrgb_float");
+        // 这一条就是本轮修的那个错：布局认得，色彩空间说不出，所以绝不默认成 PQ。
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_R10G10B10A2_UNORM) ==
+                  FrameColorSpace::kRgb10A2Unverified,
+              "R10G10B10A2_UNORM -> rgb10a2_unverified（布局认得出，不冒充某一种 HDR）");
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_R10G10B10A2_UNORM) !=
+                  FrameColorSpace::kPqBt2020,
+              "负向对照：10 位包不等于 PQ（那一问的答案在输出的 color space 上）");
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_R8_UNORM) == FrameColorSpace::kUnknown,
+              "R8_UNORM（61，上一版被当成 10 位包的那个数）-> unknown");
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_R10G10B10A2_UINT) ==
+                  FrameColorSpace::kUnknown &&
+                  FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM) ==
+                      FrameColorSpace::kUnknown,
+              "10 位包的 UINT / XR_BIAS 变体也不叫名字（不是那种无符号颜色数据）");
+        Check(FrameColorSpaceFromDxgiFormat(DXGI_FORMAT_UNKNOWN) == FrameColorSpace::kUnknown &&
+                  FrameColorSpaceFromDxgiFormat(999u) == FrameColorSpace::kUnknown,
               "认不出的格式 -> unknown（不猜某一种 HDR）");
         Check(FrameColorSpaceBitDepth(FrameColorSpace::kScRgbFloat16) == 16 &&
                   FrameColorSpaceBitDepth(FrameColorSpace::kPqBt2020) == 10 &&
                   FrameColorSpaceBitDepth(FrameColorSpace::kSrgbBgra8) == 8 &&
                   FrameColorSpaceBitDepth(FrameColorSpace::kUnknown) == 0,
-              "位深：16 / 10 / 8 / unknown=0");
+              "位深：16 / 10 / 8 / 连布局都认不出=0");
+        Check(FrameColorSpaceBitDepth(FrameColorSpace::kRgb10A2Unverified) == 10,
+              "位深那一条事实与色彩空间那句是分开的：10 位包报得出 10 位");
         Check(FrameColorSpaceBytesPerPixel(FrameColorSpace::kScRgbFloat16) == 8 &&
-                  FrameColorSpaceBytesPerPixel(FrameColorSpace::kPqBt2020) == 4,
-              "每像素字节：scRGB=8、10 位包=4");
+                  FrameColorSpaceBytesPerPixel(FrameColorSpace::kPqBt2020) == 4 &&
+                  FrameColorSpaceBytesPerPixel(FrameColorSpace::kRgb10A2Unverified) == 4,
+              "每像素字节：scRGB=8、8 位 BGRA 与 10 位包=4");
         Check(FrameColorSpaceIsHdr(FrameColorSpace::kScRgbFloat16) &&
+                  FrameColorSpaceIsHdr(FrameColorSpace::kPqBt2020) &&
+                  FrameColorSpaceIsHdr(FrameColorSpace::kHlgBt2020) &&
                   !FrameColorSpaceIsHdr(FrameColorSpace::kSrgbBgra8) &&
-                  !FrameColorSpaceIsHdr(FrameColorSpace::kUnknown),
-              "IsHdr 只对确凿的广色域为真（unknown 不为真也不为 SDR）");
+                  !FrameColorSpaceIsHdr(FrameColorSpace::kUnknown) &&
+                  !FrameColorSpaceIsHdr(FrameColorSpace::kRgb10A2Unverified),
+              "IsHdr 只对确凿带得回 HDR 的三种为真（两种说不清的都不为真，也不为 SDR）");
+        // 那一条"说不清就不许按 4 字节搬"的下场：映射函数自己拒它，返回前不动像素。
+        {
+            auto f = R10Frame({{0, 0, 0, 3}, {1023, 1023, 1023, 3}});
+            f.sourceColorSpace = FrameColorSpace::kRgb10A2Unverified;
+            const std::vector<uint8_t> before = f.pixels;
+            Diagnostic err;
+            Check(!ConvertWideFrameToSdrBgra8(&f, nullptr, &err) &&
+                      err.code == codes::kHdrUnverifiable && f.pixels == before,
+                  "10 位包说不清色彩空间 -> hdr_unverifiable，一个字节都不按猜的布局去解释");
+        }
     }
 
     // ---- 显示 color space -> HDR 状态（三值，认不出不猜）----
+    // 期望值同样从 SDK 符号取。这一张表上一版也是手抄编号，而且抄错得更实用：它把 2 / 5 / 17
+    // 当成 HDR（那三条是 G22 的 studio-range 与 BT.2020 宽色域 SDR），又把 13 / 14 两条真 PQ
+    // 的当成 SDR。一幅"HDR 关掉、wide colour 打开"的屏就会答 HDR，让 --hdr refuse 拒掉正常图。
     Section("显示 HDR 状态分类");
     {
-        Check(DisplayHdrStateOfDxgiColorSpace(2u) == DisplayHdrState::kHdr &&
-                  DisplayHdrStateOfDxgiColorSpace(12u) == DisplayHdrState::kHdr &&
-                  DisplayHdrStateOfDxgiColorSpace(17u) == DisplayHdrState::kHdr,
-              "G2084 / HLG / xCCR 那几条判成 HDR");
-        Check(DisplayHdrStateOfDxgiColorSpace(0u) == DisplayHdrState::kSdr &&
-                  DisplayHdrStateOfDxgiColorSpace(1u) == DisplayHdrState::kSdr,
-              "sRGB / scRGB 判成 SDR");
-        Check(DisplayHdrStateOfDxgiColorSpace(9999u) == DisplayHdrState::kUnknown,
-              "认不出的 color space -> unknown（不猜 HDR 也不猜 SDR）");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) ==
+                  DisplayHdrState::kHdr,
+              "RGB full G2084 (PQ) BT.2020 -> HDR");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_STUDIO_G2084_NONE_P2020) ==
+                      DisplayHdrState::kHdr &&
+                  DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020) ==
+                      DisplayHdrState::kHdr &&
+                  DisplayHdrStateOfDxgiColorSpace(
+                      DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_TOPLEFT_P2020) == DisplayHdrState::kHdr,
+              "studio/left/topleft 那几条 G2084 变体也都是 HDR（上一版把其中两条记成 SDR）");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_YCBCR_STUDIO_GHLG_TOPLEFT_P2020) ==
+                      DisplayHdrState::kHdr &&
+                  DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_YCBCR_FULL_GHLG_TOPLEFT_P2020) ==
+                      DisplayHdrState::kHdr,
+              "HLG 那两条 -> HDR");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) ==
+                      DisplayHdrState::kSdr &&
+                  DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709) ==
+                      DisplayHdrState::kSdr,
+              "sRGB(G22 full) 与 scRGB(G10) -> SDR");
+        // 负向对照：原色是 BT.2020 不等于 HDR，传递函数才是那一问的答案。
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P2020) ==
+                      DisplayHdrState::kSdr &&
+                  DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P2020) ==
+                      DisplayHdrState::kSdr,
+              "BT.2020 原色配 G22（宽色域 SDR 面板那种）-> SDR，不是 HDR");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_STUDIO_G22_NONE_P709) ==
+                      DisplayHdrState::kSdr &&
+                  DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_YCBCR_FULL_G22_NONE_P709_X601) ==
+                      DisplayHdrState::kSdr,
+              "G22 的 studio-range 与 YCbCr 601 那些 -> SDR（上一版把这两条记成 HDR）");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P709) ==
+                      DisplayHdrState::kSdr &&
+                  DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RGB_STUDIO_G24_NONE_P2020) ==
+                      DisplayHdrState::kSdr,
+              "G24 那两条（display-referred，没有 PQ/HLG）-> SDR");
+        Check(DisplayHdrStateOfDxgiColorSpace(DXGI_COLOR_SPACE_RESERVED) ==
+                      DisplayHdrState::kUnknown,
+              "RESERVED -> unknown（占位值不是一句「这块屏此刻是什么」）");
+        // 那一个编号是 0xFFFFFFFF，比这个枚举其余取值都大，所以递出去时显式转一次无符号，
+        // 免得 /W4 把这一次符号转换报成告警（判的是同一个 SDK 符号，不是另抄的数）。
+        Check(DisplayHdrStateOfDxgiColorSpace(static_cast<uint32_t>(DXGI_COLOR_SPACE_CUSTOM)) ==
+                      DisplayHdrState::kUnknown,
+              "CUSTOM -> unknown（厂商自定义那一句本构建读不懂，既不猜 HDR 也不猜 SDR）");
+        Check(DisplayHdrStateOfDxgiColorSpace(9999u) == DisplayHdrState::kUnknown &&
+                  DisplayHdrStateOfDxgiColorSpace(0xFFFFFFFEu) == DisplayHdrState::kUnknown,
+              "表外编号 -> unknown（认不出就当没答案）");
     }
 
     // ---- 单点数学：half 解码 + 传递函数 + tone 曲线的性质 ----
@@ -494,39 +584,96 @@ int main() {
     }
 
     // ---- MakeHdrReport：三个键 + 来源色彩空间 + 位深的合成 ----
+    // 这一批判的是"三份事实各有一个来源，而对外那一句只能由它们合成"：内存布局（source）、
+    // 真过了映射的那一份记录（toneMapped）、采集之前那次只读问答（displayState），加上这条路径
+    // 在登记表上的那一句（path）。任何一份缺席都不许被另一份顶上。
     Section("MakeHdrReport 合成");
     {
-        HdrRequest none;  // given=false
-        Check(!MakeHdrReport(none, paths::kWgc, FrameColorSpace::kScRgbFloat16).written,
+        const DisplayHdrState unk = DisplayHdrState::kUnknown;
+        Check(!MakeHdrReport(Hdr(HdrPolicy::kAuto, false), paths::kWgc,
+                             FrameColorSpace::kScRgbFloat16, true, unk)
+                    .written,
               "没写 --hdr：written=false（那组键一个都不出现）");
-        HdrRequest tonemap;
-        tonemap.given = true;
-        tonemap.policy = HdrPolicy::kToneMap;
-        auto a = MakeHdrReport(tonemap, paths::kWgc, FrameColorSpace::kScRgbFloat16);
+        // 真过了映射：tone_mapped 那一句唯一的根据就是那份记录。
+        auto a = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kWgc,
+                               FrameColorSpace::kScRgbFloat16, true, DisplayHdrState::kHdr);
         Check(a.written && a.requested == L"tonemap" && a.effective == hdr_effective::kToneMapped &&
                   a.basis == hdr_basis::kScRgbToneMapped && a.sourceColorSpace == L"scrgb_float" &&
                   a.bitDepthKnown && a.bitDepth == 16,
-              "tonemap + scRGB：tone_mapped / scrgb basis / 位深 16");
-        auto pq = MakeHdrReport(tonemap, paths::kDuplicationFrame, FrameColorSpace::kPqBt2020);
+              "tonemap + scRGB + 映射记录：tone_mapped / scrgb basis / 位深 16");
+        auto pq = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kWgc,
+                               FrameColorSpace::kPqBt2020, true, DisplayHdrState::kHdr);
         Check(pq.effective == hdr_effective::kToneMapped && pq.basis == hdr_basis::kPqToneMapped &&
                   pq.bitDepth == 10,
-              "tonemap + PQ：位深 10");
-        auto sdrOnWide = MakeHdrReport(tonemap, paths::kWgc, FrameColorSpace::kSrgbBgra8);
+              "tonemap + 一个给出可靠色彩空间的 PQ 帧：tone_mapped / pq basis / 位深 10");
+        // 广色域来源而那份映射记录没立起来：不许写 tone_mapped（也不许照 8 位说成透传）。
+        auto notApplied = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kWgc,
+                                        FrameColorSpace::kScRgbFloat16, false,
+                                        DisplayHdrState::kHdr);
+        Check(notApplied.effective == hdr_effective::kUnverified &&
+                  notApplied.basis == hdr_basis::kToneMapNotApplied,
+              "宽格式而那份映射记录没立起来：unverified / tone_map_not_applied（来源那一句不替映射作保）");
+        // 10 位包：布局那一条照报，色彩空间那一句留空。
+        auto tenBit = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kDuplicationFrame,
+                                    FrameColorSpace::kRgb10A2Unverified, false, unk);
+        Check(tenBit.effective == hdr_effective::kUnverified &&
+                  tenBit.basis == hdr_basis::kTransferFunctionUnknown &&
+                  tenBit.sourceColorSpace == L"rgb10a2_unverified" && tenBit.bitDepthKnown &&
+                  tenBit.bitDepth == 10,
+              "10 位包：unverified / transfer_function_unknown，而位深 10 仍然报得出");
+        auto unkFormat = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kWgc,
+                                       FrameColorSpace::kUnknown, false, unk);
+        Check(unkFormat.effective == hdr_effective::kUnverified &&
+                  unkFormat.basis == hdr_basis::kFormatUnrecognized && !unkFormat.bitDepthKnown,
+              "连布局都认不出：unverified，且不写位深（问不出来 ≠ 某一位深）");
+        // 8 位交付的三条下场：登记表 / 那次问答 / 两者都没有。
+        auto sdrOnWide = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kWgc,
+                                       FrameColorSpace::kSrgbBgra8, false, DisplayHdrState::kSdr);
         Check(sdrOnWide.effective == hdr_effective::kSdrPassthrough &&
                   sdrOnWide.basis == hdr_basis::kDeliveredBgra8Sdr && sdrOnWide.bitDepth == 8,
-              "wgc 上带回 SDR：passthrough + delivered_bgra8_sdr");
-        auto sdrOnSdr = MakeHdrReport(tonemap, paths::kPrintWindow, FrameColorSpace::kSrgbBgra8);
-        Check(sdrOnSdr.basis == hdr_basis::kPathSdrSource,
-              "printwindow 上 SDR 来源：basis 说这条路径结构上没有 HDR");
-        auto unk = MakeHdrReport(tonemap, paths::kWgc, FrameColorSpace::kUnknown);
-        Check(unk.effective == hdr_effective::kUnverified && unk.basis == hdr_basis::kFormatUnrecognized &&
-                  !unk.bitDepthKnown,
-              "认不出的格式：unverified，且不写位深（问不出来 ≠ 某一位深）");
-        HdrRequest refuse;
-        refuse.given = true;
-        refuse.policy = HdrPolicy::kRefuse;
-        auto r = MakeHdrReport(refuse, paths::kWgc, FrameColorSpace::kSrgbBgra8);
-        Check(r.requested == L"refuse", "requested 写的是规范化后的策略名");
+              "问过、答案是 SDR：passthrough + delivered_bgra8_sdr（那句核实由那次问答撑着）");
+        auto sdrOnSdr = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kPrintWindow,
+                                      FrameColorSpace::kSrgbBgra8, false, unk);
+        Check(sdrOnSdr.effective == hdr_effective::kSdrPassthrough &&
+                  sdrOnSdr.basis == hdr_basis::kPathSdrSource,
+              "printwindow 上 8 位交付：basis 说这条路径结构上带不回 HDR，所以不需要那次问答");
+        // 本轮修掉的那一格：没问过（--hdr auto 那一路根本不发那次问答）与答非 SDR，
+        // 都不许被写成 sdr_passthrough —— 而 --quiet 会把 notes 整段去掉，所以这一格必须自己说话。
+        auto neverAsked = MakeHdrReport(Hdr(HdrPolicy::kAuto, true), paths::kWgc,
+                                        FrameColorSpace::kSrgbBgra8, false, unk);
+        Check(neverAsked.written && neverAsked.requested == L"auto" &&
+                  neverAsked.effective == hdr_effective::kUnverified &&
+                  neverAsked.basis == hdr_basis::kBgra8SourceUnverified &&
+                  neverAsked.sourceColorSpace == L"srgb_bgra8" && neverAsked.bitDepth == 8,
+              "--hdr auto（没做过那次问答）：键仍然写，而 effective 自己就是 unverified");
+        auto displayHdr = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), paths::kWgc,
+                                        FrameColorSpace::kSrgbBgra8, false, DisplayHdrState::kHdr);
+        Check(displayHdr.effective == hdr_effective::kUnverified &&
+                  displayHdr.basis == hdr_basis::kBgra8SourceUnverified,
+              "屏在 HDR 模式而这一张按 8 位交付：同样不许说成 SDR 来源");
+        auto probeUnknown = MakeHdrReport(Hdr(HdrPolicy::kRefuse, true), paths::kDuplicationFrame,
+                                          FrameColorSpace::kSrgbBgra8, false, unk);
+        Check(probeUnknown.effective == hdr_effective::kUnverified,
+              "问不出来既不折成 SDR 也不折成 HDR（规矩 5），图的下场由调用方那条提示去说给人听");
+        auto refuse = MakeHdrReport(Hdr(HdrPolicy::kRefuse, true), paths::kWgc,
+                                    FrameColorSpace::kSrgbBgra8, false, DisplayHdrState::kSdr);
+        Check(refuse.requested == L"refuse", "requested 写的是规范化后的策略名");
+        // 阴性对照：这一格里没有任何一种"8 位交付"的下场会写 sdr_passthrough 而不带两条根据之一。
+        bool onlyEvidence = true;
+        const DisplayHdrState states[] = {DisplayHdrState::kSdr, DisplayHdrState::kHdr,
+                                          DisplayHdrState::kUnknown};
+        const wchar_t* paths2[] = {paths::kWgc, paths::kDuplicationFrame, paths::kPrintWindow,
+                                   paths::kDwmThumbnail, paths::kBitBltScreen};
+        for (DisplayHdrState st : states) {
+            for (const wchar_t* p : paths2) {
+                const HdrReport r = MakeHdrReport(Hdr(HdrPolicy::kToneMap, true), p,
+                                                  FrameColorSpace::kSrgbBgra8, false, st);
+                if (r.effective != hdr_effective::kSdrPassthrough) continue;
+                const bool structural = HdrCapabilityOfPath(p) == HdrCapability::kSdrSourceOnly;
+                if (!structural && st != DisplayHdrState::kSdr) onlyEvidence = false;
+            }
+        }
+        Check(onlyEvidence, "sdr_passthrough 只在有两条根据之一时才出现（8 位帧自己不算证据）");
     }
 
     // ---- HdrRequestPossible：结构与策略的组合 ----

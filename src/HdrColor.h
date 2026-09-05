@@ -24,7 +24,9 @@
 //    --hdr tonemap/refuse 配一条兑现不了这个要求的通道在解析期报 capture.hdr_unsupported +
 //    退出码 1，**绝不换后端**（与 --cursor include 同源）；
 //    --hdr refuse 且核实来源是 HDR 帧时一个像素都不落地（capture.hdr_refused）；
-//    带回一个本构建认不出的广色域格式时 capture.hdr_unverifiable（认不出格式不等于猜一个映射）。
+//    带回一个本构建认不出布局的格式、或认得出像素布局却拿不到可靠输出色彩空间的那一帧
+//    （10 位包那一条）时都是 capture.hdr_unverifiable：认不出格式不等于猜一个映射，
+//    而像素布局本身也不等于色彩空间（把 R10G10B10A2 一律当成 PQ 就是拿错的映射去解一幅图）。
 // 2b. **显式要求过的策略，回退链每一步都要继续兑现它（判据：FilterChainForHdr）。**
 //    --capture auto 会换后端，而"换一条只带得回 8 位的后端"等于把用户的要求换成一张
 //    可能被合成器压扁的图 —— 那正是 tonemap/refuse 要防的结果，所以：
@@ -43,13 +45,20 @@
 // 4. **不改变授权。** 判据仍是"这条路径的像素从哪来"（src/CaptureScope.cpp 那张表），跟色彩无关：
 //    会读到桌面像素的那几条照样一定弹框、--yes 照样管不着；色彩处理整个排在取帧之后、编码之前，
 //    一个像素都不会因为"要映射 HDR"而多读、也不引入任何"映射过就算免确认"的旁路。
-// 5. **问不出来 ≠ 没事。** 一条路径登记成 kWideGamutCapable 而这一帧的来源格式认不出时，
+// 5. **问不出来 ≠ 没事，而三件事实各有一个来源。** 内存布局、采集之前那块屏的回答、这一帧有没有
+//    真过一遍映射，是三个独立的事实；对外那一句结论只能由它们合成，谁也不许替谁作保。
+//    一条路径登记成 kWideGamutCapable 而这一帧的来源格式认不出时，
 //    effective 只能写 unverified（basis=format_unrecognized），绝不折成 tone_mapped 或 sdr_passthrough
-//    （与身份复核"问不出来 ≠ 相同"、cursor.roi_unmeasurable 与 monitor_unverifiable 分家同源）。
+//    （与身份复核"问不出来 ≠ 相同"、cursor.roi_unmeasurable 与 monitor_unverifiable 分家同源）；
+//    布局认得出而输出色彩空间没有可靠来源时同样 unverified（basis=transfer_function_unknown），
+//    并且不许顺手猜成某一种 HDR —— 位深那一条事实照报，色彩空间那一句留空。
 //    同一条规矩也管"这张交付的帧是 8 位"这一件事：它**不证明**来源本来是 SDR —— 合成器完全可能
-//    把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池。所以 note.hdr_source_sdr 只在采集之前
-//    真的问到"这块屏此刻是 SDR"时才发；问不出来就发 note.hdr_source_unverified（图照常交付，
-//    但不许把"没核实"说成"没有 HDR 可映射"），判据是 JudgeHdrPassiveNote 那一份。
+//    把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池。所以只有两种根据能支撑"来源是 SDR"：
+//    要么这条路径结构上带不回广色域帧（basis=path_sdr_source，登记表那一份就是根据），要么采集之前
+//    真的问到"这块屏此刻是 SDR"（basis=delivered_bgra8_sdr，那次问答就是根据）。两者都没有时
+//    hdrEffective 自己就写 unverified（basis=bgra8_source_unverified），图照常交付、退出码不变，
+//    但"没核实"不会被写成"这一帧没有 HDR 可映射"；那条 note（判据是 JudgeHdrPassiveNote 那一份）
+//    只是把同一件事说给人听，**不能**拿来补救一个已经写歪的机器字段（--quiet 会整段去掉 notes）。
 //
 // 登记表与 src/CaptureScope.cpp / src/CursorControl.h 那两张表是同一类东西：新增一条通道忘了登记
 // = 按 kUnregistered 处理（tonemap/refuse 不敢声称带得回 HDR，更严而不是更松）。两份表的一致性
@@ -72,15 +81,23 @@ struct CapturedFrame;
 class Deadline;
 
 // ---------------------------------------------------------------------------
-// 一条帧的来源色彩空间与像素格式（GPU 交回来、任何转换**之前**那一步的事实）。
+// 一帧的来源色彩空间与像素格式（GPU 交回来、任何转换**之前**那一步的事实）。
 // 取值只增不改名；它进结果里的 images[].sourceColorSpace。
+//
+// 这个枚举说的是**色彩空间**那一句结论，不是像素布局。两件事只在 8 位 BGRA 与 FP16 scRGB
+// 那两条上恰好一一对应，在 10 位那一条上不对应（见 kRgb10A2Unverified）。
 // ---------------------------------------------------------------------------
 enum class FrameColorSpace {
     kSrgbBgra8,     // 8 位 BGRA、sRGB/BT.709 —— 最常见那种，原样交付
     kScRgbFloat16,  // FP16 RGBA、scRGB 线性（1.0 = SDR 参考白），亮度可超过 1
     kPqBt2020,      // 10 位 R10G10B10A2、ST.2084 PQ、BT.2020 原色
     kHlgBt2020,     // 10 位 R10G10B10A2、HLG、BT.2020 原色
-    kUnknown,       // 一个本构建认不出、因此无法正确映射的广色域格式
+    kUnknown,       // 一个本构建连像素布局都认不出、因此无法正确映射的格式
+    // 布局认得出（每通道 10 位加 2 位 alpha 的那个 32 位打包格式），而传递函数与原色
+    // **没有**可靠来源：DXGI 不把 PQ / HLG / 还是某种 SDR 宽色域编码进像素格式里，那一句只在
+    // 输出的 color space 上。所以这一条既不敢折成 kPqBt2020（拿错的映射去解一幅图），也不敢
+    // 折成 SDR。位深那一条事实照报（10），色彩空间那一句留空 —— 两个字段各说各自有根据的事。
+    kRgb10A2Unverified,
 };
 
 // FrameColorSpace 的机器名（进 images[].sourceColorSpace 与 --capabilities；只增不改名）。
@@ -90,48 +107,48 @@ inline const wchar_t* FrameColorSpaceName(FrameColorSpace cs) {
         case FrameColorSpace::kScRgbFloat16: return L"scrgb_float";
         case FrameColorSpace::kPqBt2020: return L"pq_bt2020";
         case FrameColorSpace::kHlgBt2020: return L"hlg_bt2020";
+        case FrameColorSpace::kRgb10A2Unverified: return L"rgb10a2_unverified";
         case FrameColorSpace::kUnknown: return L"unknown";
     }
     return L"unknown";
 }
 
-// 这个来源是不是 HDR（广色域或高亮范围）。kUnknown 不算已知 HDR，也不算 SDR —— 调用方靠它
-// 分"照 SDR 交"与"认不出来不敢交"两种下一步，所以这里只回答"确凿是 HDR 吗"。
+// 这个来源是不是 HDR（广色域或高亮范围）。kUnknown 与 kRgb10A2Unverified 都**不**算已知 HDR，
+// 也不算 SDR —— 调用方靠它分"照 SDR 交"与"说不清就不敢交"两种下一步，所以这里只回答
+// "确凿是 HDR 吗"，也就是"确凿拿得出一套正确的映射吗"。
 inline bool FrameColorSpaceIsHdr(FrameColorSpace cs) {
     return cs == FrameColorSpace::kScRgbFloat16 || cs == FrameColorSpace::kPqBt2020 ||
            cs == FrameColorSpace::kHlgBt2020;
 }
 
-// 一个 DXGI_FORMAT 的原值 → 本工具认得的来源色彩空间。写成收 uint32_t 是为了让这份头文件不必
-// include <dxgiformat.h>（解析层与离线判据都被拖进 DXGI 头就麻烦了）。认得出的广色域格式以外，
-// 一切非 BGRA8 的已知宽格式一律 kUnknown（而不是猜成某一种 HDR）：猜错就是拿错映射去解一幅图。
-// 数值取自 DXGI_FORMAT 枚举：87=B8G8R8A8_UNORM，10=R16G16B16A16_FLOAT，
-// 61=R10G10B10A2_UNORM。DXGI 不把 PQ 与 HLG 编码进像素格式里（那在输出的 color space 上），
-// 所以 10 位包那条按调用方给出的输出色彩空间再细分成 PQ / HLG（见 ClassifyDuplicationSurface）。
-inline FrameColorSpace FrameColorSpaceFromDxgiFormat(uint32_t dxgiFormat) {
-    switch (dxgiFormat) {
-        case 87u: return FrameColorSpace::kSrgbBgra8;  // DXGI_FORMAT_B8G8R8A8_UNORM
-        case 10u: return FrameColorSpace::kScRgbFloat16;  // DXGI_FORMAT_R16G16B16A16_FLOAT
-        case 61u: return FrameColorSpace::kPqBt2020;  // DXGI_FORMAT_R10G10B10A2_UNORM（默认按 PQ）
-        default: return FrameColorSpace::kUnknown;
-    }
-}
+// 一个 DXGI_FORMAT 的原值 → 本工具叫得出名字的来源色彩空间。签名收 uint32_t 是为了让这份
+// 头文件不必 include DXGI 头（解析层与只链纯算术的离线判据目标都被拖进去就麻烦了），而实现
+// 写在 src/HdrColor.cpp：那一份 include <dxgi.h>，switch 里用的是 SDK 的枚举符号本身，
+// 所以这里**没有**手抄的格式编号可以抄错（历史上这一条被手抄错过：R10G10B10A2_UNORM 是 24，
+// 61 是 R8_UNORM，而那份表把 61 当成了 10 位包并按 PQ 去解 —— 每像素字节数与映射双双错位）。
+// 除 8 位 BGRA 与 FP16 scRGB 那两条之外，一律不叫出色彩空间的名字：认不出布局是 kUnknown，
+// 认得出 10 位包布局而输出色彩空间没有来源是 kRgb10A2Unverified（都不猜某一种 HDR —— 猜错就是
+// 拿错映射去解一幅图，而按错的字节数搬像素还会读越界）。
+FrameColorSpace FrameColorSpaceFromDxgiFormat(uint32_t dxgiFormat);
 
-// 每个来源对应的位深（进 images[].sourceBitDepth）。kUnknown 给 0 = 认不出来，调用方据此不写这个键。
+// 每个来源对应的位深（进 images[].sourceBitDepth）。kUnknown 给 0 = 连布局都认不出，
+// 调用方据此不写这个键；kRgb10A2Unverified 给 10，因为那一条是布局本身给出的事实。
 inline uint32_t FrameColorSpaceBitDepth(FrameColorSpace cs) {
     switch (cs) {
         case FrameColorSpace::kSrgbBgra8: return 8;
         case FrameColorSpace::kScRgbFloat16: return 16;
         case FrameColorSpace::kPqBt2020: return 10;
         case FrameColorSpace::kHlgBt2020: return 10;
+        case FrameColorSpace::kRgb10A2Unverified: return 10;
         case FrameColorSpace::kUnknown: return 0;
     }
     return 0;
 }
 
 // 一个来源一帧占几个字节（GPU 拷回 CPU 那一步按它判行距与整帧上限）。
-// scRGB FP16 = RGBA16F = 8；R10G10B10A2 与 BGRA8 都是 4。kUnknown 保守按 4（拷回那一步会先
-// 按字节搬、认不出的宽格式在编码之前就被判成 hdr_unverifiable，不会真按这个 bpp 去解释像素）。
+// scRGB FP16 = RGBA16F = 8；8 位 BGRA 与那个 10 位打包格式都是 4。kUnknown 保守按 4，
+// 但调用方在按这个字节数搬像素**之前**就会把认不出的格式判成 hdr_unverifiable 而停下，
+// 所以那一句"保守"不会变成一次按错布局的读。
 inline uint32_t FrameColorSpaceBytesPerPixel(FrameColorSpace cs) {
     return cs == FrameColorSpace::kScRgbFloat16 ? 8u : 4u;
 }
@@ -166,6 +183,10 @@ inline constexpr const wchar_t* kSelfDrawn8 = L"window_self_drawn_8bit";        
 inline constexpr const wchar_t* kDwmSurface8 = L"dwm_redirection_surface_8bit";  // dwm 读重定向位图
 inline constexpr const wchar_t* kScreenDc8 = L"screen_dc_8bit";                  // bitblt 拷屏幕 DC
 inline constexpr const wchar_t* kNotRegistered = L"not_registered";
+// 采集之前那一次只读问答答"这块屏此刻在 HDR 模式"。它进 cap.hdr_refused 的那一个参数位：
+// 那一次拒绝是**在取帧之前**发生的，所以这里说不出这一帧的内存格式（那一句只能等取帧那一步
+// 读回来），拿一个"本来会建成 FP16 帧池"去填那一格就是说没有来源的话。
+inline constexpr const wchar_t* kDisplayInHdrMode = L"display_in_hdr_mode";
 // 被显式 HDR 策略筛掉时，桌面复制那两条写的**这一条**原因：来源可能有广色域，但本构建没实现
 // 兑现策略那几步（见 kWideGamutUnverified）。它说的是"没做/没核实"，不是"结构上不可能"。
 inline constexpr const wchar_t* kDupPolicyUnverified = L"duplication_hdr_policy_not_implemented";
@@ -290,15 +311,21 @@ inline bool HdrRequestPossible(CaptureMethod method, HdrPolicy policy) {
 // ---------------------------------------------------------------------------
 namespace hdr_effective {
 // 这一帧按 8 位 SDR 交付，且来源核实本来就是 SDR：没做（也不需要）任何色彩转换。
+// 只有两种根据撑得起这一句（见 hdr_basis 的 delivered_bgra8_sdr 与 path_sdr_source）：那次
+// 采集之前的只读问答答"这块屏此刻是 SDR"，或登记表说这条路径结构上带不回广色域帧。
+// "这一帧是 8 位"自己不算根据。
 inline constexpr const wchar_t* kSdrPassthrough = L"sdr_passthrough";
 // 来源是 HDR，本工具已按固定的浮点链路把它映射到 8 位 BT.709 sRGB 再交付。
+// 撑得起这一句的只有帧上那一份"真的过了映射"的记录（CapturedFrame::toneMapped）。
 inline constexpr const wchar_t* kToneMapped = L"tone_mapped";
-// 没能核实这一帧的来源色彩空间（带回一个认不出的广色域格式）：不声称映射对，也不声称就是 SDR。
+// 没能核实这一帧的来源色彩空间：既不声称映射对，也不声称就是 SDR。图照常交付（这是产品语义，
+// 不是错误），但这一格不许被一个可以 --quiet 藏掉的提示替它补上。
 inline constexpr const wchar_t* kUnverified = L"unverified";
 }  // namespace hdr_effective
 
 namespace hdr_basis {
-// 交付的帧按 BGRA8 处理且来源核实为 SDR（含"这条路径结构上没有 HDR"与"这条 WGC/复制帧是 SDR"）。
+// 交付的帧按 BGRA8 处理，且采集之前那次只读问答答的是"这块屏此刻是 SDR"。
+// 没问过（--hdr auto 与不写这条选项那一路）与答非 SDR 都撑不起这一句。
 inline constexpr const wchar_t* kDeliveredBgra8Sdr = L"delivered_bgra8_sdr";
 // 真的过了一遍 FP16 scRGB → sRGB 的浮点 tone mapping。
 inline constexpr const wchar_t* kScRgbToneMapped = L"scrgb_float_tone_mapped";
@@ -308,9 +335,27 @@ inline constexpr const wchar_t* kPqToneMapped = L"pq_bt2020_tone_mapped";
 inline constexpr const wchar_t* kHlgToneMapped = L"hlg_bt2020_tone_mapped";
 // 这条路径结构上带不回广色域帧（printwindow / dwm / bitblt），tonemap 因此是恒等透传。
 inline constexpr const wchar_t* kPathSdrSource = L"path_sdr_source";
-// 带回一个本构建认不出的广色域像素格式 —— 既不敢映射，也不敢说它就是 SDR。
+// 带回一个本构建连像素布局都认不出的格式 —— 既不敢映射，也不敢说它就是 SDR。
 inline constexpr const wchar_t* kFormatUnrecognized = L"format_unrecognized";
+// 像素布局认得出（10 位打包那一条），而传递函数与原色**没有**可靠来源：DXGI 把那一句放在
+// 输出的 color space 上，不放在像素格式里，所以本构建说不出这是 PQ、HLG 还是某种 SDR 宽色域。
+// 位深那一条事实仍然报得出，色彩空间那一句留 unverified。
+inline constexpr const wchar_t* kTransferFunctionUnknown = L"transfer_function_unknown";
+// 交付的是 8 位帧，而"来源本来就是 SDR"这一句两条根据都没有：这条路径按 8 位帧池取回一帧，
+// 采集之前那次问答要么没做过（--hdr auto 那一路就是不做），要么没答 SDR。
+// 一张 8 位帧不证明内容是 SDR：合成器完全可能把一幅 HDR 画面压成 8 位再交给这个帧池。
+inline constexpr const wchar_t* kBgra8SourceUnverified = L"bgra8_source_unverified";
+// 帧上带回来的来源是广色域，而这一份帧没有"确实过了映射"的记录：不声称映射对（也绝不因此
+// 就把它按 8 位解释交付出去）。生产路径上取帧那一步会把这一条拦在编码之前，这里留一格是
+// 为了这条结论只有一个来源 —— 映射这件事本身，而不是来源那一个字段的取值。
+inline constexpr const wchar_t* kToneMapNotApplied = L"tone_map_not_applied";
 }  // namespace hdr_basis
+
+// 一次探测某块屏此刻是不是在 HDR 模式的结果。三值：yes / no / 问不出来（unknown）。
+// unknown 既不折成 yes 也不折成 no（规矩 5）：问不出来时这一帧的来源那一句就留在 unverified
+// （图照常交付），refuse 也不因此拒绝（它拒的是"确凿是 HDR"），而不是猜一个决定。
+// 声明排在报告合成之前，因为那一句结论要看得到这一问的答复。
+enum class DisplayHdrState { kSdr, kHdr, kUnknown };
 
 // 一次截图交回来的 HDR 报告（images[] 里那组色彩键的本体）。written=false 时渲染层一个键都不写。
 struct HdrReport {
@@ -323,12 +368,16 @@ struct HdrReport {
     uint32_t bitDepth = 0;             // 8 / 10 / 16；kUnknown 时 bitDepthKnown=false
 };
 
-// 把"要求的策略"与"这条路径这一帧实际带回的来源色彩空间"合成结果里那组键。
-// source 是编码之前那份帧的**来源**色彩空间（wide 帧被映射过也保留映射前那一份），
-// path 是这条路径的内部路径名（用来分辨"来源本来就是 SDR"与"这条路径带不回 HDR"）。
-// 判据只看两件事：来源核实成哪一种、这条路径登记成哪一种能力。绝不重跑映射，也不改退出码。
+// 把"要求的策略"与"这一帧实际经历的事"合成结果里那组键。三份事实各自带来，谁也不替谁作保：
+//   source     = 这条路径从 GPU 拿回来的那份内存布局（编码之前那一步；wide 帧被映射后仍留映射前那一份）
+//   toneMapped = 这一帧**确实**过了一遍浮点 tone mapping 的那一份记录（src/HdrColor.cpp 的映射函数自己置的）
+//   path       = 实际走的内部路径名（拿它在登记表上查"这条路径结构上带不带得回广色域帧"）
+//   displayState = 采集之前那次只读问答的答复（没问过与问不出来都是 kUnknown，不折成 kSdr）
+// 判据只看这四件事实本身，绝不重跑映射、绝不改退出码，也绝不因为"图反正交出去了"就把没核实的那
+// 一句写成核实过（规矩 5）。
 inline HdrReport MakeHdrReport(const HdrRequest& request, const std::wstring& path,
-                               FrameColorSpace source) {
+                               FrameColorSpace source, bool toneMapped,
+                               DisplayHdrState displayState) {
     HdrReport report;
     if (!request.given) return report;   // 没写过 --hdr：那组键都不出现（兼容行为）
     report.written = true;
@@ -340,48 +389,70 @@ inline HdrReport MakeHdrReport(const HdrRequest& request, const std::wstring& pa
 
     switch (source) {
         case FrameColorSpace::kScRgbFloat16:
-            report.effective = hdr_effective::kToneMapped;
-            report.basis = hdr_basis::kScRgbToneMapped;
-            return report;
         case FrameColorSpace::kPqBt2020:
-            report.effective = hdr_effective::kToneMapped;
-            report.basis = hdr_basis::kPqToneMapped;
-            return report;
         case FrameColorSpace::kHlgBt2020:
+            // "来源是广色域"与"本工具真的把它映射成了 8 位 sRGB"是两件事：前一句由布局给出，
+            // 后一句只由那份映射记录给出。没有那份记录时不许写 tone_mapped（也不许反过来拿
+            // "来源写着广色域"去猜映射做过）。
+            if (!toneMapped) {
+                report.effective = hdr_effective::kUnverified;
+                report.basis = hdr_basis::kToneMapNotApplied;
+                return report;
+            }
             report.effective = hdr_effective::kToneMapped;
-            report.basis = hdr_basis::kHlgToneMapped;
+            report.basis = source == FrameColorSpace::kScRgbFloat16
+                               ? hdr_basis::kScRgbToneMapped
+                               : (source == FrameColorSpace::kPqBt2020 ? hdr_basis::kPqToneMapped
+                                                                       : hdr_basis::kHlgToneMapped);
+            return report;
+        case FrameColorSpace::kRgb10A2Unverified:
+            // 布局说得出（所以位深那一条照报 10），色彩空间那句说不出：不猜 PQ、不猜 HLG、
+            // 也不猜 SDR（规矩 5）。
+            report.effective = hdr_effective::kUnverified;
+            report.basis = hdr_basis::kTransferFunctionUnknown;
             return report;
         case FrameColorSpace::kUnknown:
-            // 认不出的广色域格式：不声称映射对，也不声称是 SDR。
+            // 连布局都认不出：不声称映射对，也不声称是 SDR。
             report.effective = hdr_effective::kUnverified;
             report.basis = hdr_basis::kFormatUnrecognized;
             return report;
         case FrameColorSpace::kSrgbBgra8:
         default:
-            // 这一帧是按 8 位 BGRA sRGB 交付的。两种根据分开写：这条路径结构上带不回 HDR
-            //（printwindow 那几条，来源那一级由登记表断言），还是这条路径按 8 位帧池取回了
-            // 一张（wgc 与桌面复制）。后者**不**等于"核实过原始内容是 SDR"—— 那一问的答案在
-            // CapturedFrame::displayHdrState，由 JudgeHdrPassiveNote 拿去决定留哪一条提示；
-            // 这个键只说交付那一份的形状与这条路径的登记根据，不替那次问答背书。
-            report.effective = hdr_effective::kSdrPassthrough;
-            report.basis = HdrCapabilityOfPath(path) == HdrCapability::kSdrSourceOnly
-                               ? hdr_basis::kPathSdrSource
-                               : hdr_basis::kDeliveredBgra8Sdr;
-            return report;
+            break;
     }
+    // 走到这里 = 交付的这一帧是 8 位 BGRA。这一句本身只说形状，不说来源，所以"来源是 SDR"要另找
+    // 根据，而两条根据的强度不一样，各写各的 basis：
+    //   1) 登记表说这条路径结构上带不回广色域帧（printwindow 让窗口自绘进 8 位 DIB、dwm 读 8 位
+    //      重定向位图、bitblt 拷 8 位屏幕 DC）—— 这一条不依赖那次问答，也不需要那次问答；
+    //   2) 采集之前那次只读问答答的是"这块屏此刻是 SDR"。
+    // 两条都没有时 hdrEffective 自己就写 unverified：一张 8 位帧不证明内容是 SDR（合成器压得动），
+    // 而"没问过"更不是"问过并且是 SDR"。那条提示只是把同一件事说给人听，修不了这一格。
+    if (HdrCapabilityOfPath(path) == HdrCapability::kSdrSourceOnly) {
+        report.effective = hdr_effective::kSdrPassthrough;
+        report.basis = hdr_basis::kPathSdrSource;
+        return report;
+    }
+    report.effective = hdr_effective::kUnverified;
+    report.basis = hdr_basis::kBgra8SourceUnverified;
+    if (displayState == DisplayHdrState::kSdr) {
+        report.effective = hdr_effective::kSdrPassthrough;
+        report.basis = hdr_basis::kDeliveredBgra8Sdr;
+    }
+    return report;
 }
 
 // ---------------------------------------------------------------------------
 // 显示是否处在 HDR 模式的只读问答 + 通道链的 HDR 闸门（实现在 src/HdrColor.cpp）
 // ---------------------------------------------------------------------------
-
-// 一次探测某块屏此刻是不是在 HDR 模式的结果。三值：yes / no / 问不出来（unknown）。
-// unknown 既不折成 yes 也不折成 no（规矩 5）：问不出来时 tonemap 走 SDR 透传并留
-// basis，refuse 不因此拒绝（它拒的是"确凿是 HDR"），而不是猜一个决定。
-enum class DisplayHdrState { kSdr, kHdr, kUnknown };
+//
+// DisplayHdrState 那几个取值声明在上面（报告合成那一节之前，那里要看得到它）。
 
 // 一个 DXGI 输出的 color space 原值（DXGI_COLOR_SPACE_TYPE）→ 是不是 HDR。写成收 uint32_t 让
-// 这份头文件不 include dxgi1_6.h；离线判据就能逐条注入。判据：G2084(PQ) 与 HLG 那几种是 HDR。
+// 这份头文件不 include DXGI 头；实现写在 src/HdrColor.cpp，那一份 include <dxgi.h>，switch 里
+// 用 SDK 的枚举符号，所以这里也**没有**手抄的编号可抄错，而离线判据照样能逐条注入数字。
+// 判据只有两条：带 ST.2084(PQ) 或 HLG 那一条传递函数的是 HDR；SDK 里有名字的其余显示色彩空间
+// （G22 / G10 / G24，含 BT.2020 原色那种宽色域 SDR）不是 HDR；RESERVED、CUSTOM 与表外值
+// 一律 unknown —— 认不出不等于"是 SDR"，更不等于"是 HDR"。
 DisplayHdrState DisplayHdrStateOfDxgiColorSpace(uint32_t dxgiColorSpaceType);
 
 // 按 HWND / HMONITOR 只读地问一次它所在那块屏此刻是不是 HDR 模式。
@@ -398,7 +469,9 @@ DisplayHdrState ProbeDisplayHdrForMonitor(void* hmonitor);
 // 延伸）。第三种下场是这件更重要的差别：**没核实过**。一张 8 位 BGRA 帧并不证明原始内容是 SDR
 // —— 合成器完全可能把一幅 HDR 画面压成 8 位再交给一个 B8G8R8A8 的帧池，所以那句"来源是 SDR"
 // 只能在采集之前真的问到"这块屏此刻是 SDR"时才算，否则只能说"这件事没核实出来"。
-// 两种都是提示（图照常交付、退出码不变），不是错误，也不是静默通过。
+// 两种都是提示（图照常交付、退出码不变），不是错误，也不是静默通过。这一件事在机器字段里另有
+// 一份同源的写法（MakeHdrReport 的 hdrEffective=unverified 配 bgra8_source_unverified），两边同进
+// 同退：提示会被 --quiet 整段去掉，所以那一句结论不能只活在这里。
 enum class HdrPassiveNote {
     kNone,             // 不该发提示：没要求过、要求的是 auto（只被动上报），或这一张真带回了广色域来源
     kSourceSdr,        // note.hdr_source_sdr：核实过这块屏是 SDR，所以那个处理确实是恒等的
