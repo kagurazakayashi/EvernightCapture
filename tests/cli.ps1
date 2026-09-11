@@ -52,9 +52,14 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 # 它不是最短的那一条说明（三条天花板各是什么、只有一种内插、先裁后缩的顺序、以及"不改变授权"
 # 都要说清楚），四种语言各加约 570～1430 字符（英文那份天然最长）。随之一起抬的还有同一组的分组标题
 # grp.crop（原来只说裁剪，现在这一组还装着等比缩小，改成了"裁剪与等比缩小…先裁后缩"）。
-# 实测 zh-CN 8980 / zh-TW 9019 / en 16764 / ja 10087，所以下面四个数按各自实际长度分别抬起，
+# 这一次上调：--cursor 那一行现在要分开讲两种"做不到"—— printwindow / dwm / bitblt 是"来源本来
+# 就没有光标"，而桌面复制那两条是"这一问没有答案"（官方说明允许指针已经画在那幅桌面图像上，而这条
+# 路径没有可读回的开关），同一行还要写明 --cursor default 照旧交图但 cursorEffective 写 unverified。
+# 这是**说明语义变多**而不是文案膨胀：四行各自加长（zh-CN 331→423 / zh-TW 333→428 / en 606→795 /
+# ja 409→516），没有新增选项也没有新增分组标题。
+# 实测 zh-CN 9249 / zh-TW 9290 / en 17382 / ja 10418，下面四个数按各自实际长度抬起，
 # 并把余量留在"再加一条短选项"还能装下的位置上。
-$HELP_LIMITS = @{ 'zh-CN' = 9250; 'zh-TW' = 9300; 'en' = 17200; 'ja' = 10450 }
+$HELP_LIMITS = @{ 'zh-CN' = 9400; 'zh-TW' = 9450; 'en' = 17600; 'ja' = 10600 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']
@@ -933,10 +938,25 @@ foreach ($m in @('dwm', 'printwindow', 'bitblt', 'duplication')) {
        A = @('--monitor', 'primary', '--cursor', 'include', '--capture', $m, 'out.png'); Exit = 1
        Check = { param($o) (Codes $o.errors) -contains 'capture.cursor_unsupported' }.GetNewClosure() }
 }
-foreach ($m in @('wgc', 'auto', 'dwm', 'printwindow', 'bitblt', 'duplication')) {
+foreach ($m in @('wgc', 'auto', 'dwm', 'printwindow', 'bitblt')) {
     $cases += @{ Name = ('--cursor exclude 配 --capture {0} 在解析期放行（差别在结果里那三个键）' -f $m)
        A = ($ANCHOR + @('--cursor', 'exclude', '--capture', $m, '--dry-run', 'out.png')); Exit = 0
        Check = { param($o) -not $o.PSObject.Properties.Name.Contains('errors') }.GetNewClosure() }
+}
+# exclude 这一条现在也只有一条路线敢声称：桌面复制那两条的来源可能已经把指针画在那幅桌面图像上，
+# 而它没有可读回的开关，所以明确要求 exclude 时解析期就拒（同一条码、另一句文案），不换后端。
+# 窗口目标与屏幕目标各判一次：同一个判据两条路都要给同一个下场。
+foreach ($m in @('duplication')) {
+    $cases += @{ Name = ('--cursor exclude 配 --capture {0}：解析期就拒，不给无根据的成功' -f $m)
+       A = ($ANCHOR + @('--cursor', 'exclude', '--capture', $m, 'out.png')); Exit = 1
+       Check = { param($o) ((Codes $o.errors) -join ',') -eq 'capture.cursor_unsupported' -and
+                            $o.errors[0].option -eq '--cursor' -and
+                            $o.errors[0].value -eq 'exclude' -and
+                            $o.errors[0].message -match $m -and
+                            $o.errors[0].stage -ne 'capture' }.GetNewClosure() }
+    $cases += @{ Name = ('屏幕目标上 --cursor exclude 配 --capture {0} 同一条码' -f $m)
+       A = @('--monitor', 'primary', '--cursor', 'exclude', '--capture', $m, 'out.png'); Exit = 1
+       Check = { param($o) (Codes $o.errors) -contains 'capture.cursor_unsupported' }.GetNewClosure() }
 }
 $cases += @{ Name = '--cursor include 配 --capture wgc / auto 放行（这两条兑现得了）'
    A = ($ANCHOR + @('--cursor', 'include', '--capture', 'wgc', '--dry-run', 'out.png')); Exit = 0
@@ -946,9 +966,19 @@ $cases += @{ Name = '--cursor include 配 --capture wgc / auto 放行（这两�
 $cases += @{ Name = '-v 的 input.captureChain 按光标要求收窄（auto + include 只剩 wgc）'
    A = ($ANCHOR + @('--cursor', 'include', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
    Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc' } }
-$cases += @{ Name = 'exclude 不收窄链（那几条本来就没有光标，wgc 那条去设开关）'
+$cases += @{ Name = '窗口链 exclude 不收窄（那四条里没有桌面复制，wgc 那条去设开关）'
    A = ($ANCHOR + @('--cursor', 'exclude', '--capture', 'auto', '--verbose', 'out.png')); Exit = 0
    Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' } }
+# 屏幕链里就有那一条保证不了的：exclude 时它被摘掉，剩下的两条照旧（收窄是**减**候选，
+# 不会为了凑一条合格路线把别的通道换进来，所以桌面像素的范围一点都没扩大）。
+$cases += @{ Name = '屏幕链 exclude 把保证不了的桌面复制摘掉（wgc,bitblt 两条仍在）'
+   A = @('--monitor', 'primary', '--cursor', 'exclude', '--capture', 'auto', '--dry-run',
+        '--verbose', 'out.png'); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,bitblt' -and
+                        $o.input.target -eq 'screen' } }
+$cases += @{ Name = '没写 --cursor 时屏幕链一条都不摘（默认截图行为不变）'
+   A = @('--monitor', 'primary', '--capture', 'auto', '--dry-run', '--verbose', 'out.png'); Exit = 0
+   Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,duplication,bitblt' } }
 $cases += @{ Name = '没写 --cursor 时链与这条选项存在之前逐字相同'
    A = ($ANCHOR + @('--capture', 'auto', '--verbose', 'out.png')); Exit = 0
    Check = { param($o) (@($o.input.captureChain) -join ',') -eq 'wgc,dwm,printwindow,bitblt' } }

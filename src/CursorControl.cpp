@@ -67,6 +67,18 @@ bool ChannelHonorsCursor(CaptureMethod method, bool screenMode, CursorMode mode,
             // 而换来的风险是多拍一份没人批准过的画面。
             return mode != CursorMode::kInclude;
 
+        case CursorCapability::kPointerStateUnverified:
+            // 桌面复制那两条：两种要求都落空，而落空的原因各不相同 ——
+            //   include：这条路径没有能设进去的开关，本工具也从不把指针形状画进帧里（不修补图像）；
+            //   exclude：来源**可能已经把指针画在那幅桌面图像上**，没有开关可设也没有元数据可依据
+            //            （规矩 6：PointerPosition 只说硬件指针，且只在鼠标有更新时才有意义，
+            //             "没有独立可见的指针"推不出"帧里没有指针像素"）。
+            // 所以明确要求 exclude 的调用**不能**在这里拿到一次无根据的成功：这一条被摘出链，
+            // 显式点名它时是一条错误。写清楚的原因 token 按要求分两种（规矩 5），
+            // 别把"这一问没有答案"与"来源根本没有光标"读成同一件事。
+            if (mode == CursorMode::kExclude) drop->reason = cursor_reason::kExcludeUnprovable;
+            return false;
+
         case CursorCapability::kUnregistered:
             // 没登记：include 不敢说做得到，exclude 也不敢说"这张图里真的没有光标"。
             // 新增一条通道而忘了在登记表里加一行，下场是被摘掉 + 一条写清楚原因的 note，

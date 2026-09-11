@@ -50,9 +50,13 @@ struct CapturedFrame {
 
     // 光标（--cursor）：这一条只有"真的有一个可设开关"的那条通道会填 —— 填的是**设完再读回来**
     // 的那两个答案（cursorStateKnown = 那一问有没有答案，cursorInFrame = 这条会话现在画不画光标）。
-    // 其余通道一律留 false/false：它们的"这一帧里没有光标"来自 src/CursorControl.h 那张按路径
-    // 登记的表（说的是来源像素这件事），不是一次 API 问答，所以不该在这里冒充"我读过开关"。
-    // 两个值怎么合成结果里的 requested/effective/basis 三个键，只有一份判据（MakeCursorReport）。
+    // 其余通道一律留 false/false：那两条 false 在那儿说的是"没有可依据的读数"，不是一次 API 问答，
+    // 所以不该在这里冒充"我读过开关"。它们交回的帧在光标这件事上算什么，由 src/CursorControl.h
+    // 那张按路径登记的表说：printwindow / dwm / bitblt 的来源像素里本来就没有光标，而桌面复制那两条
+    // 登记成 pointer_state_unverified —— 官方说明允许指针**已经画在那幅桌面图像上**，这一问因此
+    // 没有答案，那两个 false 对它们不等于"读过并且确认没有"。
+    // 两个值与那张登记表怎么合成结果里的 requested/effective/basis 三个键，只有一份判据
+    //（MakeCursorReport）。
     bool cursorStateKnown = false;
     bool cursorInFrame = false;
 

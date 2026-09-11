@@ -100,12 +100,22 @@ inline constexpr const wchar_t* kNotElevated = L"unelevated_process_may_miss_ele
 // 光标"与"这条路径的来源像素里本来就没有光标"这两层，**不是**"这一张图里看得见或看不见指针"。
 // 本 SDK 的会话接口没有 IsCursorVisible 那个只读属性，像素级的事这一层一条都不声称，
 // 也不去用像素反推（那需要真的截一次，而这一份查询的规矩是一个像素都不取）。
+// 而桌面复制那两条连"来源里本来就没有光标"这一层都撑不起（见下面那一条边界），所以它们在
+// cursor.paths 里登记成 pointer_state_unverified，include / exclude 两格都是 no。
 inline constexpr const wchar_t* kCursorSettingNotPixels =
     L"cursor_effective_is_a_setting_not_a_pixel_check";
-// 桌面复制那两条的指针形状是**独立元数据**，本工具从不取它、也从不动手把它画进帧里，
-// 反过来也不抹。所以"排除"这件事在那些路径上说的是来源本来就没有，而不是事后修过图。
+// 本工具不动指针形状：既不取桌面复制那份独立的指针元数据把它合成进帧，也不事后抹掉已经画进
+// 帧里的光标。所以"exclude"在各条路径上说的都是**来源**或**那条会话的设置**，不是修过的图。
 inline constexpr const wchar_t* kPointerNeverComposited =
     L"pointer_shape_never_composited_nor_erased";
+// 桌面复制那两条的边界：官方说明写明那一幅桌面图像里指针**要么已经画在上面**、要么由显卡单独
+// 叠加（DXGI_OUTDUPL_FRAME_INFO 的 PointerPosition 只报硬件指针，而且只在鼠标有更新时才有意义，
+// 所以"没有独立可见的指针"推不出"帧里没有指针像素"）。这一条路线因此既保证不了 exclude 也
+// 保证不了 include：明确要求时它被摘出 auto 链 / 显式点名时解析期就报 capture.cursor_unsupported，
+// 而 --cursor default 或不写这条选项时图照旧交，结果里 cursorEffective 写 unverified。
+// 逐帧按指针元数据作断言需要另一套机制（跨帧保留形状、逐帧核对），是独立后续任务。
+inline constexpr const wchar_t* kDuplicationPointerUnprovable =
+    L"duplication_desktop_frame_pointer_not_guaranteed";
 // HDR（--hdr）的边界一：本项目没有一台能开 HDR 的显示器，所以 tone mapping 的数学虽然离线逐点判过，
 // "真在一幅 HDR 帧上跑通并与人眼看过的结果对照"这件事没有实测过。verifiedOnThisMachine 恒 no。
 inline constexpr const wchar_t* kHdrToneMappingUnverified =
@@ -239,10 +249,12 @@ struct BackendReport {
 // 开关那条的版本门槛问不出来时只能写 unknown，绝不折成 yes 或 no（与三值判据那一条同源）。
 struct CursorPathReport {
     std::wstring path;           // images[].path 里那个机器名
-    std::wstring capability;     // settable / excludes_cursor / unregistered
+    std::wstring capability;     // settable / excludes_cursor / pointer_state_unverified / unregistered
     std::wstring reason;         // cursor_reason:: 那一个 token（这条路径的根据）
     std::wstring includeState;   // 这条路径兑现得了 --cursor include 吗：yes / no / unknown
     std::wstring excludeState;   // 这条路径**敢不敢声称**兑现了 --cursor exclude：同上三值
+                                 //（no = 查过来源之后知道保证不了；unknown = 这条路径没登记过，
+                                 //  两种下场给调用方的下一步不一样，见 src/CursorControl.h 规矩 5）
 };
 
 struct CursorControlReport {

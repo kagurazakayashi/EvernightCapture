@@ -411,14 +411,16 @@ note.screen_query_stale	このモニタ一覧はその時点のスナップシ�
 note.screen_query_stale_hint	現在 %1 台のモニタ。番号はその回の列挙順にすぎず、デバイス名はシステムによって割り当て直される。セッションをまたぐのは id: のモニタのデバイスパス。後のスクリーンショットでも画面取得前に身元を再確認し、確認ダイアログは画素の出所に従って判定される
 
 # ---- マウス ポインターを含めるか（--cursor。判定の本体は src/CursorControl.h）----
-opt.cursor	画像にマウス ポインターを含めるか：default(既定。何も変更せず、結果にポインター関連の 3 つのキーも現れません) / include(入れる) / exclude(入れない)。実際に設定できて読み戻せるスイッチを持つのは wgc だけ（ビルド 19041 以上が必要）で、その他の経路が返す画像にはそもそもポインターがありません。だから include を printwindow / dwm / bitblt / duplication と組み合わせると capture.cursor_unsupported で拒否され、画面の画素を読む経路にこっそり乗り換えもしません；auto のときは実現できない経路を列から外し、それぞれに note.cursor_channel_skipped を残します。認可は変わりません；requested / effective / basis の判拠は README に
+opt.cursor	画像にマウス ポインターを含めるか：default(既定。何も変更せず、結果にポインター関連の 3 つのキーも現れません) / include(入れる) / exclude(入れない)。設定して読み戻せるスイッチを持つのは wgc だけ（ビルド 19041 以上）。printwindow / dwm / bitblt の出所にはそもそもポインターがなく、duplication のデスクトップ画像はポインターがすでに描かれている可能性がありスイッチもないため、この 4 条との include、および duplication との exclude は capture.cursor_unsupported で拒否されます（二種の文言）。--cursor default は画像を出しますが cursorEffective は unverified です。画面の画素を読む経路にこっそり乗り換えません；auto では実現できない経路を列から外し、それぞれに note.cursor_channel_skipped を残します。認可は変わりません；requested / effective / basis の判拠は README に
 cli.cursor_value	--cursor には default / include / exclude だけを指定できます
 cap.cursor_unsupported	%1 のマウス ポインターは実現できません：--capture %2 の経路の画素の出所には描画するポインターがありません；実現できるのは %3 です
+cap.cursor_unsupported_unprovable	%1 のマウス ポインターは実現できません：--capture %2 が返すのはディスプレイの合成フレームで、ポインターはその画像にすでに描かれている可能性があり、この経路には設定して読み戻せるスイッチがありません；この問いについて何か言えるのは %3 です
+cap.cursor_unsupported_unprovable_hint	これは「出所にポインターがない」ではなく「この経路は保証できない」という話です。公式の説明によると、デスクトップ画像はポインターがすでに描かれているか、ディスプレイ アダプターが個別に重ねるかのいずれかで、このツールはポインター メタデータも取らず画像の修正もしないので、二つの下場は区別できません。ポインターなしが必要なら --capture wgc（スイッチがあります。ビルド 19041 以上）か bitblt / dwm / printwindow（それらの出所にはポインターがありません）を使ってください。チャネルの既定どおりに出すなら --cursor default で、その場合 cursorEffective は排除を装わず unverified と書かれます
 cap.cursor_unsupported_hint	「画像にポインターを入れる」は、実際にスイッチを持つチャネルだけ実現できます。このツールはポインターを描かず、この要求のために画面の画素を読み取る経路へ乗り換えることもしません（あの経路にもポインターはなく、得られるのは誰も承認していない画面です）。--capture wgc を使うか、この要求を取り除いてください（--cursor default はチャネルの既定に従い、--cursor exclude はポインターを求めません）
 cap.cursor_unverifiable	%1 のマウス ポインターを確認できませんでした（理由 %2、実際 %3）
 cap.cursor_unverifiable_hint	そのキャプチャ セッションは「フレームにポインターを描くか」という問いに、要求と一致する答えを返ませんでした：インターフェースを取得できない、設定できない、または読み戻した値が逆でした。答えが出ないことは要求どおりという意味ではないので、この画像はキャプチャを開始する前に破棄され、画素を 1 つも書き出しません。--timeout-ms を大きくするか別の --capture で改めてください。繰り返し出る場合は message の 3 点をそのまま開発者に報告してください
 env.cursor_unsupported	%1 のマウス ポインターはこの機械では実現できません：試す予定だったのは %2、理由 %3
-env.cursor_unsupported_hint	これは対象のウィンドウではなくこの機械についての話です：あのスイッチはより新しい Windows ビルドを必要とし、その他のチャネルにはそのスイッチか、そもそもポインターがありません。--capture を変えても現れませんし、同じ対象をやり直しても同じ結果です。いまこの機械でどこまで言い切れるかは --capabilities の cursor 段落を見てください
+env.cursor_unsupported_hint	これは対象のウィンドウではなくこの機械についての話です：あのスイッチはより新しい Windows ビルドを必要とし、その他のチャネルにはそのスイッチか、そもそもポインターがなく、あるいはその経路ではこの問いに答えがまったく出ません（desktop duplication の 2 経路）。--capture を変えても現れませんし、同じ対象をやり直しても同じ結果です。いまこの機械でどこまで言い切れるかは --capabilities の cursor 段落を見てください
 note.cursor_channel_skipped	auto 列の %1 は %2 のマウス ポインターを実現できないので外しました（%3）。残りは順序どおり試します
 
 # ---- HDR 色処理（--hdr、判定本体は src/HdrColor.h）----

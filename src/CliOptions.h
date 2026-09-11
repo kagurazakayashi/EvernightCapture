@@ -182,7 +182,9 @@ struct ScaleRequest {
 enum class CursorMode {
     kDefault,  // 不改动任何通道的默认行为（--cursor 不给就是这一种）
     kInclude,  // 要求画面里有光标：只有那个开关设得进去的通道能做到
-    kExclude,  // 要求画面里没有光标：设得进去的通道去设，来源本来就没光标的通道照实报
+    kExclude,  // 要求画面里没有光标：设得进去开关的那条去设，来源本来没光标的几条照实报；
+               // 桌面复制那两条**保证不了**这一问（来源可能已含指针而没有开关），
+               // 所以明确要求 exclude 时它被摘出链 / 显式点名时解析期就拒（判据在 src/CursorControl.h）
 };
 
 struct CursorRequest {
@@ -406,8 +408,10 @@ inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
 // auto 回退链里那一条**做不到这次要求的光标状态**，已经从链里摘掉了（原因 token 在 message 末尾，
 // ASCII、不随 --lang 变：`os_below_min_build:19041` = 这台机器的版本给不了那个开关，
 // `window_self_drawn` / `dwm_redirection_surface` / `screen_dc_has_no_pointer` = 这条路径的来源
-// 里根本没有光标，`pointer_shape_is_separate_metadata` = 桌面复制那条的指针是独立元数据而本工具
-// 从不合成它，`not_registered` = 新增通道忘了在光标登记表里加一行）。
+// 里根本没有光标，`desktop_frame_pointer_state_unverified` = 桌面复制那条的来源可能已经把指针画在
+// 那幅桌面图像上、而它没有可读回的开关（include 那一路写这一条），
+// `duplication_cursor_exclusion_unprovable` = 同一条路线**不敢声称**交回的图没有光标（exclude 那一路
+// 写这一条），`not_registered` = 新增通道忘了在光标登记表里加一行）。
 // 与 note.channel_unavailable 分开：那一条说的是"本机版本用不了这条通道"，这一条说的是
 // "这条通道能用，但它兑现不了这次的光标要求"，而剩下的那几条仍会照顺序试。
 inline constexpr const wchar_t* kNoteCursorChannelSkipped = L"note.cursor_channel_skipped";

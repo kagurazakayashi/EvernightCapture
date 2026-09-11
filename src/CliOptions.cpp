@@ -1548,15 +1548,18 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
 
         // ---- 光标要求与这条通道能不能兑现 ----
-        // 这件事由那条路径的**来源像素**决定，不是一件可以事后商量的装饰：那几条通道交回的
-        // 画面里根本没有光标可画（printwindow 是窗口自绘到 DC、dwm 读重定向位图、bitblt 拷屏幕 DC、
-        // duplication 的桌面帧把指针当独立元数据交回而本工具从不合成它）。所以 --cursor include
-        // 配它们就在解析期说做不到：退出码 1，一个像素都不取、不弹框、也不"那就换一条会读桌面的
-        // 通道试试"（换过去既没把光标加回来，又多拍一份没人批准过的画面）。
+        // 这件事由那条路径的**来源像素**决定，不是一件可以事后商量的装饰：printwindow 让窗口自绘
+        // 到 DC、dwm 读重定向位图、bitblt 拷屏幕 DC，这三条的来源里根本没有光标；桌面复制读的是
+        // 显示器的合成分，而按官方说明那一幅桌面图像里指针要么**已经画在上面**、要么由显卡单独
+        // 叠加，这一问在本工具手里分不开（判据与理由见 src/CursorControl.h 的规矩 1、5、6）。
+        // 所以两种"做不到"都在解析期就说清楚，退出码 1，一个像素都不取、不弹框，也不"那就换一条
+        // 会读桌面的通道试试"（换过去既没把光标加回来，又多拍一份没人批准过的画面）：
+        //   * include 配任何一条没有那个开关的通道 —— 本工具不画光标，也不拿这条要求去换后端；
+        //   * exclude 配桌面复制 —— 不是"来源没有光标"，而是"这条路线保证不了"。
+        // 两句文案不同，因为调用方的下一步不一样（前者换 wgc 或去掉要求；后者去掉要求之后
+        // 交回的图在光标这件事上仍是未知，结果里写的是 unverified 而不是 exclude）。
         // --capture auto 不在这里判：做不到的那几条由闸门从链里摘掉并各留一条 note，
         // 摘到空了才报错（见 src/CursorControl.cpp）。
-        // exclude 这一路各条通道都成立（有开关的去设，没开关的靠来源本来就没有光标），
-        // 差别只在结果里那个 basis 说的是哪一件事。
         if (opt.cursor.given && !CursorRequestPossible(opt.capture, opt.cursor.mode)) {
             const CaptureMethod kChannels[] = {CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail,
                                                CaptureMethod::kPrintWindow, CaptureMethod::kBitBlt,
@@ -1564,13 +1567,24 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             std::wstring canDo;
             for (const CaptureMethod m : kChannels) {
                 if (!CursorRequestPossible(m, opt.cursor.mode)) continue;
+                // 屏幕目标上没有"某一扇窗口自己的画面"可取：那两条窗口专属的通道不该出现在
+                // "换这条试试"的建议里（建议给一条根本用不了的通道等于没说）。
+                if (opt.ScreenMode() && (m == CaptureMethod::kDwmThumbnail ||
+                                         m == CaptureMethod::kPrintWindow))
+                    continue;
                 if (!canDo.empty()) canDo += L", ";
                 canDo += CaptureMethodName(m);
             }
+            // 同一条码、两句文案：拿"来源里根本没有光标"去说桌面复制那一条是假话 ——
+            // 那一条的来源可能已经把指针画在画面里，而它没有可读回的开关。
+            // 判据与登记表、筛链共用同一份（这里查的正是那张表在通道级的那两句判断）。
+            const bool unprovable = ChannelPointerMayBeInImage(opt.capture);
             Err(codes::kCursorUnsupported,
-                Msgf(L"cap.cursor_unsupported", CursorModeName(opt.cursor.mode),
-                     CaptureMethodName(opt.capture), canDo),
-                L"--cursor", CursorModeName(opt.cursor.mode), Msg(L"cap.cursor_unsupported_hint"));
+                Msgf(unprovable ? L"cap.cursor_unsupported_unprovable" : L"cap.cursor_unsupported",
+                     CursorModeName(opt.cursor.mode), CaptureMethodName(opt.capture), canDo),
+                L"--cursor", CursorModeName(opt.cursor.mode),
+                Msg(unprovable ? L"cap.cursor_unsupported_unprovable_hint"
+                               : L"cap.cursor_unsupported_hint"));
         }
 
         // ---- HDR 处理要求与这条通道兑不兑现得了 ----

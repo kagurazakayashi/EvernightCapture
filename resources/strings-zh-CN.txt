@@ -419,16 +419,20 @@ note.screen_query_stale_hint	本机此刻 %1 块屏幕。编号只在本次枚�
 
 # ---- 光标包含与排除（--cursor，判据本体在 src/CursorControl.h）----
 # 三种下场各说一件事，谁也不冒充谁：cap.cursor_unsupported 说的是"这条通道的来源里根本没有
-# 光标可画"（解析期，1），env.cursor_unsupported 说的是"这台机器的版本给不了那个开关"（7），
+# 光标可画"（解析期，1），cap.cursor_unsupported_unprovable 说的是同一条码的另一件原因——
+# "这条路线对光标这一问根本没有答案"（桌面复制那两条：来源可能已含指针而没有开关，也是解析期，1），
+# env.cursor_unsupported 说的是"这台机器的版本给不了那个开关"（7），
 # cap.cursor_unverifiable 说的是"设过之后读回来不是那一件事 / 那一问没答案"（7）。
-opt.cursor	画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。只有 wgc 有一条能设进去也读得回来的开关（要内部版本 19041 起），其余几条交回的画面本来就没有光标，所以 include 配 printwindow / dwm / bitblt / duplication 报 capture.cursor_unsupported，绝不改走会读桌面像素的通道；auto 时做不到的那几条从链里摘掉并各留一条 note.cursor_channel_skipped。这一条不改变授权；requested / effective / basis 三件事的判据见 README
+opt.cursor	画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。只有 wgc 有能设进去也读回来的开关（要内部版本 19041 起）；printwindow / dwm / bitblt 的来源本来就没有光标，duplication 的桌面帧却可能已经把指针画在里面、又没有开关，所以 include 配这四条、exclude 配 duplication 都报 capture.cursor_unsupported（两种文案），--cursor default 照旧交图而 cursorEffective 写 unverified；绝不改走读桌面像素的通道，auto 时做不到的那几条从链里摘掉并各留一条 note.cursor_channel_skipped。这一条不改变授权；requested / effective / basis 三件事见 README
 cli.cursor_value	--cursor 只能写 default / include / exclude
 cap.cursor_unsupported	%1 光标做不到：--capture %2 这条路径的来源像素里没有光标可画；做得到的是 %3
+cap.cursor_unsupported_unprovable	%1 光标做不到：--capture %2 交回的是显示器合成分，指针可能已经画在那幅桌面图像里，而这条路径没有能设进去也读得回来的开关；在这一问上说得上话的是 %3
+cap.cursor_unsupported_unprovable_hint	这一条不是"来源里没有光标"，而是"这条路线保证不了"：桌面复制的那幅桌面图像按官方说明要么已经把指针画在上面、要么由显卡单独叠加，本工具不取指针元数据也不修图像，所以两个下场都分不开。要没有光标请改用 --capture wgc（那条有开关，要内部版本 19041 起）或 bitblt / dwm / printwindow（那几条来源里没有光标）；要照通道默认交回就用 --cursor default，结果里 cursorEffective 会写 unverified 而不是假装排除
 cap.cursor_unsupported_hint	"画面里要有光标"只有那条真有开关的通道能兑现。本工具不画光标，也不会因为这一条就改走去读桌面像素的那几条（它们同样没有光标，换来的只是一份没人批准过的画面）。改用 --capture wgc，或者把这条要求去掉（--cursor default 照通道默认、--cursor exclude 要没有光标）
 cap.cursor_unverifiable	%1 光标没能核实（原因 %2，实际 %3）
 cap.cursor_unverifiable_hint	那条会话对"要不要把光标画进帧里"这一问没给出与要求一致的答案：接口问不到、设不下去，或设完读回来是相反的那一件。问不出来不等于照要求办了，所以这一张在开始采集之前就被作废，一个像素都没落地。加大 --timeout-ms 或换一条 --capture 再来一次；反复出现请把 message 里那三段原样报给工具维护者
 env.cursor_unsupported	%1 光标在这台机器上兑现不了：本来要试的是 %2，原因 %3
-env.cursor_unsupported_hint	这一条说的是这台机器，与目标窗口无关：那个开关要更高的 Windows 内部版本，而其余通道要么没有这个开关、要么来源本来就没有光标。换 --capture 不会把它变出来，重试同一个目标也是同样下场。想知道本机现在哪几条说得准，跑 --capabilities 看 cursor 那一段
+env.cursor_unsupported_hint	这一条说的是这台机器，与目标窗口无关：那个开关要更高的 Windows 内部版本，而其余通道要么没有这个开关、要么来源本来就没有光标，再不然就是这一问在那条路线上根本没有答案（桌面复制那两条）。换 --capture 不会把它变出来，重试同一个目标也是同样下场。想知道本机现在哪几条说得准，跑 --capabilities 看 cursor 那一段
 note.cursor_channel_skipped	auto 链里的 %1 兑现不了 %2 光标，已摘掉（%3），剩下的照顺序试
 
 # ---- HDR 色彩处理（--hdr，判据本体在 src/HdrColor.h）----

@@ -4,18 +4,20 @@
 .DESCRIPTION
     三层各判各的，都不靠"把光标真的摆到窗口上"这种没法安排的现场：
 
-      0) 离线层（build\ecapture-cursor-tests.exe）：判据本体——按路径登记的能力表、
-         两份表的一致性、通道链按光标要求收窄（含 19041 那道门槛两侧）、版本问不出来时
+      0) 离线层（build\ecapture-cursor-tests.exe）：判据本体——按路径登记的能力表（含桌面复制
+         那两条"这一问没有答案"的状态）、两份表与通道级判断的一致性、通道链按光标要求收窄
+         （含 19041 那道门槛两侧、显式 exclude 配桌面复制、空候选链）、版本问不出来时
          只按结构筛、以及结果里 requested/effective/basis 的合成。
       1) 源码级守卫：src/ 里出现任何"把指针形状合成进帧"或"事后抹掉光标"的 API 就红。
-         这条判的是本工具的**做法**（不修补图像），不是某个系统的行为。
+         这条判的是本工具的**做法**（不修补图像、不动使用者的鼠标、不改系统光标设置），
+         不是某个系统的行为。
       2) 真机层：只用自建窗口，走 --yes 免掉的窗口内容那一级，一次都不弹框。
          判的是"那个开关真的被设进去、也真的读回来了"（API 层面的回执），以及画面本身
          仍然是本次那扇窗口（尺寸 + 签名色 + 颜色种数），即设置没有把取图弄坏。
 
-    刻意不在本机伪造的现场（一律记未验证，见第 7 节）：像素级"图里看得见/看不见指针"
+    刻意不在本机伪造的现场（一律记未验证，见第 8 节）：像素级"图里看得见/看不见指针"
     （那要把光标停在目标窗口上，等于动使用者的鼠标）、桌面那两条通道要人点头的实截、
-    低于 19041 的系统上开关问不到时的真机下场。
+    低于 19041 的系统上开关问不到时的真机下场、以及逐帧指针元数据能否支撑排除断言。
 #>
 param(
     [string]$Exe,
@@ -122,16 +124,18 @@ try {
     # =========================================================================
     Write-Host "`n=== 1) 源码级守卫：本工具不合成指针形状，也不抹除光标 ==="
     # =========================================================================
-    # "排除"这件事在各条路径上说的都是**来源**（那张登记表），不是"把已经画进去的东西修掉"。
-    # 桌面复制那条的指针形状本来是独立元数据（GetFramePointerShape），取了就得自己画进帧里——
-    # 那正是这次明确不要的做法，所以这里用源码级判据钉住：出现任何一个就红。
+    # "排除"这件事在各条路径上说的都是**来源**或**那次设置**（那张登记表），不是"把已经画进去的东西
+    # 修掉"。桌面复制那条更要注意：官方说明允许指针**已经画在那幅桌面图像上**（也可能是显卡单独
+    # 叠加，两者在这一问上分不开），所以取了那份元数据再自己画只会把事情弄得更乱 —— 这里用源码级
+    # 判据钉住"不合成、不抹除、不动鼠标、不改系统光标设置"：出现任何一个就红。
     # 判的是**调用形状**（`->Name(` / `Name(`），不是名字本身：源码与文档里要写清"我们不做哪几件事"，
     # 那些说明文字提到 API 名字是应该的，这里不能把它判成违规。
     $forbidden = @(
         @{ Name = '取指针形状元数据（要自己画进帧里才用得上）'; Pat = '->\s*GetFramePointerShape\s*\(' },
         @{ Name = '取指针形状列表'; Pat = '->\s*GetPointerShapes?\s*\(' },
         @{ Name = '把光标画进 DC / 帧里'; Pat = '(?<![A-Za-z_])DrawIcon(Ex)?\s*\(' },
-        @{ Name = '为了截图去动使用者的鼠标'; Pat = '(?<![A-Za-z_])Set(Physical)?CursorPos\s*\(' }
+        @{ Name = '为了截图去动使用者的鼠标'; Pat = '(?<![A-Za-z_])Set(Physical)?CursorPos\s*\(' },
+        @{ Name = '为了截图去改系统光标设置（拖影等）'; Pat = '(?<![A-Za-z_])SPI_SETCURSORTRAILS' }
     )
     $srcFiles = Get-ChildItem -LiteralPath (Join-Path $root 'src') -File |
         Where-Object { $_.Extension -in '.cpp', '.h' }
@@ -324,6 +328,41 @@ try {
                    (Test-Path -LiteralPath $path), $r.Dialog) -ForegroundColor DarkGray
     }
 
+    # 同一节另一件要钉住的事：明确要求 exclude 的调用**不许**在桌面复制那条上拿到一次无根据的成功。
+    # 旧行为是图照样落地、结果里写 cursorEffective: exclude，凭的是一句证明不了的话（"指针是独立
+    # 元数据而本工具不合成它"）。现在解析期就拒：退出码 1、不落地、不弹框，也不换后端。
+    foreach ($case in @(@{ Kind = 'window'; Extra = @('--capture', 'duplication') },
+                        @{ Kind = 'screen'; Extra = @('--capture', 'duplication', '--monitor', 'primary') })) {
+        $isScreen = $case.Kind -eq 'screen'
+        $m = "duplication($($case.Kind)目标)"
+        $path = Get-EcRunFile -RunDir $run -Name ("refuse-exclude-$($case.Kind).png")
+        Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        $argv = @('--format', 'png', '--lang', 'zh-CN', '--out', $path, '--cursor', 'exclude',
+                  '--yes') + @($case.Extra)
+        if (-not $isScreen) { $argv = @('--hwnd', (Get-EcHwndHex $window.Hwnd)) + @($argv) }
+        $r = Invoke-EcConsentShot -Exe $Exe -Arguments $argv -TimeoutMs 20000 `
+                                  -ExpectNoDialog -DialogWaitMs 2500
+        $json = Json-Of $r
+        $codes = if ($json -and $json.errors) { @($json.errors | ForEach-Object { $_.code }) } else { @() }
+        Assert-Ec ($r.Exit -eq 1) "exclude 配 $m 退出码 $($r.Exit)，应为 1（参数用法错，不是截图失败）"
+        Assert-Ec ($codes -contains 'capture.cursor_unsupported') `
+            "exclude 配 $m 的 code 是 '$($codes -join ',')'，应为 capture.cursor_unsupported"
+        Assert-Ec ($codes -notcontains 'capture.cursor_unverifiable') `
+            "这条路线保证不了的事报成了无法核实（$($codes -join ',')）：结构下场与运行时问不出来要分开"
+        Assert-Ec (-not (Test-Path -LiteralPath $path)) "exclude 配 $m：被拒的这一次居然落地了"
+        Assert-Ec (-not $r.Dialog) "exclude 配 $m：一条注定兑现不了的请求先去打扰人一次（弹了确认框）"
+        if ($json -and @($json.images).Count -gt 0) { Assert-Ec $false "被拒的这一次交回了图片" }
+        $e = @($json.errors | Where-Object { $_.code -eq 'capture.cursor_unsupported' })[0]
+        Assert-Ec ($e.option -eq '--cursor' -and $e.value -eq 'exclude') `
+            "那条错误的 option/value 不对劲：$($e.option)/$($e.value)"
+        # 文案必须是"这条路线保证不了"那一句，不能是"来源没有光标"那一句（那是假话）。
+        # 与 include 配同一条通道时用的同一句判据（都出自登记表），这里只核对文案非空且带通道名。
+        Assert-Ec ($e.message -match 'duplication' -and $e.hint) `
+            "exclude 配 $m 的错误没带上被拒的通道或没有下一步建议：$($e.message)"
+        Write-Host ("  {0}: exit=1 code=capture.cursor_unsupported 落地={1} 弹框={2}" -f $m,
+                   (Test-Path -LiteralPath $path), $r.Dialog) -ForegroundColor DarkGray
+    }
+
     # =========================================================================
     Write-Host "`n=== 6) 要求光标这件事不改变授权（隐私那条一条都没松） ==="
     # =========================================================================
@@ -336,17 +375,20 @@ try {
     Assert-Ec (-not (Test-Path -LiteralPath (Get-EcRunFile -RunDir $run -Name 'ask-window.png'))) `
         '答"否"之后这张图居然落地了'
 
-    # 桌面像素那两条：即使 --cursor exclude（"要的正是没有光标的画面"）、也给了 --yes，
-    # 一定弹框，且没点头什么都不落地。这条判的是"排除光标"没被当成降低风险的理由。
+    # 桌面像素那两条：--cursor 这件事一律不构成降低风险的理由。bitblt 带着 --cursor exclude
+    # （"要的正是没有光标的画面"）、也给了 --yes，仍一定弹框且没点头什么都不落地；
+    # duplication 现在明确要求 exclude 时早在解析期就被拒了（第 5 节判那一条），所以这里改用
+    # --cursor default 走"图照旧交、光标这件事报 unverified"那一路来验授权：授权那条一条都没松。
     # 这里只探测不代答（AI 不替人点任何一个按钮），所以到点由测试一侧结束那次等待：
     # 判据是"框真弹出来了 + 没落地 + 没返回成功"，"答否"那一条码留给 consent.ps1。
-    foreach ($m in @('bitblt', 'duplication')) {
+    foreach ($case in @(@{ M = 'bitblt'; Cur = 'exclude' }, @{ M = 'duplication'; Cur = 'default' })) {
+        $m = $case.M
         $path = Get-EcRunFile -RunDir $run -Name ("ask-desktop-{0}.png" -f $m)
         Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue
         $r = Invoke-EcConsentShot -Exe $Exe -TimeoutMs 9000 -DialogWaitMs 4000 -Arguments @(
             '--hwnd', (Get-EcHwndHex $window.Hwnd), '--format', 'png', '--lang', 'zh-CN',
-            '--out', $path, '--capture', $m, '--cursor', 'exclude', '--yes')
-        Assert-Ec $r.Dialog "桌面那条通道（$m）带着 --cursor exclude 与 --yes 却没弹框问人"
+            '--out', $path, '--capture', $m, '--cursor', $case.Cur, '--yes')
+        Assert-Ec $r.Dialog "桌面那条通道（$m，--cursor $($case.Cur)）给了 --yes 却没弹框问人"
         Assert-Ec (-not (Test-Path -LiteralPath $path)) "没人点头，$m 这一张居然落地了"
         Assert-Ec ($r.Exit -ne 0) "$m：没经过任何确认就返回了成功"
         Write-Host ("  {0}: 弹框={1} exit={2} 落地={3}" -f $m, $r.Dialog, $r.Exit,
@@ -371,10 +413,35 @@ try {
     $noInclude = @($paths | Where-Object { $_.capability -eq 'excludes_cursor' -and $_.include -ne 'no' })
     Assert-Ec ($noInclude.Count -eq 0) `
         "没有开关的那几条里有人把 include 说成了做得到：$(($noInclude | ForEach-Object { $_.path }) -join ',')"
+    # 三条登记的核心形状：来源没有光标的那几条 exclude=yes，桌面复制那两条 exclude=no，
+    # 而"没登记"那种（本机现在没有）只该写 unknown —— no 与 unknown 混用就是把"已知保证不了"
+    # 与"根本没查过"说成同一件事。
+    $exclYes = @($paths | Where-Object { $_.exclude -eq 'yes' } | ForEach-Object { $_.capability } | Sort-Object -Unique)
+    Assert-Ec ((($exclYes) -join ',') -in @('settable,excludes_cursor', 'excludes_cursor,settable')) `
+        "敢声称 exclude 的那一格只许出自有开关或来源没有光标的路径，实际 capability：$($exclYes -join ',')"
+    $dup = @($paths | Where-Object { $_.capability -eq 'pointer_state_unverified' })
+    Assert-Ec ($dup.Count -eq 2) "桌面复制那两条应登记成 pointer_state_unverified，实际 $($dup.Count) 条"
+    Assert-Ec ((@($dup | ForEach-Object { $_.path } | Sort-Object) -join ',') -eq
+               'duplication.frame,screen.duplication') `
+        "登记成 pointer_state_unverified 的是这两条：$(@($dup | ForEach-Object { $_.path }) -join ',')"
+    $dupLoose = @($dup | Where-Object { $_.include -ne 'no' -or $_.exclude -ne 'no' -or
+                                      $_.reason -ne 'desktop_frame_pointer_state_unverified' })
+    Assert-Ec ($dupLoose.Count -eq 0) `
+        "桌面复制那两条把 include 或 exclude 说成了做得到：$(($dupLoose | ForEach-Object { $_.path }) -join ',')"
+    # 旧的 reason token 不该再从任何一条路径里冒出来（那句"独立元数据"证明不了帧里没有指针）。
+    $stale = @($paths | Where-Object { $_.reason -eq 'pointer_shape_is_separate_metadata' -or
+                                      $_.capability -eq 'excludes_cursor' -and $_.path -like '*duplication*' })
+    Assert-Ec ($stale.Count -eq 0) "报告里还留着那句站不住的依据：$(($stale | ForEach-Object { $_.path }) -join ',')"
+    Assert-Ec (@($paths | Where-Object { $_.capability -eq 'excludes_cursor' }).Count -eq 5) `
+        '来源没有光标的那五条（printwindow / dwm.thumbnail / dwm.screen / bitblt.screen / screen.bitblt）数量不对'
     Assert-Ec ($cur.pointerShapeCompositing -eq 'never' -and $cur.pixelRetouching -eq 'never') `
         ('能力报告没写清不合成指针形状也不抹除光标这两条：{0}/{1}' -f $cur.pointerShapeCompositing, $cur.pixelRetouching)
     Assert-Ec (@($capJson.caveats) -contains 'cursor_effective_is_a_setting_not_a_pixel_check') `
         'caveats 里少了那条边界说明（effective 说的是设置与来源，不是像素）'
+    # 这一条是本次修正的另一半：桌面复制那幅桌面图像可能已经把指针画在上面，报告要把它说出来，
+    # 而不是让调用方从 capability 那一格里自己猜。
+    Assert-Ec (@($capJson.caveats) -contains 'duplication_desktop_frame_pointer_not_guaranteed') `
+        'caveats 里少了桌面复制那条指针依据的边界说明'
     # 两份查询同源：--diagnostics 也带同一段（除段落取舍外字段全同）。
     $diag = Invoke-EcProcess -FilePath $Exe -TimeoutMs 20000 -Arguments @('--diagnostics', '--lang', 'zh-CN')
     $diagJson = $diag.Stdout | ConvertFrom-Json
@@ -392,7 +459,8 @@ try {
     # =========================================================================
     Skip-Ec '像素级"图里看得见 / 看不见指针"' '那要把光标停在目标窗口上再截（等于动使用者的鼠标），而且本 SDK 的会话接口没有 IsCursorVisible 那个只读属性；这一层只判到 API 回执（设过并读回）与画面自相一致，边界写在 --capabilities 的 caveats 里'
     Skip-Ec '低于 19041 的系统上那个开关问不到（capture.cursor_unverifiable / env.cursor_unsupported 的真机现场）' '这台开发机降级不了，也不该为测试去降级；那条门槛两侧的下场由离线层注入假版本逐条判（tests\cursor_state.cpp 的第 3、4、5 节）'
-    Skip-Ec 'duplication 交回的指针形状与桌面帧不同这一现场（真机截一张带光标的桌面）' '它要人在确认框上点头，而测试一侧绝不代答"是"；这里判到的是"本工具从不取那份元数据"（第 1 节源码级守卫）与登记表把它的原因写成 pointer_shape_is_separate_metadata（第 0、7 节）'
+    Skip-Ec 'duplication 交回的桌面帧里到底有没有嵌进去的指针（真机截一张带光标的桌面）' '它要人在确认框上点头，而测试一侧绝不代答"是"；这一层判到的是登记表把那两条写成 pointer_state_unverified（第 0、7 节）、明确要求 exclude 时不给一次无根据的成功（第 5 节）、以及"本工具从不取那份指针元数据也从不修图像"（第 1 节源码级守卫）。指针已经画进画面的那一种下场要人点头之后亲眼比对，本项目没有把它说成实测'
+    Skip-Ec '逐帧 DXGI 指针元数据能否支撑 exclude 断言（PointerPosition.Visible / PointerShapeBufferSize）' '官方说明里 PointerPosition 说的是**硬件**指针，而且只在 LastMouseUpdateTime 非零时才有意义，Visible=false 两种来路分不开（根本没有可见指针 / 指针已经画在那幅桌面图像上）。要拿它作断言得先有逐帧采集与跨帧保留形状的机制，那是独立后续任务；本轮不靠它放宽登记（判据见 src/CursorControl.h 规矩 6）'
     Skip-Ec '远程桌面 / 基本显示驱动会话里屏幕 DC 与桌面复制的光标表现' '本机不是那种会话，也没有第二台机器可试；那条路本来就先被 capture.monitor_changed / cap.dup.* 那一组码挡住，与光标这件事无关'
 
     Stop-EcOwnedWindows

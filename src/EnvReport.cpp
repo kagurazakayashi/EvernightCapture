@@ -440,6 +440,15 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
                 p.includeState = TriName(Tri::kNo);
                 p.excludeState = TriName(Tri::kYes);
                 break;
+            case CursorCapability::kPointerStateUnverified:
+                // 桌面复制那两条：两格都是 **no**，而且是查过来源之后说出口的 no ——
+                // 这一问在这条路线上根本没有答案（来源可能已经把指针画在那幅桌面图像上，
+                // 而它没有可读回的开关，本工具也不取指针元数据、不修图像）。
+                // 与下面未登记那条的 unknown 分开：那一条是"没查过"，这一条是"已知保证不了"
+                //（src/CursorControl.h 规矩 5；调用方按 capability 那一个字段分得更细）。
+                p.includeState = TriName(Tri::kNo);
+                p.excludeState = TriName(Tri::kNo);
+                break;
             case CursorCapability::kUnregistered:
                 // 没登记：两条都不敢声称。新增一条通道忘了登记就在这里现形，而不是被当成默认符合。
                 p.includeState = TriName(Tri::kUnknown);
@@ -544,10 +553,14 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     r.caveats.push_back(caveat::kDeviceNotPredicted);
     r.caveats.push_back(caveat::kEncoderUnprobed);
     r.caveats.push_back(caveat::kSessionInferred);
-    // 光标那两条边界恒在：cursor 那一段说的是"设置与来源"这两层，不是像素；而本工具
-    // 从不动指针形状、也从不事后抹光标。写在这里是为了调用方不必读源码就看得见边界。
+    // 光标那三条边界恒在：cursor 那一段说的是"设置与来源"这两层，不是像素；本工具
+    // 从不动指针形状、也从不事后抹光标；而桌面复制那两条连"来源没有光标"这一层都撑不起
+    //（官方说明允许指针已经画在那幅桌面图像上），所以那两条在 cursor.paths 里是
+    // pointer_state_unverified + include/exclude 两个 no。写在这里是为了调用方不必读源码
+    // 就看得见边界与各条路线的下场。
     r.caveats.push_back(caveat::kCursorSettingNotPixels);
     r.caveats.push_back(caveat::kPointerNeverComposited);
+    r.caveats.push_back(caveat::kDuplicationPointerUnprovable);
     // HDR 那两条边界恒在：这一份查询没去问显示此刻是不是 HDR 模式，而本项目从没在 HDR 帧上实测过
     // tone mapping（只在离线用已知色块与梯度判过数学）；且 HDR 一律被映射成 8 位 SDR 再编码交付。
     r.caveats.push_back(caveat::kHdrToneMappingUnverified);
@@ -652,9 +665,10 @@ void WriteCursor(Json& j, const EnvCursorReport& cursor) {
         j.End();
     }
     j.End();
-    // 本工具对指针动手的两问恒为 never：既不把桌面复制那份独立指针元数据合成进帧，
-    // 也不事后抹掉已经画进帧里的光标。这两条与 cursor.paths 一起读才完整：
-    // "排除"在各条路径上说的都是**来源**，不是修过的图。
+    // 本工具对指针动手的两问恒为 never：既不把桌面复制那份独立的指针元数据合成进帧，
+    // 也不事后抹掉已经画进帧里的光标。这两条要与 cursor.paths 那一段一起读才完整：
+    // "exclude" 在有开关的那条说的是那次设置，在来源没有光标的那几条说的是来源，
+    // 而桌面复制那两条两样都不是（所以那里 include/exclude 两格都是 no）。
     j.Key(L"pointerShapeCompositing").Value(cursor.pointerCompositing);
     j.Key(L"pixelRetouching").Value(cursor.pixelRetouching);
     j.End();

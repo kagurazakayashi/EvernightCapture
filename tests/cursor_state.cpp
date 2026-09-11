@@ -7,11 +7,13 @@
 // GateCaptureChain，以及 src/CursorControl.h 那张按路径登记的表与 MakeCursorReport）
 // 在这里被逐条注入判：假版本、假通道链、假帧读数。
 //
-// 另外两条是「两份表不许各说一套」的现场核对：
+// 另外三条是「两份表不许各说一套」的现场核对：
 //   * 光标表覆盖 src/CaptureScope.cpp 登记表里的每一条路径（漏一条 = 该路径按未登记处理）
-//   * 通道级的 ChannelHasCursorSwitch 与路径表的 kSettable 对每个通道、两种目标都对得上
+//   * 通道级的 ChannelHasCursorSwitch / ChannelGuaranteesCursorExclusion /
+//     ChannelPointerMayBeInImage 与路径表的三种取值对每个通道、两种目标都对得上
+//   * 解析期那一句与运行期筛链那一句是同一个判据（同一个组合两边都得拒）
 // 还有解析层那一段：直接调 ParseCommandLine，所以「include 配 printwindow 在解析期就拒」
-// 这件事不必起进程、也不必真去截图就能判。
+// 与「exclude 配桌面复制不再拿到一次无根据的成功」这件事不必起进程、也不必真去截图就能判。
 //
 // 只用 C 风格的 printf 汇报；任何一条不过就返回非 0。
 
@@ -111,7 +113,7 @@ ParseResult Run(std::initializer_list<std::wstring> args) {
 // 1. 那张按路径登记的表本身
 // ---------------------------------------------------------------------------
 void TestRegistry() {
-    Section("登记表：两条 wgc 有开关，其余按来源判定，没登记的一律 unregistered");
+    Section("登记表：两条 wgc 有开关，三条来源没有光标，两条桌面复制没有答案，没登记的一律 unregistered");
     using C = CursorCapability;
     Check(CursorCapabilityOfPath(paths::kWgc) == C::kSettable, "wgc = settable");
     Check(CursorCapabilityOfPath(paths::kScreenWgc) == C::kSettable, "screen.wgc = settable");
@@ -125,10 +127,13 @@ void TestRegistry() {
           "bitblt.screen = excludes_cursor");
     Check(CursorCapabilityOfPath(paths::kScreenBitBlt) == C::kExcludesCursor,
           "screen.bitblt = excludes_cursor");
-    Check(CursorCapabilityOfPath(paths::kDuplicationFrame) == C::kExcludesCursor,
-          "duplication.frame = excludes_cursor");
-    Check(CursorCapabilityOfPath(paths::kScreenDuplication) == C::kExcludesCursor,
-          "screen.duplication = excludes_cursor");
+    // 这两条过去登记成 excludes_cursor，凭的是"指针是独立元数据而本工具从不合成它"。
+    // 那句证明不了帧里没有指针像素（官方说明允许指针已经画在那幅桌面图像上），所以改成
+    // 一个说"这一问没有答案"的状态，而不是把条目删掉让它退回 unregistered（规矩 5）。
+    Check(CursorCapabilityOfPath(paths::kDuplicationFrame) == C::kPointerStateUnverified,
+          "duplication.frame = pointer_state_unverified（不再声称来源没有光标）");
+    Check(CursorCapabilityOfPath(paths::kScreenDuplication) == C::kPointerStateUnverified,
+          "screen.duplication = pointer_state_unverified");
     Check(CursorCapabilityOfPath(paths::kUnknown) == C::kUnregistered, "unknown = unregistered");
     Check(CursorCapabilityOfPath(L"brand.new") == C::kUnregistered, "没登记的名字 = unregistered");
     Check(CursorCapabilityOfPath(L"") == C::kUnregistered, "空路径 = unregistered（不是 settable）");
@@ -136,12 +141,24 @@ void TestRegistry() {
     // 漏登记的症状是"更严"：未登记时 include 与 exclude 都**不敢**声称做到。
     Check(CursorReasonOfPath(L"brand.new") == cursor_reason::kNotRegistered,
           "未登记的路径给 not_registered 这个原因");
-    Check(CursorReasonOfPath(paths::kDuplicationFrame) == cursor_reason::kPointerMetadata,
-          "桌面复制那条的原因是 pointer_shape_is_separate_metadata（不是屏幕 DC 那一条）");
+    Check(CursorReasonOfPath(paths::kDuplicationFrame) == cursor_reason::kPointerUnverified,
+          "桌面复制那条的原因写的是这一问没有答案（不是 pointer_shape_is_separate_metadata 那一句）");
+    Check(CursorReasonOfPath(paths::kScreenDuplication) == cursor_reason::kPointerUnverified,
+          "整屏那一条与窗口那一条同一个来源原因");
+    // 两个 token 分得开"来源这件事"与"被 exclude 要求筛掉时的下场"（与 HDR 那一对同一种分工）。
+    Check(std::wstring(cursor_reason::kPointerUnverified) != cursor_reason::kExcludeUnprovable,
+          "desktop_frame_pointer_state_unverified 与 duplication_cursor_exclusion_unprovable 是两个 token");
     Check(std::wstring(CursorCapabilityName(C::kSettable)) == L"settable" &&
               std::wstring(CursorCapabilityName(C::kExcludesCursor)) == L"excludes_cursor" &&
+              std::wstring(CursorCapabilityName(C::kPointerStateUnverified)) ==
+                  L"pointer_state_unverified" &&
               std::wstring(CursorCapabilityName(C::kUnregistered)) == L"unregistered",
-          "capability 的三个机器名齐备且互不相同");
+          "capability 的四个机器名齐备且互不相同");
+    Check(std::wstring(CursorCapabilityName(C::kPointerStateUnverified)) !=
+              std::wstring(CursorCapabilityName(C::kExcludesCursor)) &&
+              std::wstring(CursorCapabilityName(C::kPointerStateUnverified)) !=
+                  std::wstring(CursorCapabilityName(C::kUnregistered)),
+          "新状态与 excludes_cursor、unregistered 两种都不重名（调用方要能分开）");
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +214,56 @@ void TestTablesAgree() {
         }
     }
     Check(switchAgrees, "ChannelHasCursorSwitch 与路径表的 kSettable 逐条相同（不存在第二套判据）");
+
+    // 通道级那两句新判断同样不许自立一套：对每个通道、两种目标各查一次表。
+    //   ChannelGuaranteesCursorExclusion = 这条通道敢不敢声称"交回的图没有光标"
+    //     —— 撑得起的是 kSettable（去设开关）与 kExcludesCursor（来源没有），别一种都不行。
+    //   ChannelPointerMayBeInImage = 这条通道的来源可不可能已经把指针画在画面里
+    //     —— 只许与 kPointerStateUnverified 同真同假。
+    bool excludeAgrees = true;
+    bool embedAgrees = true;
+    int reachable = 0;
+    for (const CaptureMethod m : methods) {
+        for (const bool screen : {false, true}) {
+            const wchar_t* path = screen ? ScreenPathOf(m) : WindowPathOf(m);
+            // dwm / printwindow 在屏幕目标上没有路径可走（解析期就报 cap.unsupported_for_screen，
+            // ScreenPathOf 那一条兜底名说的正是这件事）。那种组合这里不参与对照，但下面单独钉住
+            // "没路径 = 真的被挡在屏幕目标之外"，免得这个跳过把漏登记也一起藏起来。
+            if (std::wstring(path) == paths::kUnknown) {
+                Check(screen && (m == CaptureMethod::kDwmThumbnail ||
+                                 m == CaptureMethod::kPrintWindow),
+                      "落到兜底名的只有 dwm / printwindow 的屏幕组合（跳过对照不是因为漏登记）");
+                continue;
+            }
+            ++reachable;
+            const CursorCapability cap = CursorCapabilityOfPath(path);
+            const bool want = cap == CursorCapability::kSettable ||
+                              cap == CursorCapability::kExcludesCursor;
+            const bool may = cap == CursorCapability::kPointerStateUnverified;
+            if (ChannelGuaranteesCursorExclusion(m) != want) {
+                std::printf("        打脸: %s/%s exclude=%d 表里=%d\n",
+                            Ascii(CaptureMethodName(m)).c_str(), screen ? "screen" : "window",
+                            ChannelGuaranteesCursorExclusion(m) ? 1 : 0, want ? 1 : 0);
+                excludeAgrees = false;
+            }
+            if (ChannelPointerMayBeInImage(m) != may) {
+                std::printf("        打脸: %s/%s mayBeInImage=%d 表里=%d\n",
+                            Ascii(CaptureMethodName(m)).c_str(), screen ? "screen" : "window",
+                            ChannelPointerMayBeInImage(m) ? 1 : 0, may ? 1 : 0);
+                embedAgrees = false;
+            }
+        }
+    }
+    Check(reachable == 8, "八条真走得通的通道×目标组合都参与了对照（漏登记不会被那个跳过藏住）");
+    Check(excludeAgrees,
+          "ChannelGuaranteesCursorExclusion 与路径表逐条相同（exclude 敢不敢声称只有一个答案）");
+    Check(embedAgrees, "ChannelPointerMayBeInImage 与路径表的 pointer_state_unverified 逐条相同");
+    // 两句判断不许同时为真：那样解析期的文案选择就自相矛盾（既说"来源没有光标"又说"可能已含"）。
+    bool disjoint = true;
+    for (const CaptureMethod m : methods)
+        if (ChannelGuaranteesCursorExclusion(m) && ChannelPointerMayBeInImage(m)) disjoint = false;
+    Check(disjoint, "同一通道不可能既保证得了 exclude 又属于来源可能已含指针那一种（两句判断互斥）");
+
     Check(CursorRequestPossible(CaptureMethod::kWgc, CursorMode::kInclude),
           "wgc 的 include 结构上做得到");
     Check(!CursorRequestPossible(CaptureMethod::kPrintWindow, CursorMode::kInclude),
@@ -207,13 +274,22 @@ void TestTablesAgree() {
           "bitblt / duplication / dwm 的 include 同样做不到");
     Check(CursorRequestPossible(CaptureMethod::kAuto, CursorMode::kInclude),
           "auto 不在这里下结论（它看闸门筛完之后剩什么）");
-    bool excludeAlwaysOk = true;
-    for (const CaptureMethod m : methods) {
-        if (!CursorRequestPossible(m, CursorMode::kExclude) ||
-            !CursorRequestPossible(m, CursorMode::kDefault))
-            excludeAlwaysOk = false;
-    }
-    Check(excludeAlwaysOk, "exclude 与 default 对每条通道都在解析期放行（exclude 的差别在 basis，不在能不能）");
+    // exclude 那一路现在的形状：有开关的那条 + 来源没有光标的那三条放行；桌面复制那条**不放行**
+    //（不是"来源没有光标"，而是"这一问没有答案"，所以不能给它一次无根据的成功）；auto 交给闸门。
+    Check(CursorRequestPossible(CaptureMethod::kWgc, CursorMode::kExclude), "wgc 的 exclude 放行");
+    bool excludeKept = true;
+    for (const CaptureMethod m : {CaptureMethod::kDwmThumbnail, CaptureMethod::kPrintWindow,
+                                  CaptureMethod::kBitBlt})
+        if (!CursorRequestPossible(m, CursorMode::kExclude)) excludeKept = false;
+    Check(excludeKept, "printwindow / dwm / bitblt 的 exclude 仍放行（来源确实没有光标）");
+    Check(!CursorRequestPossible(CaptureMethod::kDuplication, CursorMode::kExclude),
+          "duplication 的 exclude 现在解析期就拒（旧行为是给一次无根据的成功）");
+    Check(CursorRequestPossible(CaptureMethod::kAuto, CursorMode::kExclude),
+          "auto 的 exclude 也交给闸门筛链，不在这里下结论");
+    Check(CursorRequestPossible(CaptureMethod::kDuplication, CursorMode::kDefault) &&
+              CursorRequestPossible(CaptureMethod::kBitBlt, CursorMode::kDefault) &&
+              CursorRequestPossible(CaptureMethod::kAuto, CursorMode::kDefault),
+          "default 对每条通道都放行（它不构成任何要求，图照旧交）");
 }
 
 // ---------------------------------------------------------------------------
@@ -282,9 +358,10 @@ void TestChainGate() {
         bool pointerReason = false;
         for (const auto& n : s.notes)
             if (n.backend == L"duplication" &&
-                Ascii(n.message).find(Ascii(cursor_reason::kPointerMetadata)) != std::string::npos)
+                Ascii(n.message).find(Ascii(cursor_reason::kPointerUnverified)) != std::string::npos)
                 pointerReason = true;
-        Check(pointerReason, "屏幕链里摘掉 duplication 那条说的是指针形状是独立元数据这件事");
+        Check(pointerReason,
+              "屏幕链里摘掉 duplication 那条写的是这一问没有答案，而不是独立元数据那一句");
     }
 
     Section("include + 显式指定做不到的那条：报错、链为空、绝不换成别的通道");
@@ -303,13 +380,13 @@ void TestChainGate() {
         Check(allBlocked, "显式那条做不到 -> 一条错误、链为空（不换后端，也不交一张光标不对的图）");
     }
 
-    Section("exclude：有开关的去设，没开关的靠来源成立，链不缩");
+    Section("exclude：有开关的去设，来源没有光标的靠来源成立，链不缩");
     {
         const CursorChainGate g =
             FilterChainForCursor(WindowAll(), Request(CursorMode::kExclude, true), false, Os(19045));
         Check(Brief(g.chain) == "wgc,dwm,printwindow,bitblt" && g.notes.empty() &&
                   g.error.code.empty(),
-              "exclude 在 19045 上一条都不摘（那几条本来就没有光标，wgc 那条去设开关）");
+              "exclude 在 19045 上一条都不摘（那条窗口链里本来就没有桌面复制）");
         // 但"有开关却这台机器问不到开关"的那条不敢声称排除成立：wgc 单独指定时会被挡。
         const CursorChainGate w = FilterChainForCursor({CaptureMethod::kWgc},
                                                        Request(CursorMode::kExclude, true), false,
@@ -321,6 +398,54 @@ void TestChainGate() {
                       std::string::npos &&
                   Ascii(w.notes[0].message).find("19041") != std::string::npos,
               "那条 note 写的原因就是 os_below_min_build，并把那道门槛的数字一起带出来");
+    }
+
+    Section("exclude + 桌面复制：这一问没有答案的那条不能拿到一次无根据的成功");
+    {
+        // 屏幕 auto 链（本机形状：wgc -> duplication -> bitblt）里摘掉 duplication，剩下的照旧回退。
+        const CursorChainGate s =
+            FilterChainForCursor(ScreenAll(), Request(CursorMode::kExclude, true), true, Os(19045));
+        Check(Brief(s.chain) == "wgc,bitblt" && s.error.code.empty(),
+              "屏幕链里 exclude 把 duplication 摘掉，链没空（不是不截，而是换一条敢声称的）");
+        Check(s.notes.size() == 1 && s.notes[0].backend == L"duplication" &&
+                  s.notes[0].code == codes::kNoteCursorChannelSkipped &&
+                  s.notes[0].option == L"--cursor" && s.notes[0].value == L"exclude" &&
+                  s.notes[0].stage == stages::kCapture,
+              "摘掉那条留一条形状稳定的 note（value 是 exclude，不是 include）");
+        Check(Ascii(s.notes[0].message).find(Ascii(cursor_reason::kExcludeUnprovable)) !=
+                  std::string::npos,
+              "exclude 那一路写的原因是 duplication_cursor_exclusion_unprovable（与来源 token 分开）");
+
+        // 窗口目标上真点名 duplication（那条通道对窗口也能用，只是不在默认链里）：同样摘不剩 = 错误。
+        const CursorChainGate one = FilterChainForCursor({CaptureMethod::kDuplication},
+                                                        Request(CursorMode::kExclude, true), false,
+                                                        Os(19045));
+        Check(one.chain.empty() && one.error.code == codes::kEnvCursorUnsupported &&
+                  one.error.option == L"--cursor" && one.error.value == L"exclude" &&
+                  one.error.stage == stages::kCapture,
+              "显式 duplication + exclude：一条错误、链为空，一张都不截（也不换后端）");
+        // 混在链里时同样只减不加：闸门绝不把一条通道换进链，所以"要 exclude"这件事
+        // 不会意外把桌面像素的范围放大（这里 kept 恒为 chain 的子集且顺序不变）。
+        const std::vector<CaptureMethod> mixed = {CaptureMethod::kDuplication, CaptureMethod::kBitBlt};
+        const CursorChainGate m = FilterChainForCursor(mixed, Request(CursorMode::kExclude, true),
+                                                       true, Os(19045));
+        Check(Brief(m.chain) == "bitblt" && m.error.code.empty() && m.notes.size() == 1,
+              "链里只剩一条时也照实收窄（bitblt 那条来源没有光标，敢声称 exclude）");
+        // 空链不是"成功"也不是第二条错误：上一步（版本闸门）已经说清楚了，这里原样交出。
+        const CursorChainGate empty =
+            FilterChainForCursor({}, Request(CursorMode::kExclude, true), true, Os(19045));
+        Check(empty.chain.empty() && empty.error.code.empty() && empty.notes.empty(),
+              "空候选链：不再补一条光标的错误（错误优先权在上一道闸门）");
+        // 没写这条选项时链一条都不动 —— 默认截图行为保持原样，未知只由报告表达。
+        const CursorChainGate plain =
+            FilterChainForCursor(ScreenAll(), Request(CursorMode::kDefault, false), true, Os(19045));
+        Check(Brief(plain.chain) == "wgc,duplication,bitblt" && plain.notes.empty(),
+              "没写 --cursor 时屏幕链一条都不摘（duplication 照旧可用）");
+        const CursorChainGate def =
+            FilterChainForCursor(ScreenAll(), Request(CursorMode::kDefault, true), true, Os(19045));
+        Check(Brief(def.chain) == "wgc,duplication,bitblt" && def.notes.empty() &&
+                  def.error.code.empty(),
+              "显式 --cursor default 也不摘 duplication（它不构成要求，只在结果里报 unverified）");
     }
 
     Section("版本门槛两侧各判一次（include 与 exclude 都要那个开关）");
@@ -395,6 +520,15 @@ void TestComposedGate() {
                                                    Request(CursorMode::kInclude, true), NoHdr());
         Check(Brief(screen.chain) == "wgc", "屏幕目标的 auto 链同样只剩 wgc");
 
+        // 组合那一份也要给出与单道闸门同一个答案：屏幕 auto + exclude 摘掉保证不了的那条。
+        const ChannelGate screenExclude = GateCaptureChain(CaptureMethod::kAuto, true, Os(19045),
+                                                          Request(CursorMode::kExclude, true),
+                                                          NoHdr());
+        Check(Brief(screenExclude.chain) == "wgc,bitblt" && screenExclude.error.code.empty(),
+              "组合闸门里屏幕 auto + exclude = wgc,bitblt（与 FilterChainForCursor 同源，不两个答案）");
+        Check(screenExclude.notes.size() == 1 && screenExclude.notes[0].backend == L"duplication",
+              "收窄留的那条 note 也从组合那一份里看得见");
+
         const ChannelGate explicitWgc = GateCaptureChain(CaptureMethod::kWgc, false, Os(19045),
                                                          Request(CursorMode::kExclude, true), NoHdr());
         Check(Brief(explicitWgc.chain) == "wgc" && explicitWgc.error.code.empty(),
@@ -452,8 +586,7 @@ void TestCursorReport() {
               "exclude + 问不到开关：unverified（不冒充已排除）");
 
         const wchar_t* noSwitchPaths[] = {paths::kPrintWindow, paths::kDwmThumbnail, paths::kDwmScreen,
-                                          paths::kBitBltScreen, paths::kScreenBitBlt,
-                                          paths::kDuplicationFrame, paths::kScreenDuplication};
+                                          paths::kBitBltScreen, paths::kScreenBitBlt};
         bool allPathBasis = true;
         for (const wchar_t* path : noSwitchPaths) {
             const CursorReport r =
@@ -462,21 +595,50 @@ void TestCursorReport() {
                 allPathBasis = false;
         }
         Check(allPathBasis,
-              "没有开关的那几条：exclude 的结论来自来源这件事，basis 写 path_excludes_cursor");
+              "来源没有光标的那几条：exclude 的结论来自来源这件事，basis 写 path_excludes_cursor");
+
+        // 桌面复制那两条：明确要求 exclude 的调用根本走不到这里（解析期与筛链都挡了），
+        // 但报告本体也不许自己兜一次"那就写 exclude"。三种要求 + 两种目标各判一次。
+        const wchar_t* dupPaths[] = {paths::kDuplicationFrame, paths::kScreenDuplication};
+        for (const wchar_t* path : dupPaths) {
+            for (const CursorMode mode : {CursorMode::kDefault, CursorMode::kInclude,
+                                          CursorMode::kExclude}) {
+                const CursorReport r = MakeCursorReport(Request(mode, true), path, false, false);
+                Check(r.written && r.effective == cursor_effective::kUnverified &&
+                          r.basis == cursor_basis::kPathPointerUnverified,
+                      "桌面复制那两条在任何光标要求下都只写 unverified + path_pointer_state_unverified");
+            }
+        }
+        // fake 帧读数也改不了这件事：那两个值对非 wgc 路径本来就不该被当成"读过开关"，
+        // 这里给 true/true 是要钉住"报告不拿一个来历不明的读数冒充设过"。
+        const CursorReport dupFakeRead =
+            MakeCursorReport(Request(CursorMode::kDefault, true), paths::kScreenDuplication,
+                             /*frameStateKnown=*/true, /*frameCursorIn=*/true);
+        Check(dupFakeRead.effective == cursor_effective::kUnverified &&
+                  dupFakeRead.basis == cursor_basis::kPathPointerUnverified,
+              "桌面复制那条即使帧上带了读数也仍写 unverified（登记表说的不是那次问答）");
 
         const CursorReport unregistered =
             MakeCursorReport(Request(CursorMode::kDefault, true), paths::kUnknown, false, false);
         Check(unregistered.effective == cursor_effective::kUnverified &&
-                  unregistered.basis == cursor_basis::kPropertyUnavailable,
-              "未登记的路径（含帧里没填 path 的兜底名）不作任何断言");
+                  unregistered.basis == cursor_basis::kPathNotRegistered,
+              "未登记的路径（含帧里没填 path 的兜底名）不作任何断言，且 basis 与上面那条分开");
+        // "没查过"与"查过而保证不了"必须落在两个不同的 basis 上（规矩 5）：调用方按它分支时
+        // 下一步不一样 —— 前者要补登记，后者是这条路线本身的限制。
+        Check(std::wstring(cursor_basis::kPathNotRegistered) != cursor_basis::kPathPointerUnverified,
+              "unregistered 与 pointer_state_unverified 的 basis 不重名");
 
         // 机器名不重复：effective 与 basis 两套取值各自互不相同，调用方能按它们分支。
         Check(std::wstring(cursor_effective::kInclude) != cursor_effective::kExclude &&
                   std::wstring(cursor_effective::kExclude) != cursor_effective::kUnverified &&
                   std::wstring(cursor_basis::kSessionSet) != cursor_basis::kSessionRead &&
                   std::wstring(cursor_basis::kSessionRead) != cursor_basis::kPathExcludes &&
-                  std::wstring(cursor_basis::kPathExcludes) != cursor_basis::kPropertyUnavailable,
-              "三值与四个 basis 的机器名互不相同（只增不改名的前提）");
+                  std::wstring(cursor_basis::kPathExcludes) != cursor_basis::kPropertyUnavailable &&
+                  std::wstring(cursor_basis::kPropertyUnavailable) !=
+                      cursor_basis::kPathPointerUnverified &&
+                  std::wstring(cursor_basis::kPathPointerUnverified) !=
+                      cursor_basis::kPathNotRegistered,
+              "三值与五个 basis 的机器名互不相同（只增不改名的前提）");
     }
 }
 
@@ -510,6 +672,45 @@ void TestParseLayer() {
                                    L"exclude", L"--capture", L"printwindow", L"out.png"});
         Check(r.ok && r.options.cursor.mode == CursorMode::kExclude,
               "exclude 配 printwindow 放行（那条来源本来就没有光标）");
+    }
+    {
+        // 这一条是本次修正的核心现场：旧行为是给一次无根据的成功（图落地、结果里写 exclude），
+        // 现在解析期就拒，退出码 1（同一条码），一个像素都不取。
+        const ParseResult r = Run({prog, L"--class", L"Shell_TrayWnd", L"--dry-run", L"--cursor",
+                                   L"exclude", L"--capture", L"duplication", L"out.png"});
+        Check(!r.ok && HasCode(r.errors, codes::kCursorUnsupported),
+              "exclude 配显式 duplication：解析期 capture.cursor_unsupported（不再无根据放行）");
+        Check(!r.errors.empty() && r.errors[0].option == L"--cursor" &&
+                  r.errors[0].value == L"exclude" && !r.errors[0].hint.empty() &&
+                  r.errors[0].stage.empty(),
+              "那条错误的 option/value/hint 齐备，stage 仍是解析期那一条（码与阶段都没变）");
+        // 文案与判据同源：这一句用的必须是"这条路线保证不了"那一条，而不是"来源没有光标"那一条。
+        const std::wstring want = Msgf(L"cap.cursor_unsupported_unprovable", L"exclude",
+                                       L"duplication", L"wgc, dwm, printwindow, bitblt");
+        Check(!r.errors.empty() && r.errors[0].message == want,
+              "exclude 配 duplication 走 unprovable 那一句文案，建议清单是那四条（与判据同一条）");
+        const std::wstring other = Msgf(L"cap.cursor_unsupported", L"exclude", L"duplication",
+                                        L"wgc, dwm, printwindow, bitblt");
+        Check(!r.errors.empty() && r.errors[0].message != other,
+              "同一条码下没把这句假话说出去（来源没有光标那句不适用于桌面复制）");
+    }
+    {
+        // 屏幕目标上被拒的是 duplication，建议里不该出现根本用不了屏幕目标的两条通道。
+        const ParseResult r = Run({prog, L"--monitor", L"primary", L"--dry-run", L"--cursor",
+                                   L"exclude", L"--capture", L"duplication", L"out.png"});
+        Check(!r.ok && HasCode(r.errors, codes::kCursorUnsupported),
+              "屏幕目标 + exclude 配 duplication：同一条码在解析期拒（与窗口目标同一个判据）");
+        const std::wstring want = Msgf(L"cap.cursor_unsupported_unprovable", L"exclude",
+                                       L"duplication", L"wgc, bitblt");
+        Check(!r.errors.empty() && r.errors[0].message == want,
+              "屏幕目标那条建议里只列屏幕目标真用得了的通道（不推荐用不了的路线）");
+    }
+    {
+        // include 配 duplication 也还是这一条码，而下场与 exclude 一样：都不落地。
+        const ParseResult r = Run({prog, L"--class", L"Shell_TrayWnd", L"--dry-run", L"--cursor",
+                                   L"include", L"--capture", L"duplication", L"out.png"});
+        Check(!r.ok && HasCode(r.errors, codes::kCursorUnsupported) && r.errors.size() == 1,
+              "include 配 duplication：一条错误，不叠第二条（改判据时别把同一件事说两遍）");
     }
     {
         const ParseResult r = Run({prog, L"--class", L"Shell_TrayWnd", L"--dry-run", L"--cursor",
@@ -573,7 +774,8 @@ void TestParseLayer() {
 void TestStrings() {
     Section("文案：新增的键都渲染得出，占位符都代入了");
     const wchar_t* keys[] = {L"opt.cursor", L"cli.cursor_value", L"cap.cursor_unsupported",
-                             L"cap.cursor_unsupported_hint", L"cap.cursor_unverifiable",
+                             L"cap.cursor_unsupported_hint", L"cap.cursor_unsupported_unprovable",
+                             L"cap.cursor_unsupported_unprovable_hint", L"cap.cursor_unverifiable",
                              L"cap.cursor_unverifiable_hint", L"env.cursor_unsupported",
                              L"env.cursor_unsupported_hint", L"note.cursor_channel_skipped"};
     bool all = true;
@@ -584,7 +786,11 @@ void TestStrings() {
             all = false;
         }
     }
-    Check(all, "九条新键在当前语言都取得到（四语 key 与占位符对齐由 scripts\\check-lang.ps1 判）");
+    Check(all, "十一条新键在当前语言都取得到（四语 key 与占位符对齐由 scripts\\check-lang.ps1 判）");
+    // 两句"做不到"必须真的不是同一句：同一码下拿"来源没有光标"去说桌面复制那条是假话。
+    Check(std::wstring(Msg(L"cap.cursor_unsupported")) !=
+              std::wstring(Msg(L"cap.cursor_unsupported_unprovable")),
+          "cap.cursor_unsupported 与 _unprovable 是两句不同的话");
 
     const std::wstring m1 = Msgf(L"cap.cursor_unverifiable", L"exclude", L"read_back_mismatch",
                                  L"include");
