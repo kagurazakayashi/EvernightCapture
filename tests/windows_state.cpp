@@ -875,10 +875,130 @@ void TestNoPartialDocument() {
           "句柄写成 0x 加 8 位十六进制，与 images[].hwnd / errors[].target 同一个格式");
 }
 
+// ---------------------------------------------------------------------------
+// 条件求值那一步失败怎么进查询结果（判据本体：src/WindowQuery.cpp 的 RecordMatchFailure，
+// 真机入口 src/WindowQueryRun.cpp 直接调它）。
+//
+// 为什么在这一层判：那一步的失败分四类下一步 ——「预算烧在那一问上」「正则不合本机上限」
+//「本工具的辅助进程自己坏了」「内部异常」，旧实现把后两类之外的一切统一改写成 capture.failed，
+// 于是调用方看到「再截一次试试」，而 worker_failed 真正该查的是这台机器的执行环境（策略、杀软、
+// 权限）。这里注入的是求值那一步**已经判好**的诊断（Worker.cpp 的 CallToDiagnostic /
+// BlockedToDiagnostic 那两条来源由 tests\isolation_state.cpp 与 tests\timeout.ps1 判），
+// 判的是查询这一层不再重新分类，以及退出码与 JSON 跟着原码走。不碰任何真实用户进程。
+// ---------------------------------------------------------------------------
+void TestMatchFailureKeepsItsCode() {
+    Section("隔离求值失败：稳定码与上下文字段原样交出，退出码照映射表判");
+
+    // 一份"求值之前什么都没发生"的结果：没有窗口、没有错误、退出码 0。
+    auto Fresh = [] {
+        MatchOptions none;
+        return BuildWindowQueryResult(Snapshot({}), ListSpec(), none, std::wstring());
+    };
+
+    // 一条机制故障：形状取自 CallToDiagnostic 的 channel_failed（码 + stage/backend + Win32 +
+    // hint 里带辅助进程最后的退出码）。
+    Diagnostic worker{};
+    worker.code = codes::kWorkerFailed;
+    worker.message = L"HELPER-DID-NOT-RETURN";
+    worker.option = L"--capture";
+    worker.value = L"match";
+    worker.hint = L"helper exit code 9";
+    worker.backend = L"match";
+    worker.stage = stages::kMatch;
+    worker.win32 = 109;
+    {
+        WindowQueryResult r = Fresh();
+        Diagnostic expected = worker;
+        RecordMatchFailure(&r, std::move(worker));
+        Check(r.errors.size() == 1 && r.errors.front().code == codes::kWorkerFailed,
+              "辅助进程故障保持 capture.worker_failed，没有被改写成 capture.failed");
+        const Diagnostic& d = r.errors.front();
+        Check(d.message == expected.message && d.option == expected.option &&
+                  d.value == expected.value && d.hint == expected.hint &&
+                  d.backend == expected.backend && d.stage == expected.stage &&
+                  d.win32 == expected.win32 && d.hresult == expected.hresult,
+              "message/option/value/hint/backend/stage/Win32/HRESULT 一个字段都没丢");
+        Check(r.exitCode == EX_CAPTURE_FAILED, "capture.worker_failed 仍按映射表出 7");
+        const std::wstring doc = Render(r, WindowAction::kList);
+        Check(Contains(doc, L"\"code\": \"capture.worker_failed\"") &&
+                  !Contains(doc, L"\"code\": \"capture.failed\""),
+              "JSON 里那个 code 就是 worker_failed，没有另写一条 capture.failed");
+        Check(Contains(doc, L"\"backend\": \"match\"") && Contains(doc, L"\"stage\": \"match\"") &&
+                  Contains(doc, L"\"win32\": 109"),
+              "JSON 把 backend / stage / win32 一起交出去（调用方据此分「机制故障」）");
+        Check(Contains(doc, L"\"windows\": []"), "求值失败那份不交半份窗口列表");
+    }
+
+    // 期限烧在条件求值那一步：码保留，只有 hint 换成「窗口查询没有通道可换」那一版。
+    {
+        Diagnostic timeout{};
+        timeout.code = codes::kMatchTimeout;
+        timeout.message = L"BUDGET-SPENT";
+        timeout.option = L"--timeout-ms";
+        timeout.value = L"1000";
+        timeout.hint = Msg(L"cap.timeout_hint");   // 求值那一步带回来的通用文案
+        timeout.backend = L"match";
+        timeout.stage = stages::kMatch;
+        Diagnostic expected = timeout;
+        WindowQueryResult r = Fresh();
+        RecordMatchFailure(&r, std::move(timeout));
+        Check(r.errors.front().code == codes::kMatchTimeout &&
+                  r.errors.front().message == expected.message &&
+                  r.errors.front().option == expected.option &&
+                  r.errors.front().value == expected.value &&
+                  r.errors.front().backend == expected.backend &&
+                  r.errors.front().stage == expected.stage,
+              "match.timeout 的码与定位字段原样保留");
+        Check(r.errors.front().hint == Msg(L"cap.timeout_query_hint") &&
+                  r.errors.front().hint != Msg(L"cap.timeout_hint"),
+              "只有 hint 换成查询那一版：一次窗口查询没有取图通道可换");
+        Check(r.exitCode == EX_CAPTURE_FAILED, "match.timeout 出 7");
+        Check(Contains(Render(r, WindowAction::kList), L"\"code\": \"match.timeout\""),
+              "JSON 里的 code 仍是 match.timeout");
+    }
+
+    // 正则不合本机上限：解析期那条退出码是 1，走到求值这一步被拒时同一张映射表判。
+    {
+        Diagnostic regex{};
+        regex.code = codes::kInvalidRegex;
+        regex.message = L"REGEX-REJECTED";
+        regex.option = L"--title-regex";
+        regex.hint = L"SIMPLIFY-PATTERN";
+        regex.backend = L"match";
+        regex.stage = stages::kMatch;
+        Diagnostic expected = regex;
+        WindowQueryResult r = Fresh();
+        RecordMatchFailure(&r, std::move(regex));
+        Check(r.errors.front().code == codes::kInvalidRegex &&
+                  r.errors.front().option == expected.option &&
+                  r.errors.front().message == expected.message &&
+                  r.errors.front().hint == expected.hint,
+              "cli.invalid_regex 原样交出（写错了模式与机器坏了是两种下一步）");
+        Check(r.exitCode == EX_USAGE, "cli.invalid_regex 出 1，与机制故障的 7 分得开");
+        Check(Contains(Render(r, WindowAction::kList), L"\"code\": \"cli.invalid_regex\""),
+              "JSON 里的 code 仍是 cli.invalid_regex");
+    }
+
+    // 阴性对照：真该按"求值本身失败"报的那一种（内部异常）在来源那一层就已经是
+    // capture.failed，这一层不重复包装也不改它 —— 与 worker_failed 分得开正是这次改动要的。
+    {
+        Diagnostic internal{};
+        internal.code = codes::kCaptureFailed;
+        internal.message = L"INTERNAL-EXCEPTION";
+        internal.backend = L"match";
+        internal.stage = stages::kMatch;
+        WindowQueryResult r = Fresh();
+        RecordMatchFailure(&r, std::move(internal));
+        Check(r.errors.front().code == codes::kCaptureFailed &&
+                  r.errors.front().message == L"INTERNAL-EXCEPTION" &&
+                  r.exitCode == EX_CAPTURE_FAILED,
+              "内部异常那条照现有边界交出 capture.failed + 7（不是被包装出来的）");
+    }
+}
+
 }  // namespace
 
-int main() {
-    // 渲染不读文案资源（机器取值全 ASCII），但判据会经过 WindowMatch 的诊断那一路，
+int main() {    // 渲染不读文案资源（机器取值全 ASCII），但判据会经过 WindowMatch 的诊断那一路，
     // 那里要读 .rc 里编进的四份资源，所以整份判据按英文跑，与其他 state 测试同一约定。
     SetLanguage(Language::kEn);
 
@@ -895,6 +1015,7 @@ int main() {
     TestRawFieldsNotProse();
     TestRenderChoices();
     TestExitCodeMapping();
+    TestMatchFailureKeepsItsCode();
     TestNoPartialDocument();
 
     std::printf("\nwindows-state: %d 条通过，%d 条失败\n", g_checks - g_failures, g_failures);

@@ -13,10 +13,13 @@
 // 三条规矩（与 src/Consent.h、src/WindowIdentity.h、src/HdrColor.h 各自的判据接得上）：
 //
 // 1. **被拒绝与被判定不合格，不是"换个后端再试一次"的理由。** 见下面 ClassifyChainStop：
-//    授权那一条（访问被拒 / 弹不出框 / 到点没人答 / 批准后目标又变了）与身份那一条（目标没了 /
-//    换了样子 / 问不出身份）换一条通道同样不该给，而"再试一次"在那里意味着用另一条通道去截一个
-//    没被人批准过的新对象。色彩策略那两条（capture.hdr_refused / capture.hdr_unverifiable）同理：
-//    那是**用户策略的结论**，换一条只带得回 8 位的后端去出一张图，等于把拒绝换成一次静默降级。
+//    授权那一条（访问被拒 / 弹不出框 / 到点没人答 / 批准后目标又变了）与身份那一条（窗口目标
+//    没了 / 换了样子 / 问不出身份；屏幕目标那块屏拔掉了 / 问不出身份）换一条通道同样不该给，而
+//    "再试一次"在那里意味着用另一条通道去截一个没被人批准过的新对象。屏那一侧的两条尤其不能当
+//    "这条通道不行"：它们说的是**那块屏此刻是谁**，换一条通道只会拿同一份当下枚举再问一次同一个
+//    问题，答案不会变，而重问一遍确认框、或者顺手截了另一块屏都不是这里的规矩。色彩策略那两条
+//    （capture.hdr_refused / capture.hdr_unverifiable）同理：那是**用户策略的结论**，换一条只带得
+//    回 8 位的后端去出一张图，等于把拒绝换成一次静默降级。
 // 2. **异常与致命错误分开。** 后端抛出东西时按性质决定：内存耗尽、显卡设备没了 —— 换一条
 //    也不会有区别，立刻终止整条链；其余（WinRT 那几步的普通失败）才可以往下试。
 // 3. **预算是整批一份，回退链不重新领。** 预算已经用尽就不再试下一条：这一条链最容易把
@@ -53,7 +56,8 @@ inline ChainStop ClassifyChainStop(const std::wstring& code) {
     if (code == codes::kAccessDenied || code == codes::kConsentUnavailable ||
         code == codes::kConsentTimeout || code == codes::kConsentStale ||
         code == codes::kTargetGone || code == codes::kTargetChanged ||
-        code == codes::kTargetUnverifiable || code == codes::kHdrRefused ||
+        code == codes::kTargetUnverifiable || code == codes::kMonitorChanged ||
+        code == codes::kMonitorUnverifiable || code == codes::kHdrRefused ||
         code == codes::kHdrUnverifiable) {
         return ChainStop::kStopWithVerdict;
     }

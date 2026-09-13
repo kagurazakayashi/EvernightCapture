@@ -211,6 +211,8 @@ struct FakeBackends {
     std::vector<std::wstring> failCode;
     std::vector<std::wstring> failMessage;
     std::vector<bool> isFatal;
+    // 整条诊断（身份判决那种：码 + 定位 + 系统原因码都在里面）。code 为空 = 只用上面那三样。
+    std::vector<Diagnostic> failVerdict;
     std::vector<CaptureMethod> called;
 
     FakeBackends& Fails(CaptureMethod m, const wchar_t* code, const wchar_t* message = L"",
@@ -219,6 +221,14 @@ struct FakeBackends {
         failCode.push_back(code ? code : L"");
         failMessage.push_back(message ? message : L"");
         isFatal.push_back(fatal);
+        failVerdict.push_back(Diagnostic{});
+        return *this;
+    }
+    // 后端交回一整条已填好的诊断 —— 生产里的"授权后复核"就是这个形状（CaptureScreenOneChannel
+    // 与 CaptureDuplication 都带着 target / backend / stage / hint / 系统码回来）。
+    FakeBackends& FailsVerdict(CaptureMethod m, const Diagnostic& d) {
+        Fails(m, d.code.c_str(), d.message.c_str());
+        failVerdict.back() = d;
         return *this;
     }
     FakeBackends& Succeeds(CaptureMethod m) { return Fails(m, L""); }
@@ -229,8 +239,12 @@ struct FakeBackends {
             if (order[i] != m) continue;
             if (!failCode[i].empty()) {
                 if (err) {
-                    err->code = failCode[i];
-                    err->message = failMessage[i];
+                    if (!failVerdict[i].code.empty()) {
+                        *err = failVerdict[i];
+                    } else {
+                        err->code = failCode[i];
+                        err->message = failMessage[i];
+                    }
                 }
                 if (fat && isFatal[i]) *fat = true;
                 return false;
@@ -846,7 +860,11 @@ int main() {
         Check(StopName(ClassifyChainStop(codes::kTargetGone)) == "stop" &&
                   StopName(ClassifyChainStop(codes::kTargetChanged)) == "stop" &&
                   StopName(ClassifyChainStop(codes::kTargetUnverifiable)) == "stop",
-              "身份那三条仍然终止（保留既有规则）");
+              "窗口身份那三条仍然终止（保留既有规则）");
+        // 屏幕那一侧的两条与窗口那三条同一类：说的是"那块屏此刻是谁"，与用哪一条通道无关。
+        Check(StopName(ClassifyChainStop(codes::kMonitorChanged)) == "stop" &&
+                  StopName(ClassifyChainStop(codes::kMonitorUnverifiable)) == "stop",
+              "屏幕身份那两条（拔了/换了画面、复核问不出来）终止整条链，不换后端重跑");
         // 负向对照：普通"这条通道不行"的下场绝不因为这次改动被误判成终止。
         Check(StopName(ClassifyChainStop(codes::kCaptureFailed)) == "next" &&
                   StopName(ClassifyChainStop(codes::kFrameTimeout)) == "next" &&
@@ -950,6 +968,95 @@ int main() {
             }
         }
         Check(allStop, "四条授权结论各自都终止整条链、原码交出、一张都不落地");
+    }
+
+    Section("FallbackChain + 假后端：屏幕身份判决终止整条整屏链，原码与上下文字段一起交出");
+    {
+        // 诊断形状取自生产：CaptureScreenOneChannel 在授权之后、取像素之前复核那块屏，
+        // 那两条码带 target（选定那一刻的设备名）、backend（真试过的那条）、stage、hint；
+        // CaptureDuplication 那一路还带 HRESULT。这里逐字比对，判的是回退链本体不吞、不包装、
+        // 不改字段 —— 而不是通道自己填得对不对（那是 screens_state / dup_state 判的）。
+        Diagnostic changed{};
+        changed.code = codes::kMonitorChanged;
+        changed.message = L"MONITOR-CHANGED";
+        changed.option = L"--monitor";
+        changed.value = L"\\DISPLAY\\MONITOR2";
+        changed.hint = L"MONITOR-CHANGED-HINT";
+        changed.target = L"DISPLAY2";
+        changed.backend = L"wgc";
+        changed.stage = stages::kCapture;
+        changed.hresult = L"0x887A0026";
+        changed.win32 = 5;
+
+        Diagnostic unverifiable{};
+        unverifiable.code = codes::kMonitorUnverifiable;
+        unverifiable.message = L"MONITOR-UNVERIFIABLE";
+        unverifiable.option = L"--monitor";
+        unverifiable.value = L"\\DISPLAY\\MONITOR2";
+        unverifiable.hint = L"MONITOR-UNVERIFIABLE-HINT";
+        unverifiable.target = L"DISPLAY2";
+        unverifiable.backend = L"wgc";
+        unverifiable.stage = stages::kCapture;
+
+        bool allStop = true;
+        for (const Diagnostic& verdict : {changed, unverifiable}) {
+            FakeBackends fb;
+            fb.FailsVerdict(CaptureMethod::kWgc, verdict)
+                .Succeeds(CaptureMethod::kDuplication)
+                .Succeeds(CaptureMethod::kBitBlt);
+            CapturedFrame out;
+            Diagnostic err;
+            std::vector<Diagnostic> notes;
+            if (RunChain(&fb, ScreenAll(), &out, &err, &notes) ||
+                BriefChain(fb.called) != "wgc" || !out.pixels.empty() || !notes.empty()) {
+                allStop = false;
+                continue;
+            }
+            // 原码 + 每一个上下文字段都要逐字相同：调用方据此判断"该重新枚举屏幕并重新确认"，
+            // 而不是"换一条通道再碰一次运气"。
+            if (err.code != verdict.code || err.message != verdict.message ||
+                err.option != verdict.option || err.value != verdict.value ||
+                err.hint != verdict.hint || err.target != verdict.target ||
+                err.backend != verdict.backend || err.stage != verdict.stage ||
+                err.hresult != verdict.hresult || err.win32 != verdict.win32) {
+                allStop = false;
+            }
+        }
+        Check(allStop,
+              "monitor_changed / monitor_unverifiable：后续后端零调用，码与 target/backend/stage/"
+              "hint/Win32/HRESULT 原样交出，一张都不落地");
+
+        // 窗口身份那三条同样按链条级判一次（不只是分类级），与屏幕那两条对齐。
+        const wchar_t* identityCodes[] = {codes::kTargetGone, codes::kTargetChanged,
+                                          codes::kTargetUnverifiable};
+        bool identityStops = true;
+        for (const wchar_t* code : identityCodes) {
+            FakeBackends fb;
+            fb.Fails(CaptureMethod::kWgc, code, L"IDENTITY-VERDICT")
+                .Succeeds(CaptureMethod::kDwmThumbnail)
+                .Succeeds(CaptureMethod::kPrintWindow);
+            CapturedFrame out;
+            Diagnostic err;
+            std::vector<Diagnostic> notes;
+            if (RunChain(&fb, WindowAll(), &out, &err, &notes) || BriefChain(fb.called) != "wgc" ||
+                err.code != code || !out.pixels.empty()) {
+                identityStops = false;
+            }
+        }
+        Check(identityStops, "回归对照：窗口身份三条码仍然各自终止整条链、原码交出");
+
+        // 阴性对照：换了这次改动之后，整屏链上的**普通取帧失败**照旧往下试 ——
+        // 屏幕目标没有被变成"一失败就停"。
+        FakeBackends fb2;
+        fb2.Fails(CaptureMethod::kWgc, codes::kFrameTimeout, L"FRAME-TIMEOUT")
+            .Succeeds(CaptureMethod::kDuplication);
+        CapturedFrame out2;
+        Diagnostic err2;
+        std::vector<Diagnostic> notes2;
+        Check(RunChain(&fb2, ScreenAll(), &out2, &err2, &notes2) &&
+                  BriefChain(fb2.called) == "wgc,duplication" && !out2.pixels.empty() &&
+                  notes2.size() == 1 && notes2[0].code == codes::kCaptureChannel,
+              "阴性对照：整屏链上首后端普通失败仍试第二条，并留来路提示");
     }
 
     Section("JudgeHdrPassiveNote：一张 8 位帧不证明来源是 SDR");

@@ -145,6 +145,23 @@ int WindowQueryExitCodeFor(const std::wstring& code) {
     return EX_NO_MATCH;
 }
 
+// 条件求值那一步失败怎么写进查询结果。**这一层不重新分类**：码由求值那一步自己判
+//（期限烧在那一问上是 match.timeout，正则不合本机上限是 cli.invalid_regex，本工具的辅助进程
+// 起不来 / 断管 / 消息不合是 capture.worker_failed，内部异常按现有边界就是 capture.failed）。
+// 把它们统一包成 capture.failed 会抹掉调用方的下一步 —— 看到 capture.failed 的人会再截一次，
+// 而 capture.worker_failed 真正该查的是这台机器的执行环境（策略、杀软、权限）。
+// 这里只改一件事：期限那条的 hint 要换成「窗口查询」那一版，因为通用文案里那句"换一条不会卡住的
+// 取图通道"在这里是错的 —— 一次窗口查询根本没有通道可换，它一个像素都不取。
+// 退出码照 WindowQueryExitCodeFor 那一张映射表判，不在这里另立一套。
+// 本进程枚举那一路的失败也走这一条：同一种故障在两条路线上必须是同一个码（旧写法只在辅助进程
+// 那一路改写，于是同一类机制故障在两条路上给出两种下场）。
+void RecordMatchFailure(WindowQueryResult* result, Diagnostic err) {
+    if (!result) return;
+    if (err.code == codes::kMatchTimeout) err.hint = Msg(L"cap.timeout_query_hint");
+    result->errors.push_back(std::move(err));
+    result->exitCode = WindowQueryExitCodeFor(result->errors.front().code);
+}
+
 void WindowIdentityOf(const WindowIdentity& id, std::wstring* hwndHex, std::wstring* className,
                       uint32_t* pid, uint64_t* processStartTicks, bool* selectionNeedsRecheck) {
     *hwndHex = HwndHexOf(id.hwnd);

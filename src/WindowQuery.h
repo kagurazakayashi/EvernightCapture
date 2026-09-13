@@ -167,6 +167,16 @@ void WindowIdentityOf(const WindowIdentity& id, std::wstring* hwndHex, std::wstr
 int WindowQueryExitCodeFor(const std::wstring& code);
 
 // ---------------------------------------------------------------------------
+// 条件求值那一步失败（本进程枚举，或整步交给辅助进程的那一条路线）-> 查询结果里的那一条。
+// 判据只有一条：**原样保留求值那一步给出的稳定码**，只把 match.timeout 的 hint 换成
+// 「一次窗口查询没有通道可换」那一版，退出码照 WindowQueryExitCodeFor 判。
+// 这里绝不把 capture.worker_failed / cli.invalid_regex 这类已经有专门语义的码包成
+// capture.failed —— 那等于把「查执行环境」与「再截一次」抹成同一个下一步。
+// 真该包的那一种（内部异常）在 BlockedToDiagnostic 那一条现有边界里就已经是 capture.failed。
+// ---------------------------------------------------------------------------
+void RecordMatchFailure(WindowQueryResult* result, Diagnostic err);
+
+// ---------------------------------------------------------------------------
 // 判据：从一份快照算出这次查询的条目与诊断。
 //   * --list    多匹配不是错误：分页、如实报告命中总数；一个都没命中也是空列表 + 成功
 //   * --inspect 需要唯一目标：按与截图同一套的选择策略消歧，歧义/越界/无匹配都是稳定诊断

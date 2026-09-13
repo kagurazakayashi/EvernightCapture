@@ -59,26 +59,17 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
         if (!IsolatedMatch(request.match, request.onScreens, dl, &snapshot.hits,
                            &snapshot.iconic, &err)) {
             // 期限到了 / 正则不合本机上限 / 辅助进程坏了：照实报，不悄悄退回本进程再跑一遍
-            //（那样等于把期限当成建议，慢的那一步下一次还会再慢一遍）。
-            if (err.code == codes::kMatchTimeout || err.code == codes::kInvalidRegex) {
-                // 期限花在条件求值那一步：这一条诊断与截图共用，但它那句"换一条不会卡住的取图通道"
-                // 在这里是错的 —— 一次窗口查询根本没有通道可换，因为它一个像素都不取。
-                // 下一步也不同：这里该做的是加大预算或简化条件。
-                if (err.code == codes::kMatchTimeout) err.hint = Msg(L"cap.timeout_query_hint");
-                result.errors.push_back(std::move(err));
-            } else {
-                err.code = codes::kCaptureFailed;
-                result.errors.push_back(std::move(err));
-            }
-            result.exitCode = WindowQueryExitCodeFor(result.errors.front().code);
+            //（那样等于把期限当成建议，慢的那一步下一次还会再慢一遍），也**不**在这里重新分类
+            //（判据见 WindowQuery.h 的 RecordMatchFailure）。
+            RecordMatchFailure(&result, std::move(err));
             return result;
         }
     } else {
         const MatchOutcome m = EnumerateMatches(request);
         if (m.status != BlockedStatus::kOk) {
-            result.errors.push_back(
-                BlockedToDiagnostic(m.status, 0, S_OK, m.detail, L"match", stages::kMatch));
-            result.exitCode = WindowQueryExitCodeFor(result.errors.front().code);
+            RecordMatchFailure(&result,
+                               BlockedToDiagnostic(m.status, 0, S_OK, m.detail, L"match",
+                                                  stages::kMatch));
             return result;
         }
         snapshot.hits = std::move(m.hits);
