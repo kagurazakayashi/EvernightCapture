@@ -1,5 +1,3 @@
-<div align="center">
-
 ![EvernightCapture logo](resources/icon.ico)
 
 # EvernightCapture
@@ -7,8 +5,6 @@
 A command-line window screenshot tool: select windows by conditions, then save that window's pixels to an image file.
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja-JP.md)
-
-</div>
 
 Built on Windows.Graphics.Capture plus four other acquisition channels (DWM thumbnail, `PrintWindow`, screen
 `BitBlt`, DXGI desktop duplication). The entry point is `ECAPTURE.EXE` — one executable, statically linked CRT, no
@@ -25,15 +21,22 @@ desktop, and would only have produced what `bitblt` already produces. That reaso
 
 ## Where to look
 
-| Question | Section |
-| --- | --- |
-| What `--yes` really skips, and what no switch can skip | [Screenshot authorization and `--yes`](#screenshot-authorization-and---yes) |
-| Which stream carries the image bytes, which carries the JSON, and what a given shell can preserve | [Output format](#output-format), [Writing image bytes to stdout, per shell](#writing-image-bytes-to-stdout-per-shell) |
-| How the deadline budget is shared and what it cannot interrupt | [Deadlines and calls that block](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms) |
-| Stable codes, stages, exit codes, partial success | [Exit codes](#exit-codes) |
-| What is compiled, what is available here, what has actually been tested | [System support](#system-support), [Read-only capability queries](#read-only-capability-queries---capabilities----diagnostics) |
-| Open questions this repository has not settled on real hardware | [Boundaries and unverified items](#boundaries-and-unverified-items) |
-| Which test proves which rule | [Build and test](#build-and-test) |
+First time here: [Quick start](#quick-start) (install, first capture, always pass `--out <file>`) →
+[Read-only discovery](#structured-window-discovery-and-inspection---list----inspect) (find the window before
+capturing it) → [Screenshot authorization and `--yes`](#screenshot-authorization-and---yes) (what a person has to
+confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
+
+| Question                                                                                          | Section                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| First capture, and why `--out <file>` is the reliable default                                     | [Quick start](#quick-start), [Omitting `--out` (compatibility note)](#omitting---out-compatibility-note)                                                                                                                                                                                                                 |
+| Find a window or a screen without taking a pixel                                                  | [Structured window discovery and inspection (`--list` / `--inspect`)](#structured-window-discovery-and-inspection---list----inspect), [Read-only screen enumeration (`--screens`)](#read-only-screen-enumeration---screens), [Read-only capability queries](#read-only-capability-queries---capabilities----diagnostics) |
+| What a person must confirm, and what no switch can skip                                           | [Screenshot authorization and `--yes`](#screenshot-authorization-and---yes)                                                                                                                                                                                                                                              |
+| Which stream carries the image bytes, which carries the JSON, and what a given shell can preserve | [Output format](#output-format), [Writing image bytes to stdout, per shell](#writing-image-bytes-to-stdout-per-shell)                                                                                                                                                                                                    |
+| How the deadline budget is shared and what it cannot interrupt                                    | [Deadlines and calls that block](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms)                                                                                                                                                                                                                     |
+| Stable codes, stages, exit codes, partial success, "what do I do when it errors"                  | [Exit codes](#exit-codes), [Guide for AI and scripts](#guide-for-ai-and-scripts)                                                                                                                                                                                                                                         |
+| What is compiled, what is available here, what has actually been tested                           | [System support](#system-support), [Read-only capability queries](#read-only-capability-queries---capabilities----diagnostics)                                                                                                                                                                                           |
+| Open questions this repository has not settled on real hardware                                   | [Boundaries and unverified items](#boundaries-and-unverified-items)                                                                                                                                                                                                                                                      |
+| Which test proves which rule                                                                      | [Build and test](#build-and-test)                                                                                                                                                                                                                                                                                        |
 
 ## Features
 
@@ -126,6 +129,7 @@ below is the verbatim output of `ECAPTURE.EXE --help`; run `.\scripts\mkreadme.p
 **do not hand-edit that block**.
 
 <!-- BEGIN ECAPTURE-HELP -->
+
 ```text
 EvernightCapture (ECAPTURE.EXE) - capture a window selected by conditions, built on Windows.Graphics.Capture
 
@@ -144,7 +148,7 @@ Window match conditions (repeat one option for OR, combine different options wit
   --exe <full-path>                           Full image path, case-insensitive
   --title, -t <exact-title>                   Window title, exact match
   --title-contains, -T <text>                 Window title contains this substring
-  --title-regex, -R <regex>                   Window title regular-expression match (ECMAScript), validated while parsing
+  --title-regex, -R <regex>                   Window title regular-expression match (ECMAScript), validated at match time
   --class, -c <class-name>                    Window class name, case-insensitive, e.g. Notepad / CabinetWClass
 
 When several windows match (mutually exclusive)
@@ -157,8 +161,8 @@ When several windows match (mutually exclusive)
 
 Capture channel (default wgc; may fail because of the OS version or the window itself)
   --capture, -C <method>                      wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
-  --cursor <default|include|exclude>          Whether the mouse pointer belongs in the image: default (nothing is changed and the three cursor keys stay out of the result) / include / exclude. Only wgc has a cursor switch that can really be set and read back (needs build 19041+); the other paths never contain a pointer, so include with printwindow / dwm / bitblt / duplication is refused as capture.cursor_unsupported and the tool never falls back to a screen-pixel channel; with auto those are dropped from the chain, each leaving a note.cursor_channel_skipped. This does not change consent; the requested / effective / basis rules are in the README
-  --hdr <auto|tonemap|refuse>                 How to treat an HDR source: auto (default, this tool changes nothing and the color keys do not appear) / tonemap (map an HDR frame to 8-bit SDR with a fixed tone curve before delivering) / refuse (if the source is confirmed HDR, error out and never deliver a BGRA8-washed image). In this build only wgc can fulfill tonemap/refuse, so asking for one with printwindow / dwm / bitblt / duplication reports capture.hdr_unsupported at parse time and never reroutes to a channel that reads desktop pixels; with --capture auto the same judgment narrows the fallback chain to the channels that really fulfill it (note.hdr_channel_skipped per channel dropped, env.hdr_unsupported if none is left). A capture that comes back capture.hdr_refused stops the chain instead of being retried on another backend. This does not change authorization; the source color space, bit depth and the processing actually applied are written into the result (see README and the color section of --capabilities)
+  --cursor <default|include|exclude>          Whether the mouse pointer belongs in the image: default (nothing is changed and the three cursor keys stay out of the result) / include / exclude. Only wgc has a switch that can be set and read back (needs build 19041+); printwindow / dwm / bitblt come from pixels that hold no pointer, while duplication returns a desktop frame that may already have the pointer drawn into it and has no switch, so include with those four and exclude with duplication are refused as capture.cursor_unsupported (two wordings) and --cursor default delivers the frame with cursorEffective unverified. It never falls back to a screen-pixel channel; with auto those paths are dropped, each leaving a note.cursor_channel_skipped. This does not change consent; the requested / effective / basis rules are in the README
+  --hdr <auto|tonemap|refuse>                 How to treat an HDR source: auto (default; changes nothing about color. Unwritten, the color keys do not appear) / tonemap (map an HDR frame to 8-bit SDR with a fixed tone curve before delivering) / refuse (if the source is confirmed HDR, error out and never deliver a BGRA8-washed image). In this build only wgc can fulfill tonemap/refuse, so asking for one with printwindow / dwm / bitblt / duplication reports capture.hdr_unsupported at parse time and never reroutes to a channel that reads desktop pixels; with --capture auto the same judgment narrows the fallback chain to the channels that really fulfill it (note.hdr_channel_skipped per channel dropped, env.hdr_unsupported if none is left). A capture that comes back capture.hdr_refused stops the chain instead of being retried on another backend. This does not change authorization; the source color space, bit depth and the processing actually applied are written into the result (see README and the color section of --capabilities)
 
 Cropping inside the window and proportional shrinking (another crop of the delivered whole-window image, in that image's own pixel coordinates - not desktop coordinates; the order is crop first and then scale, and the two crop options are mutually exclusive)
   --roi <x,y,w,h>                             Cut a w x h block starting at x,y out of the delivered whole-window image. The origin (0,0) is this image's own top-left pixel (the image is the visible window frame you actually see; the transparent DWM resize border is not in it), in physical pixels and not scaled by DPI (the process is per-monitor v2, so multiply the scale yourself for logical pixels) - which is why these four numbers are never read as desktop-absolute coordinates. Four decimal integers separated by commas; x and y may be 0, w and h are at least 1, none above 16384. If it does not fit, nothing is written: match.roi_out_of_range when that is already clear before the frame is taken (no dialog, no file) and capture.roi_invalid when it only turns out afterwards - the rectangle is never slid inside, never cropped to the edge, and the uncropped window is never handed over instead. The crop runs after the capture, so it changes nothing about authorization: channels that sample the screen still always ask, and --yes does not start applying because only a small piece is kept. In the result cropRect is in image pixels, cropScreenRect is the same rectangle in screen coordinates (written only when the image's screen origin can be established), fullWidth/fullHeight are the size before cropping and width/height after. Mutually exclusive with --client-area, and meaningless for a whole-screen target (capture.unsupported)
@@ -215,6 +219,7 @@ Examples:
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
   ECAPTURE.EXE --capabilities  ask what this machine can do first, then choose --capture and the target
 ```
+
 <!-- END ECAPTURE-HELP -->
 
 ## Argument syntax
@@ -260,10 +265,16 @@ ECAPTURE.EXE --process notepad.exe --title-contains Report D:\shots\r.png
 - `--title` compares the whole string and `--title-contains` matches a substring; both are **case-sensitive**.
   `--class`, `--process` and `--exe` are case-insensitive.
 - **A question that could not be answered never becomes a match.** A window whose title or process information the
-  system refuses to hand over (`denied` / `failed`) simply does not satisfy the conditions that need it, and a
-  `--title-regex` that throws part-way discards every hit it had collected and reports the failure
-  (`match.timeout` when the budget spent on it, `capture.worker_failed` when the helper process that ran it did not
-  come back — exit code `7` either way) instead of returning a half-evaluated list.
+  system refuses to hand over (`denied` / `failed`) simply does not satisfy the conditions that need it, and a failed
+  `--title-regex` discards every hit it had collected and reports the failure instead of returning a half-evaluated
+  list. The regex is compiled and run **at match time** (not while parsing), inside the isolated helper process, and
+  the three ways it can fail are kept distinct:
+  - **syntax error** (a pattern that will not compile) → `cli.invalid_regex`, exit code `1`, `stage=match`;
+  - **complexity / resource limit** (a pattern like `(a+)+$` hitting MSVC's backtracking `error_complexity` on a long
+    title) → the same `cli.invalid_regex` code and exit code `1`, but a "too complex" message whose hint says plainly
+    that **raising `--timeout-ms` does not help** — this is a bounded resource stop, not a slow-but-usable answer;
+  - **budget overrun** (evaluation spent the `--timeout-ms`) → `match.timeout`, exit code `7`; and if the helper that
+    ran it did not come back at all, `capture.worker_failed`, exit code `7`.
 - Enumeration skips invisible and zero-size windows by default; **minimized windows cannot be captured** and are
   only mentioned separately in the `hint`.
 - When several windows match and no disambiguation option was given, the tool refuses to pick one: it reports
@@ -329,7 +340,7 @@ is what keeps the default (no request at all) byte-for-byte the older output sha
 [The mouse pointer in the image](#the-mouse-pointer-in-the-image---cursor).
 
 The channels that read the screen and cut the target out of a whole desktop frame (`duplication`, and `bitblt` /
-`dwm`'s screen route) additionally report *where* in the desktop they actually got those pixels:
+`dwm`'s screen route) additionally report _where_ in the desktop they actually got those pixels:
 `requestedRect` is the area this channel set out to capture, `capturedRect` is the area it really captured — both in
 virtual-screen coordinates, so they line up with `rect` and with what the confirmation dialog listed. `clipped`
 appears only when the two are not the same (a window straddling two monitors, or one hanging off the edge): the
@@ -423,7 +434,8 @@ Rules:
    being encoded; command-line parse errors carry no `stage` at all), `hresult` (a raw value shaped like
    `0x80070005`), `win32` (the raw `GetLastError()` number).
    `message` follows `--lang` while these never do. Consent failures are their own branch:
-   `capture.access_denied` means somebody answered "No" or closed the dialog, `capture.consent_unavailable` means
+   `capture.access_denied` means the answer was not Yes (on this `MB_YESNO` box the only refusal a person can give is
+   "No", and the tool treats any non-Yes result as a refusal), `capture.consent_unavailable` means
    the dialog could not be shown at all (no interactive desktop) — both are exit code `6`, both carry
    `stage=consent`, `target`, `backend` (the channel) and `value` (the route), and neither is a technical access
    denial (`capture.failed` carrying `hresult=0x80070005`), which is what makes them tellable apart. A target that
@@ -434,22 +446,24 @@ Rules:
    A single-colour frame is never asserted to be a failed capture either: the image is delivered and
    `note.frame_uniform` records the fact (which colour, which channel, which target). Only `duplication` refuses a
    frame on such grounds, and only when the API itself says there was nothing to show — no present record at all
-   *and* the whole frame one colour.
+   _and_ the whole frame one colour.
 
 ### Writing image bytes to stdout, per shell
 
 `--out -` asks for two streams at once: PNG/JPEG bytes on stdout, the whole JSON document on stderr. The tool itself
 does not translate either one — image bytes go out through `WriteFile` on the raw handle and text never touches that
-stream — so a damaged file is always the shell's doing, not the tool's. The two streams are also **not** the same
-kind of data: the JSON is text that a shell may re-encode harmlessly, while the image is a byte stream where one
-substituted byte ruins the file. Whether a given shell preserves native byte streams is therefore the first question:
+stream — so a redirect that damages the image is corrupting it downstream of the tool, in the shell. The two streams
+are also **not** the same kind of data: the JSON is text that a shell may re-encode harmlessly, while the image is a
+byte stream where one substituted byte ruins the file. Whether a given shell preserves native byte streams is
+therefore the first question (a file that will not decode can still have other causes — a truncated write, a
+half-open pipe — so confirm the redirect before blaming it):
 
-| Shell | Redirecting a native command's stdout to a file | What to do |
-| --- | --- | --- |
-| `cmd.exe` | byte-exact (`1>` / `2>` rewire the real file handles) | safe as written |
-| PowerShell 7.4 and later | byte-exact — 7.4 changed the redirection operators to keep the byte stream of a native command's stdout | safe as written |
-| PowerShell 7.0 – 7.3 | stdout is decoded through the text pipeline | use `cmd /c`, or `--out <file>` |
-| Windows PowerShell 5.1 | **corrupts it**: the bytes are decoded as text and rewritten as UTF-16LE, so NUL and every byte ≥ 0x80 are already lost before the file is written; the redirected stderr file gets PowerShell's own error-record rendering (a `node : `-style prefix, the script position, a BOM) | use `--out <file>`, or `cmd /c`, or `Start-Process -RedirectStandardOutput … -RedirectStandardError …` (byte-exact, because the OS wires the handles) |
+| Shell                    | Redirecting a native command's stdout to a file                                                                                                                                                                                                                                    | What to do                                                                                                                                            |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cmd.exe`                | byte-exact (`1>` / `2>` rewire the real file handles)                                                                                                                                                                                                                              | safe as written                                                                                                                                       |
+| PowerShell 7.4 and later | byte-exact — 7.4 changed the redirection operators to keep the byte stream of a native command's stdout                                                                                                                                                                            | safe as written                                                                                                                                       |
+| PowerShell 7.0 – 7.3     | stdout is decoded through the text pipeline                                                                                                                                                                                                                                        | use `cmd /c`, or `--out <file>`                                                                                                                       |
+| Windows PowerShell 5.1   | **corrupts it**: the bytes are decoded as text and rewritten as UTF-16LE, so NUL and every byte ≥ 0x80 are already lost before the file is written; the redirected stderr file gets PowerShell's own error-record rendering (a `node : `-style prefix, the script position, a BOM) | use `--out <file>`, or `cmd /c`, or `Start-Process -RedirectStandardOutput … -RedirectStandardError …` (byte-exact, because the OS wires the handles) |
 
 ```cmd
 :: cmd.exe: image on stdout, JSON on stderr, both byte-for-byte
@@ -457,13 +471,20 @@ ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\resu
 ```
 
 ```powershell
-# PowerShell 7.4+ only. The same two lines in Windows PowerShell 5.1 turn 256 bytes into a 522-byte UTF-16LE
-# file that no decoder accepts (measured on this machine).
+# PowerShell 7.4+ only: these two lines keep the byte stream intact.
 ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
 
-# The 5.1-safe equivalent, if the image really has to come from the pipe:
-Start-Process -FilePath ECAPTURE.EXE -ArgumentList '--process','notepad.exe','--out','-' `
-  -NoNewWindow -Wait -RedirectStandardOutput D:\shots\snap.png -RedirectStandardError D:\shots\result.json
+# In Windows PowerShell 5.1 the same two lines do NOT: native stdout is decoded as text and rewritten as UTF-16LE,
+# so NUL and every byte >= 0x80 are already gone before the file is written. You can reproduce the mechanism with a
+# fixed, non-sensitive byte stream instead of a screenshot — redirect `ECAPTURE.EXE --version` and compare: under cmd
+# the file is the exact ASCII bytes (`1>` rewires the handle), under 5.1 the same output comes back roughly double
+# the length and UTF-16LE, which no PNG decoder would accept either. So for 5.1 ask for a file, or use Start-Process
+# (the OS wires the handles, byte-exact):
+$p = Start-Process -FilePath 'D:\tools\ECAPTURE.EXE' `
+  -ArgumentList '--process','notepad.exe','--yes','--out','-' `
+  -NoNewWindow -Wait -PassThru `
+  -RedirectStandardOutput 'D:\shots\snap.png' -RedirectStandardError 'D:\shots\result.json'
+$p.ExitCode   # read the exit code here; -Wait alone does not surface it
 ```
 
 `2>&1` (or `*>`) is never the answer on any of them: merging the two streams makes the shell treat the result as
@@ -474,7 +495,7 @@ default and the route this tool is built around.
 
 ## Cropping inside the window (`--roi` / `--client-area`)
 
-Both options answer a single question: *which part of the delivered window image do you actually want*. They are
+Both options answer a single question: _which part of the delivered window image do you actually want_. They are
 mutually exclusive (`cli.crop_conflict` + exit code 1), they say nothing sensible about a whole-screen target
 (`capture.unsupported` + exit code 1 — a screen has no window whose top-left corner a crop could be relative to),
 and they are refused together with the read-only queries (`cli.query_conflict` / `cli.window_query_conflict`).
@@ -502,12 +523,12 @@ reports as `limits.roiMaxValue` so help, parser and query read one number.
 
 ### What does not fit is refused, never repaired
 
-| Situation | Code | Exit | Stage |
-| --- | --- | --- | --- |
-| Four fields that are not what was promised (sign, space, wrong field count, zero width or height, over the ceiling) | `cli.invalid_value` | 1 | parse |
-| The rectangle is already too large for the window as selected, so before any dialog and before any file is planned | `match.roi_out_of_range` | 1 | match |
-| The frame came back too small to hold it (the target resized in between, or part of it hangs off the screen) | `capture.roi_invalid` | 7 | capture |
-| The question needed to locate the rectangle gave no answer (client area unreadable, or this image cannot be tied to a region of the screen) | `capture.roi_unmeasurable` | 7 | capture |
+| Situation                                                                                                                                   | Code                       | Exit | Stage   |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ---- | ------- |
+| Four fields that are not what was promised (sign, space, wrong field count, zero width or height, over the ceiling)                         | `cli.invalid_value`        | 1    | parse   |
+| The rectangle is already too large for the window as selected, so before any dialog and before any file is planned                          | `match.roi_out_of_range`   | 1    | match   |
+| The frame came back too small to hold it (the target resized in between, or part of it hangs off the screen)                                | `capture.roi_invalid`      | 7    | capture |
+| The question needed to locate the rectangle gave no answer (client area unreadable, or this image cannot be tied to a region of the screen) | `capture.roi_unmeasurable` | 7    | capture |
 
 None of these clamps the rectangle to the edge, slides it inside, or falls back to "here is the whole window
 instead" — the last one would hand over an image the caller did not ask for. And none of them lands a pixel: the
@@ -551,7 +572,7 @@ and `note.crop_mapping_unavailable` says so — an unanswerable question is neve
 established the capture fails with `capture.roi_unmeasurable` rather than returning the uncropped window.
 
 These fields sit alongside `requestedRect` / `capturedRect` / `clipped` / `rotation`, and the two groups do not
-overlap: the first says whether the *whole window* could be sampled from the desktop, the second says which part
+overlap: the first says whether the _whole window_ could be sampled from the desktop, the second says which part
 of the image that arrived is being handed over.
 
 ### Not verified on this machine
@@ -578,7 +599,7 @@ The rules are short, and they are the whole contract:
 - **One ratio, the tightest ceiling.** Each ceiling proposes a ratio (width, height, or the square root for a pixel budget)
   and the smallest one wins. Width and height are each **rounded down** and each keeps at least one pixel.
 - **It never upscales.** An image already inside every ceiling is delivered untouched and the result says
-  `scaleApplied: false`. Nothing is *reduced* by this option unless a ceiling is actually tighter than the image.
+  `scaleApplied: false`. Nothing is _reduced_ by this option unless a ceiling is actually tighter than the image.
 - **One interpolation strategy, and it is predictable**: nearest neighbour (`scaleMethod` is always `nearest`). Delivered
   pixel `(x,y)` comes from `(floor(x*scaleFromWidth/width), floor(y*scaleFromHeight/height))` of the image before scaling.
   There is no floating-point sampling and no per-channel choice of algorithm.
@@ -641,6 +662,25 @@ batch deliberately instead of being retried one target at a time. An access deni
 falling back, and neither is a refusal: once somebody answers "No" (or no dialog can be shown), the rest of that
 request is not attempted — no other backend, no second ask, while every image already completed stays in `images`.
 
+Failure **classes** stay distinct — a verdict about identity, policy or the execution environment is never folded into
+a generic "capture failed", because the correct next step differs:
+
+- **Recoverable backend failure** (`capture.frame_timeout`, `capture.window_gone`, `capture.frame_invalid`,
+  `capture.failed`): exit `7`, the `auto` chain may try the next backend — the next step is another backend or a
+  re-selected target.
+- **Target/monitor identity verdict** (`capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`,
+  `capture.monitor_changed` / `capture.monitor_unverifiable`): exit `7`, but the chain does **not** retry a different
+  backend or substitute another object/screen — the permission was bound to what was listed. The next step is to
+  enumerate again and re-confirm, never to fall back.
+- **Authorization verdict**: "No" / consent timeout / no dialog → `capture.access_denied` /
+  `capture.consent_timeout` / `capture.consent_unavailable`, exit `6`, whole request stops; a target that moved after
+  the answer → `capture.consent_stale`, exit `7`, retry by selecting it again.
+- **Regex verdicts**: syntax / too-complex → `cli.invalid_regex`, exit `1` (more time does not help a complexity
+  stop); budget overrun during evaluation → `match.timeout`, exit `7`.
+- **Isolation mechanism failure** (`capture.worker_failed`): exit `7`, and its hint says to check the machine
+  (rights, policy, antivirus) — the helper that runs regex / `PrintWindow` / DWM read-back did not behave, which is
+  an environment problem, **not** the same thing as a recoverable `capture.failed` on the target.
+
 The three read-only environment queries use only `0` and `1`: `0` = the document was delivered, even when it says this machine is
 too old and no route is available (**a successful query and a possible capture are two different things** - branch
 on `status`, do not infer the environment from an exit code); `1` = that invocation does not fit the contract
@@ -649,8 +689,8 @@ They never produce `4`/`5`/`6`/`7`/`8`: no window was enumerated, no dialog was 
 
 The two read-only window queries (`--list` / `--inspect`) share `0` and `1`, and additionally use `4`
 (`match.no_window`, only for `--inspect`, which needs one target) and `5` (`match.ambiguous_window`, several
-windows survive the selection policy), plus **`7` on exactly one path**: this run's *condition evaluation did not
-finish* (`match.timeout` - the `--timeout-ms` budget was spent on regex backtracking or on fetching a title from a
+windows survive the selection policy), plus **`7` on exactly one path**: this run's _condition evaluation did not
+finish_ (`match.timeout` - the `--timeout-ms` budget was spent on regex backtracking or on fetching a title from a
 hung window, or that step's helper process itself failed). That `7` means "this question could not be answered",
 not "the capture failed", so its `hint` is written in query terms and says plainly that switching `--capture` does
 nothing - there is no channel to switch on this path. **`6` and `8` never appear**: no dialog was shown and no file
@@ -661,11 +701,11 @@ nothing matched - an empty list is the answer.
 
 Three different numbers must not be blended into one slogan:
 
-| Layer | Value | Where it comes from |
-| --- | --- | --- |
-| Per-route API history floor | any image at all 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | what Microsoft documents for the exact call that route makes. The encoder (WinRT `BitmapEncoder`) is shared by every channel and every format; the WGC route goes through `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor`, which arrived with Windows 10 version 1903 — even though the `Windows.Graphics.Capture` namespace itself appeared in 1803, and this tool has no "let the user pick a window in the system picker" path to fall back on |
-| What this tool declares | 64-bit Windows 10 version 1903 (build 18362) or later | the highest of those floors, because that is what the default channel needs in order to deliver a window image — not the oldest API some route touches |
-| What has actually been tested | Windows 10 version 22H2 (build 19045), x64 | the one machine every on-device judgement under `tests\` runs on. `--capabilities` compares this machine against that recorded baseline and calls the answer `verifiedOnThisMachine`; matching it is an environment match, not proof that this particular device was ever tested |
+| Layer                         | Value                                                                                                      | Where it comes from                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-route API history floor   | any image at all 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | what Microsoft documents for the exact call that route makes. The encoder (WinRT `BitmapEncoder`) is shared by every channel and every format; the WGC route goes through `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor`, which arrived with Windows 10 version 1903 — even though the `Windows.Graphics.Capture` namespace itself appeared in 1803, and this tool has no "let the user pick a window in the system picker" path to fall back on |
+| What this tool declares       | 64-bit Windows 10 version 1903 (build 18362) or later                                                      | the highest of those floors, because that is what the default channel needs in order to deliver a window image — not the oldest API some route touches                                                                                                                                                                                                                                                                                                                |
+| What has actually been tested | Windows 10 version 22H2 (build 19045), x64                                                                 | the one machine every on-device judgement under `tests\` runs on. `--capabilities` compares this machine against that recorded baseline and calls the answer `verifiedOnThisMachine`; matching it is an environment match, not proof that this particular device was ever tested                                                                                                                                                                                      |
 
 Builds between 10240 and 18361 can load this exe, and can capture: the tool gates each route by its own
 floor instead of refusing the whole program there. They are not declared support and have never been
@@ -677,7 +717,7 @@ Windows 8.1) plus `api-ms-win-core-winrt-l1-1-0` and `api-ms-win-core-job-l2-1-0
 API-set mechanism does not exist on Windows 7; none of those three contracts is in the set the UCRT
 redistributable installs, so they cannot be added to an older system. `.\tests\compat.ps1` checks those
 names against the shipped binary, so the load floor is a fact about this file rather than an inference.
-Windows 8.1 *can* load and start it - and there the capability check below is what answers, because
+Windows 8.1 _can_ load and start it - and there the capability check below is what answers, because
 `Windows.Graphics.Imaging.BitmapEncoder` does not exist before Windows 10 and no image at all can be
 produced. A single `BitBlt` or `DwmRegisterThumbnail` call existing on Windows 7 therefore says nothing
 about this program, and the PE header's `subsystem version 6.00` is the MSVC linker default, not a
@@ -689,12 +729,12 @@ Before enumerating windows, planning output names, showing a consent dialog or r
 compares the Windows build read from `ntdll!RtlGetVersion` (never `GetVersionEx` — that one answers
 according to the application manifest and to version helper) against the floors above, and reports:
 
-| Code | When | Exit | Does another channel help? |
-| --- | --- | --- | --- |
-| `env.os_too_old` | build below 10240 (so also Windows 8.1, which can load the file): the one encoder implementation every format goes through is not there | 7 | **No.** Not a channel problem and not a target problem — nothing on this machine can produce an image |
-| `env.channel_unsupported` | the channel asked for explicitly has a higher floor than this build | 7 | **Yes** — another `--capture` value, or `auto`. Retrying the same target cannot help, and the requested channel is never substituted |
-| `note.channel_unavailable` | `auto` found a channel whose floor this build is under and dropped it from the chain | unchanged | the image can still come from another channel; `images[].source` names the one that did it |
-| `note.os_unverifiable` | the build number could not be read at all | unchanged | nothing was filtered by version this time - no answer counts as either "supported" or "unsupported" |
+| Code                       | When                                                                                                                                    | Exit      | Does another channel help?                                                                                                           |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `env.os_too_old`           | build below 10240 (so also Windows 8.1, which can load the file): the one encoder implementation every format goes through is not there | 7         | **No.** Not a channel problem and not a target problem — nothing on this machine can produce an image                                |
+| `env.channel_unsupported`  | the channel asked for explicitly has a higher floor than this build                                                                     | 7         | **Yes** — another `--capture` value, or `auto`. Retrying the same target cannot help, and the requested channel is never substituted |
+| `note.channel_unavailable` | `auto` found a channel whose floor this build is under and dropped it from the chain                                                    | unchanged | the image can still come from another channel; `images[].source` names the one that did it                                           |
+| `note.os_unverifiable`     | the build number could not be read at all                                                                                               | unchanged | nothing was filtered by version this time - no answer counts as either "supported" or "unsupported"                                  |
 
 `--verbose` echoes `input.osBuild` and `input.captureChain` (the channels this machine can actually offer
 for the kind of target requested), so an agent can ask the capability question without capturing
@@ -719,7 +759,7 @@ ECAPTURE.EXE --capabilities -v           # plus a probes section: each raw answe
 
 Three rules:
 
-* **Three separate facts.** `compiled` says whether this binary implements the route at all. `status` says whether
+- **Three separate facts.** `compiled` says whether this binary implements the route at all. `status` says whether
   this machine's own evidence (version floors plus screen topology) lets it run now. `verifiedOnThisMachine` is an
   **environment comparison, not a per-device test record**: it answers `yes` only when this machine's Windows build
   and architecture equal the environment this project ran its on-device tests in (build 19045, x64), `unknown` when
@@ -728,29 +768,29 @@ Three rules:
   facts stands in for another: `available` + `verifiedOnThisMachine: no` means "this build can take the route here,
   this project has only proven it on a different build", while `yes` still does not promise that a given window
   captures.
-* **No answer is reported as no answer.** Every fact is one of `yes` / `no` / `unknown`; `unknown` is never
+- **No answer is reported as no answer.** Every fact is one of `yes` / `no` / `unknown`; `unknown` is never
   folded into either "works" or "does not work", and the key is not silently dropped. When the build number
   could not be read, every `status` becomes `unverified` while `autoChainWindow` still lists all four
   channels - not filtered means not filtered, not "all supported".
-* **`available` is not a guarantee.** It carries no promise that some specific window will capture: drivers,
+- **`available` is not a guarantee.** It carries no promise that some specific window will capture: drivers,
   protected content and HDR mode are outside this layer. The `caveats` array at the end of the document
   exists precisely to pin that down.
 
-| Section | Contents |
-| --- | --- |
-| `contract` / `contractVersion` | only these two documents carry a contract version (currently 1). The capture JSON stays as lean as 《Output format》 describes and gains no top-level metadata from this |
-| `program` | name, the file name `ECAPTURE.EXE` itself (no directory), version, architecture, `buildId` |
-| `os` | this machine's build (that group reads `unknown` when `known` is false), `declaredMinBuild`, `encoderMinBuild`, `testedMinBuild` + `testedArch` (the environment this project actually tested) and `matchesTestedEnvironment` |
-| `session` | attached to the console session, remote desktop, screen topology present and how many monitors, whether this process is elevated, `consentDialogExpected` (inferred; `consentDialogProbed: false` says no dialog was ever shown) |
-| `authorization` | `yesSkips: "window-content"`, `desktopPixelsAlwaysAsk: true`, unregistered paths treated as `desktop`, plus the whole internal-path registry with `scope` and `consentWithoutYes` / `consentWithYes` per row - the machine-readable form of the table in 《Screenshot authorization and \`--yes\`》 |
-| `backends` | per route: `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`, plus which internal path it takes for window and for screen targets (`dwm`'s screen fallback included, so `--yes` cannot be read as covering more than it does) |
-| `formats` | per format: `compiled` / `status` / `reason` / `minBuild` / `registered`, one row for each of `png` / `jpeg` / `bmp` / `tiff` / `gif` (all five are compiled, and every one of them goes through the same WinRT `BitmapEncoder` call with a different encoder id). `registered` is always `unknown` because this layer does not exercise encoders (doing so would be probing capability by producing an image, the same reason we never probe by capturing). `webp` / `ico`, once advertised and then removed for lack of an encoder, stay here as `compiled: false` + `reason: "not_compiled"` so a caller gets a definite answer |
-| `cursor` | the `--cursor` story: `default` (what happens when the option is absent), the three values, that one switch as `compiled` / `status` / `reason` / `minBuild` (19041) / `verifiedOnThisMachine`, then one row per registered internal path with `capability` (`settable` / `excludes_cursor` / `unregistered`), `reason` and `include` / `exclude` each as `yes` / `no` / `unknown`, plus `pointerShapeCompositing: "never"` and `pixelRetouching: "never"`. Nothing is probed by capturing, so a path that is not in the registry reads `unknown` rather than a guessed answer |
-| `color` | the `--hdr` story: `default` (what happens when the option is absent), the three values (`auto` / `tonemap` / `refuse`), `compiled` / `status` / `reason` / `verifiedOnThisMachine`. `status` is about "can this build bring back a wide-gamut frame and how does it map", it does **not** ask whether this screen is currently in HDR mode (reason `hdr_display_mode_not_probed`); `verifiedOnThisMachine` is always `no` (this project has no HDR display, so it never claims color acceptance). One row per registered internal path, with `capability` = `wide_gamut_capable` (only `wgc` / `screen.wgc`) / `wide_gamut_unverified` (`duplication.frame` / `screen.duplication`: the desktop surface *can* arrive FP16 or 10-bit, but this build never asks the display's color space before `DuplicateOutput`, so it cannot prove what it got) / `sdr_source_only` (everything that reads an 8-bit DC) / `unregistered`, plus `honorsExplicitPolicy` - `true` only for the two `wgc` rows, which is the machine-readable form of "only wgc can fulfil `tonemap` / `refuse` in this build". `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"` (HDR is always mapped to 8-bit SDR for delivery; no native-HDR output) |
-| `autoChainWindow` / `autoChainScreen` | the `auto` chain this machine can take now. Computed by the **same** `GateChannels` call that fills `input.captureChain` for a real run, and `tests\capabilities.ps1` compares the two |
-| `limits` | maximum frame side and bytes, `--timeout-ms` ceiling, built-in isolated-call ceiling, WGC frame-pool rebuild count, ordinal and PID ceilings, `stdoutTargetsMax: 1`, JPEG quality range |
-| `privacy` | what this query declares it did not do: no screen captured, no dialog shown, nothing uploaded, no user files enumerated, no environment variables read, no usernames, no paths |
-| `caveats` | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer"), and always `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc` (the HDR mapping math is verified offline but there is no HDR display to test end-to-end, HDR is always mapped down to 8-bit SDR, and an explicit `tonemap` / `refuse` request is only ever fulfilled by the two `wgc` paths) |
+| Section                               | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `contract` / `contractVersion`        | only these two documents carry a contract version (currently 1). The capture JSON stays as lean as 《Output format》 describes and gains no top-level metadata from this                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `program`                             | name, the file name `ECAPTURE.EXE` itself (no directory), version, architecture, `buildId`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `os`                                  | this machine's build (that group reads `unknown` when `known` is false), `declaredMinBuild`, `encoderMinBuild`, `testedMinBuild` + `testedArch` (the environment this project actually tested) and `matchesTestedEnvironment`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `session`                             | attached to the console session, remote desktop, screen topology present and how many monitors, whether this process is elevated, `consentDialogExpected` (inferred; `consentDialogProbed: false` says no dialog was ever shown)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `authorization`                       | `yesSkips: "window-content"`, `desktopPixelsAlwaysAsk: true`, unregistered paths treated as `desktop`, plus the whole internal-path registry with `scope` and `consentWithoutYes` / `consentWithYes` per row - the machine-readable form of the table in 《Screenshot authorization and \`--yes\`》                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `backends`                            | per route: `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`, plus which internal path it takes for window and for screen targets (`dwm`'s screen fallback included, so `--yes` cannot be read as covering more than it does)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `formats`                             | per format: `compiled` / `status` / `reason` / `minBuild` / `registered`, one row for each of `png` / `jpeg` / `bmp` / `tiff` / `gif` (all five are compiled, and every one of them goes through the same WinRT `BitmapEncoder` call with a different encoder id). `registered` is always `unknown` because this layer does not exercise encoders (doing so would be probing capability by producing an image, the same reason we never probe by capturing). `webp` / `ico`, once advertised and then removed for lack of an encoder, stay here as `compiled: false` + `reason: "not_compiled"` so a caller gets a definite answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `cursor`                              | the `--cursor` story: `default` (what happens when the option is absent), the three values, that one switch as `compiled` / `status` / `reason` / `minBuild` (19041) / `verifiedOnThisMachine`, then one row per registered internal path with `capability` (`settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`), `reason` and `include` / `exclude` each as `yes` / `no` / `unknown`, plus `pointerShapeCompositing: "never"` and `pixelRetouching: "never"`. The two duplication paths read `capability: pointer_state_unverified` with `include` and `exclude` both `no` — a desktop frame may already have the pointer drawn into it, and the tool never composites the pointer shape, which is not proof the pixels hold no pointer. Nothing is probed by capturing, so a path that is not in the registry reads `unknown` rather than a guessed answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `color`                               | the `--hdr` story: `default` (what happens when the option is absent), the three values (`auto` / `tonemap` / `refuse`), `compiled` / `status` / `reason` / `verifiedOnThisMachine`. `status` is about "can this build bring back a wide-gamut frame and how does it map", it does **not** ask whether this screen is currently in HDR mode (reason `hdr_display_mode_not_probed`); `verifiedOnThisMachine` is always `no` (this project has no HDR display, so it never claims color acceptance). One row per registered internal path, with `capability` = `wide_gamut_capable` (only `wgc` / `screen.wgc`) / `wide_gamut_unverified` (`duplication.frame` / `screen.duplication`: the desktop surface _can_ arrive FP16 or 10-bit, but this build never asks the display's color space before `DuplicateOutput`, so it cannot prove what it got) / `sdr_source_only` (everything that reads an 8-bit DC) / `unregistered`, plus `honorsExplicitPolicy` - `true` only for the two `wgc` rows, which is the machine-readable form of "only wgc can fulfil `tonemap` / `refuse` in this build". `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"` (HDR is always mapped to 8-bit SDR for delivery; no native-HDR output)                                                                                              |
+| `autoChainWindow` / `autoChainScreen` | the `auto` chain this machine can take now. Computed by the **same** `GateChannels` call that fills `input.captureChain` for a real run, and `tests\capabilities.ps1` compares the two                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `limits`                              | maximum frame side and bytes, `--timeout-ms` ceiling, built-in isolated-call ceiling, WGC frame-pool rebuild count, ordinal and PID ceilings, `stdoutTargetsMax: 1`, JPEG quality range                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `privacy`                             | what this query declares it did not do: no screen captured, no dialog shown, nothing uploaded, no user files enumerated, no environment variables read, no usernames, no paths                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `caveats`                             | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` + `duplication_desktop_frame_pointer_not_guaranteed` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer", and a duplication desktop frame is not guaranteed pointer-free), and always `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc` (the HDR mapping math is verified offline but there is no HDR display to test end-to-end, HDR is always mapped down to 8-bit SDR, and an explicit `tonemap` / `refuse` request is only ever fulfilled by the two `wgc` paths) |
 
 Both documents come out of **one** judgement function (`BuildEnvReport` in `src/EnvReport.cpp`) and differ only
 in which sections they print: `--diagnostics` always includes the `build` section (PE link timestamp, machine
@@ -792,17 +832,17 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # disambiguate exac
 
 Five rules, and each one exists because the alternative was worse:
 
-* **Nothing is captured, nothing is asked, nothing is written.** No backend is called, no consent dialog is shown,
+- **Nothing is captured, nothing is asked, nothing is written.** No backend is called, no consent dialog is shown,
   no file is created, no network access, no environment variable read - the document itself states this in
   `authorization` (`pixelsRead: 0`, `consentDialogShown: false`, `filesWritten: false`). The query also **never
   touches a target window**: no restore, no activation, no z-order change, because "let me look at what is open"
   must not change what is on the screen. `caveats` carries `no_capture_performed` and `no_window_touched` for this.
-* **Several matches are not a capture ambiguity.** `--list` pages them (`--offset` / `--limit`, default 50 per
+- **Several matches are not a capture ambiguity.** `--list` pages them (`--offset` / `--limit`, default 50 per
   batch) and reports the real total in `pagination.matched`, so a short list never reads as "there are only these".
   Zero matches is a normal answer: `windows: []` and exit code `0`, not `match.no_window` + `4`. `--inspect` needs
   one target, so it applies **the same** selection policy a capture uses: if that policy still leaves several, it is
   `match.ambiguous_window` + exit code `5` - it never picks one for you, and it never grabs a look-alike instead.
-* **The list is a snapshot and it expires.** Handles get reused, titles change, processes exit, so the `hwnd` / `pid`
+- **The list is a snapshot and it expires.** Handles get reused, titles change, processes exit, so the `hwnd` / `pid`
   / class in here are **not a credential** you may hold on to. Every successful query carries
   `note.window_query_stale`, and the `identity` block of each row states `verificationRequired: true`,
   `isAuthorizationToken: false` and `raceWindowReducedNotEliminated: true`. A later capture re-checks the target
@@ -810,11 +850,11 @@ Five rules, and each one exists because the alternative was worse:
   `capture.target_unverifiable`), and consent is still decided by where the pixels come from: **`--yes` changes
   nothing here** (`authorization.yesAffectsResult: false`) - it neither unlocks a field nor skips a dialog that this
   query never shows.
-* **An unreadable field says so.** Cross-process questions have three outcomes, written per field: `readable`,
+- **An unreadable field says so.** Cross-process questions have three outcomes, written per field: `readable`,
   `denied` (the system refused this caller), `failed` (asked and it did not answer), each with the raw Win32 code.
   Unreadable values are sentinels (`0` / empty) plus that state, never silent absences, and the document does not
   advise running elevated: `caveats` carries `unreadable_fields_are_not_a_prediction`.
-* **The visibility policy is stated, not implied.** Invisible and zero-sized windows are excluded - the same rule the
+- **The visibility policy is stated, not implied.** Invisible and zero-sized windows are excluded - the same rule the
   capture enumeration uses - and `policy` says so (`invisibleExcluded`, `zeroSizedExcluded`); minimized windows are
   excluded by default too, are counted in `policy.minimizedExcluded`, and `--list=all` merges them into the same
   z-order. There is **no** claim about "system windows": Windows exposes no attribute that means "this is a system
@@ -823,33 +863,78 @@ Five rules, and each one exists because the alternative was worse:
 Fields per row (window inspect returns the same object as `window` instead of the `windows` array):
 
 ```json
-{ "contract": "windowquery", "contractVersion": 1, "query": "list",
+{
+  "contract": "windowquery",
+  "contractVersion": 1,
+  "query": "list",
   "program": { "version": "0.4.0" },
-  "authorization": { "readOnly": true, "pixelsRead": 0, "consentDialogShown": false,
-                     "filesWritten": false, "yesAffectsResult": false,
-                     "identityFieldsAreNotConsent": true },
-  "policy": { "invisibleExcluded": true, "zeroSizedExcluded": true, "minimizedIncluded": false,
-              "minimizedExcluded": 2, "systemWindowAssertion": false, "order": "zOrder" },
-  "pagination": { "offset": 0, "limit": 50, "limitDefaulted": true, "defaultLimit": 50,
-                  "maxLimit": 8192, "matched": 52, "returned": 50, "truncated": true,
-                  "nextOffset": 50 },
-  "windows": [ { "hwnd": "0x001A0B4C", "pid": 31468, "title": "…", "class": "CabinetWClass",
-                 "image": "explorer.exe",
-                 "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
-                 "visible": true, "minimized": false, "zOrder": 3,
-                 "readability": { "process": { "state": "readable" },
-                                  "imagePath": { "state": "denied", "win32": 5 },
-                                  "processStart": { "state": "readable" },
-                                  "rect": { "state": "readable" } },
-                 "identity": { "hwnd": "0x001A0B4C", "pid": 31468, "class": "CabinetWClass",
-                               "processStartTicks": 134351142668527401,
-                               "selectionNeedsRecheck": false, "verificationRequired": true,
-                               "isAuthorizationToken": false,
-                               "raceWindowReducedNotEliminated": true } } ],
-  "caveats": [ "no_capture_performed", "no_consent_dialog_shown", "no_window_touched",
-               "snapshot_expires", "identity_fields_are_not_a_token",
-               "invisible_and_zero_sized_excluded", "unreadable_fields_are_not_a_prediction",
-               "list_may_be_partial" ] }
+  "authorization": {
+    "readOnly": true,
+    "pixelsRead": 0,
+    "consentDialogShown": false,
+    "filesWritten": false,
+    "yesAffectsResult": false,
+    "identityFieldsAreNotConsent": true
+  },
+  "policy": {
+    "invisibleExcluded": true,
+    "zeroSizedExcluded": true,
+    "minimizedIncluded": false,
+    "minimizedExcluded": 2,
+    "systemWindowAssertion": false,
+    "order": "zOrder"
+  },
+  "pagination": {
+    "offset": 0,
+    "limit": 50,
+    "limitDefaulted": true,
+    "defaultLimit": 50,
+    "maxLimit": 8192,
+    "matched": 52,
+    "returned": 50,
+    "truncated": true,
+    "nextOffset": 50
+  },
+  "windows": [
+    {
+      "hwnd": "0x001A0B4C",
+      "pid": 31468,
+      "title": "…",
+      "class": "CabinetWClass",
+      "image": "explorer.exe",
+      "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
+      "visible": true,
+      "minimized": false,
+      "zOrder": 3,
+      "readability": {
+        "process": { "state": "readable" },
+        "imagePath": { "state": "denied", "win32": 5 },
+        "processStart": { "state": "readable" },
+        "rect": { "state": "readable" }
+      },
+      "identity": {
+        "hwnd": "0x001A0B4C",
+        "pid": 31468,
+        "class": "CabinetWClass",
+        "processStartTicks": 134351142668527401,
+        "selectionNeedsRecheck": false,
+        "verificationRequired": true,
+        "isAuthorizationToken": false,
+        "raceWindowReducedNotEliminated": true
+      }
+    }
+  ],
+  "caveats": [
+    "no_capture_performed",
+    "no_consent_dialog_shown",
+    "no_window_touched",
+    "snapshot_expires",
+    "identity_fields_are_not_a_token",
+    "invisible_and_zero_sized_excluded",
+    "unreadable_fields_are_not_a_prediction",
+    "list_may_be_partial"
+  ]
+}
 ```
 
 `title`, `class` and `image` are delivered verbatim - not truncated, not escaped into a prose line, not case-folded -
@@ -877,7 +962,7 @@ no output path, and is still a conflict with `--list` / `--inspect` rather than 
 
 ### Read-only screen enumeration (`--screens`)
 
-Naming "that monitor" used to have exactly one spelling: `--monitor <n>`, where `n` is the position in *this run's*
+Naming "that monitor" used to have exactly one spelling: `--monitor <n>`, where `n` is the position in _this run's_
 `EnumDisplayMonitors` order. That is not the id Windows writes in Settings, and after a replug or a resolution
 change it can name a different panel - and capturing the wrong screen means pixels nobody approved are already on
 disk. `--screens` turns that question into data:
@@ -895,12 +980,12 @@ capture result as `capabilities` and `windowquery` are.
 
 Four identities per screen, each stating how far it stays true (fields, not prose):
 
-| Field | What it is | Stable across | Selector |
-| --- | --- | --- | --- |
-| `ordinal` | position in this run's enumeration | `this_invocation` | `--monitor <n>` |
-| `deviceName` | GDI view device name, `\\.\DISPLAY1` | `this_desktop_attach` | `device:` |
-| `monitorDevicePath` | monitor devnode device interface path | `cross_session_expected` | `id:` |
-| `adapterLuid` | adapter's locally unique id | `this_session` | none - association only |
+| Field               | What it is                            | Stable across            | Selector                |
+| ------------------- | ------------------------------------- | ------------------------ | ----------------------- |
+| `ordinal`           | position in this run's enumeration    | `this_invocation`        | `--monitor <n>`         |
+| `deviceName`        | GDI view device name, `\\.\DISPLAY1`  | `this_desktop_attach`    | `device:`               |
+| `monitorDevicePath` | monitor devnode device interface path | `cross_session_expected` | `id:`                   |
+| `adapterLuid`       | adapter's locally unique id           | `this_session`           | none - association only |
 
 `screens[].selectors` holds the exact strings to write back (`device:DISPLAY1`, `id:\?\DISPLAY#…`), so nothing has
 to be guessed, and `identity.*` says which kinds may be used as a selector. The adapter LUID deliberately has none:
@@ -942,14 +1027,14 @@ courtesy. The document prints device paths and neither a filesystem path nor a u
 
 ## Capture channels
 
-| Value | Channel | Covered window | Hardware-accelerated content | Pointer (`--cursor`) | API history floor |
-| --- | --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | yes (DWM cache) | normal | a real switch, set and read back (19041+) | Win10 1903 (18362) — the `CreateForWindow` / `CreateForMonitor` interop, not the 1803 namespace |
-| `dwm` | DwmRegisterThumbnail | yes | mostly normal, protected windows black | never in the source pixels | Win8.1 (9600) — registering is older, but the read-back is `PrintWindow(PW_RENDERFULLCONTENT)` |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | yes (window self-draw) | often fully black | never in the source pixels | Win8.1 (9600) for that flag |
-| `bitblt` | BitBlt from a screen DC | no, visible pixels only | partly black | never in the source pixels | no floor of its own |
-| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal | the pointer arrives as separate metadata | Win8 (9200); RDP / virtual GPUs often yield nothing |
-| `auto` | falls back wgc → dwm → printwindow → bitblt | best effort | best effort | `include` narrows it to `wgc` | the chain minus whatever this build gates out |
+| Value         | Channel                                             | Covered window          | Hardware-accelerated content           | Pointer (`--cursor`)                                                                                             | API history floor                                                                               |
+| ------------- | --------------------------------------------------- | ----------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `wgc`         | Windows.Graphics.Capture                            | yes (DWM cache)         | normal                                 | a real switch, set and read back (19041+)                                                                        | Win10 1903 (18362) — the `CreateForWindow` / `CreateForMonitor` interop, not the 1803 namespace |
+| `dwm`         | DwmRegisterThumbnail                                | yes                     | mostly normal, protected windows black | never in the source pixels                                                                                       | Win8.1 (9600) — registering is older, but the read-back is `PrintWindow(PW_RENDERFULLCONTENT)`  |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT                  | yes (window self-draw)  | often fully black                      | never in the source pixels                                                                                       | Win8.1 (9600) for that flag                                                                     |
+| `bitblt`      | BitBlt from a screen DC                             | no, visible pixels only | partly black                           | never in the source pixels                                                                                       | no floor of its own                                                                             |
+| `duplication` | DXGI desktop duplication frame, cropped to the rect | no, visible pixels only | normal                                 | no switch: the pointer may already be drawn into the desktop frame, so neither include nor exclude is guaranteed | Win8 (9200); RDP / virtual GPUs often yield nothing                                             |
+| `auto`        | falls back wgc → dwm → printwindow → bitblt         | best effort             | best effort                            | `include` narrows it to `wgc`                                                                                    | the chain minus whatever this build gates out                                                   |
 
 Those are the **API history floors**, each checked against the Microsoft documentation for the exact call
 that route makes. They are not what this program claims to run on, and they are not measured either: see
@@ -989,7 +1074,7 @@ reports instead of a vague failure.
     software device owns no physical output, so it would hand back an empty frame while still reporting the right
     size.
   - **Only one output per target.** A window that straddles two monitors (or hangs off the edge) is captured where it
-    overlaps the output with the largest overlap; the rest is *not* in the image. That shows up as
+    overlaps the output with the largest overlap; the rest is _not_ in the image. That shows up as
     `capturedRect` != `requestedRect`, `clipped` and `note.capture_clipped` rather than silently looking like the
     whole window. Stitching one window across adapters is not implemented.
 - If the target monitor leaves the desktop or changes shape after the confirmation, the capture stops with
@@ -1009,56 +1094,68 @@ for that is `src/CursorControl.h`: one row per internal `images[].path`, the sam
 registry, and a path that is not registered is treated strictly (neither request is claimed).
 
 - `wgc` and `screen.wgc` are the only paths with a switch that can really be set and read back -
-  `IGraphicsCaptureSession2::IsCursorCaptureEnabled`, introduced in Windows build 19041. That is a *higher* floor
+  `IGraphicsCaptureSession2::IsCursorCaptureEnabled`, introduced in Windows build 19041. That is a _higher_ floor
   than the `wgc` channel's own 18362: a 1903 machine can capture with `wgc` and still be unable to say anything
   about the pointer.
-- `printwindow` (a window painting itself into a DC), `dwm.thumbnail` (the DWM redirection surface),
+- `printwindow` (a window painting itself into a DC), `dwm.thumbnail` (the DWM redirection surface), and
   `dwm.screen` / `bitblt.screen` / `screen.bitblt` (a screen DC, where the system cursor is drawn outside the DC's
-  content) and `duplication.frame` / `screen.duplication` (the desktop image, from which the pointer is delivered
-  as *separate metadata*) contain no pointer at all. So `exclude` is true of them as a fact about the source, and
-  `include` is simply not something they can do.
+  content) contain no pointer at all. So `exclude` is true of them as a fact about the source, and `include` is
+  simply not something they can do.
+- `duplication.frame` / `screen.duplication` are a different case: they deliver a whole desktop frame, and the
+  pointer may **already be drawn into** it. The tool never fetches or composites the duplication pointer shape, but
+  "we did not composite it" is not proof the pixels hold no pointer — per the Windows docs the pointer is either
+  baked into the desktop image or GPU-overlaid, and the per-frame `PointerPosition` / `PointerShapeBufferSize`
+  fields describe only the hardware pointer, so no per-frame assertion is honest here. These two paths are registered
+  as `pointer_state_unverified`: **neither** `include` **nor** `exclude` is something they can promise.
 
 Two rules follow, and both exist so that "I asked for it" can never be read as "I got it":
 
-- **A request a route cannot deliver is refused, not re-routed.** `--cursor include` with `printwindow`, `dwm`,
-  `bitblt` or `duplication` is `capture.cursor_unsupported` (exit `1`) at parse time - before any dialog, before any
-  output name is planned, before a pixel. Switching to a channel that reads the screen would neither add a pointer
-  (those sources hold none) nor be a frame anybody approved. With `--capture auto` the routes that cannot honour the
-  request are dropped from the chain and each leaves a `note.cursor_channel_skipped`; when nothing is left, or when
-  this machine's Windows build is below 19041 and the request was explicit, the code is `env.cursor_unsupported`
-  (exit `7`) and nothing is captured. `--verbose` echoes the surviving chain as `input.captureChain`, computed by the
-  same function the run uses, so `--cursor include` + `auto` shows `["wgc"]`.
+- **A request a route cannot deliver is refused, not re-routed.** `--cursor include` with `printwindow`, `dwm` or
+  `bitblt` — sources that hold no pointer — is `capture.cursor_unsupported` (exit `1`) at parse time, before any
+  dialog, before any output name is planned, before a pixel. On `duplication` **both** `include` and `exclude` are
+  `capture.cursor_unsupported` (exit `1`) at parse time, with two different wordings (include: that source gives no
+  pointer switch; exclude: the desktop frame's pointer state cannot be proven). Switching to a channel that reads the
+  screen would neither add a pointer nor guarantee removing one, and would not be a frame anybody approved. With
+  `--capture auto` the routes that cannot honour the request are dropped from the chain and each leaves a
+  `note.cursor_channel_skipped`; when nothing is left, or when this machine's Windows build is below 19041 and the
+  request was explicit, the code is `env.cursor_unsupported` (exit `7`) and nothing is captured. `--verbose` echoes
+  the surviving chain as `input.captureChain`, computed by the same function the run uses, so `--cursor include` +
+  `auto` shows `["wgc"]`.
 - **No pixel retouching.** The tool does not fetch the duplication pointer shape to draw it, never `DrawIcon`s a
   cursor into a frame, and never tries to erase a pointer that is already there - those are image patching and none
   of them is verifiable. `tests\cursor.ps1` fails if such a call ever appears anywhere in `src/`.
 
 For every delivered image, and only when `--cursor` was written at all, three fields say what happened:
 
-| Field | Values | Meaning |
-| --- | --- | --- |
-| `cursorRequested` | `default` / `include` / `exclude` | what was asked for |
-| `cursorEffective` | `include` / `exclude` / `unverified` | what this path actually delivered |
-| `cursorBasis` | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `wgc_cursor_property_unavailable` | on what evidence |
+| Field             | Values                                                                                                                                                                                     | Meaning                           |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
+| `cursorRequested` | `default` / `include` / `exclude`                                                                                                                                                          | what was asked for                |
+| `cursorEffective` | `include` / `exclude` / `unverified`                                                                                                                                                       | what this path actually delivered |
+| `cursorBasis`     | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `path_pointer_state_unverified` / `wgc_cursor_property_unavailable` / `path_capability_not_registered` | on what evidence                  |
 
 `wgc_session_property_set` means the switch was set for this request and the value read back matched it;
 `wgc_session_property_read` means nothing was set (`--cursor default`) and only the current value was read;
-`path_excludes_cursor` means this path's source pixels contain no pointer; `wgc_cursor_property_unavailable` means
-that question gave no answer, and then `cursorEffective` is `unverified` rather than either answer.
+`path_excludes_cursor` means this path's source pixels contain no pointer; `path_pointer_state_unverified` means a
+duplication desktop frame whose pointer state cannot be proven (so `cursorEffective` is `unverified`);
+`wgc_cursor_property_unavailable` means that question gave no answer; and `path_capability_not_registered` means the
+route was not in the registry and was treated strictly rather than guessed. In every unverified case
+`cursorEffective` is `unverified` rather than either answer.
 
 `cursorEffective` stops at exactly that evidence. It says this session was set to draw the pointer, or that this
 source holds none - it does **not** claim a pointer happened to be sitting over the target in these pixels. This
 SDK's session interface has no read-only `IsCursorVisible`, so the tool makes no pixel-level assertion, and
 `--capabilities` states that boundary as the `cursor_effective_is_a_setting_not_a_pixel_check` caveat. If an explicit
 `include` / `exclude` request cannot be confirmed on a `wgc` capture (the interface cannot be obtained, the set call
-fails, or the value read back is the opposite one), the code is `capture.cursor_unverifiable` (exit `7`) *before*
+fails, or the value read back is the opposite one), the code is `capture.cursor_unverifiable` (exit `7`) _before_
 `StartCapture`, so a frame that contradicts the request is never delivered; under `--cursor default` the same
 situation is reported as `unverified` instead of being folded into either answer.
 
 Asking about the pointer changes nothing about authorization. The tier is still decided by where the pixels come
-from, so `--cursor exclude` on `bitblt`, `duplication` or any whole-screen target still shows the dialog and `--yes`
-still does not cover it; `wgc` without `--yes` still asks. Those three cases are checked on a real window in
-`tests\cursor.ps1`. Like `path` / `scope` / `rect` and the crop fields, these three are locating evidence and
-`--quiet` does not suppress them.
+from, so `--cursor exclude` on a `bitblt` screen route or any whole-screen target, and `--cursor default` on a
+duplication route, still show the dialog and `--yes` still does not cover them; `wgc` without `--yes` still asks. (An
+`--cursor exclude` + `duplication` request is refused at parse time and never reaches a dialog at all.) Those consent
+cases are checked on a real window in `tests\cursor.ps1`. Like `path` / `scope` / `rect` and the crop fields, the three
+cursor fields are locating evidence and `--quiet` does not suppress them.
 
 `--capabilities` answers all of the above without capturing anything, in its `cursor` section: the default value, the
 three values, that single switch as `compiled` / `status` / `minBuild` / `verifiedOnThisMachine`, one row per
@@ -1067,9 +1164,14 @@ and `pointerShapeCompositing: "never"` plus `pixelRetouching: "never"`.
 
 ## HDR color handling (`--hdr`)
 
-When a display is in HDR mode the captured frame can carry luminance beyond SDR and a different transfer function. Interpreting such a frame as plain 8-bit BGRA yields a washed-out, desaturated image whose highlights are blown — and it "looks like a normal picture", which is exactly the result this tool refuses to treat as correct. `--hdr auto|tonemap|refuse` makes that a decision you state. The default `auto` means this tool changes **nothing** about color: it does not probe the display state, does not change the capture format, does not tone-map, and the color keys do not appear in the result — the output is byte-for-byte what it was before this option existed.
+When a display is in HDR mode the captured frame can carry luminance beyond SDR and a different transfer function. Interpreting such a frame as plain 8-bit BGRA yields a washed-out, desaturated image whose highlights are blown — and it "looks like a normal picture", which is exactly the result this tool refuses to treat as correct. `--hdr auto|tonemap|refuse` makes that a decision you state. Two states that behave the same while **capturing** must not be blended while **reporting**:
 
-Which channels can bring back a wide-gamut frame, and which can actually *act* on a stated policy, are two different
+- **`--hdr` not written at all** — the tool changes **nothing** about color: it does not probe the display state, does not change the capture format, does not tone-map, **and the color key group does not appear in the result** — the output is byte-for-byte what it was before this option existed.
+- **`--hdr auto` written explicitly** — the same capture behaviour (no probing, no format change, no tone-map), **but the color key group is emitted**, reporting only what the frame passively came back as. On the `wgc` path an 8-bit delivered frame reports `hdrEffective: unverified` / `hdrBasis: bgra8_source_unverified`, because `auto` never asked the display whether it was in HDR mode and an 8-bit surface does not prove the source was SDR (see the field table below).
+
+`auto` is also the default _value_ used when the option is omitted — but omitting it and writing it are distinguishable in the result via `input.hdrGiven` (`-v`), and that is exactly the omission-versus-explicit split this tool refuses to collapse.
+
+Which channels can bring back a wide-gamut frame, and which can actually _act_ on a stated policy, are two different
 questions, judged by the same rule as everything else: **where the pixels come from**, not the channel name. The
 registry lives in `src/HdrColor.h`, one row per `images[].path`, and `--capabilities` prints it as `color.paths` with
 `capability` plus `honorsExplicitPolicy`:
@@ -1078,7 +1180,7 @@ registry lives in `src/HdrColor.h`, one row per `images[].path`, and `--capabili
   this route reads back the format it really got (FP16 scRGB linear, or 8-bit BGRA), so it can say which one and map
   it. These two are the only paths that fulfil `tonemap` / `refuse` in this build.
 - `duplication.frame` / `screen.duplication` — `wide_gamut_unverified`, `honorsExplicitPolicy: false`. The desktop
-  surface *can* arrive as FP16 scRGB or 10-bit ST.2084 (PQ) / HLG BT.2020, but this build never asks the display's
+  surface _can_ arrive as FP16 scRGB or 10-bit ST.2084 (PQ) / HLG BT.2020, but this build never asks the display's
   color space before `DuplicateOutput`, so it cannot prove what it got and cannot promise a policy. Asking for
   `tonemap` / `refuse` here is therefore refused rather than quietly answered.
 - `printwindow` (the window self-draws into an 8-bit DC), `dwm.thumbnail` / `dwm.screen`, `bitblt.screen` /
@@ -1089,7 +1191,10 @@ The three values:
 
 - `tonemap` — map an HDR frame to SDR before delivering. This tool builds a **per-pixel float intermediate** before encoding (it never allocates a whole float frame, which would blow the 1 GiB per-frame budget by 4×) and applies a fixed curve: decode the transfer function (scRGB linear / PQ → absolute nits → relative linear / HLG inverse OETF) → BT.2020→BT.709 primaries matrix → **extended-Reinhard** luminance tone map (deterministic, monotonic; it degenerates to the identity when `white=1`) → sRGB encode → opaque alpha passed through. For an already-SDR source it is an identity passthrough.
 - `refuse` — once the source is confirmed to be HDR, error out and write not a single pixel; never deliver a BGRA8-washed image.
-- `auto` (default) — do not engage the path above; just report the source color space the frame actually came back as.
+- `auto` (the default value) — do not engage the mapping path above: no display probe, no format change, no
+  tone-map. When `--hdr auto` is written explicitly it still emits the color key group, just reporting passively
+  what the frame came back as (an 8-bit `wgc` frame is `unverified`, not a claim of SDR); when the option is omitted
+  the group does not appear at all (see the intro).
 
 Two rules follow from that table, both sharing the `--cursor` principle:
 
@@ -1106,15 +1211,28 @@ Two rules follow from that table, both sharing the `--cursor` principle:
 
 Whenever `--hdr` is written, each delivered image carries this group of fields (with the option absent none appear, byte-identical to before):
 
-| Field | Values | What it says |
-| --- | --- | --- |
-| `hdrRequested` | `auto` / `tonemap` / `refuse` | which policy was asked |
-| `hdrEffective` | `sdr_passthrough` / `tone_mapped` / `unverified` | what this frame actually went through |
-| `hdrBasis` | `delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized` | what that conclusion rests on |
-| `sourceColorSpace` | `srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `unknown` | the source before encoding |
-| `sourceBitDepth` | `8` / `10` / `16` (omitted entirely when unrecognized) | bits per channel of the source |
+| Field              | Values                                                                                                                                                                                                                                | What it says                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `hdrRequested`     | `auto` / `tonemap` / `refuse`                                                                                                                                                                                                         | which policy was asked                |
+| `hdrEffective`     | `sdr_passthrough` / `tone_mapped` / `unverified`                                                                                                                                                                                      | what this frame actually went through |
+| `hdrBasis`         | `delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized` / `transfer_function_unknown` / `bgra8_source_unverified` / `tone_map_not_applied` | what that conclusion rests on         |
+| `sourceColorSpace` | `srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `rgb10a2_unverified` / `unknown`                                                                                                                                          | the source before encoding            |
+| `sourceBitDepth`   | `8` / `10` / `16` (omitted entirely when unrecognized)                                                                                                                                                                                | bits per channel of the source        |
 
-When processing was explicitly asked (`tonemap` / `refuse`) but the frame's source turns out to be 8-bit SDR, the image is still delivered (mapping an SDR source is the identity) and a `note.hdr_source_sdr` is recorded, so "I asked for HDR handling" and "this frame had no HDR" stay distinguishable instead of a silent pass masquerading as "HDR was mapped". `--hdr auto` does not emit that note (it only reports passively).
+In this build only the `scrgb_float_tone_mapped` path is reachable on real captures (the FP16 `wgc` pool), because a
+10-bit packed frame is classified `rgb10a2_unverified` rather than assumed PQ or HLG — so `pq_bt2020_tone_mapped` /
+`hlg_bt2020_tone_mapped` and `transfer_function_unknown` are enum values exercised offline, not a promise that a real
+PQ/HLG panel was tone-mapped here. A wide-gamut-labelled source with no tone-map record is `unverified` /
+`tone_map_not_applied`, never "mapped" by assumption.
+
+When processing was explicitly asked (`tonemap` / `refuse`) and the frame is delivered as 8-bit BGRA, the image is
+still delivered (mapping an 8-bit source is the identity), but which note is recorded depends on what was actually
+answered before capture: if the read-only display question ran and answered SDR, the note is `note.hdr_source_sdr`
+("confirmed 8-bit SDR"); if that question was never asked or gave no answer, the note is `note.hdr_source_unverified`
+("delivered as 8-bit, but the source was not confirmed SDR") — an unverified 8-bit frame is never written up as a
+confirmed-SDR one. Either way "I asked for HDR handling" and "this frame had no confirmed HDR" stay distinguishable
+instead of a silent pass masquerading as "HDR was mapped". `--hdr auto` does not emit either note (it only reports
+passively via the machine fields above).
 
 HDR color does not change authorization: the whole step runs after capture and before encoding, and the rule is still "where do this path's pixels come from". Channels that read desktop pixels always prompt, `--yes` still does not cover them, and no "mapped, therefore pre-approved" bypass is introduced.
 
@@ -1133,11 +1251,11 @@ whose frame is bound to the selected window itself and never sample desktop pixe
 a valid image, not permissions, not protected content, not errors, not overwrite protection. What decides the tier
 is the route actually taken, never the channel label:
 
-| Route (`images[].path`) | Where the pixels come from | Without `--yes` | With `--yes` |
-| --- | --- | --- | --- |
-| `wgc`, `printwindow`, `dwm.thumbnail` | the selected window itself | asked once | not asked |
-| `dwm.screen`, `bitblt.screen`, `duplication.frame` | the area of the screen behind/around that window | asked | **still asked** |
-| `screen.wgc`, `screen.bitblt`, `screen.duplication` | a whole monitor | asked | **still asked** |
+| Route (`images[].path`)                             | Where the pixels come from                       | Without `--yes` | With `--yes`    |
+| --------------------------------------------------- | ------------------------------------------------ | --------------- | --------------- |
+| `wgc`, `printwindow`, `dwm.thumbnail`               | the selected window itself                       | asked once      | not asked       |
+| `dwm.screen`, `bitblt.screen`, `duplication.frame`  | the area of the screen behind/around that window | asked           | **still asked** |
+| `screen.wgc`, `screen.bitblt`, `screen.duplication` | a whole monitor                                  | asked           | **still asked** |
 
 A route that is unknown or cannot be proven is treated as a desktop route, so a new channel that forgot to register
 itself ends up stricter rather than looser. `--monitor` together with window conditions filters **windows**, so those
@@ -1153,11 +1271,15 @@ images follow the window rows above.
   what was approved). Consent is never cached across requests, never widened to a target the dialog did not show, and
   approving a window-content capture is never approval of a desktop one: `--capture auto` with `--yes` may run the
   window routes silently, but asks before it enters a desktop route.
-- After a refusal ("No"), a closed dialog (the `X` and `Esc` paths answer "No", they do not silently leave), nobody
-  answering within `--consent-timeout-ms`, or an unavailable interactive desktop, the rest of that request stops —
-  the remaining links of the `auto` fallback chain too, not just the remaining `--all` targets — with no retry and no
-  second ask, while every image already completed stays in `images`. A human answer is a boundary, not a hint to try
-  a different route until one of them gets through.
+- The dialog is a plain `MB_YESNO` box — two buttons, Yes and No, with default focus on **No**. Only an explicit Yes
+  approves; every other outcome is a refusal. Decline it by clicking **No**. Do not rely on `X` or `Esc`: with
+  `MB_YESNO` the title-bar `X` is shown but disabled and there is no Cancel button for `Esc` to trigger, so neither is
+  a dependable "No" gesture — the box simply has to be answered, and the tool treats any non-Yes result as a refusal
+  anyway. On top of that, nobody answering within `--consent-timeout-ms` is its own refusal (`capture.consent_timeout`).
+- After a refusal ("No"), a timeout (nobody answered within `--consent-timeout-ms`), or an unavailable interactive
+  desktop, the rest of that request stops — the remaining links of the `auto` fallback chain too, not just the
+  remaining `--all` targets — with no retry and no second ask, while every image already completed stays in `images`.
+  A human answer is a boundary, not a hint to try a different route until one of them gets through.
 - If a target's area moves or the monitor topology changes, the authorization covering it is void and the tool asks
   again; a frame already bound to the old area gives `capture.consent_stale` (exit code `7`, retry by selecting the
   target again).
@@ -1205,11 +1327,11 @@ So the identity is recorded at the moment of selection: the handle, the owning P
 
 Failing the check reads no pixels at all and returns one of three stable codes:
 
-| Code | Exit | Meaning | Next step |
-| --- | --- | --- | --- |
-| `capture.target_gone` | 7 | the handle was destroyed during this request | enumerate the windows again |
-| `capture.target_changed` | 7 | that handle value now belongs to another object (or no longer satisfies the conditions) | select the target again — **the permission you gave is not transferred to a new object** |
-| `capture.target_unverifiable` | 7 | one of the questions could not be answered (process information unreadable, the condition re-evaluation did not finish) | check the execution environment (rights, policy, antivirus), or raise `--timeout-ms` |
+| Code                          | Exit | Meaning                                                                                                                 | Next step                                                                                |
+| ----------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `capture.target_gone`         | 7    | the handle was destroyed during this request                                                                            | enumerate the windows again                                                              |
+| `capture.target_changed`      | 7    | that handle value now belongs to another object (or no longer satisfies the conditions)                                 | select the target again — **the permission you gave is not transferred to a new object** |
+| `capture.target_unverifiable` | 7    | one of the questions could not be answered (process information unreadable, the condition re-evaluation did not finish) | check the execution environment (rights, policy, antivirus), or raise `--timeout-ms`     |
 
 A changed identity never becomes a licence to "relax the conditions and grab a look-alike" — same rule as `--yes`: consent is bound to the object that was listed for the human.
 
@@ -1221,26 +1343,31 @@ A changed identity never becomes a licence to "relax the conditions and grab a l
 the moment targets start being selected. Window/screen matching (including `--title-regex`), the `auto` fallback
 chain, frame waits, encoding and the final commit all spend **the same** budget: no step and no further target of
 the batch gets a fresh copy, so four backends cannot each wait 2 seconds and two targets cannot each wait again.
-Omitted or `0` means no overall budget; even then every isolated call is bounded by a built-in 5000 ms cap, which
-is what the old `timeoutMs` argument should have done. When the budget runs out, **a step that has not started yet
+Omitted or `0` means no overall budget; even then every isolated call is bounded by a built-in 5000 ms per-call cap.
+When the budget runs out, **a step that has not started yet
 is refused and its image is not written** — `match.timeout` (`stage=match`) when the budget died while evaluating
 conditions, `capture.timeout` with `stage=capture` for a frame that never arrived and with `stage=encode` when the
 budget died in the encoder (there is no separate `encode.timeout` code; the stage is what separates the two),
-`io.timeout` (`stage=write` / `stdout`, exit code `8`) when the write step never got to start. The remaining
-targets of the batch are not started, and images already written stay in `images`. Partial batches therefore behave
-exactly like partial capture failures: exit code non-zero, whatever already landed is still delivered.
+`io.timeout` (`stage=write` / `stdout`) when the write step never got to start — exit code `8` when that leaves the
+run with not a single image delivered. The remaining targets of the batch are not started, and images already written
+stay in `images`. Partial batches therefore behave exactly like partial capture failures: exit code non-zero, whatever
+already landed is still delivered.
 
-That gate is deliberately a *pre-step* gate, and the honest limit is the flip side of it: the atomic file write has
-no cancellation point and no budget re-check after the rename, so a budget that expires **during** a commit lets
-that file land anyway. Nothing is rolled back or deleted on timeout — a file that exists on disk was written
-because the caller asked for it, and quietly removing it would be a second, unasked-for write.
+That gate is deliberately a _pre-step_ gate, and the honest limit is the flip side of it: the atomic file write has no
+cancellation point, so it cannot be interrupted mid-flight and a budget that expires **during** a commit still lets
+that file land. Nothing is rolled back or deleted on timeout — a file that exists on disk was written because the
+caller asked for it, and quietly removing it would be a second, unasked-for write. After the write returns, a
+deadline **re-check** runs and, if the budget has been crossed, records an extra `io.timeout` (message saying the
+image was delivered in full but the budget had run out when that write finished) — but the committed image stays in
+`images`, `captured` still counts it, and the run reports partial success with exit code `7` (delivered + error), not
+the `8` of a write that never landed. Delivery facts and deadline compliance are kept deliberately separate.
 
 Waiting for a person is a **separate** clock: `--consent-timeout-ms <ms>` bounds the confirmation dialog only and
 never eats the automatic budget (somebody stepping away is not "the machine is slow"). The wait is paused out of the
 automatic budget while it runs, so a long read does not spend the picture's own deadline. If nobody answers in time
 the request is **refused** — `capture.consent_timeout`, exit code `6`, `stage=consent` — and never treated as
 consent, and the rest of the batch stops just like after an explicit "No". Omitted or `0` waits forever, as before.
-The bound is a deadline that is *polled*, not one that pre-empts the dialog: expiry is noticed on the next wait
+The bound is a deadline that is _polled_, not one that pre-empts the dialog: expiry is noticed on the next wait
 slice, and the dialog gets a close grace of about 3 s, so a box can stay on screen a little past the number that was
 asked for. The ~1 second buffer after "Yes", which keeps the dialog's close animation out of the picture, belongs to
 the human stage too and is never skipped to make a deadline: what is bounded is the waiting for an answer, not the
@@ -1252,12 +1379,13 @@ the call to check a deadline against. So does `std::regex`: a pattern such as `(
 backtrack for minutes, and a length limit on the pattern is not an execution deadline. Those calls now run in a
 helper process of the same `ECAPTURE.EXE`, fed one already-parsed task over a private pipe; when the deadline
 expires the parent stops **its own** helper process and reports the timeout. The target application's window is
-never killed, and no worker can outlive the parent (a kill-on-close job object plus a broken-pipe check and an
-idle watchdog).
+never killed, and no worker can outlive the parent (a kill-on-close job object plus a broken-pipe check and a
+budget-aware watchdog: it caps only the await-task handshake, then tracks the parent's remaining budget plus a small
+deliver grace, and never shortens an explicitly accepted long budget).
 
 The closing boundary matters as much as the timeout itself, because the pipe can answer at the wrong moment. Three
 cases are told apart on connect — a helper that already connected (no I/O pending to cancel), a write that
-completed synchronously, and one that returned `ERROR_IO_PENDING`. `CancelIoEx` only *requests* cancellation, so the
+completed synchronously, and one that returned `ERROR_IO_PENDING`. `CancelIoEx` only _requests_ cancellation, so the
 parent waits for the completion to be reported and keeps each `OVERLAPPED` and its event alive until then; if the
 completion never arrives it gives the helper about 2 s to leave on its own and then `TerminateProcess`s it, and that
 grace runs **outside** the request's budget. A reply that shows up after the verdict is never read: a picture that landed
@@ -1278,15 +1406,15 @@ scenario is reachable on every Windows build — assume only that this tool retu
 
 Usable anywhere in the `--out` path; multiple images rely on them:
 
-| Placeholder | Meaning |
-| --- | --- |
-| `%i` | ordinal, starting at 1 (`--all` windows, `--monitor all` screens) |
-| `%h` | window handle, shaped like `0x001B0C48`; screen targets give 0 |
-| `%p` | process id; screen targets give 0 |
-| `%n` | window title, or the device name without the `\\.\` prefix for screen targets (e.g. `DISPLAY1`) — cleaned into a file-name fragment: characters illegal in a name become `_`, trailing dots and spaces are dropped, a result that is exactly a reserved device name (`CON`, `NUL`, `COM1`, `LPT1`, …) gets a `_` prefix, and it is cut to 80 UTF-16 units without splitting a surrogate pair |
-| `%d` | local date `YYYYMMDD` |
-| `%t` | local time `HHMMSS` |
-| `%%` | one literal `%`; any other `%x` is kept verbatim |
+| Placeholder | Meaning                                                                                                                                                                                                                                                                                                                                                                                      |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `%i`        | ordinal, starting at 1 (`--all` windows, `--monitor all` screens)                                                                                                                                                                                                                                                                                                                            |
+| `%h`        | window handle, shaped like `0x001B0C48`; screen targets give 0                                                                                                                                                                                                                                                                                                                               |
+| `%p`        | process id; screen targets give 0                                                                                                                                                                                                                                                                                                                                                            |
+| `%n`        | window title, or the device name without the `\\.\` prefix for screen targets (e.g. `DISPLAY1`) — cleaned into a file-name fragment: characters illegal in a name become `_`, trailing dots and spaces are dropped, a result that is exactly a reserved device name (`CON`, `NUL`, `COM1`, `LPT1`, …) gets a `_` prefix, and it is cut to 80 UTF-16 units without splitting a surrogate pair |
+| `%d`        | local date `YYYYMMDD`                                                                                                                                                                                                                                                                                                                                                                        |
+| `%t`        | local time `HHMMSS`                                                                                                                                                                                                                                                                                                                                                                          |
+| `%%`        | one literal `%`; any other `%x` is kept verbatim                                                                                                                                                                                                                                                                                                                                             |
 
 When `--all` is used without a placeholder the tool appends `_1`, `_2`, … and emits
 `note.all_without_placeholder`. A placeholder that cannot tell the targets apart (`%d` alone, or `%p` for two
@@ -1314,7 +1442,7 @@ switching language works offline.
 
 ## Boundaries and unverified items
 
-One place that answers "what does this tool *not* promise". The per-feature sections explain why each line exists;
+One place that answers "what does this tool _not_ promise". The per-feature sections explain why each line exists;
 this list is what an automated caller should treat as a residual risk instead of a bug.
 
 **Design boundaries, not defects:**
@@ -1345,16 +1473,16 @@ this list is what an automated caller should treat as a residual risk instead of
 **Recorded as unverified rather than inferred** (each row is what the named test reports as SKIP / "not verified" on
 this development machine; none of them is claimed as a pass):
 
-| Not verified here | Why, and where the gap is recorded |
-| --- | --- |
-| Real HDR capture, `refuse` on a real HDR frame, the FP16 frame pool, HLG end to end | no HDR display attached; the mapping math is judged offline (`tests\hdr.ps1`, `build\ecapture-hdr-tests.exe`), `color.verifiedOnThisMachine` is always `no` |
-| HDR combined with `--scale`, and mixed DPI across monitors for `--roi` / `--scale` | one monitor only, and no HDR mode to enable (`tests\scale.ps1`, `tests\crop.ps1`) |
-| A delivered frame whose side exceeds 16384 on the device; rotated panels; hot-unplugging a monitor | no such window can be staged and displays are never re-arranged by a test (`tests\image.ps1`, `tests\dup.ps1`) |
-| Deliberate `HWND` / PID recycling, and the identity span across a real consent dialog | would mean killing someone else's process, and the dialog answer comes from a person (`tests\identity.ps1` needs `-SimulateConsent`) |
-| Pixel-level "the pointer is or is not visible in this picture"; machines below build 19041 | the SDK gives no pixel-level answer and this machine is newer (`tests\cursor.ps1`) |
-| Windows builds other than 19045 · ARM64 · Server · Remote Desktop · a session with no interactive desktop · a genuinely missing encoder | a second OS cannot be arranged here; the judgements are made against injected fake builds offline instead (`tests\compat.ps1`, `tests\capabilities.ps1`) |
-| `tiff` and `gif` under `--scale`, and every other encoder-only behaviour | `tests\scale.ps1` checks `png` / `bmp` / `jpeg`; the two others share the encoder call but are not covered |
-| `--capabilities` probing by producing an image, and the consent dialog being actually displayed | probing either would be doing the thing it only reports on (`encoder_state_not_probed`, `consent_dialog_state_inferred_not_probed`) |
+| Not verified here                                                                                                                       | Why, and where the gap is recorded                                                                                                                          |
+| --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Real HDR capture, `refuse` on a real HDR frame, the FP16 frame pool, HLG end to end                                                     | no HDR display attached; the mapping math is judged offline (`tests\hdr.ps1`, `build\ecapture-hdr-tests.exe`), `color.verifiedOnThisMachine` is always `no` |
+| HDR combined with `--scale`, and mixed DPI across monitors for `--roi` / `--scale`                                                      | one monitor only, and no HDR mode to enable (`tests\scale.ps1`, `tests\crop.ps1`)                                                                           |
+| A delivered frame whose side exceeds 16384 on the device; rotated panels; hot-unplugging a monitor                                      | no such window can be staged and displays are never re-arranged by a test (`tests\image.ps1`, `tests\dup.ps1`)                                              |
+| Deliberate `HWND` / PID recycling, and the identity span across a real consent dialog                                                   | would mean killing someone else's process, and the dialog answer comes from a person (`tests\identity.ps1` needs `-SimulateConsent`)                        |
+| Pixel-level "the pointer is or is not visible in this picture"; machines below build 19041                                              | the SDK gives no pixel-level answer and this machine is newer (`tests\cursor.ps1`)                                                                          |
+| Windows builds other than 19045 · ARM64 · Server · Remote Desktop · a session with no interactive desktop · a genuinely missing encoder | a second OS cannot be arranged here; the judgements are made against injected fake builds offline instead (`tests\compat.ps1`, `tests\capabilities.ps1`)    |
+| `tiff` and `gif` under `--scale`, and every other encoder-only behaviour                                                                | `tests\scale.ps1` checks `png` / `bmp` / `jpeg`; the two others share the encoder call but are not covered                                                  |
+| `--capabilities` probing by producing an image, and the consent dialog being actually displayed                                         | probing either would be doing the thing it only reports on (`encoder_state_not_probed`, `consent_dialog_state_inferred_not_probed`)                         |
 
 ## Guide for AI and scripts
 
@@ -1367,7 +1495,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    and belongs at the front of an automation flow. It hands back this machine's version, session and screen topology,
    every route as `available` / `unavailable` / `unverified`, every format, exactly which internal paths `--yes`
    covers, and the value ceilings. That answers "which `--capture` should I ask for", "is this failure about the
-   channel or about the machine" and "would a dialog here ever be answered" *before* you take an image. For a bug
+   channel or about the machine" and "would a dialog here ever be answered" _before_ you take an image. For a bug
    report run `--diagnostics` (same judgements, plus a checkable build id; `-v` expands each raw answer). Neither
    document changes with `--lang` (all ASCII), so comparisons stay stable. `available` is **not** "this window will
    capture": drivers, protected content and HDR are outside that layer, and the `caveats` array says so.
@@ -1376,7 +1504,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    `--dry-run` does not need an output path either (with none it just means "nothing to deliver", so the JSON goes
    to stderr with `note.output_defaulted_stdout`); **`--dry-run` alone with no window condition = text help +
    exit code 2**.
-   When you need the *list* rather than one line of prose, use `--list` (structured, paged, several matches are not
+   When you need the _list_ rather than one line of prose, use `--list` (structured, paged, several matches are not
    an error, zero matches is an empty list + exit `0`) and `--inspect` (one window, and several matches stay an
    ambiguity - the tool will not pick one for you). Both read no pixel and open no dialog, and neither is changed by
    `--yes`. What they hand back is a snapshot: capture still re-checks the target identity, so pass the handle from a
@@ -1385,18 +1513,18 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 2. **Branch on `errors[].code`, never on `message` text** (that follows `--lang`) and never on whether you passed
    `--out` — the two ways of asking for stdout report the same codes. The codes an automated caller actually hits:
 
-   | Codes | Exit | Next step |
-   | --- | --- | --- |
-   | `cli.invalid_number`, `cli.invalid_value`, `cli.invalid_format`, `cli.unknown_option`, `cli.unknown_language`, `cli.crop_conflict`, `cli.query_conflict`, `cli.window_query_conflict`, `cli.monitor_conflict`, `cli.monitor_selector_empty`, `cli.monitor_selector_kind`, `cli.stdout_multiple_targets` | 1 | fix the command line — nothing was captured, no dialog was shown, no file was written |
-   | `match.index_out_of_range`, `match.monitor_out_of_range`, `match.roi_out_of_range` | 1 | `hint` lists every candidate; the requested crop cannot fit the target as selected |
-   | `match.no_window` | 4 | widen the conditions, or the window is minimized (minimized windows are never captured) |
-   | `match.ambiguous_window`, `match.monitor_ambiguous_id` | 5 | several things match and the tool will not pick one — disambiguate with `--index` / `--topmost-match` / `--all`, or with a `--screens` identifier |
-   | `match.monitor_unknown_id` | 4 | that identifier is not on the desktop any more; run `--screens` again |
-   | `capture.access_denied`, `capture.consent_timeout`, `capture.consent_unavailable` | 6 | a human boundary: "No" (or the box closed), nobody answered in time, or no interactive desktop. The rest of the request was not attempted — asking again is a new request, not a retry |
-   | `match.timeout`, `capture.worker_failed`, `capture.failed`, `capture.frame_timeout`, `capture.window_gone`, `capture.frame_invalid`, `capture.roi_invalid`, `capture.roi_unmeasurable`, `capture.monitor_changed`, `capture.monitor_unverifiable`, `capture.monitor_id_unverifiable`, `capture.consent_stale`, `capture.timeout`, `capture.hdr_refused`, `capture.hdr_unverifiable`, `capture.target_gone`, `capture.target_changed`, `capture.target_unverifiable` | 7 | read `stage` (`match` / `capture` / `encode`) before deciding; a fresh `--list` / `--screens` is usually the next call, not another `--capture` |
-   | `env.os_too_old`, `env.channel_unsupported`, `env.hdr_unsupported`, `env.cursor_unsupported` | 7 | this **machine** cannot do what was asked — see the paragraph below |
-   | `io.write_failed`, `io.file_exists`, `io.output_collision`, `io.timeout` | 8 | create the directory, or pick a name that cannot collide; `io.file_exists` is `--no-overwrite` doing its job |
-   | `capture.hdr_unsupported`, `capture.cursor_unsupported`, `capture.unsupported` | 1 | that option pair was refused while parsing, before any dialog |
+   | Codes                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Exit | Next step                                                                                                                                                                                                                                                                                                                                                                                                                       |
+   | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `cli.invalid_number`, `cli.invalid_value`, `cli.invalid_format`, `cli.unknown_option`, `cli.unknown_language`, `cli.crop_conflict`, `cli.query_conflict`, `cli.window_query_conflict`, `cli.monitor_conflict`, `cli.monitor_selector_empty`, `cli.monitor_selector_kind`, `cli.stdout_multiple_targets`                                                                                                                                                             | 1    | fix the command line — nothing was captured, no dialog was shown, no file was written                                                                                                                                                                                                                                                                                                                                           |
+   | `match.index_out_of_range`, `match.monitor_out_of_range`, `match.roi_out_of_range`                                                                                                                                                                                                                                                                                                                                                                                  | 1    | `hint` lists every candidate; the requested crop cannot fit the target as selected                                                                                                                                                                                                                                                                                                                                              |
+   | `match.no_window`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 4    | widen the conditions, or the window is minimized (minimized windows are never captured)                                                                                                                                                                                                                                                                                                                                         |
+   | `match.ambiguous_window`, `match.monitor_ambiguous_id`                                                                                                                                                                                                                                                                                                                                                                                                              | 5    | several things match and the tool will not pick one — disambiguate with `--index` / `--topmost-match` / `--all`, or with a `--screens` identifier                                                                                                                                                                                                                                                                               |
+   | `match.monitor_unknown_id`                                                                                                                                                                                                                                                                                                                                                                                                                                          | 4    | that identifier is not on the desktop any more; run `--screens` again                                                                                                                                                                                                                                                                                                                                                           |
+   | `capture.access_denied`, `capture.consent_timeout`, `capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6    | a human boundary: the answer was not Yes (on this `MB_YESNO` box the only refusal a person can give is "No"), nobody answered in time, or no interactive desktop. The rest of the request was not attempted — asking again is a new request, not a retry                                                                                                                                                                        |
+   | `match.timeout`, `capture.worker_failed`, `capture.failed`, `capture.frame_timeout`, `capture.window_gone`, `capture.frame_invalid`, `capture.roi_invalid`, `capture.roi_unmeasurable`, `capture.monitor_changed`, `capture.monitor_unverifiable`, `capture.monitor_id_unverifiable`, `capture.consent_stale`, `capture.timeout`, `capture.hdr_refused`, `capture.hdr_unverifiable`, `capture.target_gone`, `capture.target_changed`, `capture.target_unverifiable` | 7    | read `stage` (`match` / `capture` / `encode`) before deciding; a fresh `--list` / `--screens` is usually the next call, not another `--capture`                                                                                                                                                                                                                                                                                 |
+   | `env.os_too_old`, `env.channel_unsupported`, `env.hdr_unsupported`, `env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7    | this **machine** cannot do what was asked — see the paragraph below                                                                                                                                                                                                                                                                                                                                                             |
+   | `io.write_failed`, `io.file_exists`, `io.output_collision`, `io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8    | create the directory, or pick a name that cannot collide; `io.file_exists` is `--no-overwrite` doing its job; the `io.timeout` here is the write that never got to start — when a file _did_ land and only the post-write deadline re-check crossed, that image stays in `images` and the run reports exit `7` (delivered + error) instead, see [Deadlines](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms) |
+   | `capture.hdr_unsupported`, `capture.cursor_unsupported`, `capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1    | that option pair was refused while parsing, before any dialog                                                                                                                                                                                                                                                                                                                                                                   |
 
    The four `env.*` codes are about this machine, not about the target, so retrying the same window is pointless:
    `env.os_too_old` means the Windows build is under the one encoder every format uses (changing `--capture` changes
@@ -1408,6 +1536,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    [System support](#system-support) for the floors and for what has actually been tested.
    Every error also carries `target` / `backend` / `stage` / `hresult` / `win32` (see the output rules above) as far as
    that step really had them, so there is no need to dig values out of `message`.
+
 3. **Read the right stream**: with `--out <file>` the JSON is on stdout and stderr is empty, so parse stdout
    directly. With `--out -` (or no output path) the image bytes occupy stdout and the whole JSON moves to stderr.
    stdout hands over one image at a time, so write several targets to files. Keep the two streams apart in the shell
@@ -1438,35 +1567,35 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 
 ## Build and test
 
-| Command | What it proves |
-| --- | --- |
-| `.\build.ps1` | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available |
-| `.\tests\cli.ps1` | The output contract: parse errors and exit codes, every `--yes` / `--no-overwrite` boolean form, the query-versus-capture conflict groups, stream separation, "no `--out`" equivalence with `--out -`, and the four message languages. Runs `--dry-run` only — no capture, no file |
-| `.\tests\windows.ps1` | `--list` / `--inspect`: paging, the visibility policy, field-level readability, document shape, privacy, ambiguity, and that the query really touches nothing (offline `build\ecapture-windows-tests.exe` plus self-made windows) |
-| `.\tests\screens.ps1` | `--screens` and `--monitor=device:` / `id:`: which identity is stable how far, that a reported selector selects that panel, and that an unknown identifier never degrades to the primary monitor |
-| `.\tests\capabilities.ps1` | `--capabilities` / `--diagnostics` against fake probes (no screen at all, just under a channel's floor, unreadable build number, one encoder missing, the `--yes` scope versus the registry, both queries from one judgement set), plus the real-machine half: the query never blocks on a dialog, writes nothing, agrees with WMI and with `--dry-run -v`, and is all ASCII so `--lang` cannot change it |
-| `.\tests\compat.ps1` | The version floors: fake Windows builds injected into the production gate, a gated explicit channel never being substituted, which link an `auto` chain loses, and the shipped binary's Windows 8-era WinRT / job API-set imports |
-| `.\tests\channels.ps1` | Six channels against its own windows, with an occlusion control. Window-content routes run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` image judgements need `-SimulateConsent` |
-| `.\tests\wgc.ps1` | WGC live sizing: content size versus texture size, frame-pool rebuild, and never a clipped frame reported as the whole window (offline `build\ecapture-wgc-tests.exe` plus a window it resizes) |
-| `.\tests\image.ps1` | Frame-shape validation and pixel operations over hand-built layouts (stripes, checkerboard, alpha, row padding, over-large and short buffers, out-of-range crops) plus on-device single-colour captures |
-| `.\tests\crop.ps1` | `--roi` / `--client-area`: geometry against three independent Win32 questions and against pixel content, refusal before any dialog or file, and a tiny crop on a desktop route still asking |
-| `.\tests\scale.ps1` | `--scale`: no upscaling, the tightest ceiling, rounding down, the nearest-neighbour mapping point by point, the crop-then-scale order, and `png` / `bmp` / `jpeg` writing the scaled size |
-| `.\tests\dup.ps1` | Desktop duplication: the four rotations checked against the production geometry judges, a fake two-adapter output table, `requestedRect` / `capturedRect` / `clipped` / `rotation` on real images, and the "that monitor changed after the confirmation" cases. Displays are never re-arranged or re-oriented |
-| `.\tests\consent.ps1` | The tier table and how a refusal travels: the whole `ConsentGate` state machine offline against an injected fake prompt, and every dialog answered "No" on-device — which paths must ask, what a refusal reports, that nothing lands on disk. Never answers "Yes" on a human's behalf |
-| `.\tests\identity.ps1` | Identity re-check grades in the order they run, `capture.target_gone` / `capture.target_changed`, and z-order selection (`--topmost-match` / `--bottommost-match`) |
-| `.\tests\timeout.ps1` | The deadline and the helper process: one budget that later steps can only spend the remainder of, the worker wire format rejecting anything malformed instead of "looking like success", and the helper mode refusing to be launched as a public option |
-| `.\tests\isolation.ps1` | Ownership: a same-named process it did not start stays alive and is never the target, two concurrent runs do not cross, an aborted run cleans up only itself |
-| `.\tests\cursor.ps1` | `--cursor`: the per-path registry, how the chain narrows on both sides of the 19041 line, how `cursorRequested` / `cursorEffective` / `cursorBasis` are composed, and a source scan that fails if any pointer-shape fetching, cursor drawing or pointer-moving call ever appears |
-| `.\tests\hdr.ps1` | `--hdr`: DXGI format and display color-space classification (unrecognized stays `unknown`), the tone-curve properties, `ConvertWideFrameToSdrBgra8` point by point, the result-key group, and the honest SDR on-device case (keys absent by default, `note.hdr_source_sdr` when processing was asked of an SDR frame) |
-| `.\tests\save.ps1` | File delivery: every `--no-overwrite` boolean form against a real file, batch name planning and collision detection, atomic commit against a locked target / a directory / a missing directory / a killed run, and the concurrent `--no-overwrite` race |
-| `.\tests\screen.ps1` | Whole-screen capture over the three desktop routes with a red-block placement and a negative control. Only `-SimulateConsent` answers, and only on a desktop dedicated to testing |
-| `.\tests\smoke.ps1` | End to end: capture its own test window, validate PNG size and pixel content |
-| `.\tests\invoker.ps1` | The shared test invoker itself: argv quoting, both streams drained at once, binary output, a hung child, per-run scratch dirs |
-| `.\tests\build-path.ps1` | Building from a directory holding CJK text, spaces, parentheses and `%` (plus a CJK `%TEMP%`), and that the temporary batch body stays ASCII |
-| `.\tests\streams.ps1` | Stream and result reliability: one image on stdout for a single target, a batch that resolves to several targets refused before the dialog, the judgement using the number of targets actually hit, images already captured when a batch fails halfway staying in `images`, a result that cannot reach the agreed stream giving exit code `8`, and the no-`--out` / `--out -` equivalence across success, no match, ambiguity, bad arguments, a backend failure, a refusal and a broken stdout |
-| `.\tests\window_shot.bat` | Human walkthrough: every channel against a compiled test window, a person clicking the dialogs, then the whole-screen step |
-| `.\scripts\check-lang.ps1` | The four string tables align on keys and placeholders, and the exe really carries four resources |
-| `.\scripts\mkreadme.ps1` | Regenerates the help block of all four READMEs from each language's `--help`; `-Check` fails instead of writing, which is how a stale block gets caught |
+| Command                    | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.\build.ps1`              | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `.\tests\cli.ps1`          | The output contract: parse errors and exit codes, every `--yes` / `--no-overwrite` boolean form, the query-versus-capture conflict groups, stream separation, "no `--out`" equivalence with `--out -`, and the four message languages. Runs `--dry-run` only — no capture, no file                                                                                                                                                                                                             |
+| `.\tests\windows.ps1`      | `--list` / `--inspect`: paging, the visibility policy, field-level readability, document shape, privacy, ambiguity, and that the query really touches nothing (offline `build\ecapture-windows-tests.exe` plus self-made windows)                                                                                                                                                                                                                                                              |
+| `.\tests\screens.ps1`      | `--screens` and `--monitor=device:` / `id:`: which identity is stable how far, that a reported selector selects that panel, and that an unknown identifier never degrades to the primary monitor                                                                                                                                                                                                                                                                                               |
+| `.\tests\capabilities.ps1` | `--capabilities` / `--diagnostics` against fake probes (no screen at all, just under a channel's floor, unreadable build number, one encoder missing, the `--yes` scope versus the registry, both queries from one judgement set), plus the real-machine half: the query never blocks on a dialog, writes nothing, agrees with WMI and with `--dry-run -v`, and is all ASCII so `--lang` cannot change it                                                                                      |
+| `.\tests\compat.ps1`       | The version floors: fake Windows builds injected into the production gate, a gated explicit channel never being substituted, which link an `auto` chain loses, and the shipped binary's Windows 8-era WinRT / job API-set imports                                                                                                                                                                                                                                                              |
+| `.\tests\channels.ps1`     | Six channels against its own windows, with an occlusion control. Window-content routes run with `--yes` and fail if a dialog appears; `bitblt` / `duplication` image judgements need `-SimulateConsent`                                                                                                                                                                                                                                                                                        |
+| `.\tests\wgc.ps1`          | WGC live sizing: content size versus texture size, frame-pool rebuild, and never a clipped frame reported as the whole window (offline `build\ecapture-wgc-tests.exe` plus a window it resizes)                                                                                                                                                                                                                                                                                                |
+| `.\tests\image.ps1`        | Frame-shape validation and pixel operations over hand-built layouts (stripes, checkerboard, alpha, row padding, over-large and short buffers, out-of-range crops) plus on-device single-colour captures                                                                                                                                                                                                                                                                                        |
+| `.\tests\crop.ps1`         | `--roi` / `--client-area`: geometry against three independent Win32 questions and against pixel content, refusal before any dialog or file, and a tiny crop on a desktop route still asking                                                                                                                                                                                                                                                                                                    |
+| `.\tests\scale.ps1`        | `--scale`: no upscaling, the tightest ceiling, rounding down, the nearest-neighbour mapping point by point, the crop-then-scale order, and `png` / `bmp` / `jpeg` writing the scaled size                                                                                                                                                                                                                                                                                                      |
+| `.\tests\dup.ps1`          | Desktop duplication: the four rotations checked against the production geometry judges, a fake two-adapter output table, `requestedRect` / `capturedRect` / `clipped` / `rotation` on real images, and the "that monitor changed after the confirmation" cases. Displays are never re-arranged or re-oriented                                                                                                                                                                                  |
+| `.\tests\consent.ps1`      | The tier table and how a refusal travels: the whole `ConsentGate` state machine offline against an injected fake prompt, and every dialog answered "No" on-device — which paths must ask, what a refusal reports, that nothing lands on disk. Never answers "Yes" on a human's behalf                                                                                                                                                                                                          |
+| `.\tests\identity.ps1`     | Identity re-check grades in the order they run, `capture.target_gone` / `capture.target_changed`, and z-order selection (`--topmost-match` / `--bottommost-match`)                                                                                                                                                                                                                                                                                                                             |
+| `.\tests\timeout.ps1`      | The deadline and the helper process: one budget that later steps can only spend the remainder of, the worker wire format rejecting anything malformed instead of "looking like success", and the helper mode refusing to be launched as a public option                                                                                                                                                                                                                                        |
+| `.\tests\isolation.ps1`    | Ownership: a same-named process it did not start stays alive and is never the target, two concurrent runs do not cross, an aborted run cleans up only itself                                                                                                                                                                                                                                                                                                                                   |
+| `.\tests\cursor.ps1`       | `--cursor`: the per-path registry, how the chain narrows on both sides of the 19041 line, how `cursorRequested` / `cursorEffective` / `cursorBasis` are composed, and a source scan that fails if any pointer-shape fetching, cursor drawing or pointer-moving call ever appears                                                                                                                                                                                                               |
+| `.\tests\hdr.ps1`          | `--hdr`: DXGI format and display color-space classification (unrecognized stays `unknown`), the tone-curve properties, `ConvertWideFrameToSdrBgra8` point by point, the result-key group, and the honest SDR on-device case (keys absent by default, `note.hdr_source_sdr` when processing was asked of an SDR frame)                                                                                                                                                                          |
+| `.\tests\save.ps1`         | File delivery: every `--no-overwrite` boolean form against a real file, batch name planning and collision detection, atomic commit against a locked target / a directory / a missing directory / a killed run, and the concurrent `--no-overwrite` race                                                                                                                                                                                                                                        |
+| `.\tests\screen.ps1`       | Whole-screen capture over the three desktop routes with a red-block placement and a negative control. Only `-SimulateConsent` answers, and only on a desktop dedicated to testing                                                                                                                                                                                                                                                                                                              |
+| `.\tests\smoke.ps1`        | End to end: capture its own test window, validate PNG size and pixel content                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `.\tests\invoker.ps1`      | The shared test invoker itself: argv quoting, both streams drained at once, binary output, a hung child, per-run scratch dirs                                                                                                                                                                                                                                                                                                                                                                  |
+| `.\tests\build-path.ps1`   | Building from a directory holding CJK text, spaces, parentheses and `%` (plus a CJK `%TEMP%`), and that the temporary batch body stays ASCII                                                                                                                                                                                                                                                                                                                                                   |
+| `.\tests\streams.ps1`      | Stream and result reliability: one image on stdout for a single target, a batch that resolves to several targets refused before the dialog, the judgement using the number of targets actually hit, images already captured when a batch fails halfway staying in `images`, a result that cannot reach the agreed stream giving exit code `8`, and the no-`--out` / `--out -` equivalence across success, no match, ambiguity, bad arguments, a backend failure, a refusal and a broken stdout |
+| `.\tests\window_shot.bat`  | Human walkthrough: every channel against a compiled test window, a person clicking the dialogs, then the whole-screen step                                                                                                                                                                                                                                                                                                                                                                     |
+| `.\scripts\check-lang.ps1` | The four string tables align on keys and placeholders, and the exe really carries four resources                                                                                                                                                                                                                                                                                                                                                                                               |
+| `.\scripts\mkreadme.ps1`   | Regenerates the help block of all four READMEs from each language's `--help`; `-Check` fails instead of writing, which is how a stale block gets caught                                                                                                                                                                                                                                                                                                                                        |
 
 Every desktop test targets a window of its own: `tests\helper\ec_window.cs` compiles into the run's
 scratch folder and the test keeps that PID and HWND, so nothing is ever found or killed by image name and

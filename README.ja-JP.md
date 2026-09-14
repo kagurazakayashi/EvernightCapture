@@ -1,5 +1,3 @@
-<div align="center">
-
 ![EvernightCapture アイコン](resources/icon.ico)
 
 # EvernightCapture
@@ -7,8 +5,6 @@
 コマンドラインのウィンドウ画面取得ツール：条件でウィンドウを選び出し、そのウィンドウの画面を画像ファイルとして保存する。
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja-JP.md)
-
-</div>
 
 Windows.Graphics.Capture を基軸に、DWM サムネイル、`PrintWindow`、画面 `BitBlt`、DXGI デスクトップ複製の
 4 チャネルを加えた計 5 チャネルで画面を取得する。入口は `ECAPTURE.EXE` である。単一の実行ファイルで、
@@ -25,15 +21,17 @@ Windows 11 の `magnification.dll` はもはや `MagGetImage` をエクスポー
 
 ## どこを見るか
 
-| 知りたいこと | 節 |
-| --- | --- |
-| `--yes` が実際に何を省略するのか、どのスイッチでも省略できないものは何か | [撮影の承諾と --yes](#撮影の承諾と---yes) |
+初めてなら：[クイックスタート](#クイックスタート)（導入、最初の 1 枚、出力ファイルは常に `--out <ファイル>` で指定）→ 《構造化されたウィンドウの発見と検査（`--list` / `--inspect`）》（撮る前に目標を特定する）→ [撮影の承諾と --yes](#撮影の承諾と---yes)（どのステップに人の確認が必ず要るか）→ [終了コード](#終了コード)（何が起きたか、次に何をすべきか）。
+
+| 知りたいこと                                                                            | 節                                                                                                 |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `--yes` が実際に何を省略するのか、どのスイッチでも省略できないものは何か                | [撮影の承諾と --yes](#撮影の承諾と---yes)                                                          |
 | 画像バイトはどのストリーム、JSON はどのストリーム、手元のシェルはどこまで無損に保てるか | [出力の形](#出力の形)、[標準出力の画像バイトと shell の違い](#標準出力の画像バイトと-shell-の違い) |
-| 実行期限の予算がどう共有され、どこで割り込めないか | 《実行期限とブロックする呼び出し》 |
-| 安定な code、stage、終了コード、部分成功 | [終了コード](#終了コード) |
-| コンパイル済みか、この機でいま使えて、実際にどこまでテストしたか | [動作環境のサポート](#動作環境のサポート)、《読み取り専用の能力照会》 |
-| このリポジトリが実機で確定できていない残件 | [境界と未検証の項目](#境界と未検証の項目) |
-| どのテストがどの規則を証明するのか | [ビルドとテスト](#ビルドとテスト) |
+| 実行期限の予算がどう共有され、どこで割り込めないか                                      | 《実行期限とブロックする呼び出し》                                                                 |
+| 安定な code、stage、終了コード、部分成功                                                | [終了コード](#終了コード)                                                                          |
+| コンパイル済みか、この機でいま使えて、実際にどこまでテストしたか                        | [動作環境のサポート](#動作環境のサポート)、《読み取り専用の能力照会》                              |
+| このリポジトリが実機で確定できていない残件                                              | [境界と未検証の項目](#境界と未検証の項目)                                                          |
+| どのテストがどの規則を証明するのか                                                      | [ビルドとテスト](#ビルドとテスト)                                                                  |
 
 ## 特徴
 
@@ -109,6 +107,7 @@ ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 再生成する。**この部分の本文を手で編集しないこと**。
 
 <!-- BEGIN ECAPTURE-HELP -->
+
 ```text
 EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows.Graphics.Capture で画面を取得
 
@@ -127,7 +126,7 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   --exe <full-path>                           イメージの完全パス、大文字小文字を区別しない
   --title, -t <exact-title>                   ウィンドウタイトル完全一致
   --title-contains, -T <text>                 ウィンドウタイトルに部分文字列を含む
-  --title-regex, -R <regex>                   ウィンドウタイトルを正規表現で一致（ECMAScript 構文、解析時に検証）
+  --title-regex, -R <regex>                   ウィンドウタイトルを正規表現で一致（ECMAScript 構文、照合段階で検証）
   --class, -c <class-name>                    ウィンドウクラス名、大文字小文字を区別しない。例 Notepad / CabinetWClass
 
 複数のウィンドウに一致したとき（排他）
@@ -140,8 +139,8 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
 
 画面取得方式（既定 wgc；OS のバージョンやウィンドウの性質で失敗することがある）
   --capture, -C <method>                      wgc(既定、隠れても撮影可) / dwm(DWM サムネイル、隠れても撮影可) / printwindow(ウィンドウ自前描画) / bitblt(画面の可視ピクセルをコピー) / duplication(デスクトップフレームを矩形で切り出し。モニタの回転に合わせて向きを補正し、対象と最も重なる 1 台の出力だけを取ります。切り足りないときは capturedRect/clipped が付きます) / auto(wgc-dwm-printwindow-bitblt の順にフォールバック；画面全体は wgc-duplication-bitblt)。ウィンドウ自身だけ: wgc / printwindow / dwm サムネイル。画面から取る: bitblt / duplication と dwm の画面フォールバック
-  --cursor <default|include|exclude>          画像にマウス ポインターを含めるか：default(既定。何も変更せず、結果にポインター関連の 3 つのキーも現れません) / include(入れる) / exclude(入れない)。実際に設定できて読み戻せるスイッチを持つのは wgc だけ（ビルド 19041 以上が必要）で、その他の経路が返す画像にはそもそもポインターがありません。だから include を printwindow / dwm / bitblt / duplication と組み合わせると capture.cursor_unsupported で拒否され、画面の画素を読む経路にこっそり乗り換えもしません；auto のときは実現できない経路を列から外し、それぞれに note.cursor_channel_skipped を残します。認可は変わりません；requested / effective / basis の判拠は README に
-  --hdr <auto|tonemap|refuse>                 HDR 由来の映像をどう扱うか：auto（既定、本ツールは何も変えず、結果にも色のキー群を出さない） / tonemap（HDR フレームを固定のトーンカーブで 8 ビット SDR に変換してから納品） / refuse（由来が HDR と確認できたらエラーにし、BGRA8 に強制変換した色あせ画像を決して出さない）。本ビルドで tonemap/refuse を本当に実現できるのは wgc の 1 系統だけなので、printwindow / dwm / bitblt / duplication と合わせると解析時に capture.hdr_unsupported を返し、デスクトップ画素を読む系統へ回し直すことはしません。--capture auto のとき同じ判定が、実現できていない系統をフォールバック列から外します（外れた各系統は note.hdr_channel_skipped、1 つも残らなければ env.hdr_unsupported）。capture.hdr_refused のような方針の結論では列がそこで停止します。これは認可を変えません。由来の色空間・ビット深度・実際に行った処理を結果に書き込みます。判定は README と --capabilities の color 節を参照
+  --cursor <default|include|exclude>          画像にマウス ポインターを含めるか：default(既定。何も変更せず、結果にポインター関連の 3 つのキーも現れません) / include(入れる) / exclude(入れない)。設定して読み戻せるスイッチを持つのは wgc だけ（ビルド 19041 以上）。printwindow / dwm / bitblt の出所にはそもそもポインターがなく、duplication のデスクトップ画像はポインターがすでに描かれている可能性がありスイッチもないため、この 4 条との include、および duplication との exclude は capture.cursor_unsupported で拒否されます（二種の文言）。--cursor default は画像を出しますが cursorEffective は unverified です。画面の画素を読む経路にこっそり乗り換えません；auto では実現できない経路を列から外し、それぞれに note.cursor_channel_skipped を残します。認可は変わりません；requested / effective / basis の判拠は README に
+  --hdr <auto|tonemap|refuse>                 HDR 由来の映像をどう扱うか：auto（既定値、本ツールは色彩の件では何も変えない；この選択肢を一切書かなければ結果に色のキー群は出ない） / tonemap（HDR フレームを固定のトーンカーブで 8 ビット SDR に変換してから納品） / refuse（由来が HDR と確認できたらエラーにし、BGRA8 に強制変換した色あせ画像を決して出さない）。本ビルドで tonemap/refuse を本当に実現できるのは wgc の 1 系統だけなので、printwindow / dwm / bitblt / duplication と合わせると解析時に capture.hdr_unsupported を返し、デスクトップ画素を読む系統へ回し直すことはしません。--capture auto のとき同じ判定が、実現できていない系統をフォールバック列から外します（外れた各系統は note.hdr_channel_skipped、1 つも残らなければ env.hdr_unsupported）。capture.hdr_refused のような方針の結論では列がそこで停止します。これは認可を変えません。由来の色空間・ビット深度・実際に行った処理を結果に書き込みます。判定は README と --capabilities の color 節を参照
 
 ウィンドウ内の切り抜きと等比縮小（納品されたウィンドウ全体画像を、その画像自身のピクセル座標でもう一度切り抜きます。デスクトップ絶対座標ではありません。順序は切り抜き→縮小で、--roi と --client-area の 2 つは排他）
   --roi <x,y,w,h>                             納品されたウィンドウ全体画像から、x,y を開始点とする w×h を切り抜きます。原点 (0,0) はこの画像自身の左上ピクセルです（画像はユーザーが見えている見えているウィンドウ枠に対応し、DWM の透明なリサイズ枠は含まれません）。単位は物理ピクセルで、DPI スケーリングは行いません（本プロセスは per-monitor v2 です。論理ピクセルで指定する呼び出し側が拡大率を掛けてください）。したがってこの 4 つの値がデスクトップ絶対座標として扱われることはありません。4 つは 10 進数・カンマ区切り。x と y は 0 可、w と h は 1 以上、いずれも 16384 まで。収まらないときは画像を書き出しません：フレーム取得前に分かるときは match.roi_out_of_range（ダイアログもファイルもなし）、取得後に初めて分かるときは capture.roi_invalid。内側にずらす、縁で打ち切る、ウィンドウ全体を返すことはしません。切り抜きはフレーム取得の後ろにあるので、認可の判断は変わりません：画面からサンプルする経路は必ず人に聞き、--yes は「最後に小さな一部だけ残す」から有効にはなりません。結果の cropRect は画像ピクセル座標、cropScreenRect は同じ矩形の画面座標（画像の原点を確認できたときだけ書きます）、切り抜き前のサイズが fullWidth/fullHeight、後が width/height です。--client-area と排他、画面全体の対象では成り立ちません（capture.unsupported）
@@ -198,6 +197,7 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
   ECAPTURE.EXE --capabilities  --capture を決める前に照会する
 ```
+
 <!-- END ECAPTURE-HELP -->
 
 ## 引数の表記
@@ -240,10 +240,17 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 - `--title` は文字列全体の一致、`--title-contains` は部分文字列の一致で、両者とも**大文字小文字を区別する**。
   `--class` / `--process` / `--exe` は大文字小文字を区別しない。
 - **答えられなかった質問は、一致に丸めない。** タイトルもプロセス情報も、システムがこの呼び出し側へ渡さなければ
-  （`denied` / `failed`）そのウィンドウはそれを必要とする条件を満たさない、それだけのこと。途中で例外を投げた
-  `--title-regex` は、その時点で集まったヒットをすべて捨てて失敗を報告する —— 予算をそこに使い切ったなら
-  `match.timeout`、正規表現を走らせていたヘルパープロセスが戻ってこないなら `capture.worker_failed`
-  （どちらも終了コード `7`）。半分だけ評価した候補リストを答えとして返すことはしない。
+  （`denied` / `failed`）そのウィンドウはそれを必要とする条件を満たさない、それだけのこと。失敗した
+  `--title-regex` は、その時点で集まったヒットをすべて捨てて失敗を報告し、半分だけ評価した候補リストを答えとして
+  返すことはしない。正規表現は**マッチ時にコンパイルして実行する**（引数解析時ではなく）、隔離されたヘルパー
+  プロセスの中で走らせ、その失敗の三種を区別したまま返す：
+  - **構文エラー**（コンパイルできないパターン）→ `cli.invalid_regex`、終了コード `1`、`stage=match`；
+  - **複雑度 / リソース上限**（`(a+)+$` のようなパターンが長いタイトルで MSVC のバックトラッキングの
+    `error_complexity` に当たる）→ 同じ `cli.invalid_regex`、同じ終了コード `1` だが、「複雑すぎる」という
+    メッセージで、その hint は **`--timeout-ms` を大きくしても意味がない** と明確に書く —— これは有界の
+    リソース停止であって、「遅いが使える」答えではない；
+  - **予算の超過**（評価が `--timeout-ms` を使い切った）→ `match.timeout`、終了コード `7`；そしてそれを走らせた
+    ヘルパープロセスがまったく戻らないなら `capture.worker_failed`、終了コード `7`。
 - 列挙は既定で非表示のウィンドウとサイズ 0 のウィンドウを飛ばす。**最小化中のウィンドウは取得できない**ので、
   `hint` に個別に書き添えるだけにしている。
 - 複数一致なのに区別のための指定が無い場合は勝手に 1 つを選ばず、`match.ambiguous_window`（終了コード 5）を返す。
@@ -394,8 +401,9 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    `cli.stdout_multiple_targets` は `plan`、フレームの符号化中に起きた失敗は `encode` —— `encode.timeout` のような
    code は存在せず、両者を分けるのは stage のほうである。コマンドライン解析そのもののエラーには `stage` 自体が
    付かない）、`hresult`（`0x80070005` のような生の値）、`win32`（`GetLastError` の生の値）。`message` は `--lang` に
-   追随するがこちらは追随しない。承諾側の失敗は独立した枝で、`capture.access_denied` は人が「いいえ」と答えたか
-   ダイアログを閉じたこと、`capture.consent_unavailable` はダイアログをそもそも出せなかったこと（対話できる
+   追随するがこちらは追随しない。承諾側の失敗は独立した枝で、`capture.access_denied` は答えが「はい」でなかったこと
+   （この `MB_YESNO` の箱で人が出せる拒否は「いいえ」だけで、ツールは「はい」以外の結果をどれも拒否として扱う）、
+   `capture.consent_unavailable` はダイアログをそもそも出せなかったこと（対話できる
    デスクトップがない）を意味する。どちらも終了コード `6`、どちらも `stage=consent`、`target`、`backend`（チャネル）、
    `value`（経路名）を運び、そしてどちらも技術的なアクセス拒否（`capture.failed` に `hresult=0x80070005` が付く）では
    ない —— そこが区別できる理由になっている。答えたあとに対象が動いたりサイズが変わったりした場合は別の枝で、
@@ -409,17 +417,19 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
 ### 標準出力の画像バイトと shell の違い
 
 `--out -` は 2 つのストリームを同時に要求します：stdout へ PNG/JPEG のバイト列、stderr へ JSON の文書まるごと。
-本ツール側の処理はどちらにも無く、画像バイトは生のハンドルへ `WriteFile` でそのまま出て行くので、テキストの
-変換は一切起きません。つまり壊れたファイルが出る原因は常にシェルの側であって、ツールの側ではありません。
-2 つのストリームはデータの種別も別物です：JSON はシェルが再エンコードしても壊れないテキスト、画像は 1 バイト
-でも置き換わればファイルが死にます。だから最初に問うべきは「そのシェルはバイト列をそのまま運べるか」です。
+本ツールはどちらも翻訳しません —— 画像バイトは生のハンドルへ `WriteFile` でそのまま出て行き、テキストはその
+ストリームに触れない。だから画像を壊すリダイレクトは、ツールを出た**後**、シェルの側で壊していることになります。
+2 つのストリームはデータの種別も別物です：JSON はシェルが再エンコードしても無害にやり取りできるテキスト、画像は
+1 バイトでも置き換わればファイルが死ぬバイト列。よって最初に問うべきは「そのシェルはネイティブのバイト列を
+そのまま運べるか」です（デコードできないファイルには他にも原因があり得る —— 途中で切れた書き出し、半分だけ開いた
+パイプなど —— なので責任を断定する前にリダイレクトを確かめてください）。
 
-| シェル | 外部コマンドの stdout をファイルへリダイレクトしたとき | どう書くか |
-| --- | --- | --- |
-| `cmd.exe` | 無損失（`1>` / `2>` は実ファイルハンドルの張り替え） | そのままで安全 |
-| PowerShell 7.4 以降 | 無損失 —— 7.4 でリダイレクト演算子が外部コマンド stdout のバイト列を保持するよう変わった | そのままで安全（本機の 7.6.2 で 256 バイトがそのまま往復することを確認済み） |
-| PowerShell 7.0 〜 7.3 | stdout はテキストとしてパイプを通る | `cmd /c` を使うか、`--out <ファイル>` にする |
-| Windows PowerShell 5.1 | **壊す**：バイト列をテキストにデコードしてから UTF-16LE で書き直すので、NUL と 0x80 以上のバイトはファイルに届く前に失われている。実測では 256 バイトが 522 バイトになった。`2>` に書き出した stderr のファイルにも PowerShell 自身のエラーレコード形式（`node : ` のような前置、スクリプトの位置情報、BOM）が被さる | `--out <ファイル>`、または `cmd /c`、または `Start-Process -RedirectStandardOutput … -RedirectStandardError …`（OS がハンドルを張り替えるので無損失。実測済み） |
+| シェル                 | 外部コマンドの stdout をファイルへリダイレクトしたとき                                                                                                                                                                                                                     | どう書くか                                                                                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cmd.exe`              | 無損失（`1>` / `2>` は実ファイルハンドルの張り替え）                                                                                                                                                                                                                       | そのままで安全                                                                                                                                        |
+| PowerShell 7.4 以降    | 無損失 —— 7.4 でリダイレクト演算子が外部コマンド stdout のバイト列を保持するよう変わった                                                                                                                                                                                   | そのままで安全                                                                                                                                        |
+| PowerShell 7.0 〜 7.3  | stdout はテキストとしてパイプを通る                                                                                                                                                                                                                                        | `cmd /c` を使うか、`--out <ファイル>` にする                                                                                                          |
+| Windows PowerShell 5.1 | **壊す**：バイト列をテキストにデコードしてから UTF-16LE で書き直すので、NUL と 0x80 以上のバイトはファイルに届く前に失われている。`2>` に書き出した stderr のファイルにも PowerShell 自身のエラーレコード形式（`node : ` のような前置、スクリプトの位置情報、BOM）が被さる | `--out <ファイル>`、または `cmd /c`、または `Start-Process -RedirectStandardOutput … -RedirectStandardError …`（OS がハンドルを張り替えるので無損失） |
 
 ```cmd
 :: cmd.exe：画像を stdout、JSON を stderr へ。どちらもバイト単位でそのまま
@@ -427,13 +437,20 @@ ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\resu
 ```
 
 ```powershell
-# PowerShell 7.4 以降専用。同じ 2 行を Windows PowerShell 5.1 で実行すると、256 バイトが
-# 522 バイトの UTF-16LE ファイルになり、どのデコーダも受け付けない（本機で実測）。
+# PowerShell 7.4 以降専用：この 2 行はバイト列をそのまま保つ。
 ECAPTURE.EXE --process notepad.exe --out - 1> D:\shots\snap.png 2> D:\shots\result.json
 
-# 5.1 で安全な書き方。どうしても画像をパイプから出す必要があるなら：
-Start-Process -FilePath ECAPTURE.EXE -ArgumentList '--process','notepad.exe','--out','-' `
-  -NoNewWindow -Wait -RedirectStandardOutput D:\shots\snap.png -RedirectStandardError D:\shots\result.json
+# Windows PowerShell 5.1 では同じ 2 行はそうならない：ネイティブの stdout はテキストとしてデコードされ
+# UTF-16LE で書き直されるので、NUL と 0x80 以上のバイトはファイルに届く前に消えている。この仕組みは
+# スクリーンショットではなく固定の無害なバイト列で再現できる —— `ECAPTURE.EXE --version` をリダイレクトして
+# 比べれば、cmd ではファイルが ASCII バイトそのまま（`1>` がハンドルを張り替える）、5.1 では同じ出力が
+# だいたい倍の長さの UTF-16LE で返り、どの PNG デコーダも受け付けない。だから 5.1 ではファイルを要求するか、
+# Start-Process を使う（OS がハンドルを張るので無損失）：
+$p = Start-Process -FilePath 'D:\tools\ECAPTURE.EXE' `
+  -ArgumentList '--process','notepad.exe','--yes','--out','-' `
+  -NoNewWindow -Wait -PassThru `
+  -RedirectStandardOutput 'D:\shots\snap.png' -RedirectStandardError 'D:\shots\result.json'
+$p.ExitCode   # 終了コードはここで読む；-Wait だけでは取り出せない
 ```
 
 `2>&1`（および `*>`）はどのバージョンでも使えません：2 つのストリームを混ぜた瞬間にシェルは結果を文字列として
@@ -445,9 +462,10 @@ Start-Process -FilePath ECAPTURE.EXE -ArgumentList '--process','notepad.exe','--
 ## ウィンドウ内の切り抜き（`--roi` / `--client-area`）
 
 この 2 つの選択肢は同じ問いに答えます：**納品されたウィンドウ画像のうちどの部分を残すか**。互排斥（`cli.crop_conflict`
-+ 終了コード 1）、画面全体を対象には成り立ちません（`capture.unsupported` + 終了コード 1 —— 画面には左上角を基準に
-できるウィンドウが存在しない）、読み取り専用の照会与ともに指定するのも衝突です（`cli.query_conflict` /
-`cli.window_query_conflict`）。
+
+- 終了コード 1）、画面全体を対象には成り立ちません（`capture.unsupported` + 終了コード 1 —— 画面には左上角を基準に
+  できるウィンドウが存在しない）、読み取り専用の照会与ともに指定するのも衝突です（`cli.query_conflict` /
+  `cli.window_query_conflict`）。
 
 ### 座標系、そしてデスクトップ絶対座標には決してならない理由
 
@@ -469,12 +487,12 @@ Start-Process -FilePath ECAPTURE.EXE -ArgumentList '--process','notepad.exe','--
 
 ### 収まらないときは拒否し、「直し」はしない
 
-| 状況 | コード | 終了コード | `stage` |
-| --- | --- | --- | --- |
-| 4 つの表記が不合（正負記号、空白、区切り数の違い、幅または高さ 0、上限超え） | `cli.invalid_value` | 1 | parse |
-| 選択時点のウィンドウに収まらない（ダイアログも出力名計画の前） | `match.roi_out_of_range` | 1 | match |
-| フレームが返ってから収まらないと分かった（対象が途中でサイズを変えた、または画面外にかかっている） | `capture.roi_invalid` | 7 | capture |
-| この矩形の位置決めに必要なある問いが答えを返さない（クライアント領域が測れない、この画像が画面のどの領域かを確かめられない） | `capture.roi_unmeasurable` | 7 | capture |
+| 状況                                                                                                                         | コード                     | 終了コード | `stage` |
+| ---------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ---------- | ------- |
+| 4 つの表記が不合（正負記号、空白、区切り数の違い、幅または高さ 0、上限超え）                                                 | `cli.invalid_value`        | 1          | parse   |
+| 選択時点のウィンドウに収まらない（ダイアログも出力名計画の前）                                                               | `match.roi_out_of_range`   | 1          | match   |
+| フレームが返ってから収まらないと分かった（対象が途中でサイズを変えた、または画面外にかかっている）                           | `capture.roi_invalid`      | 7          | capture |
+| この矩形の位置決めに必要なある問いが答えを返さない（クライアント領域が測れない、この画像が画面のどの領域かを確かめられない） | `capture.roi_unmeasurable` | 7          | capture |
 
 いずれも「内側にずらす」「縁で打ち切る」「では全体を返す」という次の一手はありません。最後のものは呼び出し側が
 要求していない図を渡すことになります。どれも書き出しません：フレーム取得前の検査は確認ダイアログより前にあるので、
@@ -617,11 +635,11 @@ JSON は丸ごと stderr へ移り、各診断は実際にそのステップが�
 
 三つの違う数字を「Windows X 以上に対応」という一文に混ぜてはいけない。
 
-| 層 | 値 | その値の根拠 |
-| --- | --- | --- |
-| 各経路の API 上の下限 | 画像なら何でも 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | その経路が**実際に呼んでいる** API について Microsoft が書いている下限。エンコーダ（WinRT の `BitmapEncoder`）は 6 経路・全形式で共通。`wgc` は `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor` を使うので、それは Windows 10 version 1903 のインターオペレーション API である —— `Windows.Graphics.Capture` 名前空間そのものが 1803 出現なのは別問題で、本ツールには「システムピッカーでユーザーに選ばせる」という退路がない |
-| 本ツールが宣言する下限 | 64 ビット版 Windows 10 version 1903（ビルド 18362）以上 | 上のうち最も高い一つ。既定の経路がウィンドウ画像を本当に得るためにそれが必要だからであって、「どれか一つの経路が触れる一番古い API」ではない |
-| 実際にテスト済み | Windows 10 version 22H2（ビルド 19045）、x64 | `tests\` の実機判定はすべてこの 1 台でしか走らせていない。`--capabilities` の `verifiedOnThisMachine` は本機をこの記録済みの基準環境と**比較した**答えで（ビルド 19045 かつ x64 と等しいときだけ `yes`、読めなければ `unknown`）、この個体を実際に検証した記録ではない |
+| 層                     | 値                                                                                                       | その値の根拠                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ---------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 各経路の API 上の下限  | 画像なら何でも 10.0.10240 · `duplication` 10.0.9200 · `printwindow` / `dwm` 10.0.9600 · `wgc` 10.0.18362 | その経路が**実際に呼んでいる** API について Microsoft が書いている下限。エンコーダ（WinRT の `BitmapEncoder`）は 6 経路・全形式で共通。`wgc` は `IGraphicsCaptureItemInterop::CreateForWindow` / `CreateForMonitor` を使うので、それは Windows 10 version 1903 のインターオペレーション API である —— `Windows.Graphics.Capture` 名前空間そのものが 1803 出現なのは別問題で、本ツールには「システムピッカーでユーザーに選ばせる」という退路がない |
+| 本ツールが宣言する下限 | 64 ビット版 Windows 10 version 1903（ビルド 18362）以上                                                  | 上のうち最も高い一つ。既定の経路がウィンドウ画像を本当に得るためにそれが必要だからであって、「どれか一つの経路が触れる一番古い API」ではない                                                                                                                                                                                                                                                                                                      |
+| 実際にテスト済み       | Windows 10 version 22H2（ビルド 19045）、x64                                                             | `tests\` の実機判定はすべてこの 1 台でしか走らせていない。`--capabilities` の `verifiedOnThisMachine` は本機をこの記録済みの基準環境と**比較した**答えで（ビルド 19045 かつ x64 と等しいときだけ `yes`、読めなければ `unknown`）、この個体を実際に検証した記録ではない                                                                                                                                                                            |
 
 10240 から 18361 まではこの exe を起動でき、撮影もできる（本ツールは経路ごとの下限で経路を絞り込み、プログラム
 全体を拒否はしない）。ただし宣言上のサポート範囲外であり、実測もしていないので「動く見込み、未検証」として
@@ -645,12 +663,12 @@ Windows 7 や 8 に対応するという文はここに一つもない —— **
 `ntdll!RtlGetVersion` から読んだビルド番号（`GetVersionEx` は使わない — あちらはマニフェストとバージョン
 偽装に従って答える関数）を上の下限群と突き合わせ、こう報告する：
 
-| コード | いつ | 終了コード | 経路を変えれば何とかなるか |
-| --- | --- | --- | --- |
-| `env.os_too_old` | ビルドが 10240 未満：全形式が通る唯一のエンコーダが存在しない | 7 | **ならない。** 経路の話でも対象の話でもなく、この機では画像が一枚も作れない |
-| `env.channel_unsupported` | 明示指定の経路の下限が本機のビルドより上 | 7 | **なる** —— `--capture` を変えるか `auto` にする。同じ対象の再試行に意味はない。指定した経路をよそへ差し替えることはしない |
-| `note.channel_unavailable` | `auto` の列のうち下限に届かない経路を除外した | 変わらない | 他の経路で成功して画像は出る。実際に写した経路は `images[].source` に入る |
-| `note.os_unverifiable` | ビルド番号がまったく取得できなかった | 変わらない | 今回はバージョンによる絞り込みをしていない —— 答えが出ないことは「未対応」でも「対応」でもない |
+| コード                     | いつ                                                          | 終了コード | 経路を変えれば何とかなるか                                                                                                 |
+| -------------------------- | ------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `env.os_too_old`           | ビルドが 10240 未満：全形式が通る唯一のエンコーダが存在しない | 7          | **ならない。** 経路の話でも対象の話でもなく、この機では画像が一枚も作れない                                                |
+| `env.channel_unsupported`  | 明示指定の経路の下限が本機のビルドより上                      | 7          | **なる** —— `--capture` を変えるか `auto` にする。同じ対象の再試行に意味はない。指定した経路をよそへ差し替えることはしない |
+| `note.channel_unavailable` | `auto` の列のうち下限に届かない経路を除外した                 | 変わらない | 他の経路で成功して画像は出る。実際に写した経路は `images[].source` に入る                                                  |
+| `note.os_unverifiable`     | ビルド番号がまったく取得できなかった                          | 変わらない | 今回はバージョンによる絞り込みをしていない —— 答えが出ないことは「未対応」でも「対応」でもない                             |
 
 `--verbose` は `input.osBuild` と `input.captureChain`（今回の対象種別について、この機が実際に出せる経路）を
 返すので、撮影せずに能力を問い合わせられる。`--dry-run` はフレームを取らないので環境判定による失敗を返さない。
@@ -673,7 +691,7 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
 
 三つの決まり：
 
-* **3 つの独立した事実。** `compiled` はこのバイナリがその経路を実装しているか。`status` は本機自身の証拠（バージョン
+- **3 つの独立した事実。** `compiled` はこのバイナリがその経路を実装しているか。`status` は本機自身の証拠（バージョン
   下限と画面トポロジー）がいまそれをとおすか。`verifiedOnThisMachine` は**環境との比較であって、個々の機器の検証
   記録ではありません** —— 本機の Windows ビルドとアーキテクチャが、本プロジェクトが実機テストを走らせた環境（ビルド
   19045、x64）と等しいときだけ `yes`、どちらか一方が読めないときは `unknown`、それ以外は `no`。だからビルド 26100 の
@@ -681,24 +699,24 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
   判定です。3 つはいずれも互いの代役になりません：`available` + `verifiedOnThisMachine: no` は「このビルドはここで
   その経路を通せるが、本プロジェクトは別のビルドでしか証明していない」の意味で、`yes` だからといって特定のウィンドウが
   撮れるとは約束しません。
-* **答えが出なければ出ないと言う。** 各事実はいずれも `yes` / `no` / `unknown` の三値で、`unknown` は「できる」にも「できない」にも丸めず、キーごと消えたりもしない。ビルド番号が取れなかったとき `status` はすべて `unverified` になり、`autoChainWindow` は 4 本そのまま並ぶ —— 絞っていないだけで「全部対応」ではない。
-* **`available` は保証ではない。** 「このウィンドウが必ず撮れる」という意味はない。ドライバ・保護内容・HDR はこの層の外で、文末の `caveats` 配列はまさに「この報告が何を言ってないか」を並べるためにある。
+- **答えが出なければ出ないと言う。** 各事実はいずれも `yes` / `no` / `unknown` の三値で、`unknown` は「できる」にも「できない」にも丸めず、キーごと消えたりもしない。ビルド番号が取れなかったとき `status` はすべて `unverified` になり、`autoChainWindow` は 4 本そのまま並ぶ —— 絞っていないだけで「全部対応」ではない。
+- **`available` は保証ではない。** 「このウィンドウが必ず撮れる」という意味はない。ドライバ・保護内容・HDR はこの層の外で、文末の `caveats` 配列はまさに「この報告が何を言ってないか」を並べるためにある。
 
-| 段 | 内容 |
-| --- | --- |
-| `contract` / `contractVersion` | 契約版数を持つのはこの 2 つの文書だけ（いまは 1）。通常の撮影 JSON は《出力の形》どおり簡潔なままで、ここに入ったからといってトップレベルのメタ情報は増えない |
-| `program` | 名称、`ECAPTURE.EXE` というファイル名そのもの（ディレクトリなし）、版数、アーキテクチャ、`buildId` |
-| `os` | 本機のビルド（`known` が偽ならその group は `unknown`）、`declaredMinBuild`（対外宣言の下限）、`encoderMinBuild`、`testedMinBuild` + `testedArch`（実測した 1 台）、`matchesTestedEnvironment` |
-| `session` | コンソールセッションに付しているか、リモートデスクトップか、画面トポロジーの有無と画面数、本プロセスが昇格しているか、`consentDialogExpected`（推定で、`consentDialogProbed: false` が「実際には出していない」を明言） |
-| `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登録パスは `desktop` 扱い、加えて内部経路登録表の全行（各行に `scope` と `consentWithoutYes` / `consentWithYes`）。《撮影の承諾と --yes》の表の機械可読版 |
-| `backends` | 各経路の `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`、そしてウィンドウ対象・画面対象でそれぞれどの内部経路を通るか（`dwm` のデスクトップ退路も含む。だから `--yes` の適用範囲を読み広げられない） |
-| `formats` | 各形式の `compiled` / `status` / `reason` / `minBuild` / `registered`。行は `png` / `jpeg` / `bmp` / `tiff` / `gif` の 5 形式ぶん並び、5 つともコンパイル済みで、しかも全部がエンコーダ id だけを違えて同じ WinRT `BitmapEncoder` の呼び出しを通ります。`registered` は常に `unknown` —— この層はエンコーダを実際に試さない（試すと「1 枚符号化して能力を探る」になり、撮影で探らないのと同じ理由に触れる）。かつて挙げたがエンコーダが無いため外した `webp` / `ico` は `compiled: false` + `reason: "not_compiled"` に残し、推測ではなく確定した答えを渡す |
-| `cursor` | `--cursor` の話：`default`（このオプションを付けないときの扱い）、3 つの値、ただ 1 つのスイッチを `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine` で書き、続いて登録済みの内部経路 1 行ごとに `capability`（`settable` / `excludes_cursor` / `unregistered`）、`reason`、`include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、加えて `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。撮って能力を探ることはしないので、登録表に無い経路は推測の答えではなく `unknown` を読む |
-| `color` | `--hdr` の話：`default`（このオプションを付けないときの扱い）、3 つの値（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` は「このビルドが広色域フレームを運べるか + どう変換するか」を言い、その画面が今 HDR モードかどうかは聞かない（reason は `hdr_display_mode_not_probed`）。`verifiedOnThisMachine` は常に `no`（本プロジェクトに HDR ディスプレイが無いので色彩の受け入れ合格を主張しない）。登録済みの内部経路 1 行ごとに `capability` —— `wide_gamut_capable`（`wgc` / `screen.wgc` のみ）、`wide_gamut_unverified`（`duplication.frame` / `screen.duplication`。デスクトップ面は FP16 や 10 ビットで届く可能性がありますが、本ビルドは `DuplicateOutput` の前にディスプレイの色空間を尋ねないので、何を得たかの証明も保証もできない）、`sdr_source_only`（8 ビット DC を読む経路）、`unregistered` —— および `honorsExplicitPolicy`（`true` は `wgc` の 2 行だけ。「本ビルドで `tonemap` / `refuse` を実現できるのは wgc の 2 経路のみ」の機械可読版）。加えて `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR は常に 8 ビット SDR へ変換して納品し、HDR ネイティブ画像は出さない） |
-| `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる |
-| `limits` | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲 |
-| `privacy` | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし |
-| `caveats` | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品し、明示的な `tonemap` / `refuse` の要求を満たせるのは `wgc` の 2 経路だけ） |
+| 段                                    | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `contract` / `contractVersion`        | 契約版数を持つのはこの 2 つの文書だけ（いまは 1）。通常の撮影 JSON は《出力の形》どおり簡潔なままで、ここに入ったからといってトップレベルのメタ情報は増えない                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `program`                             | 名称、`ECAPTURE.EXE` というファイル名そのもの（ディレクトリなし）、版数、アーキテクチャ、`buildId`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `os`                                  | 本機のビルド（`known` が偽ならその group は `unknown`）、`declaredMinBuild`（対外宣言の下限）、`encoderMinBuild`、`testedMinBuild` + `testedArch`（実測した 1 台）、`matchesTestedEnvironment`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `session`                             | コンソールセッションに付しているか、リモートデスクトップか、画面トポロジーの有無と画面数、本プロセスが昇格しているか、`consentDialogExpected`（推定で、`consentDialogProbed: false` が「実際には出していない」を明言）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `authorization`                       | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登録パスは `desktop` 扱い、加えて内部経路登録表の全行（各行に `scope` と `consentWithoutYes` / `consentWithYes`）。《撮影の承諾と --yes》の表の機械可読版                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `backends`                            | 各経路の `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`、そしてウィンドウ対象・画面対象でそれぞれどの内部経路を通るか（`dwm` のデスクトップ退路も含む。だから `--yes` の適用範囲を読み広げられない）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `formats`                             | 各形式の `compiled` / `status` / `reason` / `minBuild` / `registered`。行は `png` / `jpeg` / `bmp` / `tiff` / `gif` の 5 形式ぶん並び、5 つともコンパイル済みで、しかも全部がエンコーダ id だけを違えて同じ WinRT `BitmapEncoder` の呼び出しを通ります。`registered` は常に `unknown` —— この層はエンコーダを実際に試さない（試すと「1 枚符号化して能力を探る」になり、撮影で探らないのと同じ理由に触れる）。かつて挙げたがエンコーダが無いため外した `webp` / `ico` は `compiled: false` + `reason: "not_compiled"` に残し、推測ではなく確定した答えを渡す                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `cursor`                              | `--cursor` の話：`default`（このオプションを付けないときの扱い）、3 つの値、ただ 1 つのスイッチを `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine` で書き、続いて登録済みの内部経路 1 行ごとに `capability`（`settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`）、`reason`、`include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、加えて `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。duplication の 2 経路は `capability: pointer_state_unverified` で `include` / `exclude` とも `no` —— デスクトップ フレームにはポインターがすでに描かれている可能性があり、本ツールはポインター形状を合成しないが、それは画素にポインターが無い証明にはならない。撮って能力を探ることはしないので、登録表に無い経路は推測の答えではなく `unknown` を読む                                                                                                                                                                                                                                                                                                                                                                        |
+| `color`                               | `--hdr` の話：`default`（このオプションを付けないときの扱い）、3 つの値（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` は「このビルドが広色域フレームを運べるか + どう変換するか」を言い、その画面が今 HDR モードかどうかは聞かない（reason は `hdr_display_mode_not_probed`）。`verifiedOnThisMachine` は常に `no`（本プロジェクトに HDR ディスプレイが無いので色彩の受け入れ合格を主張しない）。登録済みの内部経路 1 行ごとに `capability` —— `wide_gamut_capable`（`wgc` / `screen.wgc` のみ）、`wide_gamut_unverified`（`duplication.frame` / `screen.duplication`。デスクトップ面は FP16 や 10 ビットで届く可能性がありますが、本ビルドは `DuplicateOutput` の前にディスプレイの色空間を尋ねないので、何を得たかの証明も保証もできない）、`sdr_source_only`（8 ビット DC を読む経路）、`unregistered` —— および `honorsExplicitPolicy`（`true` は `wgc` の 2 行だけ。「本ビルドで `tonemap` / `refuse` を実現できるのは wgc の 2 経路のみ」の機械可読版）。加えて `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR は常に 8 ビット SDR へ変換して納品し、HDR ネイティブ画像は出さない）              |
+| `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `limits`                              | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `privacy`                             | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `caveats`                             | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品し、明示的な `tonemap` / `refuse` の要求を満たせるのは `wgc` の 2 経路だけ） |
 
 両方の文書は**同一の**判定関数（`src/EnvReport.cpp` の `BuildEnvReport`）から出る。違いは段落の取捨だけで、
 `--diagnostics` は `build` 段（PE のリンク時刻・機械種別・イメージサイズ・subsystem）を常に載せ、
@@ -733,34 +751,34 @@ ECAPTURE.EXE --list --process notepad.exe                    # 該当ウィン�
 ECAPTURE.EXE --list --class CabinetWClass --limit 5 --offset 5
 ECAPTURE.EXE --list=all --title-contains レポート            # 最小化ウィンドウも含める
 ECAPTURE.EXE --inspect --hwnd 0x001A0B4C                    # 1 窓を項目ごとに検査
-ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 画面取得と同じ消歧
+ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 撮影と同じやり方で 1 つに絞り込む
 ```
 
 ルールは 5 つ。いずれも、もう一方の做法がより悪いために存在します。
 
-* **画素も取らなければ、聞かず、書かない。** どの画面取得経路も呼ばず、確認ダイアログも出さず、ファイルも作らず、
+- **画素も取らなければ、聞かず、書かない。** どの画面取得経路も呼ばず、確認ダイアログも出さず、ファイルも作らず、
   通信も環境変数の読み取りもしません — 文書自身が `authorization` にそれを明記します
   （`pixelsRead: 0` / `consentDialogShown: false` / `filesWritten: false`）。対象ウィンドウに**一切触れない**ことも
   同じ約束です：復元も前面化も Z 順の変更もしません。「開いているものを見たい」が画面の様子を変えてはいけないため、
   `caveats` は `no_capture_performed` と `no_window_touched` を載せます。
-* **複数該当は画面取得の歧義ではない。** `--list` はページ送りして返します（`--offset` / `--limit`、既定は 1 回
+- **複数該当は画面取得の歧義ではない。** `--list` はページ送りして返します（`--offset` / `--limit`、既定は 1 回
   50 件）ので、実際の総数は `pagination.matched` に書かれ、「このページが短い」が「このしかない」に読めることを
   防ぎます。0 件は正常な回答です：`windows: []` と終了コード `0` であって、`match.no_window` + `4` ではありません。
   `--inspect` は 1 つの対象を必要とするため、画面取得が使うのと**同じ**選択戦略を適用します。その後も複数残れば
   `match.ambiguous_window` + 終了コード `5` — 代わりの 1 つを選んだり、よく似た窓を先に取ったりはしません。
-* **一覧はスナップショットで、古くなります。** ハンドルは再利用され、タイトルは変わり、プロセスは終わるので、ここにある
+- **一覧はスナップショットで、古くなります。** ハンドルは再利用され、タイトルは変わり、プロセスは終わるので、ここにある
   `hwnd` / `pid` / クラス名は**長く保持できる資格証ではありません**。成功した照会は毎回 `note.window_query_stale` を
   伴い、各行の `identity` は `verificationRequired: true` / `isAuthorizationToken: false` /
   `raceWindowReducedNotEliminated: true` を書きます。あとで画面取得するときは、画素を読む前に対象の身元を再確認します
   （それが `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`）。確認ダイアログも
   画素の出所にしたがって判定されます。**`--yes` はここで何も変えません**（`authorization.yesAffectsResult: false`）—
   項目を解除もしなければ、そもそも出ない框をスキップもしません。
-* **読めない項目は「読めない」と書きます。** プロセスをまたぐ質問には 3 つの結末があり、項目ごとに書かれます：
+- **読めない項目は「読めない」と書きます。** プロセスをまたぐ質問には 3 つの結末があり、項目ごとに書かれます：
   `readable`、`denied`（この呼び出し側がシステムに拒まれた）、`failed`（聞いたが答えがなかった）。後者 2 つは
   Win32 の生のコードも添えます。読めない値はセンチネル（`0` / 空文字）**プラス**その状態であって、鍵が黙って
   消えるのではありません。管理者実行を促すこともなく、`caveats` は
   `unreadable_fields_are_not_a_prediction` を載せます。
-* **表示方針は推測させず書きます。** 非表示とサイズ 0 のウィンドウは除外されます（画面取得の列挙と同じ規則）し、
+- **表示方針は推測させず書きます。** 非表示とサイズ 0 のウィンドウは除外されます（画面取得の列挙と同じ規則）し、
   `policy` がそのまま `invisibleExcluded` / `zeroSizedExcluded` と書きます。最小化ウィンドウも既定では一覧に入らず、
   その件数は `policy.minimizedExcluded` に数えられ、`--list=all` で同じ Z 順軸に併合されます。
   「システムウィンドウ」については**何も主張しません**：Windows には「私はシステムウィンドウだ」という属性が
@@ -769,33 +787,78 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 画面取得と�
 1 行のフィールドは次の通りです（`--inspect` は `windows` 配列を同じ形状の単一 `window` に差し替えます）：
 
 ```json
-{ "contract": "windowquery", "contractVersion": 1, "query": "list",
+{
+  "contract": "windowquery",
+  "contractVersion": 1,
+  "query": "list",
   "program": { "version": "0.4.0" },
-  "authorization": { "readOnly": true, "pixelsRead": 0, "consentDialogShown": false,
-                     "filesWritten": false, "yesAffectsResult": false,
-                     "identityFieldsAreNotConsent": true },
-  "policy": { "invisibleExcluded": true, "zeroSizedExcluded": true, "minimizedIncluded": false,
-              "minimizedExcluded": 2, "systemWindowAssertion": false, "order": "zOrder" },
-  "pagination": { "offset": 0, "limit": 50, "limitDefaulted": true, "defaultLimit": 50,
-                  "maxLimit": 8192, "matched": 52, "returned": 50, "truncated": true,
-                  "nextOffset": 50 },
-  "windows": [ { "hwnd": "0x001A0B4C", "pid": 31468, "title": "…", "class": "CabinetWClass",
-                 "image": "explorer.exe",
-                 "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
-                 "visible": true, "minimized": false, "zOrder": 3,
-                 "readability": { "process": { "state": "readable" },
-                                  "imagePath": { "state": "denied", "win32": 5 },
-                                  "processStart": { "state": "readable" },
-                                  "rect": { "state": "readable" } },
-                 "identity": { "hwnd": "0x001A0B4C", "pid": 31468, "class": "CabinetWClass",
-                               "processStartTicks": 134351142668527401,
-                               "selectionNeedsRecheck": false, "verificationRequired": true,
-                               "isAuthorizationToken": false,
-                               "raceWindowReducedNotEliminated": true } } ],
-  "caveats": [ "no_capture_performed", "no_consent_dialog_shown", "no_window_touched",
-               "snapshot_expires", "identity_fields_are_not_a_token",
-               "invisible_and_zero_sized_excluded", "unreadable_fields_are_not_a_prediction",
-               "list_may_be_partial" ] }
+  "authorization": {
+    "readOnly": true,
+    "pixelsRead": 0,
+    "consentDialogShown": false,
+    "filesWritten": false,
+    "yesAffectsResult": false,
+    "identityFieldsAreNotConsent": true
+  },
+  "policy": {
+    "invisibleExcluded": true,
+    "zeroSizedExcluded": true,
+    "minimizedIncluded": false,
+    "minimizedExcluded": 2,
+    "systemWindowAssertion": false,
+    "order": "zOrder"
+  },
+  "pagination": {
+    "offset": 0,
+    "limit": 50,
+    "limitDefaulted": true,
+    "defaultLimit": 50,
+    "maxLimit": 8192,
+    "matched": 52,
+    "returned": 50,
+    "truncated": true,
+    "nextOffset": 50
+  },
+  "windows": [
+    {
+      "hwnd": "0x001A0B4C",
+      "pid": 31468,
+      "title": "…",
+      "class": "CabinetWClass",
+      "image": "explorer.exe",
+      "rect": { "x": 681, "y": 22, "width": 1261, "height": 614 },
+      "visible": true,
+      "minimized": false,
+      "zOrder": 3,
+      "readability": {
+        "process": { "state": "readable" },
+        "imagePath": { "state": "denied", "win32": 5 },
+        "processStart": { "state": "readable" },
+        "rect": { "state": "readable" }
+      },
+      "identity": {
+        "hwnd": "0x001A0B4C",
+        "pid": 31468,
+        "class": "CabinetWClass",
+        "processStartTicks": 134351142668527401,
+        "selectionNeedsRecheck": false,
+        "verificationRequired": true,
+        "isAuthorizationToken": false,
+        "raceWindowReducedNotEliminated": true
+      }
+    }
+  ],
+  "caveats": [
+    "no_capture_performed",
+    "no_consent_dialog_shown",
+    "no_window_touched",
+    "snapshot_expires",
+    "identity_fields_are_not_a_token",
+    "invisible_and_zero_sized_excluded",
+    "unreadable_fields_are_not_a_prediction",
+    "list_may_be_partial"
+  ]
+}
 ```
 
 `title` / `class` / `image` は一言一句そのまま渡します — 切り詰めも、文章への埋め込み、大文字小文字の折込みもしません。
@@ -839,12 +902,12 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 
 ひとつのモニタに四種類の識別子があり、それぞれ「どこまで安定か」をフィールドで宣言する（本文ではなく字段で）：
 
-| フィールド | 何なのか | 安定する範囲 | 指定の形 |
-| --- | --- | --- | --- |
-| `ordinal` | この回の列挙での位置 | `this_invocation` | `--monitor <n>` |
-| `deviceName` | GDI のビュー端末名 `\\.\DISPLAY1` | `this_desktop_attach` | `device:` |
-| `monitorDevicePath` | モニタの devnode デバイスインターフェースパス | `cross_session_expected` | `id:` |
-| `adapterLuid` | アダプタのローカル一意識別子 | `this_session` | なし——関連情報のみ |
+| フィールド          | 何なのか                                      | 安定する範囲             | 指定の形           |
+| ------------------- | --------------------------------------------- | ------------------------ | ------------------ |
+| `ordinal`           | この回の列挙での位置                          | `this_invocation`        | `--monitor <n>`    |
+| `deviceName`        | GDI のビュー端末名 `\\.\DISPLAY1`             | `this_desktop_attach`    | `device:`          |
+| `monitorDevicePath` | モニタの devnode デバイスインターフェースパス | `cross_session_expected` | `id:`              |
+| `adapterLuid`       | アダプタのローカル一意識別子                  | `this_session`           | なし——関連情報のみ |
 
 `screens[].selectors` にはそのまま書き戻せる二通り（`device:DISPLAY1`、`id:\?\DISPLAY#…`）が入り、`identity.*` が
 どれを指定に使えるかを書く。アダプタの LUID には意図的に指定の形を与えていない：それは今回のセッション内でしか
@@ -884,14 +947,14 @@ GPU についているか」はこうして返る。
 
 ## 画面取得方式
 
-| 値 | チャネル | 隠れたウィンドウを撮れるか | ハードウェアアクセラレーション描画 | ポインター（`--cursor`） | API 上の下限 |
-| --- | --- | --- | --- | --- | --- |
-| `wgc` | Windows.Graphics.Capture | 撮れる（DWM のキャッシュ） | 正常 | 実際に設定できて読み戻せるスイッチがある（19041 以上） | Win10 1903（18362）—— `CreateForWindow` / `CreateForMonitor` の側で、1803 の名前空間側ではない |
-| `dwm` | DwmRegisterThumbnail | 撮れる | 大半は正常、保護されたウィンドウは黒 | 出所の画素にポインターは無い | Win8.1（9600）—— サムネイル登録自体は古いが、読み戻しが `PrintWindow(PW_RENDERFULLCONTENT)` |
-| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT | 撮れる（ウィンドウ自身の描画） | 多くの場合まっ黒 | 出所の画素にポインターは無い | Win8.1（9600）、その flag の話 |
-| `bitblt` | 画面 DC からの BitBlt | 撮れない、見えるピクセルだけをコピー | 一部が黒 | 出所の画素にポインターは無い | それ自体にバージョン下限なし |
-| `duplication` | DXGI デスクトップ複製でモニタ全体のフレームを取り矩形で crop | 撮れない、見えるピクセルだけをコピー | 正常 | ポインターは別個のメタデータとして届く | Win8（9200）、リモートデスクトップ/仮想 GPU は内容を得られないことが多い |
-| `auto` | wgc → dwm → printwindow → bitblt の順にフォールバック | 尽力 | 尽力 | `include` は列を `wgc` の 1 本に狭める | この列から、本機のバージョンでは足りない経路を引いたもの |
+| 値            | チャネル                                                     | 隠れたウィンドウを撮れるか           | ハードウェアアクセラレーション描画   | ポインター（`--cursor`）                                                                                             | API 上の下限                                                                                   |
+| ------------- | ------------------------------------------------------------ | ------------------------------------ | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `wgc`         | Windows.Graphics.Capture                                     | 撮れる（DWM のキャッシュ）           | 正常                                 | 実際に設定できて読み戻せるスイッチがある（19041 以上）                                                               | Win10 1903（18362）—— `CreateForWindow` / `CreateForMonitor` の側で、1803 の名前空間側ではない |
+| `dwm`         | DwmRegisterThumbnail                                         | 撮れる                               | 大半は正常、保護されたウィンドウは黒 | 出所の画素にポインターは無い                                                                                         | Win8.1（9600）—— サムネイル登録自体は古いが、読み戻しが `PrintWindow(PW_RENDERFULLCONTENT)`    |
+| `printwindow` | PrintWindow + PW_RENDERFULLCONTENT                           | 撮れる（ウィンドウ自身の描画）       | 多くの場合まっ黒                     | 出所の画素にポインターは無い                                                                                         | Win8.1（9600）、その flag の話                                                                 |
+| `bitblt`      | 画面 DC からの BitBlt                                        | 撮れない、見えるピクセルだけをコピー | 一部が黒                             | 出所の画素にポインターは無い                                                                                         | それ自体にバージョン下限なし                                                                   |
+| `duplication` | DXGI デスクトップ複製でモニタ全体のフレームを取り矩形で crop | 撮れない、見えるピクセルだけをコピー | 正常                                 | スイッチ無し：デスクトップ フレームにはポインターがすでに描かれている可能性があり、include も exclude も保証できない | Win8（9200）、リモートデスクトップ/仮想 GPU は内容を得られないことが多い                       |
+| `auto`        | wgc → dwm → printwindow → bitblt の順にフォールバック        | 尽力                                 | 尽力                                 | `include` は列を `wgc` の 1 本に狭める                                                                               | この列から、本機のバージョンでは足りない経路を引いたもの                                       |
 
 この列は**各経路の API 上の下限**で、その経路が実際に呼ぶ API について Microsoft が書いた文書に対応させてある。
 このプログラムが動作を宣言するバージョンでも、実測したバージョンでもない：宣言下限（Win10 1903、x64）、
@@ -951,20 +1014,28 @@ GPU についているか」はこうして返る。
   チャネル自身の 18362 よりも*高い*下限です：1903 のマシンでは `wgc` で撮れるのに、ポインターについては
   何も言えない。
 - `printwindow`（ウィンドウ自身に DC へ描画させる）、`dwm.thumbnail`（DWM のリダイレクション面）、
-  `dwm.screen` / `bitblt.screen` / `screen.bitblt`（画面 DC。システム ポインターは DC の内容の外に描かれる）、
-  `duplication.frame` / `screen.duplication`（デスクトップの画像で、ポインターは*別個のメタデータ*として
-  渡される）—— これらの出所にポインターは元からありません。だから `exclude` は出所についての事実として
-  成り立ち、`include` はそもそもこの経路たちにできることではありません。
+  `dwm.screen` / `bitblt.screen` / `screen.bitblt`（画面 DC。システム ポインターは DC の内容の外に描かれる）——
+  これらの出所にポインターは元からありません。だから `exclude` は出所についての事実として成り立ち、`include` は
+  そもそもこの経路たちにできることではありません。
+- `duplication.frame` / `screen.duplication` は別の話です：これらはデスクトップ全体のフレームを渡し、ポインターは
+  **すでにその中に描かれている**可能性があります。本ツールは複製のポインター形状を取りに行くことも合成することも
+  しませんが、「合成しなかった」は「画素にポインターが無い」証明にはなりません —— Windows の文書どおり、ポインターは
+  デスクトップ画像に焼き込まれるか GPU でオーバーレイされ、フレームごとの `PointerPosition` /
+  `PointerShapeBufferSize` はハードウェア ポインターだけを記すので、フレームごとの主張は誠実ではいられません。
+  この 2 経路は `pointer_state_unverified` として登録されます：**`include` も `exclude` も**、これらの経路が
+  約束できることではありません。
 
 ここから 2 つの規則が出ます。どちらも「頼んだ」が「できた」と読まれないためにあります：
 
-- **ある経路が渡せない要求は、経路を乗り換えるのではなく拒否します。** `--cursor include` を `printwindow`、
-  `dwm`、`bitblt`、`duplication` のいずれかと組み合わせると、解析時に `capture.cursor_unsupported`
-  （終了コード `1`）です —— ダイアログを出す前、出力名を計画する前、画素を 1 つ読む前。画面の画素を読む
-  チャネルへ乗り換えてもポインターは加わりません（それらの出所にポインターは無い）し、誰も承諾していない
-  フレームを渡すだけになります。`--capture auto` のときは、要求に応えられない経路を列から外し、それぞれに
-  `note.cursor_channel_skipped` を残します。1 本も残らないとき、または本機の Windows ビルドが 19041 未満で
-  要求を書き明かしているときは `env.cursor_unsupported`（終了コード `7`）で、画素は一切取りません。
+- **ある経路が渡せない要求は、経路を乗り換えるのではなく拒否します。** ポインターを持たない出所（`printwindow`、
+  `dwm`、`bitblt`）に `--cursor include` を組み合わせるのは、解析時に `capture.cursor_unsupported`
+  （終了コード `1`）です —— ダイアログを出す前、出力名を計画する前、画素を 1 つ読む前。`duplication` では
+  **`include` も `exclude` も**両方が解析時に `capture.cursor_unsupported`（終了コード `1`）で、文言は 2 通りに
+  分かれます（include：その出所にポインターのスイッチは無い、exclude：デスクトップ フレームのポインター状態は
+  証明できない）。画面の画素を読むチャネルへ乗り換えてもポインターは加わらず、取り除く保証もできませんし、
+  しかも誰も承諾していないフレームになります。`--capture auto` のときは、要求に応えられない経路を列から外し、
+  それぞれに `note.cursor_channel_skipped` を残します。1 本も残らないとき、または本機の Windows ビルドが 19041
+  未満で要求を書き明かしているときは `env.cursor_unsupported`（終了コード `7`）で、画素は一切取りません。
   `--verbose` が `input.captureChain` にエコーするのは生き残った列で、実際の撮影と同じ関数が算出するので、
   `--cursor include` + `auto` では `["wgc"]` だけが表示されます。
 - **画素の塗り替えはしません。** このツールはデスクトップ複製のポインター形状を取りに行って描くことをせず、
@@ -974,16 +1045,19 @@ GPU についているか」はこうして返る。
 
 渡す画像 1 枚ごとに、そして `--cursor` を一度でも書いたときだけ、3 つのキーが何が起きたかを語ります：
 
-| フィールド | 値 | 何を言うか |
-| --- | --- | --- |
-| `cursorRequested` | `default` / `include` / `exclude` | 何を要求したか |
-| `cursorEffective` | `include` / `exclude` / `unverified` | この経路が実際に渡したのはどれか |
-| `cursorBasis` | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `wgc_cursor_property_unavailable` | その結論の根拠 |
+| フィールド        | 値                                                                                                                                                                                         | 何を言うか                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------- |
+| `cursorRequested` | `default` / `include` / `exclude`                                                                                                                                                          | 何を要求したか                   |
+| `cursorEffective` | `include` / `exclude` / `unverified`                                                                                                                                                       | この経路が実際に渡したのはどれか |
+| `cursorBasis`     | `wgc_session_property_set` / `wgc_session_property_read` / `path_excludes_cursor` / `path_pointer_state_unverified` / `wgc_cursor_property_unavailable` / `path_capability_not_registered` | その結論の根拠                   |
 
 `wgc_session_property_set` は今回の要求どおりにスイッチを設定し、読み戻した値がそれと一致したことです。
 `wgc_session_property_read` は設定を一切していない（`--cursor default`）現在の値を読んだだけ、
-`path_excludes_cursor` はこの経路の出所の画素にポインターがないこと、`wgc_cursor_property_unavailable` は
-その問いが答えを出さなかったことで、このときは `cursorEffective` にどちらの答えも折らず `unverified` を書きます。
+`path_excludes_cursor` はこの経路の出所の画素にポインターがないこと、`path_pointer_state_unverified` は
+ポインター状態を証明できないデスクトップ複製フレームのこと（だから `cursorEffective` は `unverified`）、
+`wgc_cursor_property_unavailable` はその問いが答えを出さなかったこと、`path_capability_not_registered` はその
+経路が登録表に無く、推測ではなく厳しく扱われたことです。`unverified` になるどの場合でも、`cursorEffective` は
+どちらの答えにも折らず `unverified` を書きます。
 
 `cursorEffective` はその根拠までしか言いません。言うのは「このセッションがポインターを描く設定だった」か
 「この出所にポインターは無い」かで —— 今回のこれらの画素の上にポインターが載っていたとは**主張しません**。
@@ -994,11 +1068,13 @@ GPU についているか」はこうして返る。
 （終了コード `7`）で、しかも `StartCapture` **前**に出ます —— 要求と矛盾するフレームは渡されないからです。
 `--cursor default` で同じ状況になったときは、どちらかの答えに折らず `unverified` として報告します。
 
-ポインターを尋ねても承諾は何も変わりません。どの段階で人に聞くかを決めるのは今も画素の出所なので、
-`bitblt`、`duplication`、またはモニタ全体取得のいずれかに `--cursor exclude` を付けても確認ダイアログは必ず
-出ます。`--yes` はやはり及びません。`--yes` なしの `wgc` もやはり聞きます。この 3 つの現場は
-`tests\cursor.ps1` が実機の自作ウィンドウで判定します。`path` / `scope` / `rect` や切り抜き関連の欄と同じく、
-この 3 つも位置決めの判拠なので `--quiet` でも隠せません。
+ポインターを尋ねても承諾は何も変わりません。どの段階で人に聞くかを決めるのは今も画素の出所なので、`bitblt` の
+画面経路やモニタ全体取得に `--cursor exclude` を付けても、`duplication` 経路に `--cursor default` を付けても、
+確認ダイアログは必ず出ます。`--yes` はやはり及びません。`--yes` なしの `wgc` もやはり聞きます。（`--cursor exclude`
+
+- `duplication` の要求は解析時に拒否されて、そもそもダイアログに到達しません。）こうした承諾の現場は
+  `tests\cursor.ps1` が実機の自作ウィンドウで判定します。`path` / `scope` / `rect` や切り抜き関連の欄と同じく、
+  この 3 つも位置決めの判拠なので `--quiet` でも隠せません。
 
 `--capabilities` は、画素を一切撮らずに上のすべてに答えます。その `cursor` 段落です：既定値、3 つの値、
 ただ 1 つのスイッチの `compiled` / `status` / `minBuild` / `verifiedOnThisMachine`、登録済み経路 1 つにつき
@@ -1007,7 +1083,23 @@ GPU についているか」はこうして返る。
 
 ## HDR 色処理（`--hdr`）
 
-ディスプレイが HDR モードのとき、取得したフレームは SDR を超える輝度レンジと別の伝達関数を含み得ます。それを 8 ビット BGRA として無理やり解釈すると、色が抜け、ハイライトが飛んだ「普通にに見えるが間違っている」画像になります。本ツールはこの結果を正しいものとしては扱いません。`--hdr auto|tonemap|refuse` はこの件を明示的に決めるためのものです。既定値 `auto` は色について**何も変えない**ことを意味します。ディスプレイ状態を調べず、取得フォーマットも変えず、変換もしないので、結果にも色に関するキーは現れません。出力はこのオプションが存在する前と 1 バイト違わない状態のままです。
+ディスプレイが HDR モードのとき、取得したフレームは SDR を超える輝度レンジと別の伝達関数を含み得ます。それを
+8 ビット BGRA として無理やり解釈すると、色が抜け、ハイライトが飛んだ「普通にに見えるが間違っている」画像に
+なります。本ツールはこの結果を正しいものとしては扱いません。`--hdr auto|tonemap|refuse` はこの件を明示的に
+決めるためのものです。**撮影中は同じように振る舞う**のに**報告時には混ぜてはならない** 2 つの状態を分けます：
+
+- **`--hdr` を一切書かない** —— 本ツールは色について何も変えません：ディスプレイ状態を調べず、取得フォーマットも
+  変えず、変換もしない。そして**結果に色に関するキー群は現れません** —— 出力はこのオプションが存在する前と
+  1 バイト違わないままです。
+- **`--hdr auto` を明示的に書く** —— 撮影の振る舞いは同じ（調べず、フォーマットを変えず、変換しない）が、
+  **色に関するキー群は現れ**、このフレームが受け身のまま返ってきたありさまを報告します。`wgc` 経路で 8 ビットで
+  納品されたフレームは `hdrEffective: unverified` / `hdrBasis: bgra8_source_unverified` を返します —— `auto` は
+  ディスプレイが HDR モードかどうかを一度も尋していないので、8 ビットの surface は出所が SDR だと証明できない
+  からです（下のフィールド表を参照）。
+
+`auto` はこのオプションを省略したときに使われる既定の*値*でもあります —— ただし省略と明示的な記述は結果の中で
+`input.hdrGiven`（`-v`）で区別でき、これがまさに本ツールが統合することを拒否する「書いていない」と「書いた」の
+対です。
 
 どのチャネルが広色域フレームを運んで来られるかと、どのチャネルが実際に明示した方針へ**従えるか**は別々の質問で、
 判定は他と同じく**ピクセルの出所**、チャネル名ではありません。その登録表は `src/HdrColor.h` にあり、`images[].path`
@@ -1028,7 +1120,7 @@ GPU についているか」はこうして返る。
 
 - `tonemap` … HDR フレームを SDR に変換して納品する。エンコード前に**画素ごとの浮動小数中間値**を作る（フレーム全体の浮動小数バッファは確保しない。1 GiB のフレーム予算を 4 倍に押し広げるため）。手順は固定の曲線：伝達関数の復号（scRGB 線形 / PQ→絶対輝度→相対線形 / HLG 逆 OETF）→ BT.2020 から BT.709 への原色行列 → 輝度に対する**拡張 Reinhard** トーンマップ（確定的・単調で、`white=1` のときは恒等に変化）→ sRGB 符号化 → 不透明の alpha はそのまま通す。元々 SDR のときは恒等パススルー。
 - `refuse` … 出所が HDR と確認できた時点でエラーにし、ピクセルを書き込まない。BGRA8 に押し潰した色あせ画像を渡すことは絶対にしない。
-- `auto`（既定） … 上の変換パスは使わず、このフレームが実際にどんな色空間で返ってきたかを実況するだけ。
+- `auto`（既定の*値*） … 上の変換パスを作動させない：ディスプレイを調べず、フォーマットを変えず、マッピングもしない。`--hdr auto` を明示的に書いたときは色に関するキー群をやはり発し、このフレームが受け身のまま返ってきたありさまを報告するだけです（8 ビットの `wgc` フレームは `unverified` であって、SDR を主張したのではない）。オプションを省略したときはキー群はまったく現れません（節の冒頭を参照）。
 
 この表から 2 つの規則が導かれ、どちらも `--cursor` と同じ原則です。
 
@@ -1037,15 +1129,29 @@ GPU についているか」はこうして返る。
 
 `--hdr` を一度でも書くと、納品する画像ごとにこの列のキーが付きます（未指定なら一つも現れず、このオプションが存在する前と 1 バイト違わない）。
 
-| フィールド | 取りうる値 | 言っていること |
-| --- | --- | --- |
-| `hdrRequested` | `auto` / `tonemap` / `refuse` | 要求した戦略 |
-| `hdrEffective` | `sdr_passthrough` / `tone_mapped` / `unverified` | このフレームが実際に受けた処理 |
-| `hdrBasis` | `delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized` | その結論の根拠 |
-| `sourceColorSpace` | `srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `unknown` | エンコード前の出所 |
-| `sourceBitDepth` | `8` / `10` / `16`（認識できないときはキーごと省略） | 出所のチャネルビット数 |
+| フィールド         | 取りうる値                                                                                                                                                                                                                            | 言っていること                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `hdrRequested`     | `auto` / `tonemap` / `refuse`                                                                                                                                                                                                         | 要求した戦略                   |
+| `hdrEffective`     | `sdr_passthrough` / `tone_mapped` / `unverified`                                                                                                                                                                                      | このフレームが実際に受けた処理 |
+| `hdrBasis`         | `delivered_bgra8_sdr` / `scrgb_float_tone_mapped` / `pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` / `path_sdr_source` / `format_unrecognized` / `transfer_function_unknown` / `bgra8_source_unverified` / `tone_map_not_applied` | その結論の根拠                 |
+| `sourceColorSpace` | `srgb_bgra8` / `scrgb_float` / `pq_bt2020` / `hlg_bt2020` / `rgb10a2_unverified` / `unknown`                                                                                                                                          | エンコード前の出所             |
+| `sourceBitDepth`   | `8` / `10` / `16`（認識できないときはキーごと省略）                                                                                                                                                                                   | 出所のチャネルビット数         |
 
-明示的に処理を要求した（`tonemap` / `refuse`）のにこのフレームの出所が 8 ビット SDR と確認できた場合、画像はそのまま納品され（SDR に対する変換は恒等）、`note.hdr_source_sdr` が 1 件残ります。「HDR 処理を頼んだ」と「そもそも HDR が無かった」を並べて見せるためで、静かな通過を「HDR が正しく変換された」と取り違えさせません。`--hdr auto` はこの通知を出しません（あくまで実況のみ）。
+本ビルドで実機の撮影で実際に到達できるマッピング経路は `scrgb_float_tone_mapped`（FP16 の `wgc` テクスチャ
+プール）だけです。10 ビットのパックフレームは PQ や HLG とみなすのではなく `rgb10a2_unverified` に分類される
+ので、`pq_bt2020_tone_mapped` / `hlg_bt2020_tone_mapped` と `transfer_function_unknown` はオフラインで通した
+列挙値であって、「本機に PQ/HLG のパネルが実際にあってマッピングされた」という保証ではありません。広色域の
+標識を持ちながらマッピング記録の無い出所は `unverified` / `tone_map_not_applied` になり、「もうマッピング済み」
+とは決して取り違えません。
+
+明示的に処理を頼んだ（`tonemap` / `refuse`）のにこのフレームが 8 ビット BGRA で納品された場合、画像はそのまま
+納品され（8 ビット出所に対するマッピングは恒等）、ただしどの通知を残すかは撮影前に実際に何が答えられたかで
+決まります：あの読み取り専用のディスプレイ質問が走って SDR と答えたなら通知は `note.hdr_source_sdr`
+（「8 ビット SDR と確認できた」）、その質問がそもそも走らなかったか答えを返さなかったなら通知は
+`note.hdr_source_unverified`（「8 ビットで納品したが、出所は SDR と確認されていない」）—— 未確認の 8 ビット
+フレームを、確認済みの SDR のフレームとして書き立てることは決してしません。どちらでも「HDR 処理を頼んだ」と
+「このフレームに確認済みの HDR は無い」を並べて見せ、静かな通過を「HDR が正しく変換された」と取り違えさせません。
+`--hdr auto` はこの 2 つの通知をどちらも発しません（上のマシンフィールドで受け身のまま報告するだけ）。
 
 HDR 色処理は認可を変えません。この処理全体はフレーム取得の後・エンコードの前に走り、判定は相変わらず「この経路のピクセルがどこから来るか」です。デスクトップ画素を読む経路は必ず人に聞き、`--yes` は及ばず、「変換したから無確認」という迂回も作りません。
 
@@ -1063,12 +1169,12 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
 ウィンドウ自身に縛られ、デスクトップから一切サンプルしない経路の確認です。それ以外は何も保証しません：
 有効な画像も、権限も、保護コンテンツも、エラーも、上書き保護も無関係です。
 
-| 内部経路（`images[].path`） | ピクセルの出具合 | `--yes` なし | `--yes` あり |
-| --- | --- | --- | --- |
-| `wgc` / `printwindow` / `dwm.thumbnail` | 選択したウィンドウだけ | 1 回聞く | 聞かない |
-| `bitblt.screen` / `duplication.frame` / `dwm.screen` | 画面上のあの領域（他のウィンドウが写り込む） | 必ず聞く | **やはり必ず聞く** |
-| `screen.wgc` / `screen.bitblt` / `screen.duplication` | モニタ全体 | 必ず聞く | **やはり必ず聞く** |
-| 未登録の名前 | 判定できない | 必ず聞く | 必ず聞く（厳しめ側に倒す） |
+| 内部経路（`images[].path`）                           | ピクセルの出具合                             | `--yes` なし | `--yes` あり               |
+| ----------------------------------------------------- | -------------------------------------------- | ------------ | -------------------------- |
+| `wgc` / `printwindow` / `dwm.thumbnail`               | 選択したウィンドウだけ                       | 1 回聞く     | 聞かない                   |
+| `bitblt.screen` / `duplication.frame` / `dwm.screen`  | 画面上のあの領域（他のウィンドウが写り込む） | 必ず聞く     | **やはり必ず聞く**         |
+| `screen.wgc` / `screen.bitblt` / `screen.duplication` | モニタ全体                                   | 必ず聞く     | **やはり必ず聞く**         |
+| 未登録の名前                                          | 判定できない                                 | 必ず聞く     | 必ず聞く（厳しめ側に倒す） |
 
 - **デスクトップのピクセルを読む経路に回避口はありません**：`--yes`、`--quiet`、環境変数、stdin、呼び出し元
   どれも効かない。二段階に分けた目的はまさにここにあります。
@@ -1081,11 +1187,16 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
   側の経路は確認なしで走ってよいが、デスクトップの経路へ入る前には必ず聞きます。対象の領域が動いたりモニタ構成が
   変わったりすれば、それを覆う承諾は無効にもう一度聞き直し、古い領域に縛られていたフレームは `capture.consent_stale`
   （終了コード `7`、対象を選び直すと再試行できる）を返します。
-- 「いいえ」と答えた、ダイアログが閉じられた（`X` も `Esc` も「いいえ」として答え、黙って消えることはありません）、
-  `--consent-timeout-ms` 以内に誰も応答しなかった、対話できるデスクトップが無い —— この 4 つの結末のいずれでも、
-  **そのリクエストの残りは止まります**。`--all` の残り対象だけでなく `auto` フォールバック連鎖の残りリンクも同じで、
-  再試行も 2 回目の確認もしません。すでに出来上がった画像は `images` にそのまま残ります。人の返答は境界であって、
-  どれかが通るまで経路を試し続けろという合図ではありません。
+- ダイアログは素朴な `MB_YESNO` の箱です：ボタンは「はい」「いいえ」の 2 つで、既定フォーカスは **「いいえ」**。
+  承認するのは明示的な「はい」だけで、それ以外の結果はすべて拒否として扱います。拒否するには **「いいえ」を
+  クリック**してください。`X` や `Esc` に頼らないでください —— `MB_YESNO` ではタイトルバーの `X` は表示されるが
+  無効化され、`Esc` が押す Cancel ボタンも無いので、どちらも確実な「いいえ」の仕草ではない —— 箱はとにかく
+  答えられる必要があり、ツールは「はい」以外の結果をどれも拒否として扱います。加えて、
+  `--consent-timeout-ms` 以内に誰も答えないことはそれ自体がひとつの拒否です（`capture.consent_timeout`）。
+- 「いいえ」と答えた、`--consent-timeout-ms` 以内に誰も応答しなかった、対話できるデスクトップが無い ——
+  この 3 つの結末のいずれでも、**そのリクエストの残りは止まります**。`--all` の残り対象だけでなく `auto`
+  フォールバック連鎖の残りリンクも同じで、再試行も 2 回目の確認もしません。すでに出来上がった画像は `images` に
+  そのまま残ります。人の返答は境界であって、どれかが通るまで経路を試し続けろという合図ではありません。
 - 「はい」と答えた後も約 1 秒待ってからフレームを取ります。ダイアログが閉じるアニメーションが画像に写るのを避ける
   ためで、ダイアログ自体は画像に写りません。
 - ダイアログは「いいえ」に既定フォーカスを置き、対象とその矩形、通ろうとする実際の経路、展開済みの絶対出力パス
@@ -1140,11 +1251,11 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
 
 通らなければピクセルを 1 つも読まず、次の 3 つの安定したコードを返す：
 
-| コード | 終了コード | 意味 | 次の一手 |
-| --- | --- | --- | --- |
-| `capture.target_gone` | 7 | このリクエスト中にハンドルが破棄された | ウィンドウを読み直してもう一度実行する |
-| `capture.target_changed` | 7 | そのハンドル値はいま別の対象に属する（あるいは当初の条件を満たさない） | 対象を選び直す。**承認した許諾は新しい対象には移らない** |
-| `capture.target_unverifiable` | 7 | 判定基準の一つが答えられなかった（プロセス情報が読めない、条件の再評価が終わらない） | 実行環境を調べる（権限、ポリシー、セキュリティソフト）、または `--timeout-ms` を大きくする |
+| コード                        | 終了コード | 意味                                                                                 | 次の一手                                                                                   |
+| ----------------------------- | ---------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `capture.target_gone`         | 7          | このリクエスト中にハンドルが破棄された                                               | ウィンドウを読み直してもう一度実行する                                                     |
+| `capture.target_changed`      | 7          | そのハンドル値はいま別の対象に属する（あるいは当初の条件を満たさない）               | 対象を選び直す。**承認した許諾は新しい対象には移らない**                                   |
+| `capture.target_unverifiable` | 7          | 判定基準の一つが答えられなかった（プロセス情報が読めない、条件の再評価が終わらない） | 実行環境を調べる（権限、ポリシー、セキュリティソフト）、または `--timeout-ms` を大きくする |
 
 身元が変わったときに「条件を緩めて似たウィンドウを拾う」ことはしない —— `--yes` の規則と同じ根拠で、許諾は人に一覧で示した対象に結び付いている。
 
@@ -1157,7 +1268,7 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
 最後のコミットが、すべて**同じ**予算を使います。どの段階も、そして一括分のそれ以降のターゲットも、予算を新しく
 受け取り直すことはないので、4 本のバックエンドがそれぞれ 2 秒ずつ待つことも、2 つのターゲットがそれぞれもう一度
 待つこともあり得ません。指定なしまたは `0` は総予算なしを意味します。その場合も隔離実行はすべて組み込みの
-5000 ms 上限で抑えられます——これはかつての `timeoutMs` 引数が果たすべきだったものです。予算を使い切ると、
+5000 ms 上限で抑えられます。予算を使い切ると、
 **まだ始まっていない段階は拒否され、その画像は書き出されません**——条件評価の最中に尽きたなら
 `match.timeout`（`stage=match`）、フレームがいつまでも届かなかったなら `capture.timeout` の `stage=capture`、
 エンコードの最中に尽きたのも `capture.timeout` ですがそのときは `stage=encode` です（`encode.timeout` のような
@@ -1167,9 +1278,13 @@ code は無く、両者を分けるのは stage のほう）。書き込み段�
 振る舞いです：終了コードは 0 以外で、すでに着地したものはそのまま納入されます。
 
 この門番は意図的に*段階開始前*の門番です。そして正直な限界はその裏返しにあります：アトミックなファイル書き込みには
-キャンセル点が無く、リネームのあとに予算を確かめ直すこともありません。だからコミットの**最中**に期限が切れれば、
-その画像はそのまま着地します。**タイムアウトでロールバックも削除もしない** —— ディスクに在るファイルは呼び出し側が
-頼んで書かれたものであり、黙って消すことは頼まれていない 2 回目の書き込みになります。
+キャンセル点が無いので実行の途中で割り込めず、コミットの**最中**に期限が切れればそのファイルはそのまま着地します。
+**タイムアウトでロールバックも削除もしません** —— ディスクに在るファイルは呼び出し側が頼んで書かれたものであり、
+黙って消すことは頼まれていない 2 回目の書き込みになります。書き込みが返ったあとに期限を**再チェック**し、そこで
+予算を越えていれば、交付記録とは**別**に `io.timeout` を 1 条余分に記録します（メッセージには「画像は完全に
+交付されたが、その書き込みが終わった時点で予算を使い切っていた」と書く）—— ただしコミット済みの画像は `images` に
+そのまま残り、`captured` もそれを数え、今回の実行は部分成功として終了コード `7`（納品 + エラー）を報告します。
+書き込みがまったく着地しなかったときの `8` ではありません。交付という事実と期限の遵守は、意図的に分けて扱います。
 
 人を待つのは**別枠**の時計です：`--consent-timeout-ms <ms>` は確認ダイアログにだけ上限を設け、自動処理の予算を
 一切消費しません（人が席を外したことを「機械が遅い」とは数えない）。時間までに誰も応答しなければ、その要求は
@@ -1187,8 +1302,9 @@ code は無く、両者を分けるのは stage のほう）。書き込み段�
 バックトラックしかねず、パターンの長さ上限は実行期限にはなりません。これらの呼び出しは現在、同じ `ECAPTURE.EXE`
 を補助プロセスとして起動し、解析済みの 1 タスクを秘密のパイプ経由で流して走らせます。期限が切れたら、親は
 **自分自身の**その補助プロセスを止めてタイムアウトを報告します。対象アプリのウィンドウが殺されることは決してなく、
-ワーカーが親より長く生きることもありません（閉じれば殺すジョブオブジェクト、パイプ切断の検査、アイドル時の
-ウォッチドッグ）。
+ワーカーが親より長く生きることもありません（閉じれば殺すジョブオブジェクト、パイプ切断の検査、そして予算を気にする
+ウォッチドッグ：待機側のハンドシェイクにだけ上限を課し、その後は親の残り予算＋わずかな納品猶予を追跡し、明示的に
+受け入れた長い予算を切り詰めることは決してしない）。
 
 後始末の境界も期限と同じだけ重要で、それはパイプがタイミングの悪い瞬間に答えてくることがあるからです。接続時には 3 つの場合を
 区別します：すでに接続済みだったヘルパー（取り消すべき保留 I/O が無い）、同期的に完了した書き込み、そして
@@ -1213,15 +1329,15 @@ code は無く、両者を分けるのは stage のほう）。書き込み段�
 
 `--out` のパスの中で使う。複数枚の画像はこれで区別する：
 
-| プレースホルダ | 意味 |
-| --- | --- |
-| `%i` | 連番、1 始まり（`--all` の複数ウィンドウ、`--monitor all` の複数モニタ） |
-| `%h` | ウィンドウハンドル、`0x001B0C48` の形。モニタ対象は 0 |
-| `%p` | プロセス ID。モニタ対象は 0 |
-| `%n` | ウィンドウタイトル。画面ターゲットは `\\.\` 接頭辞を除いたデバイス名（例 `DISPLAY1`）。ファイル名の断片として使えるよう整えます：不正文字は `_`、末尾のドットと空白は除く、全体が予約デバイス名（`CON` / `NUL` / `COM1` / `LPT1` など）なら `_` を接頭辞に、80 の UTF-16 コードユニットで切り詰める際にサロゲート対を割らない |
-| `%d` | ローカル日付 `YYYYMMDD` |
-| `%t` | ローカル時刻 `HHMMSS` |
-| `%%` | リテラルの `%` を 1 つ。それ以外の `%x` は 2 文字そのままに残す |
+| プレースホルダ | 意味                                                                                                                                                                                                                                                                                                                          |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `%i`           | 連番、1 始まり（`--all` の複数ウィンドウ、`--monitor all` の複数モニタ）                                                                                                                                                                                                                                                      |
+| `%h`           | ウィンドウハンドル、`0x001B0C48` の形。モニタ対象は 0                                                                                                                                                                                                                                                                         |
+| `%p`           | プロセス ID。モニタ対象は 0                                                                                                                                                                                                                                                                                                   |
+| `%n`           | ウィンドウタイトル。画面ターゲットは `\\.\` 接頭辞を除いたデバイス名（例 `DISPLAY1`）。ファイル名の断片として使えるよう整えます：不正文字は `_`、末尾のドットと空白は除く、全体が予約デバイス名（`CON` / `NUL` / `COM1` / `LPT1` など）なら `_` を接頭辞に、80 の UTF-16 コードユニットで切り詰める際にサロゲート対を割らない |
+| `%d`           | ローカル日付 `YYYYMMDD`                                                                                                                                                                                                                                                                                                       |
+| `%t`           | ローカル時刻 `HHMMSS`                                                                                                                                                                                                                                                                                                         |
+| `%%`           | リテラルの `%` を 1 つ。それ以外の `%x` は 2 文字そのままに残す                                                                                                                                                                                                                                                               |
 
 `--all` の出力名にプレースホルダが無いと、自動的に `_連番` を追加し、`note.all_without_placeholder` を出す。
 プレースホルダでターゲットを分けられない時（`%d` だけ、または同一プロセスの 2 つのウィンドウで `%p`）は黙って
@@ -1278,16 +1394,16 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 **導出せずに「未検証」として記録している項目**（各行は、名前を挙げたテストがこの開発機で SKIP / 「未検証」と
 報告している内容そのものです。どれ一つ通ったとは主張していません）：
 
-| ここで判定できないもの | 理由と、どこに記録しているか |
-| --- | --- |
-| 本物の HDR フレームの取得、本物の HDR に対する `refuse`、FP16 フレームプール、HLG のエンドツーエンド | HDR ディスプレイを接続していない。変換の数学はオフラインで判定（`tests\hdr.ps1`、`build\ecapture-hdr-tests.exe`）し、`color.verifiedOnThisMachine` は常に `no` |
-| HDR と `--scale` の併用、および `--roi` / `--scale` の画面をまたいだ混合 DPI | モニタが 1 枚しかなく、HDR も有効にできない（`tests\scale.ps1`、`tests\crop.ps1`） |
-| 納品されるフレームの一辺が 16384 を超える実機ケース、回転パネル、モニタの抜き差し（ホットプラグ） | そんなウィンドウは用意できず、テストがディスプレイの並べ替えを行うこともない（`tests\image.ps1`、`tests\dup.ps1`） |
-| 意図的な `HWND` / PID の回収、および実際の確認ダイアログを挟んだ身元の区間 | 他人のプロセスを終了することになり、ダイアログの答えは人が出すものだから（`tests\identity.ps1` は `-SimulateConsent` が必要） |
-| 画素レベルの「この絵にポインターが見える／見えない」、ビルド 19041 未満の機械 | SDK が画素レベルの答えを持たず、本機はそれより新しい（`tests\cursor.ps1`） |
-| 19045 以外の Windows バージョン・ARM64・Server・リモートデスクトップ・対話デスクトップのないセッション・実際にエンコーダが欠けている状態 | ここでもう 1 つの OS は用意できない。判定は注入した偽のビルドに対しオフラインで実施（`tests\compat.ps1`、`tests\capabilities.ps1`） |
-| `tiff` と `gif` の `--scale`、およびその他のエンコーダ側の挙動 | `tests\scale.ps1` が実機で見るのは `png` / `bmp` / `jpeg` の 3 形式。残り 2 つはエンコーダ呼び出しを共有しますが判定されていません |
-| 能力照会が画像生成やダイアログ表示で能力を探っていないこと、および確認ダイアログが実際に画面へ出ること | どちらも、探ることが報告しようとしていることそのものを実行してしまうことになる（`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`） |
+| ここで判定できないもの                                                                                                                   | 理由と、どこに記録しているか                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 本物の HDR フレームの取得、本物の HDR に対する `refuse`、FP16 フレームプール、HLG のエンドツーエンド                                     | HDR ディスプレイを接続していない。変換の数学はオフラインで判定（`tests\hdr.ps1`、`build\ecapture-hdr-tests.exe`）し、`color.verifiedOnThisMachine` は常に `no` |
+| HDR と `--scale` の併用、および `--roi` / `--scale` の画面をまたいだ混合 DPI                                                             | モニタが 1 枚しかなく、HDR も有効にできない（`tests\scale.ps1`、`tests\crop.ps1`）                                                                             |
+| 納品されるフレームの一辺が 16384 を超える実機ケース、回転パネル、モニタの抜き差し（ホットプラグ）                                        | そんなウィンドウは用意できず、テストがディスプレイの並べ替えを行うこともない（`tests\image.ps1`、`tests\dup.ps1`）                                             |
+| 意図的な `HWND` / PID の回収、および実際の確認ダイアログを挟んだ身元の区間                                                               | 他人のプロセスを終了することになり、ダイアログの答えは人が出すものだから（`tests\identity.ps1` は `-SimulateConsent` が必要）                                  |
+| 画素レベルの「この絵にポインターが見える／見えない」、ビルド 19041 未満の機械                                                            | SDK が画素レベルの答えを持たず、本機はそれより新しい（`tests\cursor.ps1`）                                                                                     |
+| 19045 以外の Windows バージョン・ARM64・Server・リモートデスクトップ・対話デスクトップのないセッション・実際にエンコーダが欠けている状態 | ここでもう 1 つの OS は用意できない。判定は注入した偽のビルドに対しオフラインで実施（`tests\compat.ps1`、`tests\capabilities.ps1`）                            |
+| `tiff` と `gif` の `--scale`、およびその他のエンコーダ側の挙動                                                                           | `tests\scale.ps1` が実機で見るのは `png` / `bmp` / `jpeg` の 3 形式。残り 2 つはエンコーダ呼び出しを共有しますが判定されていません                             |
+| 能力照会が画像生成やダイアログ表示で能力を探っていないこと、および確認ダイアログが実際に画面へ出ること                                   | どちらも、探ることが報告しようとしていることそのものを実行してしまうことになる（`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`）       |
 
 ## AI / スクリプトからの呼び出しガイド
 
@@ -1320,18 +1436,18 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    自動化の呼び出し側が実際に踏む code は、終了コード別だと次の通りです（モニタを識別子で名指すにはまず
    `--screens` を実行して、番号を推測しないでください）。
 
-   | code | 終了コード | 次の一手 |
-   | --- | --- | --- |
-   | `cli.invalid_number`、`cli.invalid_value`、`cli.invalid_format`、`cli.unknown_option`、`cli.unknown_language`、`cli.crop_conflict`、`cli.query_conflict`、`cli.window_query_conflict`、`cli.monitor_conflict`、`cli.monitor_selector_empty`、`cli.monitor_selector_kind`、`cli.stdout_multiple_targets` | 1 | コマンドラインを直す —— 1 枚も取得せず、確認も出さず、ファイルも書いていない |
-   | `match.index_out_of_range`、`match.monitor_out_of_range`、`match.roi_out_of_range` | 1 | `hint` に全候補を並べてある。要求した切り抜きは選択時点の対象に収まらない |
-   | `match.no_window` | 4 | 条件を広げるか、対象が最小化中かどうかを見る（最小化ウィンドウは取得できない） |
-   | `match.ambiguous_window`、`match.monitor_ambiguous_id` | 5 | 複数当たっていてツールは 1 つを選ばない —— `--index` / `--topmost-match` / `--all`、または `--screens` の識別子で消歧する |
-   | `match.monitor_unknown_id` | 4 | その識別子はもうデスクトップに無い。`--screens` を再び実行する |
-   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable` | 6 | 人の境界：「いいえ」（または箱を閉じた）、誰も応答しなかった、対話デスクトップが無い。リクエストの残りは試みていません —— 聞き直すのは新しいリクエストであって再試行ではない |
-   | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7 | 決める前に `stage`（`match` / `capture` / `encode`）を読む。次の一手は新しい `--list` / `--screens` であって、`--capture` を変えることではない |
-   | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported` | 7 | この**マシン**が要求に応えられない —— 下の段落を参照 |
-   | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout` | 8 | ディレクトリを作るか、衝突し得ない名前を選ぶ。`io.file_exists` は `--no-overwrite` が仕事をしただけ |
-   | `capture.hdr_unsupported`、`capture.cursor_unsupported`、`capture.unsupported` | 1 | その選択肢の組み合わせは解析時に拒否された。確認ダイアログより前の話です |
+   | code                                                                                                                                                                                                                                                                                                                                                                                                                                                                | 終了コード | 次の一手                                                                                                                                                                                                                                                                                                                                                             |
+   | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+   | `cli.invalid_number`、`cli.invalid_value`、`cli.invalid_format`、`cli.unknown_option`、`cli.unknown_language`、`cli.crop_conflict`、`cli.query_conflict`、`cli.window_query_conflict`、`cli.monitor_conflict`、`cli.monitor_selector_empty`、`cli.monitor_selector_kind`、`cli.stdout_multiple_targets`                                                                                                                                                             | 1          | コマンドラインを直す —— 1 枚も取得せず、確認も出さず、ファイルも書いていない                                                                                                                                                                                                                                                                                         |
+   | `match.index_out_of_range`、`match.monitor_out_of_range`、`match.roi_out_of_range`                                                                                                                                                                                                                                                                                                                                                                                  | 1          | `hint` に全候補を並べてある。要求した切り抜きは選択時点の対象に収まらない                                                                                                                                                                                                                                                                                            |
+   | `match.no_window`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 4          | 条件を広げるか、対象が最小化中かどうかを見る（最小化ウィンドウは取得できない）                                                                                                                                                                                                                                                                                       |
+   | `match.ambiguous_window`、`match.monitor_ambiguous_id`                                                                                                                                                                                                                                                                                                                                                                                                              | 5          | 複数当たっていてツールは 1 つを選ばない —— `--index` / `--topmost-match` / `--all`、または `--screens` の識別子で絞り込む                                                                                                                                                                                                                                            |
+   | `match.monitor_unknown_id`                                                                                                                                                                                                                                                                                                                                                                                                                                          | 4          | その識別子はもうデスクトップに無い。`--screens` を再び実行する                                                                                                                                                                                                                                                                                                       |
+   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6          | 人の境界：答えが「はい」でなかった（この `MB_YESNO` の箱で人が出せる拒否は「いいえ」だけ）、期限以内に誰も応答しなかった、対話デスクトップが無い。リクエストの残りは試みていません —— 聞き直すのは新しいリクエストであって再試行ではない                                                                                                                             |
+   | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7          | 決める前に `stage`（`match` / `capture` / `encode`）を読む。次の一手は新しい `--list` / `--screens` であって、`--capture` を変えることではない                                                                                                                                                                                                                       |
+   | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7          | この**マシン**が要求に応えられない —— 下の段落を参照                                                                                                                                                                                                                                                                                                                 |
+   | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8          | ディレクトリを作るか、衝突し得ない名前を選ぶ。`io.file_exists` は `--no-overwrite` が仕事をしただけ。ここに出る `io.timeout` は「書き出しがそもそも開始できなかった」ほうで、ファイルが実際に届いたのに書き込み後の期限再チェックだけが越えた場合は、その画像は `images` に残り、実行は終了コード `7`（納品 + エラー）を返す。《実行期限とブロックする呼び出し》参照 |
+   | `capture.hdr_unsupported`、`capture.cursor_unsupported`、`capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1          | その選択肢の組み合わせは解析時に拒否された。確認ダイアログより前の話です                                                                                                                                                                                                                                                                                             |
 
    `env.*` の 4 つはその対象ではなく**このマシン**の話なので、同じウィンドウの再試行に意味がありません：
    `env.os_too_old` は本機のビルドが、全形式が通るただ 1 つのエンコーダの下限より下であることを意味し（`--capture` を
@@ -1342,6 +1458,7 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    `input.captureChain` を読む。各下限・宣言範囲・実測範囲は [動作環境のサポート](#動作環境のサポート) 参照。
    各エラーにはさらに `target` / `backend` / `stage` / `hresult` / `win32` が付く（「出力の形」の規則を参照）。
    その段階で得られた分だけ書かれるので、`message` からこじ開ける必要はない。
+
 3. **読むストリームは場合分けする**：`--out <ファイル>` を指定すれば JSON は stdout にあり stderr は空なので、
    そのままパースしてよい。`--out -`（または出力パス無し）では画像バイトが stdout を占め、JSON 全体が stderr に移る。
    stdout が受け渡すのは 1 枚だけなので、複数のターゲットはファイルへ書き出すこと。シェル側がバイト列をどう扱うかも
@@ -1379,35 +1496,35 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 
 ## ビルドとテスト
 
-| コマンド | 何を証明するか |
-| --- | --- |
-| `.\build.ps1` | Release ビルド、成果物 `build\ecapture.exe`。`-Config Debug`、`-Clean` が選べる |
-| `.\tests\cli.ps1` | 出力の契約：解析エラーと終了コード、`--yes` と `--no-overwrite` の各真偽表記、照会と撮影オプションの排他群、ストリーム分離、`--out` 省略と `--out -` の等価、4 か国語のメッセージ。`--dry-run` だけを使い、画面取得もファイル書き出しもしない |
-| `.\tests\windows.ps1` | `--list` / `--inspect`：ページ送り、表示方針、項目単位の読める／読めない、文書の形、プライバシー、歧義、そして照会が本当に何も触っていないこと（オフラインの `build\ecapture-windows-tests.exe` と自前のウィンドウ） |
-| `.\tests\screens.ps1` | `--screens` と `--monitor=device:` / `id:`：どの身元がどこまで安定か、報告した指定子が実際にそのパネルを選ぶか、存在しない識別子がメインへ退化しないこと |
+| コマンド                   | 何を証明するか                                                                                                                                                                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.\build.ps1`              | Release ビルド、成果物 `build\ecapture.exe`。`-Config Debug`、`-Clean` が選べる                                                                                                                                                                                                                                                            |
+| `.\tests\cli.ps1`          | 出力の契約：解析エラーと終了コード、`--yes` と `--no-overwrite` の各真偽表記、照会と撮影オプションの排他群、ストリーム分離、`--out` 省略と `--out -` の等価、4 か国語のメッセージ。`--dry-run` だけを使い、画面取得もファイル書き出しもしない                                                                                              |
+| `.\tests\windows.ps1`      | `--list` / `--inspect`：ページ送り、表示方針、項目単位の読める／読めない、文書の形、プライバシー、歧義、そして照会が本当に何も触っていないこと（オフラインの `build\ecapture-windows-tests.exe` と自前のウィンドウ）                                                                                                                       |
+| `.\tests\screens.ps1`      | `--screens` と `--monitor=device:` / `id:`：どの身元がどこまで安定か、報告した指定子が実際にそのパネルを選ぶか、存在しない識別子がメインへ退化しないこと                                                                                                                                                                                   |
 | `.\tests\capabilities.ps1` | `--capabilities` / `--diagnostics` を偽の probe に対して（画面が 1 つもない、あるチャネルの下限ちょう下、ビルド番号が取れない、エンコーダが 1 つ欠落、`--yes` の適用範囲と登録表、両照会が 1 つの判定群から出る）。実機側は照会がダイアログで止まらない、何も書かない、WMI と `--dry-run -v` と同源、全域 ASCII で `--lang` に左右されない |
-| `.\tests\compat.ps1` | バージョンの各下限：偽の Windows ビルドを実産の門番関数へ注入し、下限に届かない明示指定の経路を差し替えないこと、`auto` の列でどれが落ちるか、出荷バイナリの Windows 8 世代の WinRT / job API Set インポート |
-| `.\tests\channels.ps1` | 6 チャネルを自前ウィンドウ + 遮蔽対照で。ウィンドウ内容の経路は `--yes` で走り、ダイアログが出たら失敗とする。`bitblt` / `duplication` の画像判定は `-SimulateConsent` が必要 |
-| `.\tests\wgc.ps1` | WGC のサイズ追従：内容サイズとテクスチャサイズ、フレームプールの再構築、切り取られたフレームをウィンドウ全体として報告しないこと（オフラインの `build\ecapture-wgc-tests.exe` と、実際にサイズを変えたウィンドウ） |
-| `.\tests\image.ps1` | フレーム形状の検証とピクセル操作を手で組んだレイアウトで（縦縞 / チェッカーボード / alpha / 行末の合わせ込み / 上限超過と短いバッファ / 範囲外の切り出し）＋ 実機の単色撮影 |
-| `.\tests\crop.ps1` | `--roi` / `--client-area`：3 つの独立した Win32 照会とピクセル内容に対する幾何、ダイアログも出力名計画より前の拒否、デスクトップ経路で極小の切り抜きでも必ず人に聞くこと |
-| `.\tests\scale.ps1` | `--scale`：拡大しない、最も厳しい上限の採用、切り捨て、最近傍マッピングの逐点対比、切り抜き→縮小の順序、`png` / `bmp` / `jpeg` が縮小後のサイズを書くこと |
-| `.\tests\dup.ps1` | デスクトップ複製：4 通りの回転を実製品の幾何判定に対して、偽の 2 アダプタ出力表、実画像の `requestedRect` / `capturedRect` / `clipped` / `rotation`、「確認のあとにあのモニタが変わった」の各ケース。ディスプレイの並べ替えや回転は一切しない |
-| `.\tests\consent.ps1` | 承諾の等級表と拒否の伝わり方：注入した偽の応答器に対して `ConsentGate` の状態機械をオフラインで、実機ではすべてのダイアログに「いいえ」を答える —— どの経路が必ず聞くか、拒否が何を報告し、何もディスクに届かないか。人の代わりに「はい」を押すことは絶対にしない |
-| `.\tests\identity.ps1` | 身元再確認の 2 段階を実行順どおりに、`capture.target_gone` / `capture.target_changed`、Z 順による選択（`--topmost-match` / `--bottommost-match`） |
-| `.\tests\timeout.ps1` | 実行期限とヘルパープロセス：後の段階が残りしか使えない 1 つの予算、ヘルパーのワイヤー形式が「成功に似ている」のではなく不正を拒否すること、ヘルパーモードが公開オプションとして起動されることを断ること |
-| `.\tests\isolation.ps1` | 所有権：自分が起動していない同名プロセスは生かしたまま対象にならない、2 回の並行実行が混ざらない、異常終了時は自分だけを後始末する |
-| `.\tests\cursor.ps1` | `--cursor`：経路ごとの登録表、19041 の下限の両側で列が狭まる判定、`cursorRequested` / `cursorEffective` / `cursorBasis` の合成、ポインター形状の取得・ポインター描画・マウス移動の呼び出しが `src/` のどこかに現れたら失敗する見張り |
-| `.\tests\hdr.ps1` | `--hdr`：DXGI 形式と表示色空間の分類（認識できないものは `unknown` のまま）、トーン曲線の性質、`ConvertWideFrameToSdrBgra8` の逐点検証、結果のキー群、そして正直な SDR の実機ケース（既定ではキーが現れず、SDR フレームに処理を要求したときだけ `note.hdr_source_sdr`） |
-| `.\tests\save.ps1` | ファイル納入：実ファイルに対する `--no-overwrite` の各真偽表記、一括分の出力名プランと衝突検出、ロックされたターゲット / ディレクトリ / ディレクトリ無し / 強制終了に対するアトミックな確定、並発の上書き禁止 |
-| `.\tests\screen.ps1` | 3 本のデスクトップ経路でのモニタ全体取得を、赤い塊の配置と陰性対照で検証。答えるのは `-SimulateConsent` を付けたときだけで、テスト専用のデスクトップに限る |
-| `.\tests\smoke.ps1` | エンドツーエンド：自分のテストウィンドウを撮影し、PNG のサイズとピクセル内容を検証 |
-| `.\tests\invoker.ps1` | 共有のテスト起動ラッパー自身：argv のクォーティング、2 ストリームの同時消費、バイナリ出力、ハングした子プロセス、実行ごとの一時ディレクトリ |
-| `.\tests\build-path.ps1` | CJK の文字・空白・括弧・`%` を含むディレクトリからのビルド（`%TEMP%` を CJK のディレクトリにした場合も含む）と、一時バッチの本文が ASCII のままなこと |
-| `.\tests\streams.ps1` | ストリームと結果の信頼性：単一ターゲットの stdout 出力、複数ターゲットへ解決した一括分をダイアログ前に拒否すること、判定が実際のターゲット数に基づくこと、一括の途中で失敗しても先に撮れた画像が `images` に残ること、取り決めたストリームへ届かない結果が終了コード `8` になること、`--out` 省略と `--out -` の等価 |
-| `.\tests\window_shot.bat` | 人が回す手順：自作ウィンドウで全チャネルを撮り、ダイアログは人がクリックし、最後にモニタ全体 |
-| `.\scripts\check-lang.ps1` | 4 か国語のメッセージの key / プレースホルダの対応チェック。exe に本当に 4 本のリソースがコンパイル済みかも確かめる |
-| `.\scripts\mkreadme.ps1` | 各言語の `--help` の出力で 4 本の README のヘルプ節を再生成する。`-Check` は書き替えずに失敗するので、古いブロックが残っていない検査になる |
+| `.\tests\compat.ps1`       | バージョンの各下限：偽の Windows ビルドを実産の門番関数へ注入し、下限に届かない明示指定の経路を差し替えないこと、`auto` の列でどれが落ちるか、出荷バイナリの Windows 8 世代の WinRT / job API Set インポート                                                                                                                               |
+| `.\tests\channels.ps1`     | 6 チャネルを自前ウィンドウ + 遮蔽対照で。ウィンドウ内容の経路は `--yes` で走り、ダイアログが出たら失敗とする。`bitblt` / `duplication` の画像判定は `-SimulateConsent` が必要                                                                                                                                                              |
+| `.\tests\wgc.ps1`          | WGC のサイズ追従：内容サイズとテクスチャサイズ、フレームプールの再構築、切り取られたフレームをウィンドウ全体として報告しないこと（オフラインの `build\ecapture-wgc-tests.exe` と、実際にサイズを変えたウィンドウ）                                                                                                                         |
+| `.\tests\image.ps1`        | フレーム形状の検証とピクセル操作を手で組んだレイアウトで（縦縞 / チェッカーボード / alpha / 行末の合わせ込み / 上限超過と短いバッファ / 範囲外の切り出し）＋ 実機の単色撮影                                                                                                                                                                |
+| `.\tests\crop.ps1`         | `--roi` / `--client-area`：3 つの独立した Win32 照会とピクセル内容に対する幾何、ダイアログも出力名計画より前の拒否、デスクトップ経路で極小の切り抜きでも必ず人に聞くこと                                                                                                                                                                   |
+| `.\tests\scale.ps1`        | `--scale`：拡大しない、最も厳しい上限の採用、切り捨て、最近傍マッピングの逐点対比、切り抜き→縮小の順序、`png` / `bmp` / `jpeg` が縮小後のサイズを書くこと                                                                                                                                                                                  |
+| `.\tests\dup.ps1`          | デスクトップ複製：4 通りの回転を実製品の幾何判定に対して、偽の 2 アダプタ出力表、実画像の `requestedRect` / `capturedRect` / `clipped` / `rotation`、「確認のあとにあのモニタが変わった」の各ケース。ディスプレイの並べ替えや回転は一切しない                                                                                              |
+| `.\tests\consent.ps1`      | 承諾の等級表と拒否の伝わり方：注入した偽の応答器に対して `ConsentGate` の状態機械をオフラインで、実機ではすべてのダイアログに「いいえ」を答える —— どの経路が必ず聞くか、拒否が何を報告し、何もディスクに届かないか。人の代わりに「はい」を押すことは絶対にしない                                                                          |
+| `.\tests\identity.ps1`     | 身元再確認の 2 段階を実行順どおりに、`capture.target_gone` / `capture.target_changed`、Z 順による選択（`--topmost-match` / `--bottommost-match`）                                                                                                                                                                                          |
+| `.\tests\timeout.ps1`      | 実行期限とヘルパープロセス：後の段階が残りしか使えない 1 つの予算、ヘルパーのワイヤー形式が「成功に似ている」のではなく不正を拒否すること、ヘルパーモードが公開オプションとして起動されることを断ること                                                                                                                                    |
+| `.\tests\isolation.ps1`    | 所有権：自分が起動していない同名プロセスは生かしたまま対象にならない、2 回の並行実行が混ざらない、異常終了時は自分だけを後始末する                                                                                                                                                                                                         |
+| `.\tests\cursor.ps1`       | `--cursor`：経路ごとの登録表、19041 の下限の両側で列が狭まる判定、`cursorRequested` / `cursorEffective` / `cursorBasis` の合成、ポインター形状の取得・ポインター描画・マウス移動の呼び出しが `src/` のどこかに現れたら失敗する見張り                                                                                                       |
+| `.\tests\hdr.ps1`          | `--hdr`：DXGI 形式と表示色空間の分類（認識できないものは `unknown` のまま）、トーン曲線の性質、`ConvertWideFrameToSdrBgra8` の逐点検証、結果のキー群、そして正直な SDR の実機ケース（既定ではキーが現れず、SDR フレームに処理を要求したときだけ `note.hdr_source_sdr`）                                                                    |
+| `.\tests\save.ps1`         | ファイル納入：実ファイルに対する `--no-overwrite` の各真偽表記、一括分の出力名プランと衝突検出、ロックされたターゲット / ディレクトリ / ディレクトリ無し / 強制終了に対するアトミックな確定、並発の上書き禁止                                                                                                                              |
+| `.\tests\screen.ps1`       | 3 本のデスクトップ経路でのモニタ全体取得を、赤い塊の配置と陰性対照で検証。答えるのは `-SimulateConsent` を付けたときだけで、テスト専用のデスクトップに限る                                                                                                                                                                                 |
+| `.\tests\smoke.ps1`        | エンドツーエンド：自分のテストウィンドウを撮影し、PNG のサイズとピクセル内容を検証                                                                                                                                                                                                                                                         |
+| `.\tests\invoker.ps1`      | 共有のテスト起動ラッパー自身：argv のクォーティング、2 ストリームの同時消費、バイナリ出力、ハングした子プロセス、実行ごとの一時ディレクトリ                                                                                                                                                                                                |
+| `.\tests\build-path.ps1`   | CJK の文字・空白・括弧・`%` を含むディレクトリからのビルド（`%TEMP%` を CJK のディレクトリにした場合も含む）と、一時バッチの本文が ASCII のままなこと                                                                                                                                                                                      |
+| `.\tests\streams.ps1`      | ストリームと結果の信頼性：単一ターゲットの stdout 出力、複数ターゲットへ解決した一括分をダイアログ前に拒否すること、判定が実際のターゲット数に基づくこと、一括の途中で失敗しても先に撮れた画像が `images` に残ること、取り決めたストリームへ届かない結果が終了コード `8` になること、`--out` 省略と `--out -` の等価                       |
+| `.\tests\window_shot.bat`  | 人が回す手順：自作ウィンドウで全チャネルを撮り、ダイアログは人がクリックし、最後にモニタ全体                                                                                                                                                                                                                                               |
+| `.\scripts\check-lang.ps1` | 4 か国語のメッセージの key / プレースホルダの対応チェック。exe に本当に 4 本のリソースがコンパイル済みかも確かめる                                                                                                                                                                                                                         |
+| `.\scripts\mkreadme.ps1`   | 各言語の `--help` の出力で 4 本の README のヘルプ節を再生成する。`-Check` は書き替えずに失敗するので、古いブロックが残っていない検査になる                                                                                                                                                                                                 |
 
 どの実機テストも対象は自前のウィンドウです：`tests\helper\ec_window.cs` をその回の一時フォルダに
 コンパイルし、テストがその PID と HWND を握るので、プロセス名で対象を探すことも名前で一括終了することも
