@@ -155,12 +155,35 @@ try {
     # "查询报的屏数是个说得通的正数"，不去硬比对屏幕数——那条判据留给未验证。
     Assert-Ec ([int]$o.session.monitors -ge 1) "查询报的屏幕数不对劲：$($o.session.monitors)"
 
-    # 实测过没有这一条：本机正是那一台，所以必须写 yes，不能拿"版本够"冒充"实测过"
-    Assert-Ec ($o.os.matchesTestedEnvironment -eq 'yes') `
-        "本机是 $TESTED_BUILD x64，查询却说没实测过：$($o.os.matchesTestedEnvironment)"
+    # 「这台机器被本项目实测过没有」判的是同源关系，不假定跑判据的这一台就是记录里那一台：
+    # 记录只有两个数（os.testedMinBuild / os.testedArch，源码里 src/EnvReport.h 的 verified_env），
+    # matchesTestedEnvironment = 本机的版本与架构对不对得上那两个数，而每条后端的 verifiedOnThisMachine
+    # 必须由同一个判断算出来（EnvReport.cpp 把两者直接取同一个值）。换一台机器跑，这些值就该整体变成
+    # no 并留下 this_environment_not_tested 那条 caveat —— "没在这台测过就不说测过"这条判据一个字不
+    # 放宽；反过来把它写成"必须 yes"等于让开发机替所有机器声称实测过，跑判据的机器一换就整批假红。
+    Assert-Ec ([int]$o.os.testedMinBuild -eq $TESTED_BUILD -and $o.os.testedArch -eq 'x64') `
+        ("查询交回的实测记录是 {0} {1}，与这里钉住的 {2} x64（README《系统支持》同一条）不一致" -f `
+         $o.os.testedMinBuild, $o.os.testedArch, $TESTED_BUILD)
+    $isTestedEnv = ([int]$o.os.build -eq [int]$o.os.testedMinBuild -and $o.program.arch -eq $o.os.testedArch)
+    $wantMatch = if ($isTestedEnv) { 'yes' } else { 'no' }
+    Assert-Ec ($o.os.matchesTestedEnvironment -eq $wantMatch) `
+        ("本机 {0} 版本 {1}，记录 {2} 版本 {3}：matchesTestedEnvironment 该写 {4}，实际 {5}" -f `
+         $o.program.arch, $o.os.build, $o.os.testedArch, $o.os.testedMinBuild, `
+         $wantMatch, $o.os.matchesTestedEnvironment)
     foreach ($b in @($o.backends)) {
-        Assert-Ec ($b.verifiedOnThisMachine -eq 'yes') "后端 $($b.name) 的实测标记不对"
+        Assert-Ec ($b.verifiedOnThisMachine -eq $o.os.matchesTestedEnvironment) `
+            ("后端 {0} 的实测标记要与 matchesTestedEnvironment 同源：那边 {1}，这条 {2}" -f `
+             $b.name, $o.os.matchesTestedEnvironment, $b.verifiedOnThisMachine)
     }
+    # 光标那条开关没有自己的实测来源，也只能跟着同一个判断走（HDR 那一段是另一回事：本项目没有
+    # HDR 屏，verifiedOnThisMachine 恒 no，由下面色彩那节单独钉）。
+    Assert-Ec ($o.cursor.switch.verifiedOnThisMachine -eq $o.os.matchesTestedEnvironment) `
+        ("cursor 开关的实测标记要与 matchesTestedEnvironment 同源，实际 {0}" -f `
+         $o.cursor.switch.verifiedOnThisMachine)
+    $hasNotTestedCaveat = (@($o.caveats) -contains 'this_environment_not_tested')
+    Assert-Ec ($hasNotTestedCaveat -eq ($o.os.matchesTestedEnvironment -eq 'no')) `
+        ("this_environment_not_tested 这条 caveat 要跟着 matchesTestedEnvironment 出现或消失（本机 {0}，caveat 在否 {1}）" -f `
+         $o.os.matchesTestedEnvironment, $hasNotTestedCaveat)
 
     # =========================================================================
     # =========================================================================

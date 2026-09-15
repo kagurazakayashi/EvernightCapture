@@ -128,12 +128,40 @@ if ($SkipReal) {
 # $ExtraArgs 里的 --destroy-after-ms / --rename-after-ms 就落在这段路中间。
 # 收尾只停本次这一组窗口（绝不停整个清单：外面还有别的节在用自己的窗口）。
 # ---------------------------------------------------------------------------
+function Wait-EcWindowTitle {
+    <#
+        有界地等夹具把标题换成期望的那一条，回报最终标题与等了多久。
+
+        为什么需要它：夹具的 --rename-after-ms 是后台线程 Thread.Sleep + PostMessage，而 Windows 10 起
+        的定时器合并会让那一觉显著晚醒（本机实测：请求 1500 ms，第 3.8 s 才真的改名，窗口本身建了 0.4 s）。
+        判据要的现场是"夹具到底改没改成"，不是"改名抢在取帧之前"——先后没排开那一种另有 Skip-Ec 记未验证
+        （见 5a），所以这里只把"有没有改成"等出来，判据强度一点不放宽：等满仍没改成就是现场不成立，照样 FAIL。
+    #>
+    param(
+        [Parameter(Mandatory)]$Window,
+        [Parameter(Mandatory)][string]$Expected,
+        [int]$TimeoutMs = 20000
+    )
+
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalMilliseconds -lt $TimeoutMs) {
+        $t = Get-EcWindowText -Hwnd $Window.Hwnd
+        if ($t -eq $Expected) {
+            return [pscustomobject]@{ Title = $t; WaitedMs = [int]$sw.Elapsed.TotalMilliseconds; Hit = $true }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return [pscustomobject]@{ Title = (Get-EcWindowText -Hwnd $Window.Hwnd)
+                              WaitedMs = [int]$sw.Elapsed.TotalMilliseconds; Hit = $false }
+}
+
 function Invoke-ChangingBatch {
     param(
         [Parameter(Mandatory)][string]$Tag,
         [Parameter(Mandatory)][int]$SeedBase,
         [Parameter(Mandatory)][string[]]$ExtraArgs,
-        [int]$Others = 6
+        [int]$Others = 6,
+        [string]$ExpectTitle2 = ''
     )
 
     $sub = New-EcRunDir -Tag $Tag
@@ -152,11 +180,16 @@ function Invoke-ChangingBatch {
         $out = Get-EcRunFile -RunDir $sub -Name 'batch_%i.png'
         $r = Invoke-EcProcess -FilePath $Exe -TimeoutMs 120000 -Arguments `
             (@('--title-contains', $stag, '--all', '--yes', '--capture', 'wgc', '--out', $out))
+        # 等夹具那一次改名真的落地（见 Wait-EcWindowTitle 的说明），再读"当前标题"
+        $wait = $null
+        if ($ExpectTitle2) { $wait = Wait-EcWindowTitle -Window $first -Expected $ExpectTitle2 }
+        $now = if ($wait) { $wait.Title } else { (Get-EcWindowText -Hwnd $first.Hwnd) }
+        $waited = if ($wait) { $wait.WaitedMs } else { 0 }
         return [pscustomobject]@{
             Run = $sub; Stag = $stag; Result = $r; Json = (Json-Of $r)
             Hwnd = (Get-EcHwndHex $first.Hwnd); Ptr = $first.Hwnd
             TitleAtStart = "身份 会变的 $stag"
-            TitleNow = (Get-EcWindowText -Hwnd $first.Hwnd)
+            TitleNow = $now; RenameWaitedMs = $waited
             Count = @(Get-ChildItem -LiteralPath $sub.Path -Filter 'batch_*.png' -File).Count
         }
     } finally {
@@ -346,11 +379,13 @@ try {
     # 两批同构的现场，差别只在改出来的新标题里还留不留着当初那个子串。
     Write-Host '  -- 5a) 改了名而 --title-contains 不再成立'
     $broken = Invoke-ChangingBatch -Tag 'identity-brk' -SeedBase 45 `
-                                   -ExtraArgs @('--rename-after-ms', '1500', '--title2', '彻底换了个名字不含标记')
+                                   -ExtraArgs @('--rename-after-ms', '1500', '--title2', '彻底换了个名字不含标记') `
+                                   -ExpectTitle2 '彻底换了个名字不含标记'
     try {
         $o = $broken.Json
         Assert-Ec ($broken.TitleNow -eq '彻底换了个名字不含标记') `
-                  ("改名没真的发生（现场不成立），当前标题 '{0}'" -f $broken.TitleNow)
+                  ("改名没真的发生（等满 {1} ms 仍没改成，现场不成立），当前标题 '{0}'" -f `
+                   $broken.TitleNow, $broken.RenameWaitedMs)
         $e = First-Error-With $o 'capture.target_changed'
         if ($null -eq $e) {
             Skip-Ec '标题条件失效这条现场没撞上（改名与轮到它取帧的先后没排开）' `
@@ -392,8 +427,10 @@ try {
         $r = Invoke-EcProcess -FilePath $Exe -TimeoutMs 120000 -Arguments `
             (@('--title-contains', $stag, '--all', '--yes', '--capture', 'wgc', '--out', $out))
         $o = Json-Of $r
-        Assert-Ec ((Get-EcWindowText -Hwnd $first.Hwnd) -eq "$stag 还在标题里") `
-                  '改名没真的发生（这条现场不成立）'
+        $keptWait = Wait-EcWindowTitle -Window $first -Expected "$stag 还在标题里"
+        Assert-Ec ($keptWait.Hit) `
+                  ("改名没真的发生（等满 {0} ms 仍没改成，这条现场不成立），当前标题 '{1}'" -f `
+                   $keptWait.WaitedMs, $keptWait.Title)
         Assert-Ec ($null -eq (First-Error-With $o 'capture.target_changed')) `
                   ("标题改了而条件仍然成立时被当成了换目标：{0}" -f `
                    (First-Error-With $o 'capture.target_changed').message)
