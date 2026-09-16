@@ -1058,6 +1058,11 @@ CaptureOutcome RunCapture(const Options& opt) {
                 }
             }
 
+            // 这里借的是 img.source 自己那块缓冲，所以它只活到 img 移交为止：下面 pending.image
+            // 按值搬走整张图，交付那一步再按值收一份 pending，异常在交付函数里抛出来时，那一份
+            // 在展开到本层 catch 之前就已经销毁。于是指针只能用在移交之前的这两处（编码那一段与
+            // dtarget.backend 的赋值），交付那一段的诊断改拿 dtarget.backend —— 它是独立拥有的
+            // 同一份来源名，且活到本层调用之外。
             const wchar_t* backend = img.source.empty() ? CaptureMethodName(opt.capture)
                                                         : img.source.c_str();
             if (ok) {
@@ -1070,10 +1075,11 @@ CaptureOutcome RunCapture(const Options& opt) {
                                  &targetErr, &fatal);
             }
 
-            // 交付这一段（写文件 / 写标准输出）整个交给 DeliverImage：开工之前判一次预算、
-            // 完工之后再核一次，交付事实与期限合规分开记账（那三段各做什么、为什么必须分开，
-            // 判据本体写在 src/Delivery.h）。异常不在那里接：真抛出来就是"这一张没落地、
-            // 账也一页没记"，由下面那层通用错误路接手 —— 与它还在这一段之内时同一出口。
+            // 交付这一段（写文件 / 写标准输出）整个交给 DeliverImage：开工之前判一次预算并备好
+            // 落地之后要用的记账资源，完工之后再核一次，交付事实与期限合规分开记账（那四段各做
+            // 什么、为什么必须分开，判据本体写在 src/Delivery.h）。step 由本层持有而不是取返回值：
+            // 那一段抛出东西时没有返回值可读，而"这一张到底有没有交出去、账记到哪儿"正是那一刻
+            // 最需要分清的，所以 DeliverImage 在事实成立的那一刻直接把它写在这里。
             if (ok) {
                 stage = img.file == L"-" ? stages::kStdout : stages::kWrite;
                 DeliveryTarget dtarget;
@@ -1092,11 +1098,13 @@ CaptureOutcome RunCapture(const Options& opt) {
                 if (hdrNote) pending.notes.push_back(std::move(*hdrNote));
                 if (uniformNote) pending.notes.push_back(std::move(*uniformNote));
 
+                // 这里的来源名拿 dtarget.backend 那一份，不拿 backend：那缓冲已经跟着 img 搬进
+                // pending，异常展开时先于本层 catch 销毁；dtarget 是本层局部对象，catch 里读它还活着。
                 CallBackend(
-                    stage, backend,
+                    stage, dtarget.backend.c_str(),
                     [&] {
-                        step = DeliverImage(delivery, dtarget, std::move(pending), encoded,
-                                            &outcome);
+                        DeliverImage(delivery, dtarget, std::move(pending), encoded, &outcome,
+                                     &step);
                         return step.delivered;
                     },
                     &targetErr, &fatal);
@@ -1106,7 +1114,10 @@ CaptureOutcome RunCapture(const Options& opt) {
             // 走到这里说明上面那几层边界之外还有东西抛（例如 std::vector 扩容失败）：
             // 同样只作废这一个目标，除非它确实是整机级别的资源问题。
             FillFromCurrentException(&targetErr, stage, CaptureMethodName(opt.capture), &fatal);
-            settled = false;   // 那一段根本没走完，账不能算记过
+            // 交付那一段已经把这一张记完账（图与提示都已入列）之后才抛出来的，只剩那条期限记录的
+            // 两句文字组不起来：这一张的账记过就是记过，这里不再补第二条，否则等于把一次成功的
+            // 交付又说成一次写失败。抛在入账之前时 step.recorded 仍是 false，照旧记这一条真实原因。
+            settled = step.recorded;
         }
 
         if (!settled) {

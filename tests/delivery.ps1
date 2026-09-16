@@ -10,14 +10,17 @@
     判据分两层：
 
       1) 离线层：build\ecapture-delivery-tests.exe（源码 tests\delivery_state.cpp）。判的是生产
-         那两份本体：src\Delivery.cpp 的交付编排 + src\FileSave.cpp 的原子写。出口与时钟注入进来，
-         于是"提交之后预算才跨""半段流留在管道里""改名那一瞬间撞上 --no-overwrite"这些都排得出
+         那两份本体：src\Delivery.cpp 的交付编排 + src\FileSave.cpp 的原子写。出口、时钟与一道
+         计数闸门（全局 operator new）注入进来，于是"提交之后预算才跨""半段流留在管道里"
+         "改名那一瞬间撞上 --no-overwrite""图已经收不回来而记账刚好缺内存"这些都排得出
          确定的先后。文件走真磁盘，所以每一判都同时核对**磁盘事实**（文件在不在、多少字节、
          旧文件有没有被破坏、目录里有没有多余条目）与 **JSON 那一头**（images 条目、notes、
          errors 的码与 stage、以及退出码），而不是只断言预算读数。
-         十三节覆盖：按时完成、开工前已超时、文件提交后跨限、标准输出完整写后跨限、半段 stdout、
+         十五节覆盖：按时完成、开工前已超时、文件提交后跨限、标准输出完整写后跨限、半段 stdout、
          一个字节都没出去、--no-overwrite 撞名、写失败之后才看见期限（真实原因不被超时覆盖）、
-         改名失败、第一张已交付第二张不开工、最后一张慢写、没设预算、入账只一次。
+         改名失败、第一张已交付第二张不开工、最后一张慢写、没设预算、入账只一次、
+         输出之前分配失败（没开始写也就没记任何账）、提交之后才缺内存（已落地的图与提示不许
+         从报告里消失，调用方手里那一步的交付事实也说得出阶段）。
       2) 真机层：把标准输出那一头真的堵住。父侧只读走第一块就不再读，于是子进程卡在 WriteFile 里
          （窗口内容那一路，带 --yes，不弹确认框、也不拍任何桌面像素）：
          * 2a) 等过预算之后再把管道排干 —— 图应当**照常交付**：captured=1、images[0].bytes 与
@@ -127,7 +130,7 @@ try {
         $m = [regex]::Match($tail, '共 (\d+) 项检查，失败 (\d+)')
         Assert-Ec $m.Success "读不出摘要：$tail"
         Assert-Ec ([int]$m.Groups[2].Value -eq 0) "交付编排判据有失败项：$tail"
-        Assert-Ec ([int]$m.Groups[1].Value -ge 120) "交付编排判据条数不对劲（$($m.Groups[1].Value)），判据被删了？"
+        Assert-Ec ([int]$m.Groups[1].Value -ge 160) "交付编排判据条数不对劲（$($m.Groups[1].Value)），判据被删了？"
         Write-Host "  $tail"
         @($lines | Where-Object { $_ -match 'FAIL' }) | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
     }
