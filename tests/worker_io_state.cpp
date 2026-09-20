@@ -7,9 +7,13 @@
 // 真命名管道给不出这种可控顺序（它只给一个真实结局），而发布版 ECAPTURE.EXE 里
 // 不许有任何能注入假 I/O 的开关。所以判生产状态机本体（src/WorkerIo.cpp），
 // 只把它与 Win32 之间那条接缝换成脚本化的假后端。
-// 唯一不在这里判的一条是"进程正常退出时谁碰了仍未确认终态的记录"：那要看到 CRT 收尾之后的
-// 状态，用本次判据自己的假后端判不了（它本身也是观察对象，先于被测资源析构就读到垃圾），
-// 所以由本测试 exe 以 --io-exit 模式另起一个子进程记录关闭/归属次序（见判据十三）。
+// 不在这层判的有两件：
+//   * "进程正常退出时谁碰了仍未确认终态的记录"：那要看到 CRT 收尾之后的状态，用本次判据自己的
+//     假后端判不了（它本身也是观察对象，先于被测资源析构就读到垃圾），所以由本测试 exe 以
+//     --io-exit 模式另起一个子进程记录关闭/归属次序（见判据十三）。
+//   * "登记表自己第一次堆分配失败""收养那个集合节点分配失败"这两支：要的是真把内存压干，
+//     而给这份进程级单例开一个生产用的注入开关，已经超出本模块唯一的接缝（IoBackend）。
+//     判据十二判的是这两支被兜住之后的对外契约（绝不抛出、问不到时的取值依据）。
 //
 // 每条判据都在三类断言上同时钉住：
 //   1) 对外结局（done / timedOut / gle / transferred）与改造前的契约一致；
@@ -433,7 +437,7 @@ void CheckAdoptedHandle() {
             RunOverlappedOp(be, kAdopted, 64, 1000, 500, PendingReadIssued(nullptr, 0x99), nullptr);
         Check(s.unresolved, "两条挂起读都超时进登记表");
     }
-    AdoptHandle(kAdopted);
+    Check(AdoptHandle(kAdopted), "收养记上时如实回 true（记不上时调用方仍要放弃关闭责任）");
     // 先只排干得动一条：句柄必须还开着（还有未决 I/O 挂在它上面）
     be.waits.push_back({WAIT_OBJECT_0, 0});   // 第一条：确认终态
     be.waits.push_back({WAIT_TIMEOUT, 0});    // 第二条：这轮还是等不到
@@ -516,6 +520,39 @@ void CheckAlreadyConnectedWithSpentBudget() {
         nullptr);
     Check(s.done && !s.timedOut && be.waitMsSeen.empty(),
           "预算已尽时已连接分支不进入任何等待（等待只对确有挂起操作的路径有意义）");
+}
+
+// ---------------------------------------------------------------------------
+// 判据十二：登记表的对外契约 —— 绝不抛出，且"问不到"时的取值各有依据
+//   1) 这三个入口由 Transaction::Finish 直接调用，而 Finish 还会从它默认 noexcept 的析构里
+//      再走一遍：异常一逸出就是终止进程，原本的结构化错误与收尾路径全丢。这一条用编译期
+//      断言钉住 —— 源码把 noexcept 拿掉（或把收养的返回值签名改回 void）就直接编不过。
+//   2) 登记表还空着的时候（下面用的句柄值没被任何判据用过），三个入口回的是"确有依据"的值：
+//      没有未决、还剩 0 条、收养记上了；而登记表问不到这条句柄归哪个后端时，它宁可什么都不关。
+//      依据是"登记任何操作都要求登记表先存在"，不是猜的。
+// 登记表自己第一次堆分配失败、以及收养那个集合节点分配失败这两支，要的是真把内存压干；
+// 给匿名命名空间里的这份单例开一个生产用的注入开关，不在本模块的接缝（IoBackend）之内，
+// 所以这里判的是这两支被兜住之后的对外契约与收尾路径，不判那两次分配本身。
+// ---------------------------------------------------------------------------
+static_assert(noexcept(HasPendingOps(kH1)), "HasPendingOps 必须不抛出：它会被 noexcept 析构链调用");
+static_assert(noexcept(DrainPendingOps(kH1, 0)), "DrainPendingOps 必须不抛出：同上");
+static_assert(noexcept(AdoptHandle(kH1)), "AdoptHandle 必须不抛出：同上");
+
+void CheckRegistryContract() {
+    FakeBackend be;
+    const HANDLE kCold = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0xC01D));
+    Check(!HasPendingOps(kCold), "空登记表：如实回'没有未决'（登记要求登记表先存在）");
+    Check(DrainPendingOps(kCold, 0) == 0, "空登记表：一轮排干剩 0 条");
+    Check(be.targetsClosed.empty() && be.eventsOpened.empty() && be.unexpected == 0,
+          "这三次问询一个后端调用都不做，更不会顺手去关句柄");
+    Check(AdoptHandle(kCold), "收养记上时如实回 true");
+    Check(DrainPendingOps(kCold, 0) == 0, "本来就没有记录的收养句柄：排干仍算 0 条待收尾");
+    // 这条句柄上一条记录都没有，登记表问不到它归哪个后端（后端是跟着记录登记的），于是
+    // 宁可什么都不关 —— 绝不拿别的句柄的后端去关一个自己认不出的值。生产里收养只发生在
+    // "排干后还剩记录"的那一支（见 Transaction::Finish），那种场合后端问得到、由判据九钉住。
+    Check(be.targetsClosed.empty() && be.unexpected == 0,
+          "问不到归属后端时不关句柄：不猜、也不误用别人的后端");
+    Check(!HasPendingOps(kCold), "该句柄始终没有未决记录");
 }
 
 // ---------------------------------------------------------------------------
@@ -721,6 +758,7 @@ int RunWorkerIoStateChecks(int* checksOut, int* failuresOut) {
     CheckZeroAndClamp();
     CheckAlreadyConnected();
     CheckAlreadyConnectedWithSpentBudget();
+    CheckRegistryContract();
     CheckExitOrderInSubprocess();
     if (checksOut) *checksOut = g_checks;
     if (failuresOut) *failuresOut = g_failures;

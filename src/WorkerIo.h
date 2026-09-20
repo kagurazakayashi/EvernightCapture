@@ -17,6 +17,8 @@
 //     由后续 DrainPendingOps / 交易收尾继续认领。登记表只在确认终态后才删除记录；登记表
 //     自身是"故意永不析构"的进程生命周期对象，所以进程正常退出时也不会去销毁仍未确认
 //     终态的记录 —— 那一份连同它的事件、OVERLAPPED 与缓冲区由系统随进程统一回收。
+//     这份对象第一次被取用时才堆分配，所以取用点前移到发起任何 I/O 之前（见 RunOverlappedOp）：
+//     移交点上不再有分配动作，"调用方已松手却登记不上"这条失联路径因此不存在。
 //   * 等到完成事件却仍被报为未完成（ERROR_IO_INCOMPLETE / ERROR_IO_PENDING）同样不算终态。
 // 调用方的栈与堆内存因此永远不与未决的 IRP 共用：即使超时走人，内核后续只写到登记表里的副本。
 //
@@ -102,20 +104,31 @@ IoBackend& Win32Backend();
 // 事件、OVERLAPPED、缓冲区与"内核是否还在访问它们"的状态严格一致 —— 绝不提前放手。
 // backend 参数就是那条可注入接缝；waitMs 用 INFINITE 表示"不限"（沿用 Deadline 的约定）。
 // outBuf 非空时，成功读取的数据在完成确认之后复制进去（写操作传 nullptr）。
+// 登记表在这一步发起任何 I/O 之前就取好（它第一次被取用时才堆分配，那一次可能失败）：拿不到
+// 登记表就一次都不发起，直接以 ERROR_NOT_ENOUGH_MEMORY 的非终态结局返回。留到移交点上才第一次
+// 取用，等于在调用方已经松手之后赌那次分配 —— 赌输这条操作就再也查不到了。
 IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD waitMs,
                        DWORD cancelGraceMs, const IssueFn& issue, std::vector<uint8_t>* outBuf);
 
 // 非阻塞探测：登记表里是否还有挂在这个句柄上、未进入终态的操作。
 // 关闭该句柄之前必须先问这个 —— 有未决操作时关句柄属于文档不保证的行为。
-bool HasPendingOps(HANDLE hFile);
+// 本层的三个入口都不抛出，因为调用它们的是交易收尾链路（Transaction::Finish 还会从析构里
+// 再走一遍），异常从默认 noexcept 的析构逸出就是终止进程。问不到状态时按保守值回答：
+// 登记表从未建立（它第一次被取用时堆分配失败）→ 确实没有任何已移交的记录，报"没有未决"；
+// 登记表在却问不到（内部加锁失败）→ 报"还有未决"，绝不含糊成"可以放心关句柄"。
+bool HasPendingOps(HANDLE hFile) noexcept;
 
 // 对该句柄上所有未决操作做一轮有界排干，返回仍进不了终态的条数。
 // waitMs 是每条操作各自的收尾等待上限（0 = 只探一次，不等）。
-DWORD DrainPendingOps(HANDLE hFile, DWORD waitMs);
+// 排不动时（内部加锁失败）报"至少还剩一条"，让调用方走收养遗留而不是关句柄。
+DWORD DrainPendingOps(HANDLE hFile, DWORD waitMs) noexcept;
 
 // 把 hFile 的关闭责任交给登记表：所有挂在其上的操作进入终态后由登记表关掉它。
 // 调用方必须同时放弃自己对这个句柄的关闭责任（句柄值不能重复注册两次收养）。
-void AdoptHandle(HANDLE hFile);
+// 返回 false = 这条收养没能记下（登记表没建立起来，或那个记录节点分配不出来）：登记表此后
+// 不会碰这个句柄，而调用方仍然要放弃关闭责任 —— 带着未决 I/O 关它依旧是文档不保证的行为，
+// 宁可让这个句柄随进程遗留，也不许在析构链路上关出未定义行为。
+bool AdoptHandle(HANDLE hFile) noexcept;
 
 }  // namespace workerio
 }  // namespace ecapture

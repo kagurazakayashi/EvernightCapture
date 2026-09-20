@@ -444,7 +444,11 @@ void Transaction::Finish() {
         if (workerio::DrainPendingOps(pipe_.get(), kCancelDrainGraceMs) == 0) {
             pipe_.Close();
         } else {
-            workerio::AdoptHandle(pipe_.get());
+            // 收养成不成功都要把关闭责任交出去：这条句柄上还挂着没确认终态的操作，
+            // 由 Transaction 自己关它仍然是文档不保证的行为。收养没记下来（登记表的节点
+            // 分配不出来）时就让它随进程遗留 —— 代价是一个句柄值，换掉的是一次未定义行为。
+            // 这三个入口都不抛出（见 WorkerIo.h），这条收尾路径不会把异常带进析构函数。
+            static_cast<void>(workerio::AdoptHandle(pipe_.get()));
             pipe_.Release();   // 关闭责任移交登记表（登记表在操作全数终态后替它关）
         }
     }

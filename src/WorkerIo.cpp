@@ -25,7 +25,7 @@ public:
     ~PendingOperation() {
         // 只有"已确认终态"的对象才允许走到这里：登记表只在 TrySettle 返回 true 之后删除记录，
         // RunOverlappedOp 只在终态分支释放自己那份。未确认终态的对象由永不析构的登记表
-        // （或它那段免分配的兜底槽位）持到进程结束，交给系统统一回收 —— 见 Registry::Get。
+        // （或它那段免分配的兜底槽位）持到进程结束，交给系统统一回收 —— 见 Registry 的类注释。
         CloseEventOnce();
     }
 
@@ -173,6 +173,9 @@ private:
 // 的那份随进程由系统统一回收，已确认终态的记录照旧在收尾排干与成功路径里即时回收，
 // 不会把每条操作都变成积压。规模有界：每条记录至多一份块缓冲加一个事件句柄，
 // 且这里只装"还没确认终态"的操作。
+// 代价是这份对象**第一次被取用时才堆分配**，那一次分配可能抛出。因此取用点必须建在
+// "手上还没有任何内核可见资源"的时候（见 TryRegistry 与 RunOverlappedOp 开头），
+// 绝不能留到交接点上 —— 那时调用方已经松手，分配一失败这条操作就再也查不到了。
 // ---------------------------------------------------------------------------
 class Registry {
 public:
@@ -185,18 +188,27 @@ public:
     //   1) 优先登记进按句柄归组的表（正常路径，之后由 Drain 认领）；
     //   2) 那张表要堆分配，极端内存压力下可能装不下 —— 退化为占用一段免分配的固定槽位，
     //      照样保住"有人在管"：HasPending 查得到、Drain 认领得了、收养的句柄照样等它；
-    //   3) 连槽位都占满时才故意弃管 —— 依然绝不释放，只是没人再替它确认终态、
-    //      HasPending 也会漏报这一条。走到 3) 需要同一条句柄上积压超过 kRetainedCapacity
-    //      条未终态操作且此刻正好分配失败；生产一次交易里 I/O 是顺序进行的，实际到不了，
-    //      但这是内存耗尽下唯一不造成"内核往已释放内存写"的选择，如实记录在这里。
-    void Add(PendingOperation* op) {
-        std::lock_guard<std::mutex> lk(m_);
-        if (TryRegister(op)) return;
-        for (PendingOperation*& slot : retained_) {
-            if (slot == nullptr) {
-                slot = op;
-                return;
+    //   3) 连槽位都占满时才故意弃管 —— 依然绝不释放，只是没人再替它确认终态，
+    //      HasPending 也会漏报这一条。
+    // 3) 的真实条件要看清容量归属：那 kRetainedCapacity 段槽位归**整个登记表共用**，
+    // 不是每条句柄各一份 —— 别的句柄上没进终态的操作照样占着它们。所以走到 3) 要同时满足
+    // "全进程已占满这几段槽位"与"此刻那张表又分配失败"，跟单条句柄积了多少条没有直接关系。
+    // 这是内存耗尽下唯一不造成"内核往已释放内存写"的选择，如实记录在这里。
+    // 本函数绝不抛出（加锁也兜在里面）：交接点建在调用方已经松手之后，异常一逸出就等于
+    // 把这条操作变成没人认领的孤儿 —— 所以宁可原地弃管，也不许它穿到那一步之外。
+    void Add(PendingOperation* op) noexcept {
+        try {
+            std::lock_guard<std::mutex> lk(m_);
+            if (TryRegister(op)) return;
+            for (PendingOperation*& slot : retained_) {
+                if (slot == nullptr) {
+                    slot = op;
+                    return;
+                }
             }
+        } catch (...) {
+            // 能到这里只剩加锁失败（TryRegister 自己把分配失败退回 false 了）。
+            // 与槽位占满同一档处理：弃管，但绝不释放。
         }
     }
 
@@ -247,13 +259,24 @@ public:
         return left;
     }
 
-    void Adopt(HANDLE hFile) {
-        std::lock_guard<std::mutex> lk(m_);
-        adopted_.insert(hFile);
+    // 记下"这条句柄由登记表负责关闭"。那条记录本身要堆分配一个集合节点，分不出来（或加锁
+    // 失败）就如实回 false —— 本函数绝不抛出：它的调用点在交易收尾链路上，而收尾还会从
+    // Transaction 的析构里再走一遍，异常从默认 noexcept 的析构逸出就是终止进程。
+    // 回 false 之后这条句柄谁也管不着：Drain 全数终态时不会去关它。调用方据此仍然要放弃
+    // 自己的关闭责任 —— 带着未决 I/O 关句柄始终是文档不保证的行为，宁可遗留一个句柄值。
+    bool Adopt(HANDLE hFile) noexcept {
+        try {
+            std::lock_guard<std::mutex> lk(m_);
+            adopted_.insert(hFile);
+            return true;
+        } catch (...) {
+            return false;
+        }
     }
 
 private:
     // 免分配兜底槽位的容量：登记表堆分配失败时仍要保住未决资源的所有权与可查性。
+    // 这份容量是**全进程共用**的，不是每条句柄各一份：任何句柄上没进终态的操作都占同一批槽位。
     static constexpr size_t kRetainedCapacity = 8;
 
     Registry() = default;
@@ -304,6 +327,20 @@ private:
     PendingOperation* retained_[kRetainedCapacity] = {};
 };
 
+// 免抛地取得登记表。登记表第一次被取用时才堆分配（那份分配的存在是为了让它不被析构，
+// 见类注释），那一次可能抛出，所以这里兜住并如实回 nullptr。
+// nullptr 的含义是确定的："这份登记表从来没存在过" —— 而登记任何操作都要求它先存在，
+// 于是 nullptr 就等于"此刻没有任何已移交的记录"。下面三个公共入口据此给出的保守值
+// 是有依据的，不是猜的。分配失败不会留下半个静态对象：初始化被异常打断时守卫变量不置位，
+// 下一次取用会重新尝试。
+Registry* TryRegistry() noexcept {
+    try {
+        return &Registry::Get();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
 }  // namespace
 
 StartResult StartOf(const BOOL r) {
@@ -329,6 +366,18 @@ StartResult ConnectStartOf(const BOOL r) {
 
 IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD waitMs,
                        DWORD cancelGraceMs, const IssueFn& issue, std::vector<uint8_t>* outBuf) {
+    // 登记表必须在任何东西可能飞行之前先拿到手：它第一次被取用时才堆分配，而那一次分配会抛。
+    // 留到下面的交接点才第一次取用就成了赌博 —— 那时调用方已经松手，分配一失败这条操作就再也
+    // 查不到，"登记表里没有未决操作，可以放心关句柄"的判断随之失去依据。在这里取就没有这个
+    // 包袱：此刻连事件都还没建，拿不到登记表只能一次 I/O 都不发起，按机制故障如实上报，
+    // 谈不上提前释放什么。往后交接点上的 Add 已是免抛路径（登记表存在 + 自己兜尽分配失败）。
+    Registry* const reg = TryRegistry();
+    if (reg == nullptr) {
+        IoStep noRegistry;
+        noRegistry.gle = ERROR_NOT_ENOUGH_MEMORY;
+        return noRegistry;
+    }
+
     // 本地这份所有权由 unique_ptr 兜住，异常路径也不会把资源丢掉。能交给它析构的前提是
     // "这条操作已确认终态"：Execute 的分支穷尽保证了没确认终态的那条一定带着 registered()
     // = true 回来，走下面的移交；done = true 的那条必然已确认终态（复制回调用方所需的
@@ -343,18 +392,49 @@ IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD 
     }
     if (op->registered()) {
         // 没确认终态：整份（事件 + OVERLAPPED + 缓冲区）交给登记表继续看管。
-        // 先松手再接管，任何一步抛出都不会出现两个所有者同时想释放它。
+        // 先松手再接管，任何一步抛出都不会出现两个所有者同时想释放它；反过来先接管后松手
+        // 会让 unique_ptr 在抛出时析构掉一个登记表还认得的对象。这一交接不会抛出：登记表
+        // 已在函数开头拿到，Add 自己把分配失败退回免分配槽位、把加锁失败也兜住（见 Add）。
         owned.release();
-        Registry::Get().Add(op);
+        reg->Add(op);
     }
     return result;
 }
 
-bool HasPendingOps(HANDLE hFile) { return Registry::Get().HasPending(hFile); }
+// 这三个入口一律不抛出：调用它们的是交易收尾链路（Transaction::Finish，还会从析构里再走一遍），
+// 异常从默认 noexcept 的析构函数逸出就是终止进程。各自的保守取值理由写在旁边。
+bool HasPendingOps(HANDLE hFile) noexcept {
+    // 登记表取不到（它第一次被取用时堆分配失败）→ false：登记任何操作都要求它先存在，所以
+    // "它从没存在过"确实推出"此刻没有任何已移交的记录"。登记表在、却问不到状态（加锁失败）
+    // → true：宁可当成还有未决，也不让调用方在没确认终态的句柄上动手。
+    Registry* const reg = TryRegistry();
+    if (reg == nullptr) return false;
+    try {
+        return reg->HasPending(hFile);
+    } catch (...) {
+        return true;
+    }
+}
 
-DWORD DrainPendingOps(HANDLE hFile, DWORD waitMs) { return Registry::Get().Drain(hFile, waitMs); }
+DWORD DrainPendingOps(HANDLE hFile, DWORD waitMs) noexcept {
+    // 0 与 HasPendingOps 的 false 同一条依据：没有登记表就没有已移交的记录，也就没有未决操作。
+    // 反过来，登记表在却排不动（加锁失败）时报"至少还剩一条"，让调用方走收养遗留而不是关句柄。
+    Registry* const reg = TryRegistry();
+    if (reg == nullptr) return 0;
+    try {
+        return reg->Drain(hFile, waitMs);
+    } catch (...) {
+        return 1;
+    }
+}
 
-void AdoptHandle(HANDLE hFile) { Registry::Get().Adopt(hFile); }
+bool AdoptHandle(HANDLE hFile) noexcept {
+    // 返回 false = 这条收养没能记下（登记表不存在，或那个集合节点分配不出来）：调用方仍然要
+    // 放弃对这个句柄的关闭责任，此时关它依旧是文档不保证的行为，宁可让句柄随进程遗留。
+    Registry* const reg = TryRegistry();
+    if (reg == nullptr) return false;
+    return reg->Adopt(hFile);
+}
 
 // ---------------------------------------------------------------------------
 // 真实 Win32 后端

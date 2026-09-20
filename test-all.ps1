@@ -30,8 +30,15 @@
     并发互斥体放手并关闭句柄、把控制台编码还原 —— 上一版只在正常出口 Release 而不 Dispose，于是一次异常
     中止后，同一个交互式 shell 会一直占着那份句柄，下一次运行被自己的残留挡住。
 
-    退出码：0 = 跑到的套件全通过（SKIP 不算失败）；1 = 至少一套 FAIL / TIMEOUT / 没交出退出码；
-    2 = 前置没成立（构建失败、找不到产物、参数不认识、已有另一个总跑在跑）。
+    退出码：0 = 计划内的套件全部跑到并通过（各套件自己记的 SKIP 算未验证，不算失败）；
+    1 = 至少一套 FAIL / TIMEOUT / NO EXIT / NO START，**或计划里点名要跑的整套没执行起来**
+        （NOT RUN：脚本文件不见了、参数解析不干净）—— "这套根本没跑"不是一张合格的成绩单；
+    2 = 前置没成立（构建失败、找不到产物、参数不认识、筛完没有可执行测试、已有另一个总跑在跑）。
+
+    汇总里三种"没跑/没验"分开写，不合并成一个数字：按 -Quick / -Only / -Except 刻意没排的、
+    因 -StopOnFail 提前停下的剩余、以及意外整套没跑成的（只有最后这一类判退出码 1）；各套件自己
+    记的 SKIP 属于环境与安全边界，照旧既不升成失败、也不当通过。筛完是零套件的计划（例如
+    `-Only cli -Except cli`）直接按前置不成立报"没有可执行测试"，不进汇总。
 .EXAMPLE
     .\test-all.ps1                       # 构建 Release，跑全部（含需要真等 30 秒以上的那两节）
     .\test-all.ps1 -Quick                # 不跑 build-path.ps1，并给 timeout.ps1 传 -SkipLong
@@ -128,7 +135,11 @@ function Get-SuiteParameterNames {
         用 AST 而不是 `Get-Command -Path`：后者在 PowerShell 7 上会报"ArgumentList 只能在取单条命令时
         指定"（本机 7.6.2 实测），而 ParseFile 在 5.1 与 7.x 上给出同一份结果。只取 ParamBlock，
         也就是脚本级参数，不含脚本内部函数各自的 param，免得把同名开关误递给脚本。
+
         返回 $null 表示"读不出来"（连解析都不干净），与"它一个参数都没有"的空数组分开。
+        这个分开必须靠外面包一层对象来做：函数里 `return @()` 经过命令输出会被 PowerShell 摊平，
+        调用方拿到的就是 $null（实测 `$null -eq (f)` 为真），于是"这份套件不收参数"会被误读成
+        "读不出来"而整套不跑 —— 未运行现在是要判失败的，这种误读不能留。
     #>
     param([Parameter(Mandatory)][string]$Path)
 
@@ -138,7 +149,8 @@ function Get-SuiteParameterNames {
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
         if ($null -eq $ast) { return $null }
         if ($errors -and @($errors).Count) { return $null }
-        return @($ast.ParamBlock.Parameters | ForEach-Object { [string]$_.Name.VariablePath.UserPath })
+        $names = @($ast.ParamBlock.Parameters | ForEach-Object { [string]$_.Name.VariablePath.UserPath })
+        return [pscustomobject]@{ Names = $names }
     } catch {
         return $null
     }
@@ -272,6 +284,7 @@ function Show-TextTail {
 # ---------------------------------------------------------------------------
 $suites = @(
     [pscustomobject]@{ Name = 'invoker';      Note = '测试调用器自身（argv 引号、双流、二进制、超时、并发）' },
+    [pscustomobject]@{ Name = 'orchestration'; Note = '总跑自身：空计划校验与"意外没跑成/主动没跑/SKIP"的分类与退出码' },
     [pscustomobject]@{ Name = 'cli';          Note = '输出契约与退出码（只跑 --dry-run，不截图不落地）' },
     [pscustomobject]@{ Name = 'windows';      Note = '--list / --inspect 结构化窗口发现' },
     [pscustomobject]@{ Name = 'screens';      Note = '--screens 与按标识选屏的三种下场' },
@@ -320,7 +333,6 @@ if ($Only) {
     $unknown = @($Only | Where-Object { $suites.Name -notcontains $_ })
     if ($unknown) { Write-Host "不认识这些套件名：$($unknown -join ', ')" -ForegroundColor Red; Exit-TestAll 2 }
     $plan = @($plan | Where-Object { $Only -contains $_.Name })
-    if (-not $plan) { Write-Host '筛完没有套件可跑。' -ForegroundColor Red; Exit-TestAll 2 }
 }
 if ($Except) {
     $dropBad = @($Except | Where-Object { $suites.Name -notcontains $_ })
@@ -328,10 +340,23 @@ if ($Except) {
     $plan = @($plan | Where-Object { $Except -notcontains $_.Name })
 }
 
+# 所有筛选都做完之后才验计划非空：-Only 那一步非空，不代表 -Except 之后还非空
+# （`-Only cli -Except cli` 筛出来的就是零套件）。空计划不是一张"全部通过"的成绩单，
+# 而是一次根本不成立的调用，按前置没成立报出去，不进汇总、也不给 0。
+if (-not $plan) {
+    $filters = @()
+    if ($Quick) { $filters += '-Quick' }
+    if ($Only) { $filters += ("-Only {0}" -f ($Only -join ',')) }
+    if ($Except) { $filters += ("-Except {0}" -f ($Except -join ',')) }
+    $why = if ($filters) { "生效的筛选：$($filters -join '、')" } else { '没有给任何筛选开关（登记表是空的？）' }
+    Write-Host "筛完没有可执行测试，不构成验收：$why（NO-TESTS-PLANNED）" -ForegroundColor Red
+    Exit-TestAll 2
+}
+
 if ($List) {
     Write-Host "执行计划（$($plan.Count) 套，串行）：" -ForegroundColor Cyan
     $i = 0
-    foreach ($s in $plan) { $i++; Write-Host ('  {0,2}. {1,-12} {2}' -f $i, $s.Name, $s.Note) }
+    foreach ($s in $plan) { $i++; Write-Host ('  {0,2}. {1,-14} {2}' -f $i, $s.Name, $s.Note) }
     if ($Quick) { Write-Host '  -Quick：不排 build-path.ps1，并给 timeout.ps1 传 -SkipLong' }
     if ($Offline) { Write-Host '  -Offline：只跑离线层（向支持 -SkipReal 的套件传它；build-path 传 -OfflineOnly）' }
     if (-not $SimulateConsent) { Write-Host '  未给 -SimulateConsent：需要有人答"是"的判据由套件自己记 SKIP' }
@@ -434,21 +459,23 @@ foreach ($s in $plan) {
     $index++
     $path = Join-Path $repo ("tests\$($s.Name).ps1")
     if (-not (Test-Path -LiteralPath $path)) {
-        Write-Host "`n[$index/$($plan.Count)] $($s.Name).ps1 —— 找不到脚本，记为未运行" -ForegroundColor Red
-        $results += [pscustomobject]@{ Name = $s.Name; Status = 'NOT RUN'; Pass = ''; Fail = ''; Skip = ''
-                                       Sec = 0; Exit = $null; Log = '' }
+        Write-Host "`n[$index/$($plan.Count)] $($s.Name).ps1 —— 找不到脚本，记为未运行（这一条会让总退出码判失败）" -ForegroundColor Red
+        $results += [pscustomobject]@{ Name = $s.Name; Status = 'NOT RUN'; Reason = 'missing-script'
+                                       Pass = ''; Fail = ''; Skip = ''; Sec = 0; Exit = $null; Log = '' }
         continue
     }
 
     # 只递该套件自己声明的开关，其它参数一律不塞进去
-    $names = Get-SuiteParameterNames -Path $path
-    if ($null -eq $names) {
+    $declared = Get-SuiteParameterNames -Path $path
+    if ($null -eq $declared) {
         # 读不出参数就不猜：猜着传要么传给不认的套件（当场用法错），要么漏传 -Exe 而测到别的产物
-        Write-Host '  读不出这份脚本自己声明的参数（解析不干净），不猜着传参：记为未运行' -ForegroundColor Red
-        $results += [pscustomobject]@{ Name = $s.Name; Status = 'NOT RUN'; Pass = ''; Fail = ''; Skip = ''
-                                       Sec = 0; Exit = $null; Log = '' }
+        Write-Host '  读不出这份脚本自己声明的参数（解析不干净），不猜着传参：记为未运行（这一条会让总退出码判失败）' -ForegroundColor Red
+        $results += [pscustomobject]@{ Name = $s.Name; Status = 'NOT RUN'; Reason = 'unparsable-parameters'
+                                       Pass = ''; Fail = ''; Skip = ''; Sec = 0; Exit = $null; Log = '' }
         continue
     }
+    # 收得住哪些开关由这一步决定；套件一个脚本级参数都没有时这里就是空表，照常跑它
+    $names = $declared.Names
     $suiteArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $path)
     if ($names -contains 'Exe') { $suiteArgs += @('-Exe', $target) }
     if ($Keep -and $names -contains 'Keep') { $suiteArgs += '-Keep' }
@@ -494,11 +521,11 @@ foreach ($s in $plan) {
                                    Skip = $counts.Skip; Sec = $r.Sec; Exit = $r.Exit; Log = $outFile }
 
     if ($StopOnFail -and $status -ne 'PASS') {
-        Write-Host "`n给了 -StopOnFail，$($s.Name).ps1 之后停止；剩下的按未运行计。" -ForegroundColor Red
+        Write-Host "`n给了 -StopOnFail，$($s.Name).ps1 之后停止；剩下的按'调用方主动没跑'记，不混进意外未运行。" -ForegroundColor Red
         if ($index -lt $plan.Count) {
             foreach ($p in @($plan[$index..($plan.Count - 1)])) {
-                $results += [pscustomobject]@{ Name = $p.Name; Status = 'NOT RUN'; Pass = ''; Fail = ''; Skip = ''
-                                               Sec = 0; Exit = $null; Log = '' }
+                $results += [pscustomobject]@{ Name = $p.Name; Status = 'NOT RUN'; Reason = 'stopped-on-fail'
+                                               Pass = ''; Fail = ''; Skip = ''; Sec = 0; Exit = $null; Log = '' }
             }
         }
         break
@@ -509,7 +536,16 @@ foreach ($s in $plan) {
 # 汇总
 # ---------------------------------------------------------------------------
 $totalSec = [int]((Get-Date) - $startedAll).TotalSeconds
+# "没跑成"分三类，去向各不相同，不许混成一句"未运行"：
+#   * notPlanned    —— 调用方用 -Quick / -Only / -Except 刻意没排的，本来就不该跑，不进判据；
+#   * stoppedOnFail —— 给了 -StopOnFail，撞到第一个没通过的套件就主动停下的剩余，同样是调用方的决定；
+#   * unexpectedNotRun —— 计划里点名要跑、这一步却整套没执行起来（脚本文件不见了、参数解析不干净）。
+#     这一类不是"结果不理想"，而是"这次验收根本没发生"：机器调用方只看退出码时，
+#     把它当成 0 就等于替一套从没跑过的判据发合格证明，所以它和 FAIL 一样判 1。
+# 各套件自己记的 SKIP（下面那个 $sumSkip）是环境与安全边界，照旧既不升成失败、也不算通过。
 $notRun = @($results | Where-Object { $_.Status -eq 'NOT RUN' })
+$stoppedOnFail = @($notRun | Where-Object { $_.Reason -eq 'stopped-on-fail' })
+$unexpectedNotRun = @($notRun | Where-Object { $_.Reason -ne 'stopped-on-fail' })
 $bad = @($results | Where-Object { $_.Status -eq 'FAIL' -or $_.Status -eq 'TIMEOUT' -or
                                     $_.Status -eq 'NO EXIT' -or $_.Status -eq 'NO START' })
 $sumPass = 0; $sumFail = 0; $sumSkip = 0
@@ -524,29 +560,39 @@ Write-Host ''
 Write-Host '================ 汇总 ================' -ForegroundColor Cyan
 Write-Host ('{0,-13} {1,-9} {2,6} {3,6} {4,6} {5,7} {6,8}' -f 'suite', 'result', 'pass', 'fail', 'skip', 'sec', 'exit')
 foreach ($x in $results) {
+    # 未运行必须带原因：只看状态分不出"调用方没排它"和"它根本没能被启动"
+    $shown = $x.Status
+    if ($x.Status -eq 'NOT RUN' -and $x.Reason) { $shown = ('{0}({1})' -f $x.Status, $x.Reason) }
     Write-Host ('{0,-13} {1,-9} {2,6} {3,6} {4,6} {5,7} {6,8}' -f `
-        $x.Name, $x.Status,
+        $x.Name, $shown,
         $(if ($x.Pass) { $x.Pass } else { '-' }),
         $(if ($x.Fail) { $x.Fail } else { '-' }),
         $(if ($x.Skip) { $x.Skip } else { '-' }),
         $x.Sec,
         $(if ($null -ne $x.Exit) { $x.Exit } else { '-' }))
 }
-$head = if ($bad.Count) { 'Red' } else { 'Green' }
+# 意外没跑成的与真失败的同等严重：都说明这份成绩单不完整
+$incomplete = @($bad) + @($unexpectedNotRun)
+$head = if ($incomplete.Count) { 'Red' } else { 'Green' }
 Write-Host ''
-Write-Host ('跑到并交出结果的套件 {0} 套：判据通过 {1} 项、失败 {2} 项、未验证 {3} 项；未运行 {4} 套；总用时 {5}s。' -f `
-    ($results.Count - $notRun.Count), $sumPass, $sumFail, $sumSkip, $notRun.Count, $totalSec) -ForegroundColor $head
+Write-Host ('跑到并交出结果的套件 {0} 套：判据通过 {1} 项、失败 {2} 项、未验证 {3} 项；' -f `
+    ($results.Count - $notRun.Count), $sumPass, $sumFail, $sumSkip) -ForegroundColor $head
+Write-Host ('计划 {0} 套里：意外没跑成 {1} 套，因 -StopOnFail 主动没跑 {2} 套；总用时 {3}s。' -f `
+    $plan.Count, $unexpectedNotRun.Count, $stoppedOnFail.Count, $totalSec) -ForegroundColor $head
 if ($notPlanned.Count) {
     Write-Host ('  按开关没排的套件：{0}（是 -Quick / -Only / -Except 筛掉的，不是跑过）' -f ($notPlanned.Name -join ', ')) -ForegroundColor DarkYellow
 }
-if ($notRun.Count) {
-    Write-Host ('  没跑成的套件：{0}' -f ($notRun.Name -join ', ')) -ForegroundColor DarkYellow
+if ($unexpectedNotRun.Count) {
+    Write-Host ('  意外没跑成的套件：{0}（计划里要跑，整套没执行起来 —— 判失败）' -f ($unexpectedNotRun.Name -join ', ')) -ForegroundColor Red
+}
+if ($stoppedOnFail.Count) {
+    Write-Host ('  因 -StopOnFail 没跑到的剩余：{0}' -f ($stoppedOnFail.Name -join ', ')) -ForegroundColor DarkYellow
 }
 if ($sumSkip -gt 0) {
     Write-Host '  未验证的那些是环境与安全边界（没有 HDR 屏、只接了一块屏、没给 -SimulateConsent 等），' -ForegroundColor DarkYellow
     Write-Host '  既不算失败也不算通过；要补上它们请照各套件自己的说明显式加开关、并换到合适的环境。' -ForegroundColor DarkYellow
 }
-if (-not $bad.Count -and -not $notRun.Count) { Write-Host '  跑到的套件全部通过。' -ForegroundColor Green }
+if (-not $incomplete.Count) { Write-Host '  计划内的套件全部跑到并通过（SKIP 仍按未验证列出）。' -ForegroundColor Green }
 Write-Host ('  日志目录：{0}' -f $log) -ForegroundColor DarkGray
 
-Exit-TestAll $(if ($bad.Count) { 1 } else { 0 })
+Exit-TestAll $(if ($incomplete.Count) { 1 } else { 0 })
