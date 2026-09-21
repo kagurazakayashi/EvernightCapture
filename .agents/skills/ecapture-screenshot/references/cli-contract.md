@@ -212,8 +212,10 @@ ECAPTURE.EXE --inspect=path --title 订单              # 同上，并写出归�
 ```
 
 `state` 只有 `readable` / `denied` / `failed` 三种，`win32` 是失败点当场取走的 `GetLastError` 原值。
-`denied` 就是字面意思——权限不够，**不因此要求你以管理员运行**，也不预测截图会不会成功
-（`unreadable_fields_are_not_a_prediction` 那条 caveat 钉的就是这点）。
+事实只有这两样：这一问的读数状态，和那一条 API 的原样错误码。`denied` 说的是**这一问被拒绝了**
+（`win32` 为 `5` 时就是 `ERROR_ACCESS_DENIED`）——对方的权限或完整性级别与本机不同只是**一种可能原因**，
+这个字段既证明不了它，也证明不了目标受保护，更说明不了截图会不会成功（`unreadable_fields_are_not_a_prediction`
+那条 caveat 钉的就是这点）。所以别把根因写成结论，也别因此自动提权或以管理员重试：**不因此要求你以管理员运行**。
 `exePath` 这个键在默认输出里**根本不出现**（完整路径常含用户名），只有 `--inspect=path` 才逐条写出，
 并且同时写 `exePathRequested: true` 与 `exePathReadable: true/false`，让「没写」与「写了但问不到」分得开。
 
@@ -456,6 +458,12 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
 - **会拍到别家窗口时先向用户说明范围**（要 `bitblt` / `duplication`、要整屏、或 `auto` 有可能退到桌面路径），
   启动之后**等用户本人在框上点「是」**。
 - **不得用脚本、`SendMessage`、UI 自动化代点**那个框——代点等于替人做了这个决定。
+  本仓库自己"过框"有两套东西，别把一套当成另一套：`tests\consent_state.cpp` 的 `FakePrompt` 只喂给进程内的
+  `ConsentGate`，既不弹真框也不采像素，而且只链接进测试二进制，`ECAPTURE.EXE` 里没有这条路；另一套是
+  `tests\harness.psm1` 的 `Click-EcDialogButton`，它给**真的确认框**发 `BM_CLICK`，`-SimulateConsent` 之下
+  `channels.ps1`、`screen.ps1`、`dup.ps1`、`identity.ps1` 会答 `IDYES`。后者的存在只是因为人自己挑了一台可以拍的
+  专用桌面并显式要跑那几套判据——那是"测试在验证机制"，不是"有人同意了这一次请求"，调用方不能拿它当代答的依据，
+  更不能据此以为所有自动确认都只发生在离线 fake 里。
 - **用户拒绝不是技术故障，不得重试**：`capture.access_denied` 就停下来问用户怎么办；
   `capture.consent_timeout` 是"那一段时间里没有人应答"，不是"用户不同意"，要做的是确认有人在之后再开**一次新的请求**；
   `capture.consent_unavailable` 是"那个会话里根本没有人能答"（服务、计划任务、锁屏），要做的是换会话而不是再弹一遍。

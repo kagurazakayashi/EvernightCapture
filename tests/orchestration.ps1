@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-    离线验证一键总跑 test-all.ps1 自己的两件事：执行计划非空校验，以及"没跑成"的分类与退出码。
+    离线验证一键总跑 test-all.ps1 自己的三件事：执行计划（含 -Offline 选路）、"没跑成"的分类、退出码。
 .DESCRIPTION
     这里不跑任何真实判据：把 test-all.ps1 连同一份测试专用的 `tests\harness.psm1` 和若干**傀儡套件**
-    复制进本次临时目录，然后用被测的那份 test-all.ps1 去跑这份假仓库。被测对象是总跑脚本本体
-    （筛完的空计划、NOT RUN 的三种去向、退出码），不是它的抄本。
+    复制进本次临时目录（副本里"同一台机器只允许一个总跑"的互斥体名换成本次专有的，否则真总跑跑到本
+    判据时会撞在自己的锁上），然后用被测的那份 test-all.ps1 去跑这份假仓库。被测对象是总跑脚本本体
+    （空计划校验、离线选路、NOT RUN 的几种去向、代答确认的闸门、退出码），不是它的抄本。
 
     钉住的几条（都是"机器调用方拿到 0 但其实什么都没验"这一类）：
       1. 计划内点名要跑的套件**脚本文件不见了** → 记 NOT RUN(missing-script)，总退出码必须是 1
@@ -15,9 +16,17 @@
          不进汇总，也不给 0
       5. 只交出 SKIP 的套件（套件自己的退出码是 0）→ 总退出码仍是 0：环境与安全边界不升成失败
       6. 给了 -StopOnFail 时，剩下的记 NOT RUN(stopped-on-fail)，与上面两类**意外**未运行分开计
+      7. -Offline 只看登记表声明的 Real / OfflineLayer：只有真实层的那几套**整套不进计划**并逐条给原因
+         （OFFLINE-EXCLUDED），声明了离线层的真的收到那个开关（收不到就自己 FAIL），本来不碰桌面的
+         照常跑；负向对照是同一家傀儡不加 -Offline 时确实被启动并判 FAIL
+      8. 登记表说某套有离线层、脚本却没声明那个参数 → 记 NOT RUN(offline-switch-missing) 判失败，
+         既不许退化成"没开关也照跑真实层"，也不许悄悄当成离线排除
+      9. -SimulateConsent 必须当场拿到那句 yes：-Force 不能替这一步；标准输入被重定向（拿不到回答）
+         也算没确认 → 交 2，且在进任何套件之前就停住（CONSENT-YES-REQUIRED）
+     10. -Offline 与 -SimulateConsent 同时给 → 参数不成立，交 2（OFFLINE-CONSENT-CONFLICT）；
+         只点名要一套没有离线层的套件时，离线计划是空的 → 同样按"没有可执行测试"交 2
 
     全程不截图、不弹框、不碰桌面上任何别人的窗口；-Exe 只被用来过一次 `--version` 只读自检。
-    注意：被测脚本仍要抢那个"同一台机器只允许一个总跑"的互斥体，所以本判据不能与真总跑并发。
 .EXAMPLE
     .\tests\orchestration.ps1
     .\tests\orchestration.ps1 -Keep      # 保留假仓库现场（日志与傀儡套件）以便人眼看
@@ -114,21 +123,52 @@ param([string]$Exe
 Write-Host "unterminated above"
 '@
 
+    # 只有拿到 -SkipReal 才算跑对的套件：用来证明离线开关真的递到了套件手里，不是只在计划里写了
+    $needSkipRealBody = @'
+param([string]$Exe, [switch]$SkipReal)
+if (-not $SkipReal) {
+    Write-Host "  FAIL  stub was started without -SkipReal (real desktop layer would run)"
+    Write-Host "失败：1 项，通过 0 项"
+    exit 1
+}
+Write-Host "orchestration stub: offline layer only"
+Write-Host "全部通过：2 项"
+exit 0
+'@
+    # 一被启动就失败的套件：放在只有真实层的套件的位子上，判它有没有被 -Offline 排除掉
+    $mustNotRunBody = @'
+param([string]$Exe)
+Write-Host "  FAIL  stub must not be started in offline mode"
+Write-Host "失败：9 项，通过 0 项"
+exit 1
+'@
+
     function Invoke-FakeTotal {
-        <# 用被测的那份 test-all.ps1 跑假仓库：-NoBuild -Force 免构建免按键，超时收紧。 #>
+        <# 用被测的那份 test-all.ps1 跑假仓库：-NoBuild -Force 免构建免按键，超时收紧。
+            -NoInput 是给"必须当场输入 yes"那条判据用的：用 -NonInteractive 起子进程，
+            Read-Host 一定拿不到回答（不然后果要看运行它的人有没有控制台，判据就成了碰运气）。 #>
         param(
             [Parameter(Mandatory)][string[]]$Only,
             [string[]]$Except = @(),
             [switch]$StopOnFail,
+            [switch]$Offline,
+            [switch]$SimulateConsent,
+            [switch]$List,
+            [switch]$NoInput,
             [string]$Tag = 'run'
         )
 
         $logDir = Join-Path $run.Path ('logs-' + $Tag)
-        $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $fake 'test-all.ps1'),
-               '-NoBuild', '-Force', '-Shell', 'auto', '-SuiteTimeoutSec', '60',
-               '-LogDir', $logDir, '-Exe', (Get-EcExePath), '-Only', ($Only -join ','))
+        $head = @('-NoProfile', '-ExecutionPolicy', 'Bypass')
+        if ($NoInput) { $head += '-NonInteractive' }   # 让 Read-Host 一定拿不到回答
+        $a = $head + @('-File', (Join-Path $fake 'test-all.ps1'),
+                       '-NoBuild', '-Force', '-Shell', 'auto', '-SuiteTimeoutSec', '60',
+                       '-LogDir', $logDir, '-Exe', (Get-EcExePath), '-Only', ($Only -join ','))
         if ($Except) { $a += @('-Except', ($Except -join ',')) }
         if ($StopOnFail) { $a += '-StopOnFail' }
+        if ($Offline) { $a += '-Offline' }
+        if ($SimulateConsent) { $a += '-SimulateConsent' }
+        if ($List) { $a += '-List' }
         $r = Invoke-EcProcess -FilePath (Get-Process -Id $PID).Path -Arguments $a -TimeoutMs 180000
         return [pscustomobject]@{ Exit = $r.Exit; Text = ('{0}{1}' -f $r.Stdout, $r.Stderr) }
     }
@@ -213,6 +253,65 @@ Write-Host "unterminated above"
         "剩余那套记成主动没跑，不混进意外未运行"
     Assert-Ec ($r.Text -match '意外没跑成 0 套') "主动停下的剩余不会虚增意外未运行"
     Assert-Ec ($r.Text -match '因 -StopOnFail 主动没跑 1 套') "主动没跑的条数如实报 1"
+
+    # =======================================================================
+    Write-Host "`n=== 8) -Offline 按声明选路：只有真实层的整套不排，并给原因 ==="
+    # =======================================================================
+    # 'save' 在登记表里是 Real='desktop' 且没有离线层；这份傀儡一旦被启动就 FAIL，
+    # 所以它要是没出现在结果表里，就是真的没被跑 —— 不是"跑了但报跳过"。
+    Set-FakeSuite -Name 'save' -Body $mustNotRunBody
+    Set-FakeSuite -Name 'windows' -Body $needSkipRealBody   # 登记表：Real='desktop' + OfflineLayer='SkipReal'
+    $r = Invoke-FakeTotal -Only @('cli', 'save', 'windows') -Offline -Tag 'offline'
+    Assert-Ec ($r.Exit -eq 0) "离线计划里该跑的都通过时交 0（实际 $($r.Exit)）"
+    Assert-Ec (-not (Assert-Row -Text $r.Text -Name 'save' -Status 'PASS') -and
+              (-not (Assert-Row -Text $r.Text -Name 'save' -Status 'FAIL'))) `
+        "只有真实层的 save 在 -Offline 下整套没被启动（跑起来就会 FAIL，这里没有它任何一行）"
+    Assert-Ec ($r.Text -match 'OFFLINE-EXCLUDED') "被排除的套件逐条给了原因（OFFLINE-EXCLUDED）"
+    Assert-Ec ($r.Text -match '(?m)^\s*-\s+save\s+没有可单独跑的离线层') "排除名单里点名 save 并说清为什么"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'windows' -Status 'PASS') `
+        "声明了离线层的 windows 照常跑，并且真的收到了 -SkipReal（收不到它自己会 FAIL）"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'cli' -Status 'PASS') "本来就不碰桌面的 cli 照常跑，不需要任何开关"
+
+    # =======================================================================
+    Write-Host "`n=== 8 之二) 对照：不加 -Offline 时那些套件照常进计划 ==="
+    # =======================================================================
+    # 负向对照：同一份现场不加 -Offline，save 就该被启动并 FAIL —— 证明上面那条不是"傀儡本来就没跑"
+    $r = Invoke-FakeTotal -Only @('save') -Tag 'offline-off'
+    Assert-Ec ($r.Exit -eq 1) "不加 -Offline 时 save 被启动并判 FAIL（实际 $($r.Exit)）"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'save' -Status 'FAIL') "save 这一轮确实在计划里"
+    Assert-Ec ($r.Text -notmatch 'OFFLINE-EXCLUDED') "没给 -Offline 就不该报离线排除"
+
+    # =======================================================================
+    Write-Host "`n=== 9) 声明的离线层在源码里找不到：整套不跑并判失败 ==="
+    # =======================================================================
+    # 登记表说 crop 有 -SkipReal 那一层，傀儡脚本却只声明了 Exe：这是登记表在说谎，
+    # 不许退化成"没开关也照跑真实层"，也不许悄悄当成离线排除。
+    Set-FakeSuite -Name 'crop' -Body $okBody
+    $r = Invoke-FakeTotal -Only @('crop') -Offline -Tag 'lied'
+    Assert-Ec ($r.Exit -eq 1) "元数据与源码不一致时判失败（实际 $($r.Exit)）"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'crop' -Status 'NOT RUN(offline-switch-missing)') `
+        "不一致的那套记 NOT RUN(offline-switch-missing)，既不跑真实层也不冒充跑过"
+
+    # =======================================================================
+    Write-Host "`n=== 10) 代答'是'这道确认不归 -Force 管 ==="
+    # =======================================================================
+    # 本判据用 -NonInteractive 起子进程，Read-Host 必然拿不到回答 —— 不看运行它的人当下有没有控制台，
+    # 被测脚本拿不到 yes 就必须按"没确认"中止，而且要在进任何套件之前停住。
+    $r = Invoke-FakeTotal -Only @('cli') -SimulateConsent -NoInput -Tag 'yesgate'
+    Assert-Ec ($r.Exit -eq 2) "拿不到 yes 时按前置不成立交 2（实际 $($r.Exit)）"
+    Assert-Ec ($r.Text -match 'CONSENT-YES-REQUIRED') "报清楚了是缺那句 yes，不是别的前置"
+    Assert-Ec (-not (Assert-Row -Text $r.Text -Name 'cli' -Status 'PASS')) "没确认就一个套件都不许启动"
+    Assert-Ec ($r.Text -notmatch '汇总 ====') "没确认不进汇总"
+
+    # =======================================================================
+    Write-Host "`n=== 11) -Offline 与 -SimulateConsent 是两句互相矛盾的话 ==="
+    # =======================================================================
+    $r = Invoke-FakeTotal -Only @('cli') -Offline -SimulateConsent -Tag 'conflict'
+    Assert-Ec ($r.Exit -eq 2) "这个组合按参数不成立交 2（实际 $($r.Exit)）"
+    Assert-Ec ($r.Text -match 'OFFLINE-CONSENT-CONFLICT') "报清楚了是这两个开关打架"
+    $r = Invoke-FakeTotal -Only @('save') -Offline -Tag 'empty-offline'
+    Assert-Ec ($r.Exit -eq 2) "只点名要一套没有离线层的套件时，离线计划是空的 → 交 2（实际 $($r.Exit)）"
+    Assert-Ec ($r.Text -match 'NO-TESTS-PLANNED') "空离线计划同样报'没有可执行测试'"
 } finally {
     if ($Keep) { Write-Host ("  假仓库现场保留在 {0}" -f $run.Path) -ForegroundColor DarkGray }
     else { Remove-EcRunDir $run -Quiet }

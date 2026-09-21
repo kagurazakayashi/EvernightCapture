@@ -106,8 +106,11 @@ answered by taking a screenshot.
   compiled and run **at match time** (nothing is pre-compiled while parsing) inside the bounded helper, and its ways
   of failing are kept apart - see the table in *Handling a result*.
 - A `readability` entry that could not be read is **absent or `denied` / `failed` with the raw code**, never written as
-  empty, `0` or `false`. `denied` means the owner runs at another privilege level; it is not a prediction about the
-  capture and not a request to run as administrator - nothing here escalates.
+  empty, `0` or `false`. The facts here are the state plus the `GetLastError` value taken at the failing call:
+  `denied` says this one query was refused. The owner running at a different privilege or integrity level is *one
+  possible* reason for a refusal - the field does not establish it, so do not report a root cause the data does not
+  carry, do not conclude the target is protected, and do not retry elevated. It is not a prediction about the capture
+  and not a request to run as administrator - nothing here escalates.
 - **Every query result is a snapshot of this moment** (`note.window_query_stale` / `note.screen_query_stale`). In
   `identity`, `processStartTicks` is what tells a recycled PID from the same process, and
   `isAuthorizationToken: false` / `raceWindowReducedNotEliminated: true` are stated, not implied.
@@ -133,9 +136,18 @@ answered by taking a screenshot.
 - The tier is decided by **where the pixels actually come from**, never by the channel name you typed. An unregistered
   or unprovable route counts as a desktop route, so a new channel that forgot to register itself ends up stricter.
 - **Nothing skips a desktop route**: not `--yes`, not `--quiet`, not an environment variable, not stdin, not who is
-  calling. There is no hidden bypass switch and no public `--worker` entry point. The fake consent driver used by the
-  tests is linked only into test binaries and is not reachable from `ECAPTURE.EXE` - "how a test approves" is not a
-  way to call the tool, and it is not evidence that a real person agreed.
+  calling. There is no hidden bypass switch and no public `--worker` entry point. The repository does get past the
+  dialog in two different ways during testing, and they are not the same thing - do not read one as covering the
+  other:
+  * an **in-process fake**: `tests/consent_state.cpp` answers `ConsentGate` with a scripted `FakePrompt`. No window
+    appears and no pixel is read, and it is linked only into test binaries - it is not reachable from `ECAPTURE.EXE`.
+  * a **real dialog being clicked**: `Click-EcDialogButton` in `tests/harness.psm1` posts `BM_CLICK` to a control of
+    the actual `#32770` box, and under `-SimulateConsent` the desktop suites (`channels.ps1`, `screen.ps1`, `dup.ps1`,
+    `identity.ps1`) answer `IDYES` to the same box that would be asking about the live screen. That runs only because
+    the user deliberately chose a dedicated desktop and asked for those tests; it is a machine clicking a machine-made
+    decision, not a person agreeing.
+  So: "how a test gets a Yes" is never a way to call the tool, and neither mechanism is evidence that anyone
+  authorized *this* request. The rule below applies to both.
 - Cropping, scaling, HDR handling, cursor settings, channel fallback and worker execution all run **after** or
   independently of the decision, so none of them lowers the bar: `bitblt` with `--roi 0,0,8,8` and `--yes` still opens
   the dialog. `--capture auto` with `--yes` may walk the window-content routes silently but asks before entering any
@@ -145,9 +157,10 @@ answered by taking a screenshot.
   click `X`: with this button set the title-bar `X` is shown but disabled and there is no Cancel button for `Esc` to
   trigger, so neither is a dependable "No" gesture - the box has to be answered. The tool treats any non-Yes result
   as a refusal anyway.
-- **Do not answer the dialog for the user** (no `SendMessage`, no UI automation, no scripted click, no simulated Yes)
-  and do not fake an answer. Before starting a desktop route, tell the user what will be in the picture and wait for
-  them to click Yes.
+- **Do not answer the dialog for the user** (no `SendMessage`, no UI automation, no scripted click, no simulated Yes -
+  the repository's own `Click-EcDialogButton` included; the fact that a desktop test suite can drive it is not a
+  permission for you to) and do not fake an answer. Before starting a desktop route, tell the user what will be in the
+  picture and wait for them to click Yes.
 - **A refusal is a decision to preserve, not a technical failure.** "No" (`capture.access_denied`, 6), nobody
   answering within `--consent-timeout-ms` (`capture.consent_timeout`, 6) or a dialog that cannot be shown
   (`capture.consent_unavailable`, 6) stop the rest of that request - including the remaining links of an `auto` chain,
