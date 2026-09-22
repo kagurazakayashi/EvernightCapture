@@ -1,10 +1,7 @@
 #include "WorkerIo.h"
 
 #include <algorithm>
-#include <map>
 #include <memory>
-#include <mutex>
-#include <set>
 
 namespace ecapture {
 namespace workerio {
@@ -23,9 +20,9 @@ public:
     PendingOperation& operator=(const PendingOperation&) = delete;
 
     ~PendingOperation() {
-        // 只有"已确认终态"的对象才允许走到这里：登记表只在 TrySettle 返回 true 之后删除记录，
-        // RunOverlappedOp 只在终态分支释放自己那份。未确认终态的对象由永不析构的登记表
-        // （或它那段免分配的兜底槽位）持到进程结束，交给系统统一回收 —— 见 Registry 的类注释。
+        // 只有"已确认终态"的对象才允许走到这里：登记表只在 TrySettle 返回 true 之后摘链并删记录，
+        // RunOverlappedOp 只在终态分支释放自己那份。未确认终态的对象由永不析构的登记表持到
+        // 进程结束，交给系统统一回收 —— 见 Registry 的类注释。
         CloseEventOnce();
     }
 
@@ -162,6 +159,13 @@ private:
     std::vector<uint8_t> buf_;
     bool terminal_ = false;
     bool registered_ = false;
+
+public:
+    // 登记链节点：登记表用它把这条操作挂进一条**不需要任何堆分配**的侵入式双向链表。
+    // 只有登记表读写这两个指针（挂链、摘链都在它的锁内完成）；未登记时恒为 nullptr。
+    // 正是这两个字段让"登记"这一步不再有容量上限、也不再有分配失败档 —— 见 Registry 注释。
+    PendingOperation* regPrev_ = nullptr;
+    PendingOperation* regNext_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -171,12 +175,38 @@ private:
 // 还在写的 OVERLAPPED 与缓冲区，正是本模块要防的缺陷（光改注释拦不住 CRT 的收尾次序）。
 // 换成堆上这份"进程生命周期对象"之后，退出路径上没有任何代码再去碰这些资源：未确认终态
 // 的那份随进程由系统统一回收，已确认终态的记录照旧在收尾排干与成功路径里即时回收，
-// 不会把每条操作都变成积压。规模有界：每条记录至多一份块缓冲加一个事件句柄，
-// 且这里只装"还没确认终态"的操作。
-// 代价是这份对象**第一次被取用时才堆分配**，那一次分配可能抛出。因此取用点必须建在
-// "手上还没有任何内核可见资源"的时候（见 TryRegistry 与 RunOverlappedOp 开头），
-// 绝不能留到交接点上 —— 那时调用方已经松手，分配一失败这条操作就再也查不到了。
+// 不会把每条操作都变成积压。
+//
+// 登记模型（本轮修复的要点）：登记**不再需要任何堆分配**。每条 PendingOperation 对象自身
+// 就带着登记链的前后指针，登记表只是把这条操作挂进一条侵入式双向链表（O(1)，见 Add）。
+// 于是"登记"这一步没有容量上限、也没有分配失败档 —— 过去那份"8 个全局兜底槽位 + 那张表
+// 分配失败"的双重降级被整体移除：那条路径会在槽位占满且分配失败时把第 9 条未决操作静默
+// 丢弃，让它带着 unresolved=true 消失在 HasPending/Drain 之外 —— 查询随后谎报"无未决"，
+// 收尾据此去关一个仍有飞行 I/O 的句柄（文档不保证的行为）。现在每个已发起且未确认终态的
+// 操作，其事件、OVERLAPPED、缓冲区与句柄关闭责任都不可能失联：只要它没进终态，就必然在
+// 这条链上，查得到、排得干。
+// 保留的"有界"含义是"只装未进终态的操作"：确认终态即刻摘链并析构（事件恰好关一次），
+// 日常使用不积压，链长自然被"真正未决的操作数"界住，而不是被一个拍出来的常数界住。
+// 登记表本身第一次被取用时才堆分配（那份分配是为了让它不被析构），那一次可能抛出；
+// 因此取用点仍必须建在"手上还没有任何内核可见资源"的时候（见 TryRegistry 与
+// RunOverlappedOp 开头）—— 拿不到登记表就一次 I/O 都不发起地失败。
 // ---------------------------------------------------------------------------
+// SRWLOCK 的独占锁 RAII：Acquire/ReleaseSRWLockExclusive 不抛异常，因此登记表内的所有
+// 临界区都是 noexcept 的 —— 交接点建在调用方已经松手之后，绝不允许异常把一条已发起的操作
+// 变成没人认领的孤儿。
+class SrwExclusive {
+public:
+    explicit SrwExclusive(SRWLOCK& lock) noexcept : lock_(&lock) {
+        AcquireSRWLockExclusive(lock_);
+    }
+    ~SrwExclusive() { ReleaseSRWLockExclusive(lock_); }
+    SrwExclusive(const SrwExclusive&) = delete;
+    SrwExclusive& operator=(const SrwExclusive&) = delete;
+
+private:
+    SRWLOCK* lock_;
+};
+
 class Registry {
 public:
     static Registry& Get() {
@@ -184,147 +214,127 @@ public:
         return *r;
     }
 
-    // 接管一份还没确认终态的资源，所有权在这里绝不会遗失、也绝不会顺手释放：
-    //   1) 优先登记进按句柄归组的表（正常路径，之后由 Drain 认领）；
-    //   2) 那张表要堆分配，极端内存压力下可能装不下 —— 退化为占用一段免分配的固定槽位，
-    //      照样保住"有人在管"：HasPending 查得到、Drain 认领得了、收养的句柄照样等它；
-    //   3) 连槽位都占满时才故意弃管 —— 依然绝不释放，只是没人再替它确认终态，
-    //      HasPending 也会漏报这一条。
-    // 3) 的真实条件要看清容量归属：那 kRetainedCapacity 段槽位归**整个登记表共用**，
-    // 不是每条句柄各一份 —— 别的句柄上没进终态的操作照样占着它们。所以走到 3) 要同时满足
-    // "全进程已占满这几段槽位"与"此刻那张表又分配失败"，跟单条句柄积了多少条没有直接关系。
-    // 这是内存耗尽下唯一不造成"内核往已释放内存写"的选择，如实记录在这里。
-    // 本函数绝不抛出（加锁也兜在里面）：交接点建在调用方已经松手之后，异常一逸出就等于
-    // 把这条操作变成没人认领的孤儿 —— 所以宁可原地弃管，也不许它穿到那一步之外。
+    // 接管一份还没确认终态的资源，所有权在这里绝不会遗失、也绝不会顺手释放。
+    // 挂链是 O(1) 且不分配，所以这里没有旧实现那种"表分配失败 + 兜底槽位占满"的弃管档：
+    // 只要控制权走到这里，这条操作就一定在链上，HasPending 查得到、Drain 认领得了。
     void Add(PendingOperation* op) noexcept {
-        try {
-            std::lock_guard<std::mutex> lk(m_);
-            if (TryRegister(op)) return;
-            for (PendingOperation*& slot : retained_) {
-                if (slot == nullptr) {
-                    slot = op;
-                    return;
-                }
-            }
-        } catch (...) {
-            // 能到这里只剩加锁失败（TryRegister 自己把分配失败退回 false 了）。
-            // 与槽位占满同一档处理：弃管，但绝不释放。
+        const SrwExclusive lock(lock_);
+        op->regPrev_ = tail_;
+        op->regNext_ = nullptr;
+        if (tail_ != nullptr) {
+            tail_->regNext_ = op;
+        } else {
+            head_ = op;
         }
+        tail_ = op;
     }
 
-    bool HasPending(HANDLE hFile) {
-        std::lock_guard<std::mutex> lk(m_);
-        const auto it = ops_.find(hFile);
-        if (it != ops_.end() && !it->second.empty()) return true;
-        return CountRetained(hFile) != 0;
+    bool HasPending(HANDLE hFile) noexcept {
+        const SrwExclusive lock(lock_);
+        for (PendingOperation* op = head_; op != nullptr; op = op->regNext_) {
+            if (op->file() == hFile) return true;
+        }
+        return false;
     }
 
-    // 返回该句柄上仍未进终态的操作数（表里的加上兜底槽位里的）；
-    // 全清空且句柄已被收养时，顺带关掉句柄。
+    // 返回该句柄上仍未进终态的操作数；全清空且句柄已被收养时，顺带关掉句柄。
+    // 不标 noexcept：TrySettle 会调到可注入后端，理论上可能抛出；公共入口 DrainPendingOps
+    // 把它兜住并回保守值（至少还剩一条）。除了那次外部调用，函数体只做不抛的链表操作。
     DWORD Drain(HANDLE hFile, DWORD waitMs) {
-        std::lock_guard<std::mutex> lk(m_);
+        const SrwExclusive lock(lock_);
         // 先记下这条句柄用的是哪个后端：记录清完之后就问不到了。被收养的句柄要由
         // 同一个后端关闭（生产即 CloseHandle，测试以计数核对"恰好一次"）。
-        IoBackend* be = BackendFor(hFile);
-        const auto it = ops_.find(hFile);
-        if (it != ops_.end()) {
-            auto& list = it->second;
-            for (auto entry = list.begin(); entry != list.end();) {
-                if ((*entry)->TrySettle(waitMs)) {
-                    delete *entry;   // 析构只发生在确认终态之后：事件、OVERLAPPED、缓冲区
-                    entry = list.erase(entry);
-                } else {
-                    ++entry;
-                }
-            }
-            if (list.empty()) ops_.erase(it);
-        }
-        for (PendingOperation*& slot : retained_) {
-            PendingOperation* op = slot;
-            if (op == nullptr || op->file() != hFile) continue;
-            if (op->TrySettle(waitMs)) {
-                slot = nullptr;
-                delete op;
+        IoBackend* be = nullptr;
+        for (PendingOperation* op = head_; op != nullptr; op = op->regNext_) {
+            if (op->file() == hFile) {
+                be = &op->backend();
+                break;
             }
         }
         DWORD left = 0;
-        const auto rest = ops_.find(hFile);
-        if (rest != ops_.end()) left += static_cast<DWORD>(rest->second.size());
-        left += static_cast<DWORD>(CountRetained(hFile));
+        PendingOperation* op = head_;
+        while (op != nullptr) {
+            PendingOperation* const next = op->regNext_;   // 摘链会改 op->regNext_，先取下一跳
+            if (op->file() == hFile) {
+                if (op->TrySettle(waitMs)) {
+                    Unlink(op);
+                    delete op;   // 析构只发生在确认终态之后：事件、OVERLAPPED、缓冲区
+                } else {
+                    ++left;
+                }
+            }
+            op = next;
+        }
         if (left == 0) {
-            const bool wasAdopted = adopted_.erase(hFile) != 0;
-            backendOf_.erase(hFile);
+            const bool wasAdopted = RemoveAdopted(hFile);
+            // 问不到归属后端（这条句柄上一条记录都没有）时宁可什么都不关，绝不拿别的句柄的
+            // 后端去关一个自己认不出的值。
             if (wasAdopted && be != nullptr) be->CloseTargetHandle(hFile);
         }
         return left;
     }
 
-    // 记下"这条句柄由登记表负责关闭"。那条记录本身要堆分配一个集合节点，分不出来（或加锁
-    // 失败）就如实回 false —— 本函数绝不抛出：它的调用点在交易收尾链路上，而收尾还会从
-    // Transaction 的析构里再走一遍，异常从默认 noexcept 的析构逸出就是终止进程。
+    // 记下"这条句柄由登记表负责关闭"。收养记录住在一段免分配的定长数组里，不进堆。
+    // 回 false 只发生在同时收养的句柄数超过这段定长容量时 —— 本函数绝不抛出：它的调用点
+    // 在交易收尾链路上，而收尾还会从 Transaction 的析构里再走一遍，异常从默认 noexcept
+    // 的析构逸出就是终止进程。
     // 回 false 之后这条句柄谁也管不着：Drain 全数终态时不会去关它。调用方据此仍然要放弃
     // 自己的关闭责任 —— 带着未决 I/O 关句柄始终是文档不保证的行为，宁可遗留一个句柄值。
+    // 这是本模块唯一保留的保守降级，且它是**可观测的返回值**，不是静默丢弃：调用方拿得到
+    // "没记下"这个事实，也不会因此谎报"已经排干"。
     bool Adopt(HANDLE hFile) noexcept {
-        try {
-            std::lock_guard<std::mutex> lk(m_);
-            adopted_.insert(hFile);
-            return true;
-        } catch (...) {
-            return false;
+        const SrwExclusive lock(lock_);
+        for (size_t i = 0; i < adoptedCount_; ++i) {
+            if (adopted_[i] == hFile) return true;   // 重复收养同一个句柄是幂等的
         }
+        if (adoptedCount_ >= kMaxAdopted) return false;
+        adopted_[adoptedCount_] = hFile;
+        ++adoptedCount_;
+        return true;
     }
 
 private:
-    // 免分配兜底槽位的容量：登记表堆分配失败时仍要保住未决资源的所有权与可查性。
-    // 这份容量是**全进程共用**的，不是每条句柄各一份：任何句柄上没进终态的操作都占同一批槽位。
-    static constexpr size_t kRetainedCapacity = 8;
+    // 同时挂起的"待关闭句柄"上限。收养只发生在"排干后还剩记录"的收尾路径，正常请求下一两条。
+    // 满了就回 false（可观测），调用方照旧放弃关闭责任。
+    static constexpr size_t kMaxAdopted = 32;
 
     Registry() = default;
 
-    // 前提：已持锁。成功接管返回 true；所需的堆内存分配不出来时，把已经插进去的那条退回、
-    // 返回 false —— 两种结果都不释放 op，也不留下"表里认得它但没人负责"的中间状态。
-    bool TryRegister(PendingOperation* op) {
-        const HANDLE h = op->file();
-        try {
-            ops_[h].push_back(op);
-            backendOf_[h] = &op->backend();
-            return true;
-        } catch (...) {
-            const auto it = ops_.find(h);
-            if (it != ops_.end()) {
-                if (!it->second.empty() && it->second.back() == op) it->second.pop_back();
-                if (it->second.empty()) ops_.erase(it);
-            }
-            return false;
+    // 前提：已持锁。把 op 从登记链上摘下来（不改 op 自身以外的任何东西）。
+    void Unlink(PendingOperation* op) noexcept {
+        if (op->regPrev_ != nullptr) {
+            op->regPrev_->regNext_ = op->regNext_;
+        } else {
+            head_ = op->regNext_;
         }
+        if (op->regNext_ != nullptr) {
+            op->regNext_->regPrev_ = op->regPrev_;
+        } else {
+            tail_ = op->regPrev_;
+        }
+        op->regPrev_ = nullptr;
+        op->regNext_ = nullptr;
     }
 
     // 前提：已持锁。
-    size_t CountRetained(HANDLE hFile) const {
-        size_t n = 0;
-        for (PendingOperation* op : retained_) {
-            if (op != nullptr && op->file() == hFile) ++n;
+    bool RemoveAdopted(HANDLE hFile) noexcept {
+        for (size_t i = 0; i < adoptedCount_; ++i) {
+            if (adopted_[i] == hFile) {
+                adopted_[i] = adopted_[adoptedCount_ - 1];
+                --adoptedCount_;
+                return true;
+            }
         }
-        return n;
+        return false;
     }
 
-    // 前提：已持锁。表里没有（例如这条住在兜底槽位）时，向还没清空的记录本身问后端。
-    IoBackend* BackendFor(HANDLE hFile) {
-        const auto be = backendOf_.find(hFile);
-        if (be != backendOf_.end()) return be->second;
-        for (PendingOperation* op : retained_) {
-            if (op != nullptr && op->file() == hFile) return &op->backend();
-        }
-        return nullptr;
-    }
-
-    std::mutex m_;
-    std::map<HANDLE, std::vector<PendingOperation*>> ops_;
-    std::map<HANDLE, IoBackend*> backendOf_;
-    std::set<HANDLE> adopted_;
-    // 裸指针 + 不 new 不 delete：对象住在"永不析构"的登记表里，退出时没人碰这些槽位，
-    // 里面未确认终态的资源就照上面的方案由系统随进程回收。
-    PendingOperation* retained_[kRetainedCapacity] = {};
+    SRWLOCK lock_ = SRWLOCK_INIT;
+    // 裸指针 + 不 delete：未确认终态的对象住在"永不析构"的登记表里，退出时没人碰这条链，
+    // 里面未确认终态的资源就由系统随进程统一回收。已确认终态的条目在 Drain/成功路径里即时删除。
+    PendingOperation* head_ = nullptr;
+    PendingOperation* tail_ = nullptr;
+    HANDLE adopted_[kMaxAdopted] = {};
+    size_t adoptedCount_ = 0;
 };
 
 // 免抛地取得登记表。登记表第一次被取用时才堆分配（那份分配的存在是为了让它不被析构，
@@ -370,7 +380,7 @@ IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD 
     // 留到下面的交接点才第一次取用就成了赌博 —— 那时调用方已经松手，分配一失败这条操作就再也
     // 查不到，"登记表里没有未决操作，可以放心关句柄"的判断随之失去依据。在这里取就没有这个
     // 包袱：此刻连事件都还没建，拿不到登记表只能一次 I/O 都不发起，按机制故障如实上报，
-    // 谈不上提前释放什么。往后交接点上的 Add 已是免抛路径（登记表存在 + 自己兜尽分配失败）。
+    // 谈不上提前释放什么。往后交接点上的 Add 已是免分配、免抛路径。
     Registry* const reg = TryRegistry();
     if (reg == nullptr) {
         IoStep noRegistry;
@@ -382,7 +392,16 @@ IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD 
     // "这条操作已确认终态"：Execute 的分支穷尽保证了没确认终态的那条一定带着 registered()
     // = true 回来，走下面的移交；done = true 的那条必然已确认终态（复制回调用方所需的
     // 内存分配失败时也还在这一档里），所以这里既不会早放、也不会漏放。
-    std::unique_ptr<PendingOperation> owned(new PendingOperation(backend, hFile, bufCap));
+    // 构造这一步要分配操作对象与其块缓冲：分不出来时**一次 I/O 都不发起**地按机制故障上报
+    // （capacity 不足在发起前明确失败，而不是发起后丢失登记）。
+    std::unique_ptr<PendingOperation> owned;
+    try {
+        owned.reset(new PendingOperation(backend, hFile, bufCap));
+    } catch (...) {
+        IoStep noMemory;
+        noMemory.gle = ERROR_NOT_ENOUGH_MEMORY;
+        return noMemory;
+    }
     PendingOperation* op = owned.get();
     const IoStep step = op->Execute(waitMs, cancelGraceMs, issue);
     IoStep result = step;
@@ -394,7 +413,7 @@ IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD 
         // 没确认终态：整份（事件 + OVERLAPPED + 缓冲区）交给登记表继续看管。
         // 先松手再接管，任何一步抛出都不会出现两个所有者同时想释放它；反过来先接管后松手
         // 会让 unique_ptr 在抛出时析构掉一个登记表还认得的对象。这一交接不会抛出：登记表
-        // 已在函数开头拿到，Add 自己把分配失败退回免分配槽位、把加锁失败也兜住（见 Add）。
+        // 已在函数开头拿到，而 Add 只是把操作对象挂进一条免分配的侵入式链表（见 Add）。
         owned.release();
         reg->Add(op);
     }
@@ -402,23 +421,20 @@ IoStep RunOverlappedOp(IoBackend& backend, HANDLE hFile, uint32_t bufCap, DWORD 
 }
 
 // 这三个入口一律不抛出：调用它们的是交易收尾链路（Transaction::Finish，还会从析构里再走一遍），
-// 异常从默认 noexcept 的析构函数逸出就是终止进程。各自的保守取值理由写在旁边。
+// 异常从默认 noexcept 的析构函数逸出就是终止进程。登记表内部的临界区用 SRWLOCK，本身就不抛。
 bool HasPendingOps(HANDLE hFile) noexcept {
     // 登记表取不到（它第一次被取用时堆分配失败）→ false：登记任何操作都要求它先存在，所以
-    // "它从没存在过"确实推出"此刻没有任何已移交的记录"。登记表在、却问不到状态（加锁失败）
-    // → true：宁可当成还有未决，也不让调用方在没确认终态的句柄上动手。
+    // "它从没存在过"确实推出"此刻没有任何已移交的记录"。登记表存在时查询不会失败：
+    // 挂链/查链都在不抛的 SRWLOCK 临界区里，不存在“问不到状态”的中间档。
     Registry* const reg = TryRegistry();
     if (reg == nullptr) return false;
-    try {
-        return reg->HasPending(hFile);
-    } catch (...) {
-        return true;
-    }
+    return reg->HasPending(hFile);
 }
 
 DWORD DrainPendingOps(HANDLE hFile, DWORD waitMs) noexcept {
     // 0 与 HasPendingOps 的 false 同一条依据：没有登记表就没有已移交的记录，也就没有未决操作。
-    // 反过来，登记表在却排不动（加锁失败）时报"至少还剩一条"，让调用方走收养遗留而不是关句柄。
+    // 登记表在却排不动（后端调用抛出，属于病理情形）时报"至少还剩一条"，让调用方走收养
+    // 遗留而不是关句柄 —— 宁可保守，也不把未知终态当成安全。
     Registry* const reg = TryRegistry();
     if (reg == nullptr) return 0;
     try {
@@ -429,8 +445,8 @@ DWORD DrainPendingOps(HANDLE hFile, DWORD waitMs) noexcept {
 }
 
 bool AdoptHandle(HANDLE hFile) noexcept {
-    // 返回 false = 这条收养没能记下（登记表不存在，或那个集合节点分配不出来）：调用方仍然要
-    // 放弃对这个句柄的关闭责任，此时关它依旧是文档不保证的行为，宁可让句柄随进程遗留。
+    // 返回 false 只有一种情形：同时收养的句柄数超过了免分配定长容量。此时调用方仍然要
+    // 放弃对这个句柄的关闭责任，到它依旧是文档不保证的行为，宁可让句柄随进程遗留。
     Registry* const reg = TryRegistry();
     if (reg == nullptr) return false;
     return reg->Adopt(hFile);

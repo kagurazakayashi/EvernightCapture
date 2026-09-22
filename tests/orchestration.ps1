@@ -15,7 +15,8 @@
       4. `-Only x -Except x` 筛出零套件的计划 → 明确报"没有可执行测试"（NO-TESTS-PLANNED）并以 2 结束，
          不进汇总，也不给 0
       5. 只交出 SKIP 的套件（套件自己的退出码是 0）→ 总退出码仍是 0：环境与安全边界不升成失败
-      6. 给了 -StopOnFail 时，剩下的记 NOT RUN(stopped-on-fail)，与上面两类**意外**未运行分开计
+      6. 给了 -StopOnFail 时，剩下的记 NOT RUN(stopped-on-fail)，与上面两类**意外**未运行分开计；
+         并且缺失/解析不干净这两个“意外”也要过同一个 -StopOnFail 决策：它们之后的哨兵套件绝未启动
       7. -Offline 只看登记表声明的 Real / OfflineLayer：只有真实层的那几套**整套不进计划**并逐条给原因
          （OFFLINE-EXCLUDED），声明了离线层的真的收到那个开关（收不到就自己 FAIL），本来不碰桌面的
          照常跑；负向对照是同一家傀儡不加 -Offline 时确实被启动并判 FAIL
@@ -253,6 +254,34 @@ exit 1
         "剩余那套记成主动没跑，不混进意外未运行"
     Assert-Ec ($r.Text -match '意外没跑成 0 套') "主动停下的剩余不会虚增意外未运行"
     Assert-Ec ($r.Text -match '因 -StopOnFail 主动没跑 1 套') "主动没跑的条数如实报 1"
+
+    # =======================================================================
+    Write-Host "`n=== 7 之二) 缺失/解析不干净也要过 -StopOnFail：后面的哨兵绝未启动 ==="
+    # =======================================================================
+    # 以前这两条直接 continue，绕过 StopOnFail 继续往下跑：'计划内没跑成'与'主动跳过'混为一谈，
+    # 后面的套件还是会启动。现在它们要和真失败走同一个停止决策。
+    Set-FakeSuite -Name 'crop' -Remove                       # 计划内缺失
+    Set-FakeSuite -Name 'scale' -Body $mustNotRunBody        # 哨兵：启动就会 FAIL
+    $r = Invoke-FakeTotal -Only @('crop', 'scale') -StopOnFail -Tag 'stopfail-missing'
+    Assert-Ec ($r.Exit -eq 1) "缺失套件 + -StopOnFail 时总退出码 1（实际 $($r.Exit)）"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'crop' -Status 'NOT RUN(missing-script)') `
+        "缺失的那套仍如实记为 NOT RUN(missing-script)"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'scale' -Status 'NOT RUN(stopped-on-fail)') `
+        "哨兵套件记成主动没跑，不是 FAIL（它根本没被启动）"
+    Assert-Ec ($r.Text -match '意外没跑成 1 套') "意外未运行只算缺失的那一套（1 套），哨兵不算"
+    Assert-Ec ($r.Text -match '因 -StopOnFail 主动没跑 1 套') "哨兵如实记在'主动没跑'里"
+    Assert-Ec ($r.Text -notmatch 'stub must not be started') "哨兵那行启动标记一个都没出现：确实没被启动"
+
+    Set-FakeSuite -Name 'screens' -Body $brokenBody          # 计划内解析不干净
+    Set-FakeSuite -Name 'wgc' -Body $mustNotRunBody          # 哨兵
+    $r = Invoke-FakeTotal -Only @('screens', 'wgc') -StopOnFail -Tag 'stopfail-broken'
+    Assert-Ec ($r.Exit -eq 1) "解析不干净 + -StopOnFail 时总退出码 1（实际 $($r.Exit)）"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'screens' -Status 'NOT RUN(unparsable-parameters)') `
+        "解析不干净的那套记 NOT RUN(unparsable-parameters)"
+    Assert-Ec (Assert-Row -Text $r.Text -Name 'wgc' -Status 'NOT RUN(stopped-on-fail)') `
+        "解析失败之后的哨兵也没被启动"
+    Assert-Ec ($r.Text -match '因 -StopOnFail 主动没跑 1 套') "解析失败那轮哨兵同样记在'主动没跑'里"
+    Assert-Ec ($r.Text -notmatch 'stub must not be started') "解析失败那一轮哨兵同样没启动过"
 
     # =======================================================================
     Write-Host "`n=== 8) -Offline 按声明选路：只有真实层的整套不排，并给原因 ==="

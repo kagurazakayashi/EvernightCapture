@@ -147,9 +147,22 @@ $cases = @(
        Check = { param($o) $o.input.monitor -eq 1 -and $o.input.target -eq 'screen' } }
     @{ Name = '--monitor all 回显 all'; A = @('--monitor','all','--dry-run','out.png','-v'); Exit = 0
        Check = { param($o) $o.input.monitor -eq 'all' -and $o.input.target -eq 'screen' } }
-    @{ Name = '--monitor 与窗口条件同时给出 = 按屏过滤窗口'
-       A = @('--monitor','1','--class','Shell_TrayWnd','--dry-run','out.png','-v'); Exit = 0
-       Check = { param($o) $o.input.target -eq 'window' -and $o.input.monitor -eq 1 } }
+    # 屏幕限定 + 窗口条件。锚点 Shell_TrayWnd 是**主屏**那条任务栏（副屏上的是
+    # Shell_SecondaryTrayWnd，本机三屏实测 1 + 2），所以"它能匹配上"这件事跟机器拓扑无关；
+    # 而 `--monitor 1` 的 1 是本次枚举顺序里的位置，多屏机器上未必是主屏——拿它当正例
+    # 等于把"这台机器 1 号屏就有任务栏"写进判据（单屏机器全绿，多屏机器如实报 match.no_window）。
+    # 于是正例走 primary，编号形式只断言路由与如实失败：目标仍是窗口、编号原样回显、
+    # 匹配不上时只能报 match.no_window（不许悄悄换成截整屏，也不许变成解析错误）。
+    @{ Name = '--monitor primary 与窗口条件同时给出 = 按屏过滤窗口'
+       A = @('--monitor','primary','--class','Shell_TrayWnd','--dry-run','out.png','-v'); Exit = 0
+       Errors = @()
+       Check = { param($o) $o.input.target -eq 'window' -and $o.input.monitor -eq 'primary' -and
+                            $o.captured -eq 0 } }
+    @{ Name = '--monitor 编号与窗口条件同时给出 = 路由不变（1 号屏未必有任务栏）'
+       A = @('--monitor','1','--class','Shell_TrayWnd','--dry-run','out.png','-v'); Exit = @(0,4)
+       Check = { param($o) $o.input.target -eq 'window' -and $o.input.monitor -eq 1 -and
+                            $o.captured -eq 0 -and @($o.images).Count -eq 0 -and
+                            -not (@(Codes $o.errors) | Where-Object { $_ -ne 'match.no_window' }) } }
     @{ Name = 'help 里有 --monitor 一节'; A = @('--help'); Exit = 3; Text = $true
        Has = @('截图目标', '--monitor') }
     @{ Name = '--monitor all 与窗口条件冲突'; A = @('--monitor','all','--class','Shell_TrayWnd','out.png')

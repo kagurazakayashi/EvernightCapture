@@ -129,7 +129,6 @@ below is the verbatim output of `ECAPTURE.EXE --help`; run `.\scripts\mkreadme.p
 **do not hand-edit that block**.
 
 <!-- BEGIN ECAPTURE-HELP -->
-
 ```text
 EvernightCapture (ECAPTURE.EXE) - capture a window selected by conditions, built on Windows.Graphics.Capture
 
@@ -219,7 +218,6 @@ Examples:
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
   ECAPTURE.EXE --capabilities  ask what this machine can do first, then choose --capture and the target
 ```
-
 <!-- END ECAPTURE-HELP -->
 
 ## Argument syntax
@@ -1487,8 +1485,9 @@ this development machine; none of them is claimed as a pass):
 ## Guide for AI and scripts
 
 The tool is designed for programmatic calls; following these conventions is the cheapest way to use it. The
-repository also ships a skill that teaches an agent to drive it: `.agents/skills/ecapture-screenshot/` (contains
-`SKILL.md`, `references/cli-contract.md`, and a copy of the exe).
+repository also ships a skill that teaches an agent to drive it: `.agents/skills/yashi-evernight-capture/` (contains
+`SKILL.md`, `references/cli-contract.md`, and a copy of the exe). Installing the skill (see "Install") puts it at
+`%UserProfile%\.agents\skills\yashi-evernight-capture` by default; an earlier release called it `ecapture-screenshot`.
 
 1. **Ask the capability question first, then discover windows with `--list` / `--inspect`, then capture for real.**
    `--capabilities` is read-only - no pixel taken, no consent dialog, no file written - so it never disturbs anybody
@@ -1565,7 +1564,111 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 7. To reliably target "some application", prefer `--process`/`--exe` plus `--class`; title matching is
    case-sensitive and unreliable across locales.
 
-## Build and test
+## Install (Windows, no developer tools needed)
+
+Running the program needs no toolchain at all - no Visual Studio, no CMake, no source tree. Those are only needed to
+*build* an installer, which is the next section's job.
+
+### 1. Get the installer
+
+The repository root script `build-installer.ps1` produces
+`build\installer\EvernightCapture-<version>-<arch>-setup.exe` and writes a `.sha256` next to it. **This project has no
+release attachment yet, so there is no download URL to quote here** - until there is one, an installer has to be
+produced from a checkout, and the file should be checked against its `.sha256` before it is run.
+
+### 2. System requirements
+
+- Windows 10 build **18362** or newer, **x64**. `ECAPTURE.EXE --capabilities` reports the floor this binary enforces
+  itself (`os.declaredMinBuild`, plus `os.build` for the machine you are on); see "System support" above for what was
+  actually tested.
+- **No Visual C++ redistributable**: the runtime is linked statically, so there is nothing else to install.
+- **No administrator rights**: setup installs for the current user only. It never elevates itself just because you
+  chose a folder it cannot write to - it reports the failure instead of installing somewhere else.
+- HDR, multiple monitors, and the desktop-route confirmation dialog are *runtime* features, not installer
+  requirements; nothing about them changes what the installer needs.
+
+### 3. Run the wizard and choose a folder
+
+The default directory is `%UserProfile%\.agents\skills\yashi-evernight-capture`, and the wizard lets you pick any
+folder. **The folder you choose *is* the skill root**: `SKILL.md` sits directly in it, with `ECAPTURE.EXE` beside it,
+and no extra nested folder is created. Setup remembers the folder you chose when you upgrade.
+
+```bat
+:: Read-only self-check after installing (cmd.exe). Quote the path: the default contains no spaces, a custom one may.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
+```
+
+```powershell
+# PowerShell: the same thing, plus the optional post-install offline test run
+& "$env:USERPROFILE\.agents\skills\yashi-evernight-capture\verify-install.ps1" -RunOfflineTests
+# A custom install directory works the same way - pass it explicitly, do not assume the default:
+& "D:\My Tools\ecapture\verify-install.ps1" -InstallDir "D:\My Tools\ecapture"
+```
+
+### 4. Read-only install self-check
+
+`verify-install.ps1` (installed at the root of the chosen folder) needs **no Visual Studio, no source tree and no
+network**. It checks, in order: every file listed in `install-manifest.json` for presence, size and SHA-256; that the
+relative links in the four READMEs and `SKILL.md` resolve inside the install folder; that `ECAPTURE.EXE --version`
+exits 0 with the declared version, that `--capabilities` / `--diagnostics` exit 0 as parseable JSON whose
+`program.version` / `arch` / `buildId` match the manifest, and that `--help` exits 3 (that is its contract, not a
+failure). With `-RunOfflineTests` it then runs the declared offline test set through the bundled `test-all.ps1`,
+pointed at **this** folder's `ECAPTURE.EXE` - never at an older copy on `PATH` - with logs in the system temp
+directory. Exit codes: `0` all passed, `1` something failed, `2` a precondition was missing (wrong folder, no
+manifest). The real window / HDR / multi-monitor / consent-dialog tests are **not** run here; those stay a job for a
+person in a suitable environment.
+
+### 5. Let an AI tool find and use the skill
+
+Three different things, and mixing them up is the usual reason "it does not work":
+
+- **File installation** - where `SKILL.md` and `ECAPTURE.EXE` physically are. That is the folder you picked.
+- **Skill discovery** - whether the tool finds that folder on its own. **Not every tool scans `.agents/skills`.**
+- **Command execution permission** - installing a file grants no authority to capture anything. Everything in
+  "Screenshot authorization and `--yes`" still applies; in particular a person still has to answer the desktop
+  dialog.
+
+**OpenCode** (checked against its official Agent Skills documentation): besides `.opencode/skills/<name>/SKILL.md` and
+the Claude-compatible paths, it loads a global *agent-compatible* path `~/.agents/skills/<name>/SKILL.md` - on Windows
+that is `%UserProfile%\.agents\skills\<name>\SKILL.md`, i.e. exactly the default folder this installer uses, so the
+default install is discovered automatically at the next start. Its rules also require `name` to match the folder name
+(here `yashi-evernight-capture`), so do not rename one without the other. **A custom folder is not auto-discovered** -
+point the tool at it.
+
+For a tool that does not auto-discover, hand it the folder explicitly (this is a pointer, **not** registration):
+
+```text
+Read the SKILL.md at <absolute path to the installed SKILL.md> and follow it. Call the ECAPTURE.EXE in that same
+directory by absolute path, with the path quoted. Start with read-only checks (--version, --capabilities). Do not try
+to prove the install works by taking a screenshot.
+```
+
+### 6. Upgrade, uninstall, troubleshooting
+
+- **Upgrade**: run a newer setup and keep the same folder - it upgrades in place and remembers your choice. If the
+  copy fails or is interrupted, setup rolls back rather than leaving a half-written folder.
+- **Changing the folder** installs a second, independent copy. The old folder is left untouched (nothing is migrated
+  or deleted for you); if both copies remain, both uninstallers are listed separately - remove the one you do not
+  want, or point your tool at exactly one of them.
+- **Unknown folder with the same name**: setup says `install-manifest.json` is missing and asks before adding its
+  files; it never silently overwrites whatever was already there. An unattended run (`/VERYSILENT`) has nobody to ask,
+  so it writes **no file at all** and stops with a non-zero exit code, recording the reason in its `/LOG` file.
+- **Uninstall** removes only the files the installer recorded. Files you added, logs, and neighbouring skills stay;
+  nothing recursively deletes the parent folders (`.agents`, `skills`) or your chosen folder's other contents.
+- **A file is in use**: setup reports the locked file and rolls back. It does not kill a running program to force the
+  install through, and it does not claim success.
+- **The install folder is blocked by a security policy**: when the chosen folder sits under a policy that forbids
+  programs living in it from creating a temporary directory (common with endpoint protection), an in-place uninstall
+  fails with `Setup was unable to create the directory "…-uninstall.tmp". Error 5`, and the bundled `delivery` layer of
+  the self-test fails its "temporary directory can be created" checks. That is the environment refusing, not the
+  product misbehaving: install into a different folder, or have an administrator allow this one. The read-only part of
+  `verify-install.ps1` (file hashes, document references, binary identity) is unaffected and still checks out.
+- **"It installed but the AI ignores it"**: confirm the folder is one the tool actually scans (see above), then check
+  the binary identity rather than the version string - compare `install-manifest.json`'s `version`, `arch` and
+  `buildId` with `ECAPTURE.EXE --capabilities`. An older `ECAPTURE.EXE` next to a source checkout can be stale; a
+  freshly installed one cannot be, because it comes from the installer's own build.
+
+## Build and test (maintainers)
 
 | Command                     | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1613,6 +1716,95 @@ and a batch body containing anything but ASCII is rejected before it is written.
 `.\tests\build-path.ps1` proves. Builds must stay warning-free under `/W4`. When testing by hand in Git Bash,
 run `export MSYS2_ARG_CONV_EXCL='*'` first — otherwise `/help` gets rewritten as a path and
 `--out /tmp/x.png` turns into a mangled one.
+
+### One entry point: `test-all.ps1`
+
+`test-all.ps1` orchestrates the suites above; it contains no judgements of its own. It builds first (unless told not
+to), then runs the suites **serially** through the shared `tests\harness.psm1` invoker, and prints one table plus the
+log directory.
+
+```powershell
+.\test-all.ps1                       # build Release, run everything
+.\test-all.ps1 -Quick                # skip build-path.ps1, and timeout.ps1's long waits
+.\test-all.ps1 -Only cli,windows     # just these
+.\test-all.ps1 -Except build-path    # everything except the slowest
+.\test-all.ps1 -Offline              # only each suite's offline layer
+.\test-all.ps1 -List                 # print the plan; do not build, do not run anything
+.\test-all.ps1 -NoBuild              # use the existing build\ecapture.exe
+.\test-all.ps1 -Exe D:\tools\ECAPTURE.EXE   # or an explicit binary
+.\test-all.ps1 -StopOnFail           # stop at the first suite that fails
+```
+
+- **`-List` only previews.** It prints the plan and starts nothing - a filter that ends in no runnable suite is
+  reported as a missing precondition, and "empty plan" is never silently a success.
+- **`-Offline`** routes by per-suite metadata, not by name. Purely offline suites (read-only CLI queries, pure
+  functions and protocols, temporary files) run as usual; mixed suites get the switch they declare
+  (`-SkipReal` / `-OfflineOnly`), typed into their command line **before anything starts** - a mixed script that would
+  otherwise open a window never gets the chance; suites that are real-only and declare no offline entry are removed
+  from the plan up front and each one gets a reason in the summary (`OFFLINE-EXCLUDED`), and not one byte of them is
+  started. A suite that claims an offline entry but does not accept it is a metadata mismatch: it does **not** run and
+  the exit code fails - it is never quietly degraded into running the real path, and never booked as a reasonable
+  SKIP. `-Offline` may still require the Windows toolchain (one suite compiles a helper window program with the
+  bundled .NET Framework `csc` in a scratch folder); it is not a portable/offline-in-the-network sense claim.
+- **Consent is never assumed.** `-Force` only skips the "press Enter to start" pause: it **cannot** approve a real
+  desktop confirmation, and it cannot be combined with the acceptance switches. `-Offline` together with
+  `-SimulateConsent` / `-TimeoutConsent` is refused before anything executes (`OFFLINE-CONSENT-CONFLICT`), and so is
+  answering a dialog by name that the target suite does not accept (`-TimeoutConsent` is only valid for the suite that
+  documents it). Simulated consent needs `yes` typed at the prompt: with redirected input, no console or a
+  non-interactive host, the run stops as *not approved* instead of defaulting to agreement.
+- **Exit codes**: `0` = every planned suite ran and passed (a suite's own SKIP is unverified, not a failure); `1` =
+  at least one FAIL / TIMEOUT / NO EXIT / NO START, **or a suite the plan named never started** (missing script,
+  unparsable source, offline metadata mismatch); `2` = a precondition was missing (build failed, no binary, unknown
+  option, no runnable test after filtering, conflicting switches, or another run already holding the lock). A build
+  failure ends with code 2 and never reuses a stale artifact.
+- **The summary counts only real results.** "Delivered a result" means the suite actually produced a final state:
+  NO START / NO EXIT are not counted as delivered. Three kinds of "did not run / not verified" stay separate and are
+  never merged into one number: deliberately not planned (`-Quick` / `-Only` / `-Except` / `-Offline`), the remainder
+  after `-StopOnFail`, and suites that unexpectedly never started (only the last kind fails the exit code). A suite's
+  own SKIP stays an environment/safety boundary - it is neither promoted to a failure nor booked as a pass.
+- **Logs** go to `build\test-logs\<timestamp>\` (one file per suite plus a combined one); `build\` is gitignored.
+
+### Building the installer: `build-installer.ps1`
+
+The root script is meant to be called by absolute path from any working directory; it locates the repository from its
+own location, never from the current directory.
+
+```powershell
+# PowerShell (maintainer machine, from anywhere)
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1"                 # Release build + installer
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -Clean          # clean rebuild first
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -StageOnly      # build + collect/verify payload, no compiler needed
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -SkipBuild      # reuse build\, identity still verified
+```
+
+```bat
+:: cmd.exe - the same, quoted; %UserProfile% is expanded by cmd, not by the script
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\EvernightCapture\build-installer.ps1"
+```
+
+- **It builds first and stops on failure** (exit code 11): `build.ps1` with `-Config` (default `Release`), producing
+  the binary *and* the test programs. `-SkipBuild` is an explicit request to reuse `build\`, and it still checks the
+  source of truth (version from `src\Version.h`, PE architecture, `program.buildId`) - a failed build never falls back
+  to an old artifact, and "the file exists" is never treated as "the current build succeeded".
+- **Payload collection** follows `installer\payload.manifest.json` into a private staging directory under `build\`:
+  `ECAPTURE.EXE`, `SKILL.md` + `references\`, all four READMEs, `LICENSE`, `resources\icon.ico`,
+  `verify-install.ps1`, `test-all.ps1`, `tests\` (scripts, `harness.psm1`, helper source, batch walkthrough) and the
+  test binaries under `build\`. A content guard rejects source files, developer-only `AGENTS.md` / `MEMORY.md`,
+  logs and screenshots, and the check refuses to stage a different `ECAPTURE.EXE` than the one just built.
+- **The staged manifest** `install-manifest.json` (plus `payload.sha256.txt`) records version, architecture, config,
+  `buildId` and the SHA-256 of every file, which is what the installed `verify-install.ps1` checks against.
+- **The compiler** is Inno Setup 6.3 or newer (the script needs `ArchitecturesAllowed=x64compatible`). It is found on
+  `PATH` or in the usual installation folders, or given explicitly with `-IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"`.
+  The script never downloads or installs a tool: without a compiler it prints what is missing and exits `32`
+  (`-StageOnly` still works and needs no compiler at all). `build.ps1`'s own dependency is Visual Studio with the C++
+  desktop workload, located through `vswhere`.
+- **Output**: `build\installer\EvernightCapture-<version>-<arch>-setup.exe` plus `<...>.exe.sha256`. Version comes from
+  `src\Version.h` (there is no second hand-written version), the name carries version and architecture, and the
+  printed summary repeats the path, version, `buildId` and SHA-256. `build\` (staging, installer, logs) is gitignored
+  and contains no tracked release artifact. Timestamped artifacts are not byte-for-byte reproducible and are not
+  promised to be.
+- Neither script asks for administrator rights and neither changes the machine's execution policy; the examples above
+  use `-ExecutionPolicy Bypass` for one process only, which is not a global setting.
 
 ## License
 

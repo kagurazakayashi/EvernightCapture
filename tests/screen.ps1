@@ -196,14 +196,28 @@ try {
     Assert-Ec (-not (Test-Path -LiteralPath $dryPath)) '--dry-run 不该写出文件'
 
     # ---------- 4) --monitor + 窗口条件：按屏过滤，不该弹框（与是否代答无关）----------
-    Write-Host "`n=== --monitor 1 + 窗口条件：按屏过滤，不弹框，JSON 仍是窗口形状 ==="
-    $r = Invoke-EcapProcess2 @('--monitor', '1', '--class', 'Shell_TrayWnd', '--dry-run', '--out', '-', '-v') `
+    # 锚点 Shell_TrayWnd 是**主屏**那条任务栏（副屏上的是 Shell_SecondaryTrayWnd），所以"匹配得上"
+    # 与机器拓扑无关；而编号 1 是本次枚举顺序里的位置，多屏机器上未必是主屏，拿它当正例等于把
+    # 拓扑写进判据（同一处修正在 tests\cli.ps1）。编号形式照跑，但只断言路由：不弹框、仍是窗口
+    # 形状、编号原样回显，匹配不上时只能报 match.no_window。
+    Write-Host "`n=== --monitor + 窗口条件：按屏过滤，不弹框，JSON 仍是窗口形状 ==="
+    $r = Invoke-EcapProcess2 @('--monitor', 'primary', '--class', 'Shell_TrayWnd', '--dry-run', '--out', '-', '-v') `
             -ExpectNoDialog
     Assert-Ec (-not $r.Dialog) '按屏过滤（不截整屏）弹了确认框'
     $o = $null
     try { $o = $r.Err | ConvertFrom-Json } catch { }
     Assert-Ec ($r.Exit -eq 0 -and $o -and $o.input.target -eq 'window') "按屏过滤模式没跑起来：exit=$($r.Exit)"
     Assert-Ec (@($o.notes | ForEach-Object code) -contains 'note.dry_run') '按屏过滤时 dry-run 仍应报 note.dry_run'
+    $r = Invoke-EcapProcess2 @('--monitor', '1', '--class', 'Shell_TrayWnd', '--dry-run', '--out', '-', '-v') `
+            -ExpectNoDialog
+    Assert-Ec (-not $r.Dialog) '按编号限缩屏幕过滤窗口时弹了确认框'
+    $o = $null
+    try { $o = $r.Err | ConvertFrom-Json } catch { }
+    $codes = @($o.errors | ForEach-Object code)
+    Assert-Ec ($o -and $o.input.target -eq 'window' -and $o.input.monitor -eq 1 -and
+                (@(0, 4) -contains $r.Exit) -and -not ($codes | Where-Object { $_ -ne 'match.no_window' })) `
+        ("按编号限缩屏幕过滤窗口的路由不对：exit={0} target={1} monitor={2} errors=[{3}]" -f `
+            $r.Exit, $o.input.target, $o.input.monitor, ($codes -join ','))
     $r = Invoke-EcapProcess2 @('--monitor', '99', '--class', 'Shell_TrayWnd', '--out', '-', '-v') -ExpectNoDialog
     Assert-Ec (-not $r.Dialog) '屏幕编号越界时不该先弹框（越界是参数错）'
     $o = $null

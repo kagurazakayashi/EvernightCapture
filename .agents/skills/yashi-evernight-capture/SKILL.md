@@ -1,7 +1,8 @@
 ---
-name: ecapture-screenshot
+name: yashi-evernight-capture
 description: Capture window or full-screen images on Windows with ECAPTURE.EXE (EvernightCapture) by selecting targets through conditions. Use when taking a screenshot, grabbing one specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), naming a monitor by a stable identifier (--screens), capturing several windows at once, capturing one whole monitor, or interpreting ECAPTURE's JSON result, exit codes and stable diagnostic codes. Prefer read-only queries over probing by capturing. Any route that samples desktop pixels (whole screen, bitblt, duplication, DWM's screen fallback) requires the user's own confirmation - present it to the user instead of answering for them.
 argument-hint: <window conditions> <output path>
+license: MulanPSL-2.0
 ---
 
 # ECAPTURE screenshot guide
@@ -23,37 +24,68 @@ Three kinds of call, and the difference matters:
 - **A real capture that samples desktop pixels** (any whole screen, `bitblt`, `duplication`, DWM's `dwm.screen`
   fallback) - **a person has to answer the dialog**. Say what will be captured, start it, and wait for them.
 
+## Installing and deploying this skill
+
+This skill is delivered by the Windows installer produced by the repository's `build-installer.ps1`. Three things are
+separate and must not be conflated:
+
+- **File installation** - where `SKILL.md` and `ECAPTURE.EXE` physically are. The installer defaults to
+  `%UserProfile%\.agents\skills\yashi-evernight-capture` but the user can choose **any** directory; that chosen
+  directory *is* the skill root, with `SKILL.md` directly in it (no extra nested folder of the same name).
+- **Skill discovery** - whether an AI tool finds it automatically. **Do not assume every tool scans `.agents/skills`.**
+  Only a tool whose documented mechanism is verified to include this location discovers it on its own; otherwise the
+  user has to point the tool at the directory explicitly.
+- **Command execution permission** - whether you are allowed to run the executable at all. Installing a file grants no
+  extra authority: every capture rule in this guide (especially "a person answers the desktop dialog") still applies.
+
+A generic way to hand it to a tool that does not auto-discover: tell the tool to **read the `SKILL.md` in the actual
+install directory explicitly**, then call the `ECAPTURE.EXE` **in that same directory by absolute path** (see below).
+This is a manual pointer, **not** automatic registration. The first verification step you ask for should be read-only
+only (`--version` / `--capabilities`) - it must not prove a working install by taking a screenshot.
+
 ## Where the executable is
 
-The bundled copy is `ECAPTURE.EXE` in this directory. **Call it by absolute path**; `$PSScriptRoot` only has a value
-*inside* a `.ps1` file, so interactively it expands to nothing.
+This skill ships `ECAPTURE.EXE` **next to this `SKILL.md`**: in an installed copy they sit in the same directory (the
+installer's chosen Skill root), so the workflow is: find this file, then take the executable beside it.
+
+1. **Locate the directory that holds the `SKILL.md` you actually loaded** - it is not always the default one. The
+   installer defaults to `%UserProfile%\.agents\skills\yashi-evernight-capture`, but the user may have picked any
+   other folder; a repository checkout keeps it under `.agents\skills\yashi-evernight-capture`. Never hard-code a
+   single path, and never fall back to a `PATH` lookup.
+2. **Build the absolute executable path from that directory and always quote it.** `$PSScriptRoot` only has a value
+   *inside* a `.ps1` file - interactively it expands to nothing, so use the literal path there.
+
+An earlier release called this skill `ecapture-screenshot`; if you meet that name, treat it as the same skill and prefer
+the current `yashi-evernight-capture` location. The old location is not a second, independent guide.
 
 ```powershell
-# PowerShell (interactive: use the literal path, not $PSScriptRoot)
-$exe = "P:\yashi\EvernightCapture\.agents\skills\ecapture-screenshot\ECAPTURE.EXE"
+# PowerShell. In a .ps1 file the directory is $PSScriptRoot; interactively paste the literal path.
+$skillDir = "$env:USERPROFILE\.agents\skills\yashi-evernight-capture"   # <- your actual install directory
+$exe = Join-Path $skillDir 'ECAPTURE.EXE'
 & $exe --process notepad.exe --yes --timeout-ms 5000 --out D:\shots\epad.png
 ```
 
 ```bat
-:: cmd.exe - the same absolute path
-P:\yashi\EvernightCapture\.agents\skills\ecapture-screenshot\ECAPTURE.EXE --capabilities
+:: cmd.exe - the same absolute path, quoted
+"%UserProfile%\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE" --capabilities
 ```
 
-Substitute your own checkout if the repository lives elsewhere, and do not assume the tool is on `PATH`.
+Do not assume the tool is on `PATH`.
 
 - `ECAPTURE.EXE --help` is the authority on the option list. **`--help` exits with code 3 and `--version` with 0;
   neither is a failure.** Add `--lang en` for English message text (`zh-CN` / `zh-TW` / `en` / `ja`).
-- **The bundled copy can be older than this guide while still printing `0.4.0`.** Ask it read-only and compare the
-  contract, not the version: `--capabilities` -> `cursor.paths[]` rows for `duplication.frame` /
+- **A copy can be older than this guide while still printing `0.4.0`.** Ask it read-only and compare the **contract**
+  and the **identity**, not the version string: `--capabilities` -> `cursor.paths[]` rows for `duplication.frame` /
   `screen.duplication` say `capability: "pointer_state_unverified"` (an old copy says `excludes_cursor`), and
-  `color.paths[]` rows carry `honorsExplicitPolicy` (an old copy has no such key). `program.buildId` differs between
-  builds. In this checkout the copy next to this file is exactly such an old one: it refuses `--scale` as
-  `cli.unknown_option`, and it accepts `--cursor exclude` with `--capture duplication` instead of refusing it.
+  `color.paths[]` rows carry `honorsExplicitPolicy` (an old copy has no such key); `program.buildId` differs between
+  builds. A **source checkout's** copy can be stale - that says nothing about a **newly installed** package, whose
+  `ECAPTURE.EXE` comes from that installer's own build. Either way, read `program.buildId` / `--diagnostics` before
+  trusting a copy.
   **A stale binary quietly accepting something this guide says is refused is not evidence the requirement was met** -
-  it reports the older, now-known-unreliable basis values, so treat its output as unverified and say so.
-  If the bundled binary contradicts this guide or refuses a documented option, **report it and let the user decide**:
-  building (`.\build.ps1` -> `build\ecapture.exe`) and replacing a shipped
-  binary is a change to a published artifact, so do not build, install or overwrite anything on your own.
+  it reports older, now-known-unreliable basis values, so treat its output as unverified and say so.
+  If a binary contradicts this guide or refuses a documented option, **report it and let the user decide**: building
+  (`.\build.ps1` -> `build\ecapture.exe`) or replacing an installed executable is a change to a published artifact, so
+  do not build, install or overwrite anything on your own.
 - Git Bash mangles `/help` as a path and **collapses backslashes** in arguments like `--monitor id:...`:
   `export MSYS2_ARG_CONV_EXCL='*'`, quote the value, and pass Windows-style paths.
 
@@ -317,7 +349,7 @@ Codes not listed here (including every `note.*`) are in `references/cli-contract
 ## Recipes
 
 ```powershell
-$exe = "P:\yashi\EvernightCapture\.agents\skills\ecapture-screenshot\ECAPTURE.EXE"   # substitute your checkout
+$exe = Join-Path "$env:USERPROFILE\.agents\skills\yashi-evernight-capture" 'ECAPTURE.EXE'   # substitute your install dir
 
 # Safe to run as-is: all four are read-only (no pixel, no dialog, no file, no output path needed).
 & $exe --capabilities                                   # what can this machine do
@@ -343,7 +375,7 @@ quote it; in Git Bash export `MSYS2_ARG_CONV_EXCL='*'` first, or the backslashes
 
 ```cmd
 :: cmd.exe - image bytes on stdout, JSON on stderr, both byte-exact. Never 2>&1 for an image.
-P:\yashi\EvernightCapture\.agents\skills\ecapture-screenshot\ECAPTURE.EXE --process notepad.exe --yes --out - 1> D:\shots\snap.png 2> D:\shots\result.json
+"%UserProfile%\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE" --process notepad.exe --yes --out - 1> D:\shots\snap.png 2> D:\shots\result.json
 ```
 
 ## Resources

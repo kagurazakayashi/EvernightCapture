@@ -98,7 +98,6 @@ ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 改動選項後執行 `.\scripts\mkreadme.ps1` 重新產生，**不要手動編輯這一段的正文**。
 
 <!-- BEGIN ECAPTURE-HELP -->
-
 ```text
 EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Graphics.Capture
 
@@ -188,7 +187,6 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
   ECAPTURE.EXE --capabilities  先唯讀問一次這台機器能走哪幾條路徑，再決定 --capture 與目標條件
 ```
-
 <!-- END ECAPTURE-HELP -->
 
 ## 引數寫法
@@ -1188,7 +1186,9 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 ## 給 AI / 腳本的呼叫指南
 
 這個工具就是為程式化呼叫設計，照下面這套約定做最省事。專案裡還附了一份教 AI 使用它的 skill：
-`.agents/skills/ecapture-screenshot/`（裡有 `SKILL.md`、`references/cli-contract.md` 和一份 exe 副本）。
+`.agents/skills/yashi-evernight-capture/`（裡有 `SKILL.md`、`references/cli-contract.md` 和一份 exe 副本）。
+安裝（見「安裝」一節）預設會裝到 `%UserProfile%\.agents\skills\yashi-evernight-capture`；早期版本曾用名
+`ecapture-screenshot`，見到那個名字當成同一個 skill 即可。
 
 1. **先問一次能力，再用 `--list` / `--inspect` 發現視窗，最後真的截圖。** `--capabilities` 是唯讀的：不取像素、不彈確認框、
    不寫檔案，所以不會打擾任何人，適合放在自動化流程最前面。它把這台機器的版本、工作階段、螢幕拓撲、每條路線的
@@ -1254,7 +1254,70 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    之內沒人回答就是拒絕（`capture.consent_timeout`、退出碼 6）。看到 `capture.timeout` 且 `backend=printwindow` /
    `dwm`，多半是目標的 UI 執行緒卡住了，請改用 `--capture wgc` 或放寬預算。
 
-## 建置與測試
+## 安裝（Windows，普通使用者不需要開發工具）
+
+使用這個程式完全不需要工具鏈：不用 Visual Studio、不用 CMake、也不用原始碼樹。那些只在**建置安裝封裝**時才需要（見下一節）。
+
+### 1. 取得安裝封裝
+
+倉庫根的 `build-installer.ps1` 會產生 `build\installer\EvernightCapture-<版本>-<架構>-setup.exe`，並在旁邊寫一份 `.sha256`。**本專案目前還沒有發佈附件，所以這裡給不出下載網址**——在有之前，安裝封裝只能從檢出（checkout）建置出來；執行前請先對照 `.sha256` 核對檔案。
+
+### 2. 系統需求
+
+- Windows 10 build **18362** 以上，**x64**。這個二進位自己宣告並強制的下限由 `ECAPTURE.EXE --capabilities` 報出（`os.declaredMinBuild`，目前機器則是 `os.build`）；真正實測過的範圍見上面的「系統支援」。
+- **不需要任何 VC++ 執行階段**：執行階段是靜態連結的，沒有額外要裝的東西。
+- **不需要管理員權限**：安裝程式按目前使用者安裝。就算你選的目錄它寫不進去，它也只如實報錯，不會自動提權、也不會改裝到別處。
+- HDR、多螢幕、桌面路徑的確認框都是**執行時期**特性，不是安裝需求；它們不改變安裝程式需要什麼。
+
+### 3. 執行安裝精靈並選擇目錄
+
+預設目錄是 `%UserProfile%\.agents\skills\yashi-evernight-capture`，精靈允許你選任意目錄。**你選的目錄就是 Skill 根目錄**：`SKILL.md` 直接位於其中，`ECAPTURE.EXE` 就在它旁邊，不會再多套一層同名目錄。升級時安裝程式會記住你上次選的目錄。
+
+```bat
+:: 安裝後做一次唯讀自檢（cmd.exe）。路徑要帶引號：預設路徑沒有空白，自訂路徑可能有。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
+```
+
+```powershell
+# PowerShell：同上，另跑一遍可選的安裝版離線測試
+& "$env:USERPROFILE\.agents\skills\yashi-evernight-capture\verify-install.ps1" -RunOfflineTests
+# 自訂安裝目錄同理——顯式傳進去，不要假設預設路徑：
+& "D:\我的 工具\ecapture\verify-install.ps1" -InstallDir "D:\我的 工具\ecapture"
+```
+
+### 4. 唯讀安裝自檢
+
+`verify-install.ps1`（裝在所選目錄的根）**不需要 Visual Studio、不需要原始碼樹、也不需要網路**。它依次核對：`install-manifest.json` 裡每個檔案是否存在、大小與 SHA-256 是否一致；四份 README 與 `SKILL.md` 裡的相對連結是否都指向安裝目錄內真實存在的檔案；`ECAPTURE.EXE --version` 是否退出碼 0 且版本與宣告一致；`--capabilities` / `--diagnostics` 是否退出碼 0、可解析為 JSON，且 `program.version` / `arch` / `buildId` 與清單一致；`--help` 是否退出碼 3（這是它的契約，不是失敗）。加 `-RunOfflineTests` 時，它會用隨包的 `test-all.ps1` 跑清單宣告的離線測試集，且指向**本目錄**的 `ECAPTURE.EXE`（絕不誤用 `PATH` 上的舊版），日誌寫在系統臨時目錄。退出碼：`0` 全過，`1` 有失敗，`2` 前置不成立（目錄不對、沒有清單）。真實視窗 / HDR / 多螢幕 / 確認框測試**不在這裡跑**，那要由人在合適的環境裡安排。
+
+### 5. 讓 AI 工具發現並使用這個 Skill
+
+三件不同的事，混為一談通常就是「裝了沒用」的原因：
+
+- **檔案安裝**——`SKILL.md` 與 `ECAPTURE.EXE` 實際在哪。就是你選的那個目錄。
+- **Skill 發現**——工具會不會自己找到那個目錄。**不是每個工具都會掃 `.agents\skills`。**
+- **命令執行權限**——裝了檔案不等於有權截圖。上面「截圖授權與 `--yes`」那套規則照舊，尤其是桌面確認框仍然要由人回答。
+
+**OpenCode**（已對照其官方 Agent Skills 文件核實）：除了 `.opencode/skills/<名稱>/SKILL.md` 與 Claude 相容路徑，它還會載入全域「agent 相容」路徑 `~/.agents/skills/<名稱>/SKILL.md`；在 Windows 上就是 `%UserProfile%\.agents\skills\<名稱>\SKILL.md`，與本安裝程式的預設目錄完全一致，所以**預設安裝**會在下次啟動時被自動發現。它的規則還要求 `name` 與所在目錄名一致（這裡是 `yashi-evernight-capture`），別只改其中一個。**自訂目錄不會被自動發現**，需要手動指向它。
+
+對不會自動發現的工具，把目錄顯式交給它（這是「指路」，**不是**自動註冊）：
+
+```text
+請顯式讀取這個路徑的 SKILL.md：<安裝目錄裡 SKILL.md 的絕對路徑>，並按其說明執行。
+呼叫同一個目錄裡的 ECAPTURE.EXE，用絕對路徑並加引號。
+先只做唯讀檢查（--version、--capabilities）。不要用截圖來證明安裝成功。
+```
+
+### 6. 升級、卸載與排障
+
+- **升級**：跑新的安裝封裝、保持同一個目錄即可原地升級，並會記住你的選擇。失敗或中斷會回復（rollback），不會留下寫了一半的目錄。
+- **換目錄**等於裝第二份獨立副本：舊目錄原樣保留（不會替你遷移或刪除）。兩份都在時，卸載項目會各自列出——刪掉不要的那份，或讓工具只指向其中一份。
+- **同名但不屬於本產品的目錄**：安裝程式會說缺少 `install-manifest.json`，並在動手前問你，絕不會靜默覆蓋原有內容。無人值守安裝（`/VERYSILENT`）沒有可問的人，於是它**一個檔案都不寫**，以非 0 退出碼中止，原因記在 `/LOG` 那份日誌裡。
+- **卸載**只刪安裝程式記錄過的檔案。你後來加的檔案、日誌、相鄰的其它 Skill 一律保留；不會遞迴刪除 `.agents`、`skills` 這些父目錄或你目錄裡的其它內容。
+- **檔案被佔用**：安裝程式如實報出被佔用的檔案並回復，不會為了讓安裝通過去結束你的程式，也不會假報成功。
+- **安裝位置被安全策略限制**：若所選目錄落在某種「該目錄裡的程式不許建立臨時目錄」的策略之下（企業終端防護常見），原地解除安裝會報 `Setup was unable to create the directory "…-uninstall.tmp". Error 5`，隨包自檢的 `delivery` 那層會報「臨時目錄建立得出來」失敗。這是環境在拒絕，不是產品壞了：換一個目錄重裝，或請管理員放行這個目錄；`verify-install.ps1` 的唯讀部分（檔案雜湊、文件引用、二進位身分）不受影響，照常核對。
+- **「裝了但 AI 不理它」**：先確認那個目錄確實是工具會掃描的（見上），然後核對二進位身分而不是版本號字串——把 `install-manifest.json` 的 `version`、`arch`、`buildId` 與 `ECAPTURE.EXE --capabilities` 對上。原始碼檢出旁的舊 `ECAPTURE.EXE` 可能滯後；**新裝的那份不會**，因為它來自本次安裝程式自己的建置。
+
+## 建置與測試（維護者）
 
 | 命令                        | 這條測什麼                                                                                                                                                                                                                                                                                                              |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1296,6 +1359,53 @@ PID 與 HWND，因此既不按處理程序名去找目標、也不按處理程�
 環境塊遞給那個暫存批次檔，正文裡一個絕對路徑都不寫，所以倉庫放在含中文、空白、括號或 `%` 的目錄裡也能照常建置，
 而正文一旦混進非 ASCII 會在寫入前被當場攔下（判據見 `.\tests\build-path.ps1`）。建置要求在 `/W4` 下零警告。
 在 Git Bash 裡手動測試要先 `export MSYS2_ARG_CONV_EXCL='*'`，否則 `/help` 會被當成路徑改寫、`--out /tmp/x.png` 會被轉成怪異的路徑。
+
+### 測試總入口：`test-all.ps1`
+
+`test-all.ps1` 只做編排，自己不含任何判據：先建置（除非你讓它別建），再按固定順序**串行**跑上面那些套件（子程序走共用的 `tests\harness.psm1` 呼叫器），最後輸出一張匯總表與日誌目錄。
+
+```powershell
+.\test-all.ps1                       # 建置 Release，全跑
+.\test-all.ps1 -Quick                # 不跑 build-path.ps1，並讓 timeout.ps1 跳過長等待
+.\test-all.ps1 -Only cli,windows     # 只跑這兩套
+.\test-all.ps1 -Except build-path    # 除了最慢的那套
+.\test-all.ps1 -Offline              # 只跑各套件的離線層
+.\test-all.ps1 -List                 # 只印計劃，不建置也不啟動任何測試
+.\test-all.ps1 -NoBuild              # 用現有 build\ecapture.exe
+.\test-all.ps1 -Exe D:\tools\ECAPTURE.EXE   # 或直接指一個二進位
+.\test-all.ps1 -StopOnFail           # 第一套失敗就停
+```
+
+- **`-List` 只是預覽**：印出計劃，什麼都不啟動；篩完沒有可跑套件按「前置不成立」報錯，**空計劃永遠不會被當成成功**。
+- **`-Offline` 按元資料選路，不靠名字猜**：純離線套件（唯讀 CLI 查詢、純函式與協定、臨時檔案）照常跑；混合套件帶上它自己宣告的開關（`-SkipReal` / `-OfflineOnly`），並**在任何東西啟動之前**就寫進命令列——本來會開視窗的混合腳本根本沒有機會先開窗；只有真實層、又沒宣告離線入口的套件，在計劃階段就整套移出並逐條給原因（`OFFLINE-EXCLUDED`），一個位元組都不啟動。宣告了離線入口卻找不到那個參數的，屬於元資料與原始碼不一致：**不跑並判失敗**，絕不退化成「沒開關就照跑真實層」，也不悄悄當成合理 SKIP。`-Offline` 仍可要求 Windows 工具鏈（有一套會用系統自帶的 .NET Framework `csc` 在臨時目錄編一個輔助視窗程式），它不是「斷網也能跑」的承諾。
+- **確認不被假定**：`-Force` 只免去「按 Enter 開始」那句，**不能**代答真實確認框，也不能與那些代答開關併用。`-Offline` 與 `-SimulateConsent` / `-TimeoutConsent` 在任何執行之前就被判衝突（`OFFLINE-CONSENT-CONFLICT`）；給一個並不接受該開關的套件賒 `-TimeoutConsent` 同樣被拒。代答確認框必須在提示後親自輸入 `yes`：輸入被重導向、無主控台、非互動一律按**沒確認**中止，絕不預設同意。
+- **退出碼**：`0` = 計劃內套件全部跑到並通過（套件自己記的 SKIP 算未驗證，不算失敗）；`1` = 至少一套 FAIL / TIMEOUT / NO EXIT / NO START，**或計劃裡點名要跑的整套根本沒啟動**（腳本不見了、原始碼解析不乾淨、離線元資料不符）；`2` = 前置不成立（建置失敗、找不到產物、參數不認識、篩完沒有可執行測試、參數衝突、已有另一個總跑在跑）。建置失敗以退出碼 2 結束，絕不拿舊產物繼續。
+- **匯總只計真實結果**：「交出結果」只算真正給出終態的套件，NO START / NO EXIT 不算。三種「沒跑/未驗證」分開寫、不合并成一個數字：被 `-Quick` / `-Only` / `-Except` / `-Offline` 刻意沒排的、因 `-StopOnFail` 停下的剩餘、以及意外整套沒跑成的（只有最後這類判退出碼 1）；各套件自己記的 SKIP 屬於環境與安全邊界，既不升成失敗也不當成通過。
+- **日誌**寫在 `build\test-logs\<時間戳>\`（每套一份，另有一份合并的）；`build\` 已在 `.gitignore` 裡。
+
+### 建置安裝封裝：`build-installer.ps1`
+
+這個根腳本就是要從任意工作目錄按**絕對路徑**呼叫：倉庫位置取自腳本自身，不取自目前目錄。
+
+```powershell
+# PowerShell（維護機，任意目錄）
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1"                 # Release 建置 + 安裝封裝
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -Clean          # 先乾淨重建
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -StageOnly      # 只建置 + 收集/驗證乘載，不需要編譯器
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -SkipBuild      # 复用 build\，仍核對身分
+```
+
+```bat
+:: cmd.exe 同理，注意引號；%UserProfile% 由 cmd 展開，不是腳本
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\EvernightCapture\build-installer.ps1"
+```
+
+- **先建置，失敗即停**（退出碼 11）：呼叫 `build.ps1`（`-Config` 預設 `Release`），產出程式**與**全部測試程式。`-SkipBuild` 是顯式選擇复用 `build\`，但依舊核對真源（版本取自 `src\Version.h`、PE 架構、`program.buildId`）——建置失敗絕不退回舊產物，「檔案存在」也絕不等於「本次建置成功」。
+- **乘載收集**按 `installer\payload.manifest.json` 落到 `build\` 下的獨立 staging：`ECAPTURE.EXE`、`SKILL.md` + `references\`、四份 README、`LICENSE`、`resources\icon.ico`、`verify-install.ps1`、`test-all.ps1`、`tests\`（腳本、`harness.psm1`、輔助視窗原始碼、手工精靈批次檔）與 `build\` 下的測試二進位。內容守衛會攔下原始碼檔案、開發用 `AGENTS.md` / `MEMORY.md`、日誌與截圖；若乘載裡的 `ECAPTURE.EXE` 不是本次建置的那份，同樣攔下。
+- **乘載清單** `install-manifest.json`（另有 `payload.sha256.txt`）記下版本、架構、組態、`buildId` 與每個檔案的 SHA-256；安裝後的 `verify-install.ps1` 就是拿它核對。
+- **編譯器**要求 Inno Setup 6.3 或更高（腳本用到 `ArchitecturesAllowed=x64compatible`）。它會在 `PATH` 與常見安裝目錄裡找，也可以用 `-IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"` 顯式指定。腳本不會自動下載或安裝任何工具：找不到編譯器就印出缺什麼並以退出碼 `32` 結束（`-StageOnly` 不需要編譯器，照樣能跑）。`build.ps1` 自己的依賴是帶 C++ 桌面工作負載的 Visual Studio，由 `vswhere` 定位。
+- **產物**：`build\installer\EvernightCapture-<版本>-<架構>-setup.exe` 與緊貼的 `<...>.exe.sha256`。版本取自 `src\Version.h`（沒有第二份手寫版本），命名帶版本與架構，末尾摘要會重中路径、版本、`buildId` 與 SHA-256。`build\`（staging、安裝封裝、日誌）已在 `.gitignore` 裡，不含入版發佈產物。帶時間戳的產物不承諾逐位元組可重現。
+- 兩個腳本都不要求管理員權限，也不修改系統的執行原則；上面的例子只用 `-ExecutionPolicy Bypass` 對單一程序生效，不是全域設定。
 
 ## 授權
 

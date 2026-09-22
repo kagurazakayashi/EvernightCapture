@@ -1,0 +1,47 @@
+{
+  "manifestVersion": 1,
+  "product": "EvernightCapture",
+  "appId": "{{B7A2E1C4-5D3F-4E6A-9C21-8F0B3D5E7A10}}",
+  "skill": {
+    "dirName": "yashi-evernight-capture",
+    "entryFile": "SKILL.md",
+    "defaultInstallDirToken": "%UserProfile%\\.agents\\skills\\yashi-evernight-capture"
+  },
+  "entries": [
+    { "from": "build/ecapture.exe",                        "to": "ECAPTURE.EXE",                  "role": "program",        "required": true,  "glob": false, "freshness": "current-build" },
+
+    { "from": ".agents/skills/yashi-evernight-capture/SKILL.md", "to": "SKILL.md",                "role": "skill-entry",    "required": true,  "glob": false, "freshness": "repo" },
+    { "from": ".agents/skills/yashi-evernight-capture/references/*.md", "to": "references/",      "role": "skill-reference","required": true,  "glob": true,  "freshness": "repo" },
+
+    { "from": "README.md",       "to": "README.md",       "role": "doc",            "required": true, "glob": false, "freshness": "repo" },
+    { "from": "README.zh-CN.md", "to": "README.zh-CN.md", "role": "doc",            "required": true, "glob": false, "freshness": "repo" },
+    { "from": "README.zh-TW.md", "to": "README.zh-TW.md", "role": "doc",            "required": true, "glob": false, "freshness": "repo" },
+    { "from": "README.ja-JP.md", "to": "README.ja-JP.md", "role": "doc",            "required": true, "glob": false, "freshness": "repo" },
+
+    { "from": "LICENSE",          "to": "LICENSE",          "role": "license",      "required": true,  "glob": false, "freshness": "repo" },
+    { "from": "resources/icon.ico", "to": "resources/icon.ico", "role": "readme-asset", "required": true, "glob": false, "freshness": "repo" },
+
+    { "from": "installer/verify-install.ps1", "to": "verify-install.ps1", "role": "selfcheck", "required": true, "glob": false, "freshness": "repo" },
+    { "from": "test-all.ps1",                 "to": "test-all.ps1",       "role": "test-runner", "required": true, "glob": false, "freshness": "repo" },
+
+    { "from": "tests/*.ps1",               "to": "tests/",               "role": "test-script",  "required": true,  "glob": true, "freshness": "repo" },
+    { "from": "tests/harness.psm1",        "to": "tests/harness.psm1",   "role": "test-shared",  "required": true,  "glob": false, "freshness": "repo" },
+    { "from": "tests/helper/ec_window.cs", "to": "tests/helper/ec_window.cs", "role": "test-support", "required": true, "glob": false, "freshness": "repo" },
+    { "from": "tests/window_shot.bat",     "to": "tests/window_shot.bat",     "role": "test-support", "required": false, "glob": false, "freshness": "repo" },
+
+    { "from": "build/ecapture-*-tests.exe", "to": "build/", "role": "test-binary", "required": false, "glob": true, "freshness": "current-build" }
+  ],
+  "installPlan": {
+    "offlineTests": [
+      "invoker", "orchestration", "cli",
+      "windows", "screens", "capabilities", "compat",
+      "hdr", "delivery", "crop", "scale", "wgc", "identity", "dup"
+    ],
+    "offlineTestsNote": "这 14 套在安装目录里只需本地 ECAPTURE.EXE + 随包测试脚本/二进制，不需要 Visual Studio、源码树或网络（invoker 只用 Windows 自带的 .NET Framework csc 编个测试窗口程序，且只在临时目录里跑）。build\\ 下其余状态测试二进制也随包发出，可按需用 -Only 追加离线层。",
+    "excludedFromInstall": [
+      { "suite": "cursor", "reason": "离线层之后还有一节源码级守卫（要读 src\\*.cpp / src\\CaptureWgc.cpp），安装目录里没有源码，且该节没有开关可跳" },
+      { "suite": "save, image, streams, isolation, timeout, channels, consent, screen, smoke", "reason": "没有可单独跑的离线入口（真实层无法排除），-Offline 会在计划阶段整套主动排除并给原因" },
+      { "suite": "build-path", "reason": "把源码仓库反复复制进怪路径再构建，需要完整源码树与 MSVC/Ninja 工具链，只适用于源码开发" }
+    ]
+  }
+}

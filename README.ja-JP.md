@@ -107,7 +107,6 @@ ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 再生成する。**この部分の本文を手で編集しないこと**。
 
 <!-- BEGIN ECAPTURE-HELP -->
-
 ```text
 EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows.Graphics.Capture で画面を取得
 
@@ -197,7 +196,6 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
   ECAPTURE.EXE --capabilities  --capture を決める前に照会する
 ```
-
 <!-- END ECAPTURE-HELP -->
 
 ## 引数の表記
@@ -1408,8 +1406,9 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 ## AI / スクリプトからの呼び出しガイド
 
 このツールはプログラマブルな呼び出しを前提に設計されているので、以下の約束に従うのが一番手間がかからない。
-リポジトリには AI に使い方を教える skill も同梱してある：`.agents/skills/ecapture-screenshot/`
-（`SKILL.md`、`references/cli-contract.md`、exe のコピー入り）。
+リポジトリには AI に使い方を教える skill も同梱してある：`.agents/skills/yashi-evernight-capture/`
+（`SKILL.md`、`references/cli-contract.md`、exe のコピー入り）。インストール（「インストール」節を参照）すると既定で
+`%UserProfile%\.agents\skills\yashi-evernight-capture` に入る；以前の版は `ecapture-screenshot` という名前だった。
 
 1. **まず能力を一度照会し、それから `--list` / `--inspect` でウィンドウを発見し、最後に本番の画面取得。**
    `--capabilities` は読み取り専用で、ピクセルも取らなければ確認ダイアログも出さず、ファイルも書かない。
@@ -1494,7 +1493,70 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    （`capture.consent_timeout`、終了コード 6）。`capture.timeout` に `backend=printwindow` / `dwm` が付いていたら、
    対象の UI スレッドが詰まっている可能性が高いので、`--capture wgc` を選ぶか予算を緩める。
 
-## ビルドとテスト
+## インストール（Windows、一般ユーザーに開発ツールは不要）
+
+このプログラムの利用にツールチェーンは不要だ。Visual Studio も CMake もソースツリーも要らない。それらが必要なのは**インストーラーをビルドする**ときだけだ（次節）。
+
+### 1. インストーラーを手に入れる
+
+リポジトリルートの `build-installer.ps1` が `build\installer\EvernightCapture-<バージョン>-<アーキテクチャ>-setup.exe` を生成し、隣に `.sha256` を書く。**本プロジェクトにはまだリリース添付が無いため、ここに書けるダウンロード URL は無い**。それまではチェックアウトからビルドするしかなく、実行前に `.sha256` と照合すべきだ。
+
+### 2. 動作要件
+
+- Windows 10 build **18362** 以降、**x64**。このバイナリ自身が宣言し強制する下限は `ECAPTURE.EXE --capabilities` が報告する（`os.declaredMinBuild`、今のマシンは `os.build`）。実際に検証済みの範囲は上の「システム対応」を見てほしい。
+- **VC++ 再頒布パッケージは不要**：ランタイムは静的リンクされており、他に入れるものは無い。
+- **管理者権限は不要**：インストーラーは現在のユーザー向けに入れる。書き込めないフォルダを選んでも、自動で昇格したり別の場所に勝手に入れたりはせず、忠実に失敗を報告する。
+- HDR、マルチモニター、デスクトップ経路の確認ダイアログは**実行時**の機能であり、インストール要件ではない。
+
+### 3. ウィザードを実行してフォルダを選ぶ
+
+既定のディレクトリは `%UserProfile%\.agents\skills\yashi-evernight-capture` で、ウィザードで任意のフォルダを選べる。**選んだフォルダがそのまま Skill のルートになる**：`SKILL.md` はその直下に置かれ、`ECAPTURE.EXE` が隣に並ぶ。同じ名前のフォルダを余分に作ることはない。アップグレード時は前回選んだフォルダを覚えている。
+
+```bat
+:: インストール後の読み取り専用セルフチェック（cmd.exe）。パスは引用符で囲む（既定パスに空白は無いが、カスタムパスにはあり得る）。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
+```
+
+```powershell
+# PowerShell：同じものを、任意のインストール後オフラインテスト付きで
+& "$env:USERPROFILE\.agents\skills\yashi-evernight-capture\verify-install.ps1" -RunOfflineTests
+# カスタムのインストール先も同じ——既定を仮定せず明示的に渡す：
+& "D:\My Tools\ecapture\verify-install.ps1" -InstallDir "D:\My Tools\ecapture"
+```
+
+### 4. 読み取り専用のインストール自己検査
+
+`verify-install.ps1`（選択したフォルダのルートに入る）は **Visual Studio もソースツリーもネットワークも必要としない**。順に次を確かめる：`install-manifest.json` に載る全ファイルの存在・サイズ・SHA-256；四つの README と `SKILL.md` の相対リンクがインストール先の中の実在ファイルを指しているか；`--version` が終了コード 0 で版が一致するか；`--capabilities` / `--diagnostics` が終了コード 0 で解釈可能な JSON であり、`program.version` / `arch` / `buildId` がマニフェストと一致するか；`--help` が終了コード 3 か（これは契約であって失敗ではない）。`-RunOfflineTests` を付けると、同梱の `test-all.ps1` でマニフェストが宣言するオフラインテスト群を、**このフォルダの** `ECAPTURE.EXE`（`PATH` 上の古い版は使わない）に対して実行し、ログはシステムの一時ディレクトリに置く。終了コード：`0` 全通過、`1` 失敗あり、`2` 前提が成立しない（フォルダ違い、マニフェスト無し）。実際のウィンドウ / HDR / マルチモニター / 確認ダイアログのテストは**ここでは走らせない**——それは人が適切な環境で行うものだ。
+
+### 5. AI ツールにこの Skill を見つけさせる
+
+三つは別の話で、混同するとたいてい「入れたのに効かない」になる：
+
+- **ファイルのインストール**——`SKILL.md` と `ECAPTURE.EXE` が実際どこにあるか。それは選んだフォルダだ。
+- **Skill の探索**——ツールがそのフォルダを自分で見つけるか。**すべてのツールが `.agents\skills` を走査するわけではない。**
+- **コマンド実行の権限**——ファイルを置いたからといって何かを撮る権利は生まれない。上の「撮影権限と `--yes`」の規則はそのままで、とくにデスクトップの確認ダイアログは人が答える。
+
+**OpenCode**（公式 Agent Skills ドキュメントで確認済み）：`.opencode/skills/<名前>/SKILL.md` と Claude 互換パスに加え、グローバルの *agent 互換* パス `~/.agents/skills/<名前>/SKILL.md` を読み込む。Windows では `%UserProfile%\.agents\skills\<名前>\SKILL.md` となり、このインストーラーの既定フォルダと完全に一致する。つまり**既定のインストールは次回起動時に自動的に見つかる**。また同ドキュメントは `name` がフォルダ名と一致すること（ここでは `yashi-evernight-capture`）を要求するので、片方だけ変えないこと。**カスタムフォルダは自動検出されない**ので、ツールに明示的に指す必要がある。
+
+自動検出しないツールには、フォルダを明示的に渡す（これは「指し示し」であって**自動登録ではない**）：
+
+```text
+インストール先にある SKILL.md を次の絶対パスで明示的に読んで、その指示に従ってください：<SKILL.md の絶対パス>
+同じディレクトリの ECAPTURE.EXE を絶対パスで、引用符を付けて呼んでください。
+最初は読み取り専用の確認（--version、--capabilities）だけにしてください。スクリーンショットを撮ってインストール成功を証明しないでください。
+```
+
+### 6. アップグレード・アンインストール・困ったとき
+
+- **アップグレード**：新しいセットアップを同じフォルダに実行すればインプレースで更新し、選択を覚えている。失敗や中断時はロールバックし、書きかけのフォルダを残さない。
+- **フォルダを変える**と二つ目の独立したコピーになる。古いフォルダはそのまま残る（勝手に移行・削除しない）。両方ある場合、アンインストール項目は別々に並ぶので、不要な方を消すか、ツールを一方だけに向ける。
+- **同名で本製品のものでないフォルダ**：`install-manifest.json` が無いと報告し、何かをする前に確認する。既存の中身を黙って上書きすることはない。`/VERYSILENT` による無人インストールでは尋ねる相手がいないため、**ファイルを一つも書かず**に非 0 の終了コードで中止し、理由は `/LOG` の日誌に残す。
+- **アンインストール**はインストーラーが記録したファイルだけを消す。あとから足したファイル、ログ、隣の Skill は残る；`.agents` や `skills` といった親フォルダを再帰的に削除しない。
+- **ファイルが使用中**：インストーラーはロックされたファイルを報告してロールバックする。インストールを通すために実行中のプログラムを終了させることはなく、成功したふりもしない。
+- **インストール先がセキュリティポリシーで制限されている**：選んだフォルダが「その中のプログラムは一時ディレクトリを作成してはいけない」という方針（企業向けエンドポイント保護でよくある）の下にあると、その場でのアンインストールは `Setup was unable to create the directory "…-uninstall.tmp". Error 5` で失敗し、同梱セルフテストの `delivery` 層が「一時ディレクトリが作れるか」で失敗する。これは環境が拒否しているだけで製品の不具合ではない：別のフォルダに入れて直すか、管理者にこのフォルダを許可してもらう。`verify-install.ps1` の読み取り専用部分（ファイルハッシュ、ドキュメント参照、バイナリの同一性）は影響を受けず、これまで通り照合できる。
+- **「入れたのに AI が無視する」**：まずそのフォルダがツールの走査対象かを確かめ（上記）、次に版の文字列ではなくバイナリの同一性を照合する——`install-manifest.json` の `version`・`arch`・`buildId` を `ECAPTURE.EXE --capabilities` と突き合わせる。ソースチェックアウト隣の古い `ECAPTURE.EXE` は遅れていることがあるが、**新しく入れたものはそうならない**（そのインストーラー自身のビルドから来るため）。
+
+## ビルドとテスト（メンテナー向け）
 
 | コマンド                    | 何を証明するか                                                                                                                                                                                                                                                                                                                             |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1537,6 +1599,53 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 `build.ps1` は vswhere で VS を見つけ、VS 同梱の cmake/ninja を優先して使う。ビルドは `/W4` で警告ゼロが要求される。
 Git Bash で手でテストするときは、まず `export MSYS2_ARG_CONV_EXCL='*'` を実行すること。でないと `/help` がパスとして
 書き換えられ、`--out /tmp/x.png` が変なパスに変換される。
+
+### テストの総合入口：`test-all.ps1`
+
+`test-all.ps1` は編排だけを行い、自前の判定は持たない。まずビルドし（指示があれば省く）、上のスイートを固定順に**直列**で実行し（子プロセスは共有の `tests\harness.psm1` 呼び出し器を使う）、最後に一つの表とログディレクトリを出す。
+
+```powershell
+.\test-all.ps1                       # Release をビルドして全部
+.\test-all.ps1 -Quick                # build-path.ps1 を省き、timeout.ps1 の長い待ちも省く
+.\test-all.ps1 -Only cli,windows     # この二つだけ
+.\test-all.ps1 -Except build-path    # 最も遅いものを除く
+.\test-all.ps1 -Offline              # 各スイートのオフライン層だけ
+.\test-all.ps1 -List                 # 計画を印字するだけ。ビルドも起動もしない
+.\test-all.ps1 -NoBuild              # 既存の build\ecapture.exe を使う
+.\test-all.ps1 -Exe D:\tools\ECAPTURE.EXE   # バイナリを明示する
+.\test-all.ps1 -StopOnFail           # 最初の失敗で止める
+```
+
+- **`-List` はプレビューのみ**。計画を印字して何も起動しない。絞り込んだ結果実行可能なスイートが無ければ「前提不成立」として非零になり、**空の計画が黙って成功になることはない**。
+- **`-Offline` はメタデータで経路を選ぶ**（名前で推測しない）。純オフラインのスイート（読み取り専用 CLI 照会、純関数とプロトコル、一時ファイル）はそのまま走り、混在スイートには自分が宣言したスイッチ（`-SkipReal` / `-OfflineOnly`）を、**何かが起動する前に**コマンド線へ入れる——ウィンドウを開く混在スクリプトが先に開く隙を与えない。実層しか無くオフライン入口を宣言していないスイートは計画段階で丸ごと外し、一本ずつ理由を付ける（`OFFLINE-EXCLUDED`）。1 バイトも起動しない。オフライン入口を宣言しているのにそのパラメータが無い場合はメタデータとソースの不一致であり、**走らせず失敗とする**——「スイッチが無いから実層を走らせる」という退化も、もっともらしい SKIP 扱いもしない。`-Offline` でも Windows ツールチェーンを要求することはある（一つのスイートは OS 付属の .NET Framework `csc` で補助ウィンドウプログラムを一時フォルダにコンパイルする）。「ネットワーク不要で何でも動く」という主張ではない。
+- **確認は仮定しない**：`-Force` は「Enter で開始」の一時停止を省くだけで、実のデスクトップ確認を**代行承認できない**し、代答スイッチとも併用できない。`-Offline` と `-SimulateConsent` / `-TimeoutConsent` の併用は実行前に衝突として拒否される（`OFFLINE-CONSENT-CONFLICT`）。そのスイッチを受け付けないスイートに `-TimeoutConsent` を渡すのも拒否される。模擬同意はプロンプトで `yes` を手入力する必要があり、入力リダイレクト・コンソール無し・非対話は「未承認」として中止し、既定で同意にはならない。
+- **終了コード**：`0` = 計画内の全スイートが実行され通過（スイート自身の SKIP は未検証であって失敗ではない）；`1` = 少なくとも一つが FAIL / TIMEOUT / NO EXIT / NO START、**または計画が名指ししたスイートがそもそも起動しなかった**（スクリプト欠落、ソース解析失敗、オフラインメタデータ不一致）；`2` = 前提不成立（ビルド失敗、成果物が無い、未知のオプション、絞り込み後に対象ゼロ、スイッチの衝突、別の実行がロック保持中）。ビルド失敗は終了コード 2 で終わり、古い成果物を決して使わない。
+- **集計は実結果だけを数える**：「結果を出した」は終態を実際に返したスイートのみを指し、NO START / NO EXIT は含めない。三種の「未実行 / 未検証」は別々に書き、一つの数にまとめない：`-Quick` / `-Only` / `-Except` / `-Offline` で意図的に外した分、`-StopOnFail` で止めた残り、そして予期せず起動しなかった分（最後の種類だけが終了コード 1 にする）。スイート自身の SKIP は環境と安全の境界であり、失敗にも通過にも昇格しない。
+- **ログ**は `build\test-logs\<タイムスタンプ>\` に出る（スイートごと 1 ファイルと結合版）。`build\` は `.gitignore` 済み。
+
+### インストーラーのビルド：`build-installer.ps1`
+
+ルートのこのスクリプトは、どの作業ディレクトリからでも**絶対パス**で呼ばれることを前提にしている。リポジトリの位置はスクリプト自身から求め、カレントディレクトリには依存しない。
+
+```powershell
+# PowerShell（メンテナーのマシン、どこからでも）
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1"                 # Release ビルド + インストーラー
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -Clean          # 先にクリーンビルド
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -StageOnly      # ビルド + ペイロード収集/検証のみ（コンパイラ不要）
+& "$env:USERPROFILE\src\EvernightCapture\build-installer.ps1" -SkipBuild      # build\ を再利用（同一性は検証する）
+```
+
+```bat
+:: cmd.exe でも同じ。引用符を忘れずに。%UserProfile% はスクリプトではなく cmd が展開する
+powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\EvernightCapture\build-installer.ps1"
+```
+
+- **まずビルドし、失敗すれば止まる**（終了コード 11）：`build.ps1` を `-Config`（既定 `Release`）で呼び、本体**と**テストプログラムを出す。`-SkipBuild` は `build\` の再利用を明示する指定だが、それでも真の出所（`src\Version.h` の版、PE アーキテクチャ、`program.buildId`）を照合する——ビルド失敗が古い成果物に逃げることはなく、「ファイルが有る」は「今のビルドが成功した」にはならない。
+- **ペイロードの収集**は `installer\payload.manifest.json` に従い、`build\` 下の独立した staging に入れる：`ECAPTURE.EXE`、`SKILL.md` + `references\`、README 四つ、`LICENSE`、`resources\icon.ico`、`verify-install.ps1`、`test-all.ps1`、`tests\`（スクリプト、`harness.psm1`、補助ウィンドウのソース、手動ウィザードのバッチ）、そして `build\` 下のテストバイナリ。内容ガードがソースファイル、開発用 `AGENTS.md` / `MEMORY.md`、ログ、スクリーンショットを拒否し、ペイロード内の `ECAPTURE.EXE` が今ビルドしたものと違えばこれも拒否する。
+- **staging のマニフェスト** `install-manifest.json`（と `payload.sha256.txt`）が版、アーキテクチャ、構成、`buildId`、全ファイルの SHA-256 を記録し、インストール後の `verify-install.ps1` はこれと照合する。
+- **コンパイラ**は Inno Setup 6.3 以降（.iss が `ArchitecturesAllowed=x64compatible` を使う）。`PATH` か一般的なインストール先から見つけ、`-IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"` でも指定できる。ツールの自動ダウンロードや自動インストールはしない：無ければ何が足りないかを印字して終了コード `32` で終わる（`-StageOnly` はコンパイラ不要でそのまま動く）。`build.ps1` 自身の依存は C++ デスクトップワークロード付きの Visual Studio で、`vswhere` が探す。
+- **成果物**：`build\installer\EvernightCapture-<版>-<アーキテクチャ>-setup.exe` と隣の `<...>.exe.sha256`。版は `src\Version.h` から取り（手書きの版は二つと持たない）、名前には版とアーキテクチャを含め、最後の要約にパス、版、`buildId`、SHA-256 を再掲する。`build\`（staging、インストーラー、ログ）は `.gitignore` 済みで、追跡されるリリース成果物は含まない。タイムスタンプを含む成果物はバイト単位の再現性を約束しない。
+- どちらのスクリプトも管理者権限を要求せず、システムの実行ポリシーも変えない。上の例の `-ExecutionPolicy Bypass` はその 1 プロセス限りで、グローバル設定ではない。
 
 ## ライセンス
 

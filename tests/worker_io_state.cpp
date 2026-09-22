@@ -11,9 +11,11 @@
 //   * "进程正常退出时谁碰了仍未确认终态的记录"：那要看到 CRT 收尾之后的状态，用本次判据自己的
 //     假后端判不了（它本身也是观察对象，先于被测资源析构就读到垃圾），所以由本测试 exe 以
 //     --io-exit 模式另起一个子进程记录关闭/归属次序（见判据十三）。
-//   * "登记表自己第一次堆分配失败""收养那个集合节点分配失败"这两支：要的是真把内存压干，
-//     而给这份进程级单例开一个生产用的注入开关，已经超出本模块唯一的接缝（IoBackend）。
-//     判据十二判的是这两支被兜住之后的对外契约（绝不抛出、问不到时的取值依据）。
+//   * "登记表自己第一次堆分配失败"这一支：要的是真把内存压干，而给这份进程级单例开一个
+//     生产用的注入开关，已经超出本模块唯一的接缝（IoBackend）。判据十二判的是这一支被兜住
+//     之后的对外契约（绝不抛出、拿不到登记表时"一次 I/O 都不发起地失败"的取值依据）。
+//     登记本身不再需要堆分配（操作对象自带登记链节点），"收养集合节点分配失败"这一支
+//     因此不存在了；判据十四压的是取代它的免分配登记链。
 //
 // 每条判据都在三类断言上同时钉住：
 //   1) 对外结局（done / timedOut / gle / transferred）与改造前的契约一致；
@@ -530,9 +532,10 @@ void CheckAlreadyConnectedWithSpentBudget() {
 //   2) 登记表还空着的时候（下面用的句柄值没被任何判据用过），三个入口回的是"确有依据"的值：
 //      没有未决、还剩 0 条、收养记上了；而登记表问不到这条句柄归哪个后端时，它宁可什么都不关。
 //      依据是"登记任何操作都要求登记表先存在"，不是猜的。
-// 登记表自己第一次堆分配失败、以及收养那个集合节点分配失败这两支，要的是真把内存压干；
+// 登记表自己第一次堆分配失败这一支，要的是真把内存压干；
 // 给匿名命名空间里的这份单例开一个生产用的注入开关，不在本模块的接缝（IoBackend）之内，
-// 所以这里判的是这两支被兜住之后的对外契约与收尾路径，不判那两次分配本身。
+// 所以这里判的是这一支被兜住之后的对外契约与收尾路径，不判那次分配本身。
+// 登记本身已免分配（见判据十四），"收养节点分配失败"这一支不再存在。
 // ---------------------------------------------------------------------------
 static_assert(noexcept(HasPendingOps(kH1)), "HasPendingOps 必须不抛出：它会被 noexcept 析构链调用");
 static_assert(noexcept(DrainPendingOps(kH1, 0)), "DrainPendingOps 必须不抛出：同上");
@@ -738,6 +741,66 @@ void CheckExitOrderInSubprocess() {
     Check(targetsClosed == 0, "没被收养的句柄不会被登记表关掉");
 }
 
+// ---------------------------------------------------------------------------
+// 判据十四：登记不再有"8 个全进程兑底槽位 + 那张表分配失败"的容量悬崖。
+// 旧实现在 8 条未决记录占满固定的免分配槽位、且那张按句柄归组的表又分配失败时，会把
+// 第 9 条操作静默丢弃 —— 它带着 unresolved=true，却在 HasPending/Drain 之外：查询据此
+// 谎报"没有未决"，收尾据此去关一个仍有飞行 I/O 的句柄（文档不保证的行为）。
+// 现在登记是免分配的侵入式链表：同一条句柄上多条、或多条句柄各一条，只要没进终态，
+// 就全部查得到、排得干。下面用远超旧容量（8）的规模各压一遍。
+// ---------------------------------------------------------------------------
+void CheckNoCapacityCliffAcrossHandles() {
+    constexpr int kOps = 16;   // 远超旧实现的 8 个全局槽位
+    FakeBackend be;
+    std::vector<HANDLE> handles;
+    for (int i = 0; i < kOps; ++i) {
+        const HANDLE h = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x2000 + i));
+        handles.push_back(h);
+        be.waits.push_back({WAIT_TIMEOUT, 0});
+        be.waits.push_back({WAIT_TIMEOUT, 0});
+        be.cancels.push_back({true, 0});
+        const IoStep s =
+            RunOverlappedOp(be, h, 64, 1000, 500, PendingReadIssued(nullptr, 0x10), nullptr);
+        Check(s.unresolved && HasPendingOps(h), "第 N 条未决操作照样可查（不再有容量悬崖）");
+    }
+    Check(be.eventsAlive() == kOps, "所有未决操作的事件都没被提前关闭");
+    for (int i = 0; i < kOps; ++i) {
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.fetches.push_back({false, 0, ERROR_OPERATION_ABORTED});
+        Check(DrainPendingOps(handles[i], 500) == 0 && !HasPendingOps(handles[i]),
+              "每条登记的未决操作都能被排干清理");
+    }
+    Check(be.eventsClosed.size() == static_cast<size_t>(kOps) && be.doubleClose == 0 &&
+              be.eventsAlive() == 0,
+          "全部 16 条各自恰好清理一次、无重复关闭");
+    Check(be.unexpected == 0, "跨句柄大数量登记-排干全程无计划外调用");
+}
+
+void CheckNoCapacityCliffSameHandle() {
+    constexpr int kOps = 12;
+    FakeBackend be;
+    const HANDLE h = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x2ABC));
+    for (int i = 0; i < kOps; ++i) {
+        be.waits.push_back({WAIT_TIMEOUT, 0});
+        be.waits.push_back({WAIT_TIMEOUT, 0});
+        be.cancels.push_back({true, 0});
+        const IoStep s =
+            RunOverlappedOp(be, h, 64, 1000, 500, PendingReadIssued(nullptr, 0x22), nullptr);
+        Check(s.unresolved && HasPendingOps(h), "同一句柄上多条挂起读都归登记表看管");
+    }
+    // 一轮排干里逐条确认终态（每条一条 wait + 一条 fetch）
+    for (int i = 0; i < kOps; ++i) {
+        be.waits.push_back({WAIT_OBJECT_0, 0});
+        be.fetches.push_back({false, 0, ERROR_OPERATION_ABORTED});
+    }
+    Check(DrainPendingOps(h, 500) == 0 && !HasPendingOps(h),
+          "一轮排干把同一句柄上的 12 条一次清空");
+    Check(be.eventsClosed.size() == static_cast<size_t>(kOps) && be.doubleClose == 0 &&
+              be.eventsAlive() == 0,
+          "12 条事件各关一次、无重复");
+    Check(be.unexpected == 0, "同句柄多未决全程无计划外调用");
+}
+
 }  // namespace
 
 // isolation_state.cpp 的 wmain 在 --io-exit 模式下调进来：那一份子进程就是判据十三的现场。
@@ -759,6 +822,8 @@ int RunWorkerIoStateChecks(int* checksOut, int* failuresOut) {
     CheckAlreadyConnected();
     CheckAlreadyConnectedWithSpentBudget();
     CheckRegistryContract();
+    CheckNoCapacityCliffAcrossHandles();
+    CheckNoCapacityCliffSameHandle();
     CheckExitOrderInSubprocess();
     if (checksOut) *checksOut = g_checks;
     if (failuresOut) *failuresOut = g_failures;
