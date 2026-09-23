@@ -138,7 +138,7 @@ ECAPTURE.EXE --capabilities -v     # 另加 probes 段：每一问的原始答�
 | `contract` / `contractVersion` | 只有这两份文档带契约版本（现为 1）。**截图结果那份照旧精简**，不因此多出顶层元信息 |
 | `program` | `name`、`binary`（只有 `ECAPTURE.EXE` 这个名字，不含目录）、`version`、`arch`、`buildId` |
 | `os` | 本机版本三要件 + `declaredMinBuild`（对外声明下限）+ `encoderMinBuild` + `testedMinBuild`/`testedArch`（实测过的那一台）+ `matchesTestedEnvironment` |
-| `session` | `attachedToConsoleSession`、`remoteSession`、`displayTopology`、`monitors`、`elevated`、`consentDialogExpected`（+ `consentDialogProbed: false`：这一条是推出来的，查询没有真去弹框） |
+| `session` | `attachedToConsoleSession`、`remoteSession`、`displayTopology`、`monitors`、`elevated`、`integrityLevel`（本进程那一档强制完整性级别，ASCII token：`unknown` / `untrusted` / `low` / `medium` / `high` / `system` / `protected_process`；问不出来就是 `unknown`，既不报成够用也不报成被降级。它不参与任何一条通道 `status` 的判定，只与下面那条 caveat 以及失败时的 `note.low_integrity` 一起说明"这一档挡了哪几件事"，见「进程完整性级别」一节）、`consentDialogExpected`（+ `consentDialogProbed: false`：这一条是推出来的，查询没有真去弹框） |
 | `authorization` | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、`unregisteredPathScope: "desktop"`，以及整份内部路径登记表：每条带 `scope` 与 `consentWithoutYes` / `consentWithYes`（后者为 `true` 就是"`--yes` 也跳不过"） |
 | `backends[]` | 每条路线的 `compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine` 与 `paths[]`（窗口目标与屏幕目标各走哪条内部路径；`dwm` 的屏幕退路也列出来，免得 `--yes` 被读大） |
 | `formats[]` | 每种格式的 `compiled` / `status` / `reason` / `minBuild` / `registered`。`registered` 恒为 `unknown`：这一层不去实测编码器。`webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里 |
@@ -147,7 +147,7 @@ ECAPTURE.EXE --capabilities -v     # 另加 probes 段：每一问的原始答�
 | `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与真实截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 判两处一致 |
 | `limits` | `maxFrameSide` 16384、`maxFrameBytes` 1 GiB、`maxTimeoutMs` 86400000、`isolatedCallMs` 5000、`maxWgcRecreates` 4、`maxOrdinal` 65535、`maxPid` 4294967295、`stdoutTargetsMax` 1、`jpegQualityMin`/`Max` 1/100、`roiMaxValue` 16384（= `--roi` 与 `--scale` 那条边长的同一条线） |
 | `privacy` | 自述：`capturesScreen` / `showsDialog` / `uploads` / `enumeratesUserFiles` / `readsEnvironmentVariables` / `includesUsernames` / `includesPaths` 全为 `false` |
-| `caveats` | 稳定 ASCII token，列"这份报告没断言什么"：`no_capture_performed`、`no_consent_dialog_shown`、`available_is_not_a_guarantee`、`device_capability_not_predicted`、`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`；光标那一段恒带 `cursor_effective_is_a_setting_not_a_pixel_check`、`pointer_shape_never_composited_nor_erased` 与 `duplication_desktop_frame_pointer_not_guaranteed`；色彩那一段恒带 `hdr_tone_mapping_not_verified_on_hdr_display`、`hdr_output_is_tone_mapped_to_sdr_bgra8`、`hdr_explicit_policy_only_fulfilled_by_wgc` 与 `hdr_pixel_layout_is_not_a_color_space`；按本机情况追加 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`。**这一段是 `-q` 会去掉的那一段**，所以要把"这份报告没说过什么"读全的时候就别加 `--quiet` |
+| `caveats` | 稳定 ASCII token，列"这份报告没断言什么"：`no_capture_performed`、`no_consent_dialog_shown`、`available_is_not_a_guarantee`、`device_capability_not_predicted`、`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`；光标那一段恒带 `cursor_effective_is_a_setting_not_a_pixel_check`、`pointer_shape_never_composited_nor_erased` 与 `duplication_desktop_frame_pointer_not_guaranteed`；色彩那一段恒带 `hdr_tone_mapping_not_verified_on_hdr_display`、`hdr_output_is_tone_mapped_to_sdr_bgra8`、`hdr_explicit_policy_only_fulfilled_by_wgc` 与 `hdr_pixel_layout_is_not_a_color_space`；按本机情况追加 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium`（本进程低于中完整性，多半是它那个目录的标签带下去的；只报这一档，不把任何一条通道判成 `unavailable`）/ `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`。**这一段是 `-q` 会去掉的那一段**，所以要把"这份报告没说过什么"读全的时候就别加 `--quiet` |
 
 `reason` 的取值同样稳定：`none`、`not_compiled`、`os_below_min_build`、`os_version_unavailable`、
 `no_display_topology`、`display_topology_unavailable`、`encoder_not_registered`。`cursor` 那一段的 `include` / `exclude` 同样三值；未登记的路径读 `unknown` 而 `reason` 写 `not_registered`，不猜一个答案。
@@ -170,6 +170,43 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
 按 `status` 分支而不是按退出码猜环境）；`1` = 用法不合契约。不会出现 `4`/`5`/`6`/`7`/`8`。
 
 整份文档是 ASCII（机器读的取值不翻译），所以同一台机器上换 `--lang` 输出逐字节相同 —— 可以放心做前后两次比对。
+
+## 进程完整性级别（低于中完整性时挡了什么）
+
+一个目录可以带上显式的强制完整性标签（`icacls` 里那一行 `Mandatory Label\Low Mandatory Level`），并继承给目录里的
+每个文件；从那条路径启动的进程因此低于中完整性。这时候失败的不是一件事，而是**三类彼此无关**的事：
+
+| 落点 | 低完整性下的下场 | 在结果里的形状 |
+| --- | --- | --- |
+| `wgc` 取帧 | `GraphicsCaptureItem.CreateForWindow` 被拒 | `capture.failed` + `hresult: "0x80070005"`，`stage: "capture"` |
+| `printwindow` 取帧 | 跨进程绘制消息送不进中完整性窗口（UIPI） | `capture.failed` + `win32: 5`，`stage: "capture"` |
+| 落盘 | 不能在中完整性的目录里创建文件（**图已经在内存里拿到了**） | `io.write_failed` + `win32: 5`，`stage: "write"` / `"stdout"` |
+
+本机实测**没有**被这一档挡掉的：`dwm.thumbnail` 照常出一整扇窗口（前提是输出目录让低完整性进程建文件），
+`bitblt.screen` 与 `duplication.frame` 也照常出——那两条本来就要人亲自批准，属另一层，与完整性无关
+（见「截图授权」一节）。所以这一档**不等于**"这台机器截不了图"，反过来也没有任何一条路线因它被保证成功。
+`--capabilities` 里各条通道的 `status` 不因这一档改动：那个字段管的是版本下限与屏幕拓扑。
+实测范围只有那台 19045 x64 开发机，同一份逐字节的二进制放在别处（`%LOCALAPPDATA%\Temp`、
+`%APPDATA%\Roaming`、`%UserProfile%`、本仓库自己的 `build\`）全部正常。
+
+怎么核对：`icacls "<放着 ECAPTURE.EXE 的目录>"` 看有没有那条标签；`whoami /groups` 看此刻进程那一档叫什么
+（`S-1-16-4096` 是 Low，`S-1-16-8192` 是 Medium，`S-1-16-12288` 是 High）。
+
+程序这一侧的两处出口，判据同一份（`src/ProcessIntegrity.h`）：
+
+1. 只读查询：`session.integrityLevel` 那一档 + 低于 medium 时 `caveats` 里的
+   `process_integrity_below_medium`；`--diagnostics -v` 另有一问 `tokenIntegrityLevel`，
+   问不成时带 `win32` 原始错误码（`0` 而答案仍是 `unknown` = 系统答了一个本工具没登记过的取值）。
+2. 真去截图：本进程低于 medium 且这一轮里出现上表那两类"系统不让"时，各条失败自己的 `hint`
+   追加一句可操作的说明，整轮另追加一条 `note.low_integrity`。`code` / `stage` / `hresult` / `win32` /
+   退出码 / 已经交付的图**全部原样不动**，按 `code` 分支的调用方看到的契约不变；`--yes` 与授权分级也不变
+   （低完整性不会让任何一级授权变得更好走，也不会让它更严）。确认框上答"否"那一条同为 Win32 `5`，
+   但它不在取帧 / 写文件 / 写标准输出这三步上，因此绝不会被补写——那是人的决定，不是这一档的成因。
+
+出路按代价从小到大：把 `--out` 指向同样带这条标签的目录里的路径（工具从不创建目录）；要窗口自己的画面时
+改用 `--capture dwm`；把这套 skill 装到没有被这样降级的目录，或由那个目录的所有者去掉标签
+（去标签属于改动安全设置，得由所有者自己决定）。**以管理员身份运行不是这条提示的解法**，
+文案里也没有建议那么做。
 
 ## 只读的窗口查询（`--list` / `--inspect`）
 
@@ -844,6 +881,7 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 `note.format_extension_mismatch` `note.format_defaulted_png` `note.output_defaulted_stdout`
 `note.output_extension_appended` `note.quality_ignored` `note.all_without_placeholder`
 `note.flag_overrides_quiet` `note.pipe_default_format` `note.json_flag_deprecated` `note.frame_uniform`（这一张整幅只有一个颜色：质量提示，图片照常交付）`note.crop_mapping_unavailable`（已按请求裁好，但这张交付图像核实不出它对应屏幕上哪一块，所以少了 `cropScreenRect` 那一行：`cropRect` 仍是图像自己的像素坐标，别拿它当桌面坐标用）`note.capture_clipped`（目标没被完整截下来：`message` 给"要截多大 / 只截到多大"，`hint` 给四边各少了几像素。图照常交付、退出码不变，配 `capturedRect` / `clipped` 一起看）
+`note.low_integrity`（本进程低于中完整性，而这一轮里有若干条失败是"系统不让"——取帧 / 写文件 / 写标准输出这三步上的 `0x80070005` 或 Win32 `5`。**整轮只发一条**，配 `target` / `backend` / `stage` 跟着第一条对得上的失败走；各条失败自己的 `hint` 里另有一句可操作的说明，`--quiet` 只隐藏这一条 note，隐藏不了 errors 里的 hint。它不改 `code`、不改退出码，也不宣布"这台机器不能截图"：判据与 `session.integrityLevel` 同源，见「进程完整性级别」一节。确认框上答"否"那一条同为 Win32 `5` 却绝不被算进来——那是人的决定，不是这一档的成因）
 `note.cursor_channel_skipped`（`auto` 链里那一条**做不到这次要求的光标状态**、已从链中去掉：`message` 给通道名、要求的状态与一个 ASCII 原因 token（`os_below_min_build:19041` / `window_self_drawn` / `dwm_redirection_surface` / `screen_dc_has_no_pointer` / `desktop_frame_pointer_state_unverified`（include 那一路摘掉 duplication）/ `duplication_cursor_exclusion_unprovable`（exclude 那一路摘掉 duplication）/ `not_registered`），`backend` 是被摘掉的那条，剩下的仍按顺序试。与 `note.channel_unavailable` 分开：那条说的是"本机版本用不了这条通道"，这条说的是"这条通道能用，但它兑现不了这次的光标要求"
 `note.hdr_channel_skipped`（`auto` 链里那一条**兑现不了这次要求的 HDR 处理**、已从链中去掉，剩下的照原顺序继续试：`message` 给通道名、要求的策略与一个 ASCII 原因 token（`window_self_drawn_8bit` / `dwm_redirection_surface_8bit` / `screen_dc_8bit` / `duplication_hdr_policy_not_implemented` / `not_registered`），`option`=`--hdr`、`value`=规范化取值、`backend`=被摘掉的那条，`stage=capture`。与 `note.channel_unavailable` 分开：那条说"本机版本用不了这条通道"，这条说"这条通道能用，但它兑现不了这次的色彩要求"）
 `note.hdr_source_sdr`（写过 `--hdr tonemap` 或 `--hdr refuse`，而这一帧的来源核实是 8 位 SDR：那条处理是恒等的、没有改变任何一个像素。图照常交付、退出码不变，这条只是把"我要过 HDR 处理"与"其实这一帧没有 HDR"分开放在调用方眼前，免得把一次静默通过当成"HDR 已被正确映射"。**这一条只由采集之前真的问到那块屏此刻是 SDR 来支撑**；`--hdr auto` 不发这条；`--quiet` 连同整段 notes 一起去掉）

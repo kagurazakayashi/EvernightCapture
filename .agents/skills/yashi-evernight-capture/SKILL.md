@@ -128,6 +128,14 @@ Three facts per row, and they are three different kinds of evidence:
 involved. Read-only queries never probe by capturing - that is why some rows stay `unverified` instead of being
 answered by taking a screenshot.
 
+`session.integrityLevel` is a fourth kind of fact, about **this process** rather than about the machine: the mandatory
+integrity level the executable is running at, because the folder it sits in may carry a `Low Mandatory Level` label
+(`icacls` shows it, and every file under that folder inherits it). Below Medium the tool is neither "supported" nor
+"broken": `wgc` and `printwindow` get refused, a file cannot be created in a normal (Medium) directory even after the
+frame was acquired, while `dwm.thumbnail` and the two desktop-pixel routes still deliver. `status` says nothing about
+any of that - that column is the version floor and screen topology - so read this field as its own layer, and treat an
+`unknown` there as a question that went unanswered rather than as either a downgrade or an all-clear.
+
 ## Snapshots, identity and matching (what a query does *not* buy you)
 
 - **Matching**: different options are ANDed, repeated values of one option are ORed, and conditions are never combined
@@ -299,6 +307,7 @@ repair a field you then read as an affirmation.
 | Explicit cursor or HDR state the named channel cannot deliver | `capture.cursor_unsupported` / `capture.hdr_unsupported`, 1 | **no channel was substituted**: change the requirement or the channel deliberately; see below for what duplication can and cannot promise |
 | Policy verdict after the frame | `capture.hdr_refused` / `capture.hdr_unverifiable`, 7 | the user's own requirement produced it; the chain stops, no silent downgrade on another backend |
 | Machine-level requirement | `env.os_too_old` 7 (whole tool, `--capture` cannot help) / `env.channel_unsupported` 7 (that channel only) / `env.cursor_unsupported`, `env.hdr_unsupported` 7 (requirement unmet here) | read `--capabilities`; retrying the same target changes nothing |
+| **The process is below Medium integrity** - the executable sits in a folder carrying a `Mandatory Label\Low Mandatory Level` label (`.agents` skill roots are a known case), and that round also carries `note.low_integrity` | `capture.failed` 7 with `hresult: 0x80070005` (`wgc`) or `win32: 5` (`printwindow`), and / or `io.write_failed` 8 with `win32: 5` **after the frame was already acquired** | this is not "that window is protected" and not "this machine cannot capture": check `session.integrityLevel` from `--capabilities` (a `low` / `untrusted` value plus the `process_integrity_below_medium` caveat says it), and confirm with `icacls "<the EXE's folder>"`. Raising `--timeout-ms`, renaming the target, reinstalling codecs or looping through backends cannot change it. What still works here: `--capture dwm` for a window's own picture, and writing `--out` into a folder that carries the same low label (never into a normal directory - that is the `io.write_failed` above). Desktop-pixel routes still need the person's own Yes; the level changes nothing about authorization. Telling the user to run as administrator is not the fix; moving the install, or the owner removing the label, is |
 | Output problem | `io.write_failed`, `io.file_exists`, `io.output_collision` (8) | create the directory, or choose a name that cannot collide; keep what already landed |
 | Timeout at the write stage | `io.timeout` 8 when nothing landed; **7 with the image kept** when the budget only crossed after the commit | fix the budget tail; do not re-capture a picture that is already delivered |
 | Encode step could not run at all | `capture.encoder_unavailable`, 7 | no image can be produced here whatever the target; check the media components / this session |
@@ -384,7 +393,8 @@ quote it; in Git Bash export `MSYS2_ARG_CONV_EXCL='*'` first, or the backslashes
 guessing. Its section headings, usable as grep patterns: **全部选项** (every option, value range and the AND/OR plus
 never-a-match rules closing that section) · **取值写法** (numbers, positional values, repeats) ·
 **运行环境与能力检查** (per-route API floors vs the declared floor vs what was actually tested) ·
-**只读的能力查询** · **只读的窗口查询** (`windowquery` / `windowinspect` field tables, pagination, per-field
+**只读的能力查询** · **进程完整性级别** (what a below-Medium process is refused, which routes still deliver, the two
+reporting outlets and the three ways out) · **只读的窗口查询** (`windowquery` / `windowinspect` field tables, pagination, per-field
 `readability`) · **只读的屏幕枚举** · **窗口内部裁剪** · **等比缩小** · **截图授权** (the two tiers, the full
 `images[].path` / `scope` registry, what the dialog lists and how the consent snapshot is bound) ·
 **期限与阻塞隔离** (the four clocks, the helper's segmented deadlines, the pipe shutdown boundary, the honest limits) ·

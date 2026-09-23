@@ -67,6 +67,9 @@ EnvProbe HealthyProbe() {
     p.consoleSessionId = 1;
     p.remoteSession = Tri::kNo;
     p.elevated = Tri::kNo;
+    // 健康现场按"进程待在一个没有被降级过的目录里"来建模：中完整性。低完整性那一档自己
+    // 有用例逐条判（见 TestProcessIntegrity），不在这里顺手带上。
+    p.integrity = Integrity::kMedium;
     p.displayTopology = Tri::kYes;
     p.monitorCountKnown = true;
     p.monitorCount = 1;
@@ -552,6 +555,66 @@ void TestChainsMatchTheGate() {
     Check(wgc && wgc->status == CapStatus::kUnavailable, "and is reported unavailable");
 }
 
+// ---------------------------------------------------------------------------
+// 14) 进程完整性级别：报出这一档，但不把任何一条通道判成 unavailable
+// ---------------------------------------------------------------------------
+void TestProcessIntegrity() {
+    Section("14) 进程完整性级别");
+
+    // 健康现场 = 进程待在一个没有被降级过的目录里。
+    EnvReport medium = BuildEnvReport(HealthyProbe(), EnvQueryKind::kCapabilities);
+    Check(medium.integrityLevel == L"medium", "a medium-integrity process reads medium");
+    Check(!HasCaveat(medium, caveat::kLowIntegrity), "and carries no integrity caveat");
+    const BackendReport* wgcMedium = Find(medium, CaptureMethod::kWgc);
+    Check(wgcMedium && wgcMedium->status == CapStatus::kAvailable, "medium leaves wgc available");
+
+    // 低完整性：报 low 并补一条边界说明；而各条通道的 status 一个字都不改 —— 本机实测这一档下
+    // dwm.thumbnail / bitblt.screen / duplication.frame 照常出图，被拒的是 wgc 与 printwindow
+    // 那两条以及"往中完整性目录建文件"。把这条写成某条通道 unavailable 就是拿三次观察冒充契约。
+    EnvProbe pLow = HealthyProbe();
+    pLow.integrity = Integrity::kLow;
+    EnvReport low = BuildEnvReport(pLow, EnvQueryKind::kCapabilities);
+    Check(low.integrityLevel == L"low", "a low-integrity process reads low");
+    Check(HasCaveat(low, caveat::kLowIntegrity), "and the boundary is stated in caveats");
+    const BackendReport* wgcLow = Find(low, CaptureMethod::kWgc);
+    Check(wgcLow && wgcLow->status == CapStatus::kAvailable,
+          "the level alone does not make a channel unavailable");
+    Check(low.autoChainWindow.size() == medium.autoChainWindow.size(),
+          "nor does it shorten the auto chain");
+
+    // 问不出来就是 unknown：既不折成"够用"，也不凭空扣一顶"被降级了"的帽子。
+    EnvProbe pUnknown = HealthyProbe();
+    pUnknown.integrity = Integrity::kUnknown;
+    EnvReport unknown = BuildEnvReport(pUnknown, EnvQueryKind::kCapabilities);
+    Check(unknown.integrityLevel == L"unknown", "no answer reads unknown, not medium");
+    Check(!HasCaveat(unknown, caveat::kLowIntegrity),
+          "and a question that went unanswered is not reported as a downgrade");
+
+    for (Integrity v : {Integrity::kUntrusted, Integrity::kLow}) {
+        EnvProbe p = HealthyProbe();
+        p.integrity = v;
+        EnvReport r = BuildEnvReport(p, EnvQueryKind::kCapabilities);
+        Check(IntegrityBelowMedium(v), "this level counts as below medium");
+        Check(HasCaveat(r, caveat::kLowIntegrity), "and the report states it for this level");
+    }
+    // 负向对照：medium 以上一条都不许落进"低于"（哪天把比较写成 >= 就会在这里被抓出来）
+    for (Integrity v : {Integrity::kMedium, Integrity::kHigh, Integrity::kSystem,
+                        Integrity::kProtectedProcess}) {
+        Check(!IntegrityBelowMedium(v), "medium and above are never counted as below");
+    }
+    // token 是契约的一部分：认不出的标签值不发明新词。
+    Check(std::wstring(IntegrityName(Integrity::kLow)) == L"low", "token low");
+    Check(std::wstring(IntegrityName(Integrity::kUnknown)) == L"unknown", "token unknown");
+    Check(std::wstring(IntegrityName(Integrity::kProtectedProcess)) == L"protected_process",
+          "token protected_process");
+
+    // 渲染：ASCII token 写在 session 那一段里，换语言改不动它。
+    Check(Contains(RenderEnvJson(low, false, false), L"\"integrityLevel\": \"low\""),
+          "the level is in the document");
+    Check(Contains(RenderEnvJson(medium, false, false), L"\"integrityLevel\": \"medium\""),
+          "medium is in the document too");
+}
+
 }  // namespace
 
 int main() {
@@ -572,6 +635,7 @@ int main() {
     TestPrivacyFlags();
     TestLimitsAreSingleSourced();
     TestChainsMatchTheGate();
+    TestProcessIntegrity();
 
     std::printf("\ncapabilities-state: %d 条通过，%d 条失败\n", g_checks - g_failures, g_failures);
     return g_failures == 0 ? 0 : 1;

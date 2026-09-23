@@ -173,8 +173,77 @@ try {
     }
 
     # =========================================================================
-    Write-Host "`n=== 5) 本机不具备条件、照实记未验证的部分 ==="
+    Write-Host "`n=== 5) 真机：进程完整性级别读的是系统自己那份标签名 ==="
     # =========================================================================
+    # 这一条是给"照印象写表"那一类错法准备的：实现里那几个 SECURITY_MANDATORY_*_RID 与级别名
+    # 的对应，如果整个错开一档，本机看起来仍会像"问出了一个答案"（medium 报成 low、low 报成
+    # untrusted），离线层判不出来。这里走的是另一条路 —— 期望值一律取自系统自己那份名字表：
+    # 被测试那个文件**自己的**强制完整性标签（安全描述符里那条 S-1-16-*，由 Get-Acl 交回、
+    # 名字由 LSA 换算），没有那条标签时才退回宿主进程的 whoami 那一档。
+    # 顺序不能反：镜像带着标签时进程就被带到那一档，与宿主是谁无关。安装版自检把 exe 跑在
+    # 带低完整性标签的 Skill 目录里，正是这个差别（拿宿主的 whoami 当期望值会把这份正确的
+    # "low"判成失败）。.NET 那条路（WindowsIdentity.Groups / Translate）在本机拿不到 S-1-16-*
+    # 这一组，所以不拿它当替代判据。
+    $labelName = $null
+    $labelSource = $null
+    # 文件上那条标签在安全描述符的 SACL 里，Get-Acl 的 Access 只列 DACL，所以读它要走 icacls
+    # （它两种都打，而名字同样是 LSA 那份表换算出来的）。
+    try {
+        $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+        if (Test-Path -LiteralPath $icacls) {
+            $aclText = (& $icacls $Exe) -join "`n"
+            $mAcl = [regex]::Match($aclText, 'Mandatory Label\\(.*?) Mandatory Level')
+            if ($mAcl.Success) {
+                $labelName = 'Mandatory Label\{0} Mandatory Level' -f $mAcl.Groups[1].Value
+                $labelSource = '被测文件自己的标签'
+            }
+        }
+    } catch { $labelName = $null }
+    if (-not $labelName) {
+        try {
+            $whoami = Join-Path $env:SystemRoot 'System32\whoami.exe'
+            if (Test-Path -LiteralPath $whoami) {
+                $text = (& $whoami /groups) -join "`n"
+                $m = [regex]::Match($text, '(?m)^(.+?)\s+Label\s+(S-1-16-\d+)\s*$')
+                if ($m.Success) { $labelName = $m.Groups[1].Value.Trim(); $labelSource = '宿主进程' }
+            }
+        } catch { $labelName = $null }
+    }
+    if (-not $labelName) {
+        Skip-Ec '本进程的完整性级别与系统给出的标签名逐字对上' `
+                '被测文件上没有完整性标签，whoami 那一行也没读出来（这一层不拿实现里的数字当期望值，所以宁可记未验证）'
+    } else {
+        $want = switch -Regex ($labelName) {
+            'Untrusted'         { 'untrusted' }
+            'Low'               { 'low' }
+            'Medium Plus'       { 'medium' }   # 8448 与 8192 都归到"不低于那条线"这一侧
+            'Medium'            { 'medium' }
+            'High'              { 'high' }
+            'System'            { 'system' }
+            'Protected Process' { 'protected_process' }
+            default             { $null }
+        }
+        Assert-Ec ($null -ne $want) "系统给的标签名读不出级别：$labelName"
+        $rIl = Invoke-EcProcess -FilePath $Exe -Arguments @('--capabilities')
+        $oIl = Json-Of $rIl
+        Assert-Ec ($rIl.Exit -eq 0 -and $oIl) "--capabilities 没跑通（exit=$($rIl.Exit)）：$($rIl.Stderr)"
+        $got = [string]$oIl.session.integrityLevel
+        Assert-Ec ($got -eq $want) `
+            "本工具报的完整性级别 $got 与系统那份标签名（$labelName → $want，出处：$labelSource）不一致（RID 表错档了？）"
+        # 低于 medium 时 caveats 必须带上那条边界说明；不低于时一条都不许多（走的是哪一侧由上面
+        # 那个值决定，两边都判到，不靠"这台机器刚好是 medium"混过去）
+        $hasCaveat = @($oIl.caveats) -contains 'process_integrity_below_medium'
+        $below = ($want -eq 'low' -or $want -eq 'untrusted')
+        Assert-Ec ($hasCaveat -eq $below) `
+            "caveat 与级别对不上：$want 时 boundary=$below 而 caveats=$hasCaveat"
+        Write-Host "  被测这一档：$got（期望：$labelName，出处：$labelSource）" -ForegroundColor DarkGray
+    }
+
+    # =========================================================================
+    Write-Host "`n=== 6) 本机不具备条件、照实记未验证的部分 ==="
+    # =========================================================================
+    Skip-Ec '低完整性目录下启动的那一份二进制：取帧被拒与写盘被拒时都补上可操作的提示' `
+            '这一档需要一个带 Mandatory Label\Low Mandatory Level 标签的目录才能造出来，而本套件绝不为了测试去改任何目录的完整性标签，也不拿别的用户的数据目录做实验。判据本体（哪几档算低于 medium、哪几步的 access denied 才被补写、确认框上答「否」那一条为什么绝不被当成同一件事）由上面的离线层注入逐条判；这台机器上确实出现过的那一档由第 5 节与系统那份名字表对过。'
     Skip-Ec '低于各条下限的 Windows 上：显式那条通道真的报 env.channel_unsupported 且不落地' `
             '这台机器的 Windows 版本降不下去；那几道边界由离线层注入假版本逐条判'
     Skip-Ec 'Windows 7 / 8 上装载失败时系统给出的具体报错文字' `

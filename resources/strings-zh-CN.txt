@@ -405,6 +405,9 @@ env.os_too_old	这台机器的 Windows 内部版本 %1 低于本工具的下限 
 env.os_too_old_hint	图片编码只有一套实现（WinRT 的 BitmapEncoder），Windows 10 之前不存在，所以这一条与选了哪条取图通道无关：换 --capture、换目标、重试都不会有别的下场。本工具声明的最低运行环境是 64 位 Windows 10 版本 1903（内部版本 18362）以上，且只在 Windows 10 22H2（19045）上实测过；想知道本机这次能走哪几条通道，用 --verbose 看 input.osBuild 与 input.captureChain
 env.channel_unsupported	%1 通道要 Windows 内部版本 %2 或更新，本机是 %3，因此一个像素都没取
 env.channel_unsupported_hint	这一条是本机版本的事，与目标窗口无关：换一条取图通道（--capture / -C）或改用 auto 才有意义，重试同一个目标不会有别的下场。显式指定的通道绝不换成别的，所以这条不会被 auto 自动绕开
+env.integrity_hint	本进程运行在 %1 完整性级别，低于中完整性，所以系统拒绝了这一步跨完整性的操作。这一条说的是这个 exe 待在哪个目录里，与目标窗口本身无关，也与这台机器支不支持无关
+env.integrity_denied	本进程处在 %1 完整性级别（低于中完整性），这一轮里有 %2 条失败是“系统不让”，不是那个目标截不到
+env.integrity_note_hint	先核对：对着放着 ECAPTURE.EXE 的那个目录跑 icacls，看有没有 Mandatory Label\Low Mandatory Level 这一条——那种标签会被目录里的每个文件继承，正是它把进程带到中完整性以下。三条出路：1）把 --out 指向同样带这条低完整性标签的目录里的路径，低完整性进程在那样的目录里建得了文件（本工具从不创建目录，那一层要先存在）；2）要窗口自己的画面就改用 --capture dwm，本机实测这一档下它照常出图，被系统拒掉的是 wgc 与 printwindow 那两条；3）把这套 skill 装到没有被这样降级的目录去，或由那个目录的所有者把这条标签去掉。以管理员身份运行不是这条提示要的做法，这句话也没有建议那么做
 note.channel_unavailable	auto 回退链里没有 %1：它要 Windows 内部版本 %2 或更新，本机 %3
 note.os_unverifiable	没能问出本机 Windows 的内部版本，所以这一次没有按版本筛通道；真不可用的那一条会交回它自己的错误码
 

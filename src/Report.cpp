@@ -13,6 +13,7 @@
 #include "Capture.h"
 #include "EnvReport.h"
 #include "Lang.h"
+#include "ProcessIntegrity.h"
 #include "ScreenIdentity.h"   // MonitorSelectorLabel / KindName：选择器的回显只写一处
 #include "ScreenQuery.h"
 #include "SystemCompat.h"
@@ -495,6 +496,11 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         images = std::move(outcome.images);
         for (auto& e : outcome.errors) errors.push_back(std::move(e));
         for (auto& n : outcome.notes) notes.push_back(std::move(n));
+        // 本进程低于中完整性时，给这一轮里每一条"系统不让"的采集 / 落盘失败补一句可操作的
+        // 提示，并追加一条 note.low_integrity。判据只有这一份（src/ProcessIntegrity.h），
+        // 与 --capabilities 报出的 session.integrityLevel 同源。code、stage、已交付的图与
+        // 退出码都原样不动：这一层解释成因，不改判据。
+        AnnotateIntegrityDenials(ProbeProcessIntegrity(nullptr), &errors, &notes);
         code = outcome.exitCode;
     }
 

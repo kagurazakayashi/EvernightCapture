@@ -405,6 +405,13 @@ inline constexpr const wchar_t* kCaptureChannel = L"note.capture_channel";
 //   note.os_unverifiable      本机版本没能问出来，所以这一次没有按版本筛通道（不等于支持）
 inline constexpr const wchar_t* kNoteChannelUnavailable = L"note.channel_unavailable";
 inline constexpr const wchar_t* kNoteOsUnverifiable = L"note.os_unverifiable";
+// 本进程跑在低于中完整性的强制完整性级别上（多半是被那个目录的标签带下去的），而这一轮的
+// 取帧 / 落盘里有若干条失败正是"系统不让"（0x80070005 或 Win32 错误码 5）。整轮只发一条，
+// 逐条失败上另有各自的 hint。它不改 code、不改退出码，也不宣布"这台机器不能截图"：
+// 本机实测低完整性下 dwm.thumbnail / bitblt.screen / duplication.frame 照常出图，
+// 被挡的是 wgc 与 printwindow 那两条以及"往中完整性目录建文件"这一件事。
+// 判据与 --capabilities 里 session.integrityLevel 同源（src/ProcessIntegrity.h）。
+inline constexpr const wchar_t* kLowIntegrity = L"note.low_integrity";
 // auto 回退链里那一条**做不到这次要求的光标状态**，已经从链里摘掉了（原因 token 在 message 末尾，
 // ASCII、不随 --lang 变：`os_below_min_build:19041` = 这台机器的版本给不了那个开关，
 // `window_self_drawn` / `dwm_redirection_surface` / `screen_dc_has_no_pointer` = 这条路径的来源

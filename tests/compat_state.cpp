@@ -15,8 +15,14 @@
 #include <string>
 #include <vector>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 #include "../src/CliOptions.h"
 #include "../src/Lang.h"
+#include "../src/ProcessIntegrity.h"
 #include "../src/SystemCompat.h"
 
 using namespace ecapture;
@@ -290,6 +296,8 @@ void TestStrings() {
         const std::string tag = Narrow(LanguageTag(lang));
         const wchar_t* keys[] = {L"env.os_too_old",         L"env.os_too_old_hint",
                                  L"env.channel_unsupported", L"env.channel_unsupported_hint",
+                                 L"env.integrity_hint", L"env.integrity_denied",
+                                 L"env.integrity_note_hint",
                                  L"note.channel_unavailable", L"note.os_unverifiable",
                                  L"help.system"};
         for (const wchar_t* key : keys) {
@@ -314,8 +322,161 @@ void TestStrings() {
         // 提示文字里不许有没代进去的占位符（EnvBase 用 Msg 取 hint，本来就没给参数）
         Check(c.hint.find(L'%') == std::wstring::npos,
               (tag + " 的 hint 里没有占位符（它取的时候没带参数）").c_str());
+        // 低完整性那三条：两条带占位符的要代得干净，级别 token 与条数都得原样出现。
+        const std::wstring perError = Msgf(L"env.integrity_hint", IntegrityName(Integrity::kLow));
+        Check(perError.find(L'%') == std::wstring::npos &&
+                  perError.find(L"low") != std::wstring::npos,
+              (tag + " 的 env.integrity_hint 把级别 token 代进去了").c_str());
+        const std::wstring noteText =
+            Msgf(L"env.integrity_denied", IntegrityName(Integrity::kLow), 3ull);
+        Check(noteText.find(L'%') == std::wstring::npos &&
+                  noteText.find(L"low") != std::wstring::npos &&
+                  noteText.find(L"3") != std::wstring::npos,
+              (tag + " 的 env.integrity_denied 把级别与条数都代进去了").c_str());
+        Check(Msg(L"env.integrity_note_hint").find(L'%') == std::wstring::npos,
+              (tag + " 的 env.integrity_note_hint 里没有占位符").c_str());
     }
     SetLanguage(Language::kEn);
+}
+
+// ---------------------------------------------------------------------------
+// 低完整性那一档对失败说明做了什么：只补成因，不改判据
+// ---------------------------------------------------------------------------
+void TestIntegrityDenials() {
+    Section("低完整性的失败补写");
+
+    Diagnostic wgc;
+    wgc.code = codes::kCaptureFailed;
+    wgc.stage = stages::kCapture;
+    wgc.backend = L"wgc";
+    wgc.hresult = L"0x80070005";
+    Diagnostic pw;
+    pw.code = codes::kCaptureFailed;
+    pw.stage = stages::kCapture;
+    pw.backend = L"printwindow";
+    pw.win32 = static_cast<uint32_t>(ERROR_ACCESS_DENIED);
+    Diagnostic write;
+    write.code = codes::kWriteFailed;
+    write.stage = stages::kWrite;
+    write.win32 = static_cast<uint32_t>(ERROR_ACCESS_DENIED);
+    Diagnostic refused;
+    refused.code = codes::kAccessDenied;
+    refused.stage = stages::kConsent;
+    refused.win32 = static_cast<uint32_t>(ERROR_ACCESS_DENIED);
+
+    // 1) 中完整性：一条都不许多写。低完整性是那个目录的标签造成的，不是通用成因，
+    //    拿它去解释一次普通的 access denied 会把人指向根本无关的下一步。
+    {
+        std::vector<Diagnostic> errors{wgc, pw, write};
+        std::vector<Diagnostic> notes;
+        Check(AnnotateIntegrityDenials(Integrity::kMedium, &errors, &notes) == 0,
+              "medium annotates nothing");
+        Check(notes.empty(), "medium adds no note");
+        Check(errors[0].hint.empty() && errors[1].hint.empty() && errors[2].hint.empty(),
+              "medium leaves every hint exactly as the backend wrote it");
+    }
+    // 2) 问不出来（unknown）：同样一条都不写 —— "没答案"不等于"被降级"。
+    {
+        std::vector<Diagnostic> errors{wgc};
+        std::vector<Diagnostic> notes;
+        Check(AnnotateIntegrityDenials(Integrity::kUnknown, &errors, &notes) == 0,
+              "an unanswered question writes nothing");
+        Check(notes.empty(), "and adds no note either");
+    }
+    // 3) 低完整性：三条都被补，整轮只追加一条 note。
+    {
+        std::vector<Diagnostic> errors{wgc, pw, write, refused};
+        std::vector<Diagnostic> notes;
+        Check(AnnotateIntegrityDenials(Integrity::kLow, &errors, &notes) == 3,
+              "low annotates the three capture/write denials");
+        Check(notes.size() == 1, "and appends exactly one note for the whole run");
+        Check(notes[0].code == codes::kLowIntegrity, "the note carries its own stable code");
+        Check(notes[0].message.find(L'%') == std::wstring::npos &&
+                  notes[0].message.find(L"low") != std::wstring::npos,
+              "the note names the level with no leftover placeholder");
+        Check(!notes[0].hint.empty(), "the note carries the way out");
+        // 定位字段跟着第一条对得上的失败走，不各写一份坐标。
+        Check(notes[0].stage == stages::kCapture && notes[0].backend == L"wgc",
+              "the note borrows the first matching failure's coordinates");
+        for (size_t i = 0; i < 3; ++i) {
+            Check(errors[i].hint.find(L"low") != std::wstring::npos,
+                  "each annotated failure names the level");
+        }
+        // code / stage / backend 与原始错误值一个字都不改：这一层解释成因，
+        // 不改判据、不改退出码，也不抹掉已经记下的交付事实。
+        Check(errors[0].code == codes::kCaptureFailed && errors[0].hresult == L"0x80070005" &&
+                  errors[1].win32 == static_cast<uint32_t>(ERROR_ACCESS_DENIED) &&
+                  errors[2].code == codes::kWriteFailed,
+              "codes and raw error values survive untouched");
+        // 确认框上"人答了否"同为 win32 5，但它不在取帧 / 落盘那三步里：绝不补写，
+        // 否则一句"你的目录被降级了"会盖掉"这个人不同意"。
+        Check(refused.hint.empty(), "the consent refusal is never reinterpreted");
+    }
+    // 4) 负向对照：同一条路上别的错误码不许被当成这一档的证据。
+    {
+        Diagnostic other = wgc;
+        other.hresult = L"0x80070057";  // 参数不对那一类，不是"不让"
+        std::vector<Diagnostic> errors{other};
+        std::vector<Diagnostic> notes;
+        Check(AnnotateIntegrityDenials(Integrity::kLow, &errors, &notes) == 0,
+              "an unrelated HRESULT is not called an integrity denial");
+        Check(notes.empty(), "and no note is invented for it");
+    }
+    // 5) IsAccessDenied 只认那两个原值：文字随 --lang 变，永远不作为判据。
+    Check(IsAccessDenied(wgc), "E_ACCESSDENIED as an HRESULT counts");
+    Check(IsAccessDenied(pw), "Win32 error 5 counts");
+    // 数值这一问本身不看 stage：确认框上"人答了否"同为 win32 5，把它挡在补写之外的
+    // 是上面那三步的落点筛选（DeniableStage），不是这一问走了眼。两条判据分开才说得准。
+    Check(IsAccessDenied(refused), "the numeric test itself stays stage-blind");
+    Diagnostic noCode;
+    noCode.message = L"Access is denied";
+    Check(!IsAccessDenied(noCode), "message text alone is never the criterion");
+}
+
+// ---------------------------------------------------------------------------
+// 标签值到级别的映射：这一组数字必须有独立出处，不能是实现里那几个字面量
+// ---------------------------------------------------------------------------
+void TestIntegrityLabelRids() {
+    Section("完整性标签值的映射");
+
+    // 判据的出处：系统自己那份表（本机 whoami /groups 打出来的就是
+    // "Mandatory Label\Medium Mandatory Level  S-1-16-8192" 这样一行）。
+    // 这一条之所以必须写死数字，是因为本层刚踩过一次：照印象把整组错开一档，
+    // Medium 会被报成 Low、Low 会被报成 Untrusted，而两份错答案看起来都像问出来了。
+    Check(SECURITY_MANDATORY_UNTRUSTED_RID == 0u, "untrusted RID is 0");
+    Check(SECURITY_MANDATORY_LOW_RID == 4096u, "low RID is 4096");
+    Check(SECURITY_MANDATORY_MEDIUM_RID == 8192u, "medium RID is 8192");
+    Check(SECURITY_MANDATORY_MEDIUM_PLUS_RID == 8448u, "medium plus RID is 8448");
+    Check(SECURITY_MANDATORY_HIGH_RID == 12288u, "high RID is 12288");
+    Check(SECURITY_MANDATORY_SYSTEM_RID == 16384u, "system RID is 16384");
+    Check(SECURITY_MANDATORY_PROTECTED_PROCESS_RID == 20480u, "protected process RID is 20480");
+
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_UNTRUSTED_RID) == Integrity::kUntrusted,
+          "untrusted maps");
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_LOW_RID) == Integrity::kLow, "low maps");
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_MEDIUM_RID) == Integrity::kMedium, "medium maps");
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_MEDIUM_PLUS_RID) == Integrity::kMedium,
+          "medium plus counts as medium (it is not below the line)");
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_HIGH_RID) == Integrity::kHigh, "high maps");
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_SYSTEM_RID) == Integrity::kSystem, "system maps");
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_PROTECTED_PROCESS_RID) ==
+              Integrity::kProtectedProcess,
+          "protected process maps");
+    // 没登记过的取值不发明级别名，也不折成任何一边
+    Check(IntegrityFromLabelRid(SECURITY_MANDATORY_MEDIUM_RID + 1) == Integrity::kUnknown,
+          "an unlisted value stays unknown");
+    Check(IntegrityFromLabelRid(0xFFFFFFFFu) == Integrity::kUnknown, "and so does a wild one");
+    // 分组判据与上面那张表必须一致：4096 与 0 在"低于 medium"这一侧，8192 与 8448 不在。
+    Check(IntegrityBelowMedium(IntegrityFromLabelRid(SECURITY_MANDATORY_LOW_RID)),
+          "low is below the line");
+    Check(IntegrityBelowMedium(IntegrityFromLabelRid(SECURITY_MANDATORY_UNTRUSTED_RID)),
+          "untrusted is below the line");
+    Check(!IntegrityBelowMedium(IntegrityFromLabelRid(SECURITY_MANDATORY_MEDIUM_RID)),
+          "medium is not below the line");
+    Check(!IntegrityBelowMedium(IntegrityFromLabelRid(SECURITY_MANDATORY_MEDIUM_PLUS_RID)),
+          "medium plus is not below the line");
+    Check(!IntegrityBelowMedium(IntegrityFromLabelRid(SECURITY_MANDATORY_MEDIUM_RID + 1)),
+          "and an unanswered question is never treated as downgraded");
 }
 
 }  // namespace
@@ -330,6 +491,8 @@ int main() {
     TestAutoChain();
     TestRuntimeFloor();
     TestStrings();
+    TestIntegrityDenials();
+    TestIntegrityLabelRids();
 
     std::printf("\ncompat-state: %d 条通过，%d 条失败\n", g_checks - g_failures, g_failures);
     return g_failures == 0 ? 0 : 1;

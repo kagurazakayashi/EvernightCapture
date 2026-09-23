@@ -285,6 +285,9 @@ EnvProbe ProbeEnvFacts() {
     p.remoteSession = GetSystemMetrics(SM_REMOTESESSION) != 0 ? Tri::kYes : Tri::kNo;
     ProbeTopology(&p.displayTopology, &p.monitorCountKnown, &p.monitorCount);
     p.elevated = ProbeElevation();
+    // 本进程那一档强制完整性级别：与 TokenElevation 同一颗令牌上问出来的另一件事，
+    // 只答级别本身，不判任何一条通道能不能用（见 src/ProcessIntegrity.h）。
+    p.integrity = ProbeProcessIntegrity(&p.integrityProbeError);
     ProbePeIdentity(&p);
     wchar_t buf[64];
     if (p.buildIdKnown) {
@@ -340,6 +343,7 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     r.consoleAttached = probe.consoleAttached;
     r.remoteSession = probe.remoteSession;
     r.elevated = probe.elevated;
+    r.integrityLevel = IntegrityName(probe.integrity);
     r.displayTopology = probe.displayTopology;
     r.monitorCountKnown = probe.monitorCountKnown;
     r.monitorCount = probe.monitorCount;
@@ -580,6 +584,9 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     if (probe.remoteSession == Tri::kYes) r.caveats.push_back(caveat::kRemoteSession);
     if (r.consentDialogExpected == Tri::kNo) r.caveats.push_back(caveat::kDesktopNeedsDialog);
     if (probe.elevated == Tri::kNo) r.caveats.push_back(caveat::kNotElevated);
+    // 低于中完整性时把这一档报出来：它解释的是"为什么这一步系统不让"，不是一条通道判决。
+    // 问不出来（unknown）时一条都不加，免得把"没答案"写成"被降级了"。
+    if (IntegrityBelowMedium(probe.integrity)) r.caveats.push_back(caveat::kLowIntegrity);
     // PE 头里那个 subsystem version 是链接器默认值，不是本工具的支持声明（AGENTS.md
     // 《系统兼容性与能力检查》里"别拿它当声明"那一条同源），所以只要把它报出来就要配这一句。
     if (probe.subsystemVersionKnown) r.caveats.push_back(caveat::kSubsystemIsLinkerDefault);
@@ -788,6 +795,19 @@ void WriteProbes(Json& j, const EnvReport& r) {
             .Key(L"source").Value(L"GetTokenInformation(TokenElevation)").End();
     }
     {
+        j.Obj().Key(L"question").Value(L"tokenIntegrityLevel")
+            .Key(L"known").Value(r.probe.integrity != Integrity::kUnknown)
+            .Key(L"answer").Value(r.integrityLevel)
+            .Key(L"belowMedium").Value(IntegrityBelowMedium(r.probe.integrity))
+            .Key(L"source").Value(L"GetTokenInformation(TokenIntegrityLevel)");
+        // 问不出来时把那一步的 GetLastError 一起交回：0 而答案仍是 unknown，意味着系统答了
+        // 一个本工具没登记过的标签取值，与"那两步调用本身失败"是两件不同的事。
+        if (r.probe.integrity == Integrity::kUnknown) {
+            j.Key(L"win32").Value(static_cast<long long>(r.probe.integrityProbeError));
+        }
+        j.End();
+    }
+    {
         j.Obj().Key(L"question").Value(L"peBuildIdentity")
             .Key(L"known").Value(r.probe.buildIdKnown)
             .Key(L"answer").Value(r.buildId)
@@ -898,6 +918,9 @@ std::wstring RenderEnvJson(const EnvReport& r, bool verbose, bool quiet) {
     if (r.monitorCountKnown) j.Key(L"monitors").Value(static_cast<long long>(r.monitorCount));
     else j.Key(L"monitors").Value(L"unknown");
     WriteTriState(j, L"elevated", r.elevated);
+    // 本进程的强制完整性级别（ASCII token，不随 --lang 变）。低于 medium 时 caveats 里
+    // 另有一条 process_integrity_below_medium 说明这一档影响的是哪几件事。
+    j.Key(L"integrityLevel").Value(r.integrityLevel);
     // 这一条是推出来的（会话号 + 屏幕拓扑），本查询没有真去弹一个框：名字里就写着 expected，
     // 免得调用方读成"已经确认过那里有个人"。
     WriteTriState(j, L"consentDialogExpected", r.consentDialogExpected);

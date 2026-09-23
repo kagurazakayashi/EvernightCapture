@@ -37,6 +37,7 @@ add_executable(ecapture
   src/ScreenIdentity.cpp
   src/ScreenQuery.cpp
   src/SystemCompat.cpp
+  src/ProcessIntegrity.cpp
   src/EnvReport.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
@@ -342,6 +343,7 @@ set_property(TARGET ecapture-dup-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-compat-tests
   tests/compat_state.cpp
   src/SystemCompat.cpp
+  src/ProcessIntegrity.cpp
   src/CliOptions.cpp
   src/Lang.cpp
   resources/ecapture.rc)
@@ -371,6 +373,7 @@ add_executable(ecapture-capabilities-tests
   tests/capabilities_state.cpp
   src/EnvReport.cpp
   src/SystemCompat.cpp
+  src/ProcessIntegrity.cpp
   src/CaptureScope.cpp
   src/CliOptions.cpp
   src/Lang.cpp

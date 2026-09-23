@@ -141,6 +141,9 @@ using namespace ecapture;
 
 int g_failures = 0;
 int g_checks = 0;
+// 有一次临时目录没能写在 %TEMP% 而是退到了这个测试 exe 自己那个目录（本进程被目录标签带到
+// low 那一档时的现场）。收尾时按这一格说明写在哪儿，别让一处半途失败的清理留下没人认领的目录。
+bool g_usedModuleDir = false;
 
 void Check(bool ok, const char* what) {
     ++g_checks;
@@ -278,16 +281,57 @@ private:
 class Scratch {
 public:
     explicit Scratch(const wchar_t* leaf) {
+        const std::wstring stem =
+            L"ecapture-delivery-" + std::to_wstring(GetCurrentProcessId()) + L"-" + leaf;
+        // 先按规矩试系统临时目录。
         wchar_t base[MAX_PATH]{};
-        if (!GetTempPathW(MAX_PATH, base)) return;
-        path_ = std::wstring(base) + L"ecapture-delivery-" +
-                std::to_wstring(GetCurrentProcessId()) + L"-" + leaf;
-        if (CreateDirectoryW(path_.c_str(), nullptr) ||
-            GetLastError() == ERROR_ALREADY_EXISTS) {
-            path_ += L"\\";
+        if (GetTempPathW(MAX_PATH, base)) {
+            path_ = std::wstring(base) + stem;
+            lastAttempt_ = path_;
+            if (CreateDirectoryW(path_.c_str(), nullptr) ||
+                GetLastError() == ERROR_ALREADY_EXISTS) {
+                path_ += L"\\";
+                return;
+            }
+            lastError_ = GetLastError();
+            path_.clear();
         } else {
+            lastError_ = GetLastError();
+        }
+        // 退路：写在**这个测试 exe 自己那个目录**里。本进程被所在目录的强制完整性标签带到
+        // low 那一档时，中完整性的 %TEMP% 里建不了目录（安装版离线自检正是这种现场），而与
+        // 自己同一个标签的目录建得了。换的只是落点、不是要求：下面判的仍是真磁盘、真临时文件、
+        // 真改名提交与真清理，一条判据都没放宽。
+        wchar_t module[MAX_PATH]{};
+        const DWORD len = GetModuleFileNameW(nullptr, module, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) return;
+        std::wstring dir(module, len);
+        const size_t slash = dir.find_last_of(L"\\/");
+        if (slash == std::wstring::npos) return;
+        path_ = dir.substr(0, slash + 1) + stem;
+        lastAttempt_ = path_;
+        if (CreateDirectoryW(path_.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS) {
+            path_ += L"\\";
+            g_usedModuleDir = true;   // 收尾时说明写在安装目录里，别让清理半途失败留下无人认领的目录
+        } else {
+            lastError_ = GetLastError();
             path_.clear();
         }
+    }
+
+    // 建不起来时把"试的是哪条路径、系统给了哪个错误码"一起报出来。这一条失败的成因不止一个：
+    // 本机实测把这份测试 exe 放进一个带低完整性标签的目录后，进程被带到 low 那一档，连中完整性
+    // 的临时目录里都建不了文件，于是每一节都在同一句"临时目录建得起来"上早退。只报那一句会让人
+    // 以为是判据自己写坏了，而真正该核对的是那个目录的标签（icacls 看一眼就有答案）。
+    bool Require(const char* label) {
+        if (valid()) return true;
+        std::string detail;
+        for (wchar_t c : lastAttempt_) detail.push_back(c > 0 && c < 128 ? static_cast<char>(c) : '?');
+        Check(false,
+              (std::string(label) + "（试的是 " + (detail.empty() ? std::string("<问不出路径>") : detail) +
+               "，系统错误码 " + std::to_string(lastError_) + "）")
+                  .c_str());
+        return false;
     }
     ~Scratch() {
         if (path_.empty()) return;
@@ -328,6 +372,8 @@ public:
 
 private:
     std::wstring path_;
+    std::wstring lastAttempt_;   // 建不起来时试的是哪条路径（ Require 里报出来）
+    DWORD lastError_ = 0;        // 那一步的 GetLastError 原值，0 = 没走到那一步
 };
 
 bool WriteAll(const std::wstring& path, const std::vector<uint8_t>& bytes) {
@@ -428,7 +474,7 @@ DeliveryStep RunDeliver(const DeliveryRun& run, const DeliveryTarget& target,
 void CheckOnTime() {
     std::printf("[1] 按时完成的交付：只记事实，不记期限\n");
     Scratch dir(L"on-time");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"shot.png");
     const std::vector<uint8_t> bytes = MakeBytes(512, 3);
 
@@ -462,7 +508,7 @@ void CheckOnTime() {
 void CheckSpentBeforeStart() {
     std::printf("[2] 开工前预算已尽：不开始输出\n");
     Scratch dir(L"pre-start");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"late.png");
     const std::vector<uint8_t> bytes = MakeBytes(512, 5);
 
@@ -495,7 +541,7 @@ void CheckSpentBeforeStart() {
 void CheckFileCommittedLate() {
     std::printf("[3] 文件提交后跨限：交付事实与期限合规各记各的\n");
     Scratch dir(L"committed-late");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"slow.png");
     const std::vector<uint8_t> bytes = MakeBytes(2048, 11);
 
@@ -631,7 +677,7 @@ void CheckStdoutNothingEmitted() {
 void CheckNoOverwriteKeepsOldFile() {
     std::printf("[7] --no-overwrite：提交那一步失败，旧文件原样留着\n");
     Scratch dir(L"no-overwrite");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"old.png");
     const std::vector<uint8_t> oldBytes = MakeBytes(64, 100);
     const std::vector<uint8_t> bytes = MakeBytes(512, 7);
@@ -663,7 +709,7 @@ void CheckNoOverwriteKeepsOldFile() {
 void CheckIoErrorNotOverwrittenByTimeout() {
     std::printf("[8] 写失败之后才看见期限已过：真实 I/O 原因不被覆盖\n");
     Scratch dir(L"fail-and-late");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"keep.png");
     const std::vector<uint8_t> oldBytes = MakeBytes(64, 200);
     Check(WriteAll(path, oldBytes), "先把旧文件摆好");
@@ -692,7 +738,7 @@ void CheckIoErrorNotOverwrittenByTimeout() {
 void CheckCommitFailureKeepsTarget() {
     std::printf("[9] 提交那一步失败：改名撞上一个同名的目录\n");
     Scratch dir(L"commit-fail");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring blocked = dir.Path(L"blocked");
     Check(CreateDirectoryW(blocked.c_str(), nullptr) != FALSE, "先摆一个与目标同名的目录");
 
@@ -723,7 +769,7 @@ void CheckCommitFailureKeepsTarget() {
 void CheckFirstDeliveredSecondRefused() {
     std::printf("[10] 第一张已交付、第二张开工前超时\n");
     Scratch dir(L"two-targets");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring first = dir.Path(L"a.png");
     const std::wstring second = dir.Path(L"b.png");
     const std::vector<uint8_t> bytes = MakeBytes(512, 31);
@@ -759,7 +805,7 @@ void CheckFirstDeliveredSecondRefused() {
 void CheckLastTargetSlowWrite() {
     std::printf("[11] 最后一张慢写：两张都在磁盘上，期限那条只说第二张\n");
     Scratch dir(L"slow-last");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring first = dir.Path(L"c.png");
     const std::wstring second = dir.Path(L"d.png");
     const std::vector<uint8_t> bytes = MakeBytes(1024, 47);
@@ -799,7 +845,7 @@ void CheckLastTargetSlowWrite() {
 void CheckNoBudgetNeverTimesOut() {
     std::printf("[12] 没有 --timeout-ms：再慢也不报期限\n");
     Scratch dir(L"no-budget");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"any.png");
     FakeClock clock;
     const Deadline dl = Deadline::FromTotalMs(0, clock.budget());   // 0 = 不限
@@ -820,7 +866,7 @@ void CheckNoBudgetNeverTimesOut() {
 void CheckNoDuplicateRecord() {
     std::printf("[13] 入账只一次：不重复插入、也不先插入再撤销\n");
     Scratch dir(L"single-record");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"one.png");
     FakeClock clock;
     const Deadline dl = Deadline::FromTotalMs(1000, clock.budget());
@@ -847,7 +893,7 @@ void CheckNoDuplicateRecord() {
 void CheckFaultBeforeCommit() {
     std::printf("[14] 输出之前分配失败：没开始写，也没记任何账\n");
     Scratch dir(L"fault-before");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"never.png");
     const std::vector<uint8_t> bytes = MakeBytes(512, 61);
 
@@ -889,7 +935,7 @@ void CheckFaultBeforeCommit() {
 void CheckFaultAfterCommit() {
     std::printf("[15] 提交之后分配失败：图与提示照样在账上，step 也说得出交付阶段\n");
     Scratch dir(L"fault-after");
-    if (!dir.valid()) { Check(false, "临时目录建得起来"); return; }
+    if (!dir.Require("临时目录建得起来")) return;
     const std::wstring path = dir.Path(L"kept.png");
     const std::vector<uint8_t> bytes = MakeBytes(2048, 71);
 
@@ -963,6 +1009,12 @@ int main() {
     CheckNoDuplicateRecord();
     CheckFaultBeforeCommit();
     CheckFaultAfterCommit();
+    if (g_usedModuleDir) {
+        // 落点换了但要求没换，这一句必须让读日志的人看得见：写在安装目录里是低完整性那档
+        // 逼出来的退路，不是本来的约定（正常收尾会删干净；半途被杀时按这个线索去核对残留）。
+        std::printf("提示：本轮至少有一个临时目录没能建在系统临时目录里，"
+                    "改建在本测试 exe 自己的目录（判据与落点无关，一条都没放宽）。\n");
+    }
     std::printf("共 %d 项检查，失败 %d\n", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

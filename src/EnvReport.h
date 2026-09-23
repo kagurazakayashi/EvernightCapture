@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "CliOptions.h"
+#include "ProcessIntegrity.h"
 #include "SystemCompat.h"
 
 namespace ecapture {
@@ -96,6 +97,13 @@ inline constexpr const wchar_t* kDesktopNeedsDialog = L"desktop_paths_need_answe
 // 本进程没被提升过，而更高完整性级别的目标窗口本来就不一定会响应跨进程的绘制请求。
 // 只报这个事实，不断言"截不到"（那一条要看具体目标）。
 inline constexpr const wchar_t* kNotElevated = L"unelevated_process_may_miss_elevated_targets";
+// 本进程的强制完整性级别低于中完整性（多半是它所在那个目录的标签带下去的，见
+// src/ProcessIntegrity.h）。这一条与上面那条同源：只报"这一次运行处在哪一档"，不把任何一条
+// 通道判成 unavailable，也不断言"这台机器不能截图"。它要说的是这份报告**没有**核对的那一层：
+// 低完整性下 `wgc` 与 `printwindow` 会被系统拒（0x80070005 / 错误码 5），往中完整性的目录
+// 建文件也会被拒，而 `dwm.thumbnail` 与桌面像素那几条在本机实测照常出图 ——
+// 哪个具体目标截得到，仍然只有那一步自己交回真实错误码才算数。
+inline constexpr const wchar_t* kLowIntegrity = L"process_integrity_below_medium";
 // 光标（--cursor）那一段的边界：结果里 cursorEffective 断言到的是"这条会话被设置成画 / 不画
 // 光标"与"这条路径的来源像素里本来就没有光标"这两层，**不是**"这一张图里看得见或看不见指针"。
 // 本 SDK 的会话接口没有 IsCursorVisible 那个只读属性，像素级的事这一层一条都不声称，
@@ -184,6 +192,15 @@ struct EnvProbe {
     // 跨进程的绘制请求能不能送进别人的窗口，所以这条与"某些目标没把握"有关。
     // 只回答是/否，不读用户名、不读 SID 归属。
     Tri elevated = Tri::kUnknown;
+
+    // 本进程的强制完整性级别（GetTokenInformation(TokenIntegrityLevel)）。kUnknown = 这一问
+    // 没答案，既不按"够用"处理也不按"被降级"处理。它不参与任何一条通道的 status 判定
+    // （理由见 src/ProcessIntegrity.h 开头那两条规矩），只作为 session.integrityLevel 报出来，
+    // 并在真的出现"系统不让"那类失败时由同一个判据补上可操作的提示。
+    Integrity integrity = Integrity::kUnknown;
+    // 上面那一问为什么没能给出答案（GetLastError 原值，0 = 那两步都成功）。只在 -v 的
+    // probes 段展开，默认那份不占字段：它给人核对，不给调用方分支。
+    uint32_t integrityProbeError = 0;
 
     // 桌面上有没有可用的屏幕输出，以及有几块（EnumDisplayMonitors）。
     // kUnknown = 那次枚举本身没跑成；kNo = 枚举成功但一块屏都没有（无图形会话）。
@@ -346,6 +363,9 @@ struct EnvReport {
     Tri consoleAttached = Tri::kUnknown;
     Tri remoteSession = Tri::kUnknown;
     Tri elevated = Tri::kUnknown;
+    // 本进程那一档强制完整性级别的 ASCII token（unknown / untrusted / low /
+    // medium / high / system / protected_process）。问不出来就是 unknown，不折成任何一边。
+    std::wstring integrityLevel = L"unknown";
     Tri displayTopology = Tri::kUnknown;
     Tri consentDialogExpected = Tri::kUnknown;   // 推出来的，没有真去弹框（见 caveat.kSessionInferred）
     bool monitorCountKnown = false;
