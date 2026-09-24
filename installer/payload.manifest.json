@@ -2,6 +2,7 @@
   "manifestVersion": 1,
   "product": "EvernightCapture",
   "appId": "{{B7A2E1C4-5D3F-4E6A-9C21-8F0B3D5E7A10}}",
+  "ownershipMarkerFile": "evernightcapture.owner.ini",
   "skill": {
     "dirName": "yashi-evernight-capture",
     "entryFile": "SKILL.md",
@@ -27,9 +28,18 @@
     { "from": "tests/*.ps1",               "to": "tests/",               "role": "test-script",  "required": true,  "glob": true, "freshness": "repo" },
     { "from": "tests/harness.psm1",        "to": "tests/harness.psm1",   "role": "test-shared",  "required": true,  "glob": false, "freshness": "repo" },
     { "from": "tests/helper/ec_window.cs", "to": "tests/helper/ec_window.cs", "role": "test-support", "required": true, "glob": false, "freshness": "repo" },
-    { "from": "tests/window_shot.bat",     "to": "tests/window_shot.bat",     "role": "test-support", "required": false, "glob": false, "freshness": "repo" },
 
-    { "from": "build/ecapture-*-tests.exe", "to": "build/", "role": "test-binary", "required": false, "glob": true, "freshness": "current-build" }
+    { "from": "build/ecapture-capabilities-tests.exe", "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-compat-tests.exe",       "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-windows-tests.exe",      "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-screens-tests.exe",      "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-hdr-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-delivery-tests.exe",     "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-crop-tests.exe",         "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-image-tests.exe",        "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-wgc-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-identity-tests.exe",     "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-dup-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" }
   ],
   "installPlan": {
     "offlineTests": [
@@ -37,11 +47,28 @@
       "windows", "screens", "capabilities", "compat",
       "hdr", "delivery", "crop", "scale", "wgc", "identity", "dup"
     ],
-    "offlineTestsNote": "这 14 套在安装目录里只需本地 ECAPTURE.EXE + 随包测试脚本/二进制，不需要 Visual Studio、源码树或网络（invoker 只用 Windows 自带的 .NET Framework csc 编个测试窗口程序，且只在临时目录里跑）。build\\ 下其余状态测试二进制也随包发出，可按需用 -Only 追加离线层。",
+    "offlineSuiteDeps": {
+      "invoker":      { "scripts": ["tests/invoker.ps1"], "binaries": [], "aux": ["tests/helper/ec_window.cs"], "note": "只用 Windows 自带的 .NET Framework csc 现编一个测试窗口程序，且只在临时目录里跑" },
+      "orchestration":{ "scripts": ["tests/orchestration.ps1"], "binaries": [], "aux": [], "note": "判总跑自身的计划与退出码分类" },
+      "cli":          { "scripts": ["tests/cli.ps1"], "binaries": [], "aux": [], "note": "只跑 --dry-run 与只读查询" },
+      "windows":      { "scripts": ["tests/windows.ps1"], "binaries": ["ecapture-windows-tests.exe"], "aux": [], "note": "离线层跑状态注入判据" },
+      "screens":      { "scripts": ["tests/screens.ps1"], "binaries": ["ecapture-screens-tests.exe"], "aux": [], "note": "离线层跑状态注入判据" },
+      "capabilities": { "scripts": ["tests/capabilities.ps1"], "binaries": ["ecapture-capabilities-tests.exe"], "aux": [], "note": "离线层跑状态注入判据" },
+      "compat":       { "scripts": ["tests/compat.ps1"], "binaries": ["ecapture-compat-tests.exe"], "aux": [], "note": "离线层 + 只读导入表检查" },
+      "hdr":          { "scripts": ["tests/hdr.ps1"], "binaries": ["ecapture-hdr-tests.exe"], "aux": [], "note": "离线层是 HDR 色彩数学与表一致性的判据本体，与有没有 HDR 显示器无关" },
+      "delivery":     { "scripts": ["tests/delivery.ps1"], "binaries": ["ecapture-delivery-tests.exe"], "aux": [], "note": "离线层跑交付事实与期限合规" },
+      "crop":         { "scripts": ["tests/crop.ps1"], "binaries": ["ecapture-crop-tests.exe"], "aux": [], "note": "离线层跑裁剪几何" },
+      "scale":        { "scripts": ["tests/scale.ps1"], "binaries": ["ecapture-image-tests.exe"], "aux": [], "note": "缩放几何与 image 状态判据同一个测试程序" },
+      "wgc":          { "scripts": ["tests/wgc.ps1"], "binaries": ["ecapture-wgc-tests.exe"], "aux": [], "note": "离线层跑 WGC 几何与帧池重建" },
+      "identity":     { "scripts": ["tests/identity.ps1"], "binaries": ["ecapture-identity-tests.exe"], "aux": [], "note": "离线层跑身份复核与 Z 序选择" },
+      "dup":          { "scripts": ["tests/dup.ps1"], "binaries": ["ecapture-dup-tests.exe"], "aux": [], "note": "离线层跑桌面复制几何" }
+    },
+    "offlineTestsNote": "offlineSuiteDeps 是这套离线计划的依赖闭包，打包与安装自检都读同一份表：少一个文件就在打包阶段失败，不会等安装后去补编译。ECAPTURE.EXE 与全部测试程序都是 CRT 静态链接（CMakeLists.txt 里 MSVC_RUNTIME_LIBRARY=MultiThreaded），所以安装版不需要 VC++ 运行库、Visual Studio、源码树或网络。build\\ 下其余状态测试二进制不在闭包里，不随包发出。",
     "excludedFromInstall": [
       { "suite": "cursor", "reason": "离线层之后还有一节源码级守卫（要读 src\\*.cpp / src\\CaptureWgc.cpp），安装目录里没有源码，且该节没有开关可跳" },
       { "suite": "save, image, streams, isolation, timeout, channels, consent, screen, smoke", "reason": "没有可单独跑的离线入口（真实层无法排除），-Offline 会在计划阶段整套主动排除并给原因" },
-      { "suite": "build-path", "reason": "把源码仓库反复复制进怪路径再构建，需要完整源码树与 MSVC/Ninja 工具链，只适用于源码开发" }
+      { "suite": "build-path", "reason": "把源码仓库反复复制进怪路径再构建，需要完整源码树与 MSVC/Ninja 工具链，只适用于源码开发" },
+      { "suite": "installer-package, install-lifecycle", "reason": "判的是打包与安装器本身：需要仓库根的 installer\\packaging.psm1、build-installer.ps1 与 Inno Setup 编译器，属于开发期检查，安装目录里没有这些输入" }
     ]
   }
 }

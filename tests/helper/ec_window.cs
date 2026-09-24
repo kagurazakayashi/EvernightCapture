@@ -11,6 +11,8 @@
 //   args     把 argv 原样回吐，验证共享进程调用器的引号规则
 //   streams  两条流同时大量输出，验证并发读取与二进制不转码
 //   hang     先留下可诊断输出再睡死，验证超时只结束本次拥有的进程树
+//   pipehold 父进程立刻正常退出，但把标准流句柄留给一条会自己到点结束的孙进程：
+//            验证"父进程退了"不等于"两条流都到头了"时，等待仍然有期限
 //
 // 窗口模式还可以 --block-print-ms N：故意不处理 WM_PRINT，把这条消息所在的线程堵住 N 毫秒，
 // 用来造"目标应用的线程卡住了"那种局面 —— 父进程里那次 PrintWindow 于是永不返回，
@@ -266,6 +268,7 @@ namespace EcTestHelper
             if (opt.Mode == "args") { return RunArgs(opt); }
             if (opt.Mode == "streams") { return RunStreams(opt); }
             if (opt.Mode == "hang") { return RunHang(opt); }
+            if (opt.Mode == "pipehold") { return RunPipeHold(opt); }
             Console.Error.WriteLine("unknown mode: " + opt.Mode);
             return 2;
         }
@@ -730,6 +733,24 @@ namespace EcTestHelper
             {
                 return self.MainModule.FileName;
             }
+        }
+
+        // 子进程持有管道：起一条继承本进程标准流句柄的孙进程（不重定向，所以它拿的是同一头管道），
+        // 然后自己立刻正常退出。读的一方如果以为"父进程退了 = 两条流都到头了"，就会在这里一直挂着。
+        // 孙进程自己按 --seconds 到点结束；调用方的期限等待也要能把它连同这棵树一起来的。
+        // 孙进程的 PID 会写在 stdout 上，便于调用方在判完之后再核对那一条确实收尾了。
+        private static int RunPipeHold(Options opt)
+        {
+            ProcessStartInfo psi = new ProcessStartInfo(CurrentExePath(),
+                "--mode hang --seconds " + opt.Seconds.ToString(CultureInfo.InvariantCulture));
+            psi.UseShellExecute = false;
+            psi.CreateNoWindow = true;
+            Process child = Process.Start(psi);
+            Console.Out.WriteLine("pipehold-exited child=" + child.Id);
+            Console.Out.Flush();
+            Console.Error.WriteLine("pipehold-exited pid=" + Process.GetCurrentProcess().Id);
+            Console.Error.Flush();
+            return 0;
         }
 
         private static void WriteAscii(Stream stream, string text)

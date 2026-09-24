@@ -3,7 +3,7 @@
     离线验证共享测试进程调用器（tests\harness.psm1）：argv 引号规则、双流并发、二进制、超时。
 .DESCRIPTION
     一律不截图，也不碰桌面上任何别人的窗口：被测对象是调用器自己，
-    假后端是 tests\helper\ec_window.cs 编出来的 ecwindow.exe（args / streams / hang 三种模式）。
+    假后端是 tests\helper\ec_window.cs 编出来的 ecwindow.exe（args / streams / hang / pipehold 等模式）。
     覆盖这些坑：
       1. 空参数、中文、空格、制表符、引号、路径里的普通与结尾反斜杠
       2. stdout / stderr 同时大量输出（先读完一条再读另一条的老写法会在这里死锁）
@@ -11,6 +11,11 @@
       4. 子进程卡死：到期只结束本次拥有的进程树（含孙进程），并保留部分输出
       5. 唯一临时目录：两轮并发各有各的目录，删除只认自己那一个
       6. 探测回调（-Probe）：整屏确认框那类"跑到一半要点一下"的测试靠它，不能把读取堵住
+      7. 只有一条流在写、另一条始终空着：等待与读流必须并行走，不能互相等
+      8. 父进程已退出但管道仍被孙进程握着：等待仍然要有期限，并且如实报告"没杀干净"的边界，
+         由本测试按自己跟踪到的 PID 收尾（只核对镜像路径，绝不按进程名批量动手）
+      9. 退出非零与"输出不是 JSON"是两种不同的失败，都要能被区分并逐条说清；
+         身份核对（Test-EcArtifactIdentity）拿一个根本不是 ECAPTURE 的程序时必须判不通过
     最后用 -Worker 起两轮本子脚本并发跑，验证互不干扰。
 .EXAMPLE
     .\tests\invoker.ps1
@@ -163,6 +168,47 @@ try {
     } finally {
         Remove-EcRunDir $b -Quiet
     }
+
+    # ---------- 7b) 只有一条流大量输出，另一条始终空着 ----------
+    Write-Host "`n=== 只向 stderr 写 6 MB（stdout 一个字节都没有）==="
+    $r = Invoke-EcProcess -FilePath $helper -TimeoutMs 120000 `
+        -Arguments @('--mode', 'streams', '--stdout-bytes', '0', '--stderr-bytes', [string]$big)
+    Assert-Ec ($r.Exit -eq 0) "stderr-only 模式退出码 $($r.Exit)，应为 0" -Quiet
+    Assert-Ec (-not $r.TimedOut) '只有 stderr 在写时也不该卡住（超时说明等待与读流没并行走）'
+    Assert-Ec ($r.StdoutBytes.Length -eq 0) "stdout 应该是空的，实际 $($r.StdoutBytes.Length) 字节"
+    Assert-Ec ($r.StderrBytes.Length -eq $big) "stderr 字节数 $($r.StderrBytes.Length)，应为 $big"
+    Assert-Ec (Test-EcBytePattern -Bytes $r.StderrBytes -Total $big) '只有 stderr 时二进制模式被改坏了'
+
+    # ---------- 7c) 父进程退了，但管道还被孙进程握着 ----------
+    Write-Host "`n=== 子进程持有管道：父进程先退，等待仍然必须有期限 ==="
+    $r = Invoke-EcProcess -FilePath $helper -TimeoutMs 3000 `
+        -Arguments @('--mode', 'pipehold', '--seconds', '120')
+    Assert-Ec $r.TimedOut '管道被孙进程握着时没有按期限收住（说明"父进程退出"被当成了"两条流都到头了"）'
+    Assert-Ec ($r.Stdout -match 'pipehold-exited child=(\d+)') "超时后没保留部分 stdout：[$($r.Stdout.Trim())]"
+    $kidPid = [int]$Matches[1]
+    $kid = Get-Process -Id $kidPid -ErrorAction SilentlyContinue
+    Assert-Ec ($null -ne $kid) "没抓到那条孙进程（PID $kidPid），这条判据没测到东西"
+    if ($kid) {
+        # 调用器只可能结束"本次亲手起的那一棵"：父进程已经自己退了，操作系统就不再替它记子级，
+        # 所以这里由本测试按自己从输出里拿到的 PID 收尾，并核对镜像路径 —— 不按进程名批量动手。
+        [void](Stop-EcOwnProcess -Process $kid -ExpectedPath $helper)
+        Start-Sleep -Milliseconds 500
+        Assert-Ec (-not (Test-EcProcessAlive -ProcessId $kidPid)) "跟踪到的孙进程 $kidPid 没收尾掉"
+        Write-Host ("  已收尾本次跟踪到的孙进程 PID={0}" -f $kidPid) -ForegroundColor DarkGray
+    }
+
+    # ---------- 7d) 非零退出 / 输出不是 JSON：两种失败要分得开，都不能被吞掉 ----------
+    Write-Host "`n=== 退出非零与查询输出不是 JSON ==="
+    $bad = Invoke-EcProcess -FilePath $helper -TimeoutMs 30000 -Arguments @('--mode', 'no-such-mode')
+    Assert-Ec ($bad.Exit -ne 0) "未知模式应该非零退出（实际 $($bad.Exit)）" -Quiet
+    Assert-Ec ($bad.Stderr -match 'unknown mode') "非零退出的原因要留在 stderr 里：[$($bad.Stderr.Trim())]"
+    $q = Invoke-EcReadOnlyQuery -Exe $helper -Arguments @('--mode', 'args', '--', 'x') -TimeoutMs 30000
+    Assert-Ec ($q.Exit -eq 0) ("args 模式应该正常退出（实际 {0}）" -f $q.Exit) -Quiet
+    Assert-Ec ($null -eq $q.Json) '不是 JSON 的输出必须被判成"解不动"，不能当成空对象蒙过去'
+    Assert-Ec ([bool]$q.JsonError) '解不动时要把原因交回来，别让调用方只能猜'
+    $idBad = Test-EcArtifactIdentity -Exe $helper -ExpectedVersion '0.0.0' -ExpectedArch 'x64' -TimeoutMs 30000
+    Assert-Ec (-not $idBad.Ok) '拿一个根本不是 ECAPTURE 的程序去核对身份，必须判不通过'
+    Assert-Ec (@($idBad.Problems).Count -ge 2) "身份核对要逐条说清哪里不行（实际 $(@($idBad.Problems).Count) 条）"
 
     # ---------- 8) 并发两轮 ----------
     if (-not $Worker) {

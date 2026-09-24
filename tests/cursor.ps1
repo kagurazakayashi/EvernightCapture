@@ -103,9 +103,8 @@ try {
     if ($SkipState) {
         Skip-Ec '光标的离线判据' '调用方给了 -SkipState'
     } else {
-        if (-not (Test-Path -LiteralPath $stateExe)) {
-            Write-Host '  没有 build\ecapture-cursor-tests.exe，先跑一次 .\build.ps1' -ForegroundColor DarkGray
-            & (Join-Path $root 'build.ps1')
+        if (-not (Test-EcStateBinary -Root $root -Exe $stateExe)) {
+            Assert-Ec $false "缺少离线判据程序 $stateExe：源码树里先跑一次 .\build.ps1；安装目录里它必须随包发出（说明打包的依赖闭包没兜住）"
         }
         $st = Invoke-EcProcess -FilePath $stateExe -TimeoutMs 120000
         $lines = @($st.Stdout -split "`r?`n" | Where-Object { $_ })

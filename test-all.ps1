@@ -242,13 +242,18 @@ function Invoke-Step {
     )
 
     $prevPsmp = $env:PSModulePath
+    # 毫秒数走 [long] 再夹到 [int]：-SuiteTimeoutSec 给得很大时，$TimeoutSec * 1000 会先溢出成负数，
+    # 于是调用器一上来就判"超时"，把健康的套件全部误杀。
+    $timeoutMs = [long]$TimeoutSec * 1000L
+    if ($timeoutMs -lt 1000L) { $timeoutMs = 1000L }
+    if ($timeoutMs -gt [long][int]::MaxValue) { $timeoutMs = [long][int]::MaxValue }
     $r = if ($ChildModulePath) {
         try {
             $env:PSModulePath = $ChildModulePath
-            Invoke-EcProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs ($TimeoutSec * 1000)
+            Invoke-EcProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs ([int]$timeoutMs)
         } finally { $env:PSModulePath = $prevPsmp }
     } else {
-        Invoke-EcProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs ($TimeoutSec * 1000)
+        Invoke-EcProcess -FilePath $FilePath -Arguments $Arguments -TimeoutMs ([int]$timeoutMs)
     }
     # 注意：PowerShell 5.1 里 `$x = if (cond) { 空数组 }` 会被管道拆成 $null，所以这里显式补一份空 byte[]
     $outBytes = $r.StdoutBytes
@@ -331,6 +336,8 @@ $suites = @(
     [pscustomobject]@{ Name = 'consent';      Real = 'desktop'; OfflineLayer = '';            Note = '授权两级与拒绝传播（会真的弹框，只代答否）' },
     [pscustomobject]@{ Name = 'screen';       Real = 'desktop'; OfflineLayer = '';            Note = '整屏三条桌面路径（要 -SimulateConsent 才跑全）' },
     [pscustomobject]@{ Name = 'smoke';        Real = 'desktop'; OfflineLayer = '';            Note = '端到端出图与像素内容' },
+    [pscustomobject]@{ Name = 'installer-package'; Real = 'build'; OfflineLayer = '';           Note = '打包判据：staging 归属、离线依赖闭包、产物身份、缺依赖不出包（需要 installer\packaging.psm1 与 Inno 编译器）' },
+    [pscustomobject]@{ Name = 'install-lifecycle'; Real = 'build'; OfflineLayer = '';           Note = '真装真卸判据：只在本次自建的临时目录里安装/卸载，判归属保护、用户改动备份、失败现场与卸载边界（需要安装包）' },
     [pscustomobject]@{ Name = 'build-path';   Real = 'build';   OfflineLayer = 'OfflineOnly';  Note = '构建路径（把仓库复制进怪路径反复构建，最慢）' }
 )
 
@@ -365,10 +372,17 @@ if ($Except) {
 }
 
 # ---------------------------------------------------------------------------
-# 参数冲突：在任何实际执行之前就拒绝。离线层与"代答真实确认框"是互相矛盾的两句话 ——
+# 参数合法性与冲突：在任何实际执行之前就拒绝。
+# -SuiteTimeoutSec 是**逐套**预算，非法值（0、负数、大得离谱）不该跑完才发现，
+# 更不该在换算成毫秒时溢出成负数、把每一套都误判成超时。
+# 离线层与"代答真实确认框"是互相矛盾的两句话 ——
 # -Offline 要求不碰真实确认框，-SimulateConsent / -TimeoutConsent 正是去操作它。
 # 这两个检查不受 -Force 影响，也不因筛掉了哪几套而跳过。
 # ---------------------------------------------------------------------------
+if ($SuiteTimeoutSec -lt 1 -or $SuiteTimeoutSec -gt 86400) {
+    Write-Host '-SuiteTimeoutSec 必须在 1..86400 秒之间（它是每套的预算，不是总预算）' -ForegroundColor Red
+    Exit-TestAll 2
+}
 if ($Offline -and $SimulateConsent) {
     Write-Host 'OFFLINE-CONSENT-CONFLICT：-Offline 与 -SimulateConsent 不能同时给（前者要求不碰真实确认框，后者正是去代答它）。' -ForegroundColor Red
     Exit-TestAll 2

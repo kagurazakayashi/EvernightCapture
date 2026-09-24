@@ -106,7 +106,7 @@ if (-not $SkipState) {
     Write-Host "`n=== 1) 离线：假查询层逐条注入（build\ecapture-identity-tests.exe）==="
     # ===========================================================================
     if (-not (Test-Path -LiteralPath $stateExe)) {
-        Assert-Ec $false "找不到 $stateExe（先跑 .\build.ps1）"
+        Assert-Ec $false "找不到 $stateExe（源码树里先跑 .\build.ps1；安装目录里它必须随包发出）"
     } else {
         $r = Invoke-EcProcess -FilePath $stateExe -TimeoutMs 120000
         $bad = @($r.Stdout -split "`r?`n" | Where-Object { $_ -match '^\s*FAIL' })

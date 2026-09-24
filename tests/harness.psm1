@@ -100,6 +100,29 @@ function Get-EcExePath {
     return $script:EcExe
 }
 
+function Test-EcStateBinary {
+    <#
+        离线判据程序（build\ecapture-*-tests.exe）在不在位。
+        分两种现场，规矩不一样，不能混成一条"顺手补编译"：
+          * 源码树里（同目录有 build.ps1）：缺了就现编一次，这是开发便利；
+          * 安装目录里（没有 build.ps1）：这个文件本该由打包依赖闭包保证随包发出，缺了就是问题，
+            这里不猜、不自己造，返回 $false 让调用方如实判失败（降级成 SKIP 也算造假）。
+        返回 $true 只说明"文件现在在位"，不替你判它能不能跑。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Exe
+    )
+
+    if (Test-Path -LiteralPath $Exe) { return $true }
+    $buildPs = Join-Path $Root 'build.ps1'
+    if (Test-Path -LiteralPath $buildPs) {
+        Write-Host ("  没有 {0}，先跑一次 .\build.ps1" -f $Exe) -ForegroundColor DarkGray
+        & $buildPs
+    }
+    return [bool](Test-Path -LiteralPath $Exe)
+}
+
 function New-EcRunDir {
     <# 本次运行专属的临时目录。名字里带时间戳 + PID + 随机段，两轮并发各自一份。 #>
     param([string]$Tag = 'run')
@@ -551,6 +574,166 @@ function Invoke-Ecapture {
     if (-not $file) { $file = Get-EcExePath }
     return (Invoke-EcProcess -FilePath $file -Arguments $Arguments -TimeoutMs $TimeoutMs `
             -Probe $Probe -ProbeIntervalMs $ProbeIntervalMs -ProbeTimeoutMs $ProbeTimeoutMs)
+}
+
+# ----------------------------------------------------------------------------
+# 产物身份：PE 头 + 三条只读查询互相核对（打包与安装自检共用这一份判据）
+# ----------------------------------------------------------------------------
+function Get-EcPeIdentity {
+    <#
+        读磁盘上那份 EXE 的 PE 头：Machine（架构）与 TimeDateStamp（链接时间戳）。
+        偏移与可读长度先做边界检查，读不出完整第一页就当"读不出来"，不拿一个来路不明的偏移继续算。
+        这两个字段在 COFF 文件头里，PE32 与 PE32+ 的偏移一致，所以不需要先看 OptionalHeader 的 Magic。
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $result = [pscustomobject]@{ Path = $Path; Known = $false; Machine = 0; TimeDateStamp = 0; Error = $null }
+    $fs = $null
+    try {
+        $fs = [IO.File]::OpenRead($Path)
+        if ($fs.Length -lt 4096) { $result.Error = '文件比一页还短，不像有效的 PE'; return $result }
+        $page = New-Object byte[] 4096
+        $got = 0
+        while ($got -lt 4096) {
+            $n = $fs.Read($page, $got, 4096 - $got)
+            if ($n -le 0) { break }
+            $got += $n
+        }
+        if ($got -lt 4096) { $result.Error = "第一页只读到 $got 字节"; return $result }
+        if ($page[0] -ne 0x4D -or $page[1] -ne 0x5A) { $result.Error = '缺少 MZ 头'; return $result }
+        $e_lfanew = [BitConverter]::ToInt32($page, 0x3C)
+        if ($e_lfanew -le 0x40 -or $e_lfanew -gt (4096 - 12)) { $result.Error = "e_lfanew 不在第一页可解释的范围内：$e_lfanew"; return $result }
+        if ([BitConverter]::ToUInt32($page, $e_lfanew) -ne 0x00004550) { $result.Error = '缺少 PE\0\0 签名'; return $result }
+        $result.Machine       = [BitConverter]::ToUInt16($page, $e_lfanew + 4)
+        $result.TimeDateStamp = [BitConverter]::ToUInt32($page, $e_lfanew + 8)
+        $result.Known = $true
+    } catch {
+        $result.Error = $_.Exception.Message
+    } finally {
+        if ($fs) { $fs.Dispose() }
+    }
+    return $result
+}
+
+function Invoke-EcReadOnlyQuery {
+    <#
+        用调用器跑一次只读查询（--version / --capabilities / --diagnostics），把"起没起来、
+        退没退、JSON 解不解动"分开交回来 —— 这一层不判对错，判由调用方决定，免得错误被吞掉后继续当成功。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [int]$TimeoutMs = 60000,
+        [int]$ExpectExit = 0
+    )
+
+    $r = Invoke-EcProcess -FilePath $Exe -Arguments $Arguments -TimeoutMs $TimeoutMs
+    $json = $null
+    $jsonError = $null
+    if ($r.Exit -eq $ExpectExit -and -not $r.TimedOut -and -not $r.StartError) {
+        try { $json = $r.Stdout | ConvertFrom-Json } catch { $jsonError = $_.Exception.Message }
+    }
+    return [pscustomobject]@{
+        Result = $r; Started = [bool](-not $r.StartError); Expected = $ExpectExit
+        TimedOut = [bool]$r.TimedOut; Exit = $r.Exit; Json = $json; JsonError = $jsonError; Text = $r.Stdout
+    }
+}
+
+function Test-EcArtifactIdentity {
+    <#
+    .SYNOPSIS
+        核对一份 EXE 是否真是"它自称的那次构建"：进程能起、能退出、JSON 能解、身份字段齐全且互相自洽。
+    .DESCRIPTION
+        版本号的文本子串匹配不足以核对构建，所以三条只读查询都要跑，并且把清单里声明的 buildId 与
+        EXE 自己 PE 头里的 Machine、链接时间戳对上（buildId 的形状是 <version>-<arch>-<TimeDateStamp:08X>，
+        见 src/EnvReport.cpp 的 ProbePeIdentity）。
+        这里刻意不吞错误：起不来、超时、非零退出、输出不是 JSON、program.version/arch/buildId 缺失、
+        buildId=unknown、buildId 与 PE 头对不上 —— 每一条都进 Problems，由调用方决定是否判失败。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(Mandatory)][string]$ExpectedVersion,
+        [Parameter(Mandatory)][string]$ExpectedArch,
+        [int]$TimeoutMs = 60000
+    )
+
+    $problems = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $Exe)) {
+        return [pscustomobject]@{ Ok = $false; Problems = @("找不到产物：$Exe"); BuildId = $null; Caps = $null; Diagnostics = $null; Pe = $null; VersionText = '' }
+    }
+
+    $ver = Invoke-EcReadOnlyQuery -Exe $Exe -Arguments @('--version') -TimeoutMs $TimeoutMs
+    if (-not $ver.Started) { $problems.Add("--version 起进程失败：$($ver.Result.StartError)") }
+    elseif ($ver.TimedOut) { $problems.Add('--version 超时，没有按时退出') }
+    elseif ($ver.Exit -ne 0) { $problems.Add("--version 退出码 $($ver.Exit)，应为 0") }
+    elseif ($ver.Text -notmatch [regex]::Escape($ExpectedVersion)) { $problems.Add("--version 输出里没有声明的版本 $ExpectedVersion：$($ver.Text.Trim())") }
+
+    $caps = Invoke-EcReadOnlyQuery -Exe $Exe -Arguments @('--capabilities', '--lang', 'en') -TimeoutMs $TimeoutMs
+    if ($caps.Started -and -not $caps.TimedOut -and $caps.Exit -eq 0) {
+        if ($null -eq $caps.Json) { $problems.Add("--capabilities 的输出不是合法 JSON：$($caps.JsonError)") }
+    } else {
+        $problems.Add('--capabilities 没能正常完成（起进程失败 / 超时 / 非零退出）')
+    }
+
+    $diag = Invoke-EcReadOnlyQuery -Exe $Exe -Arguments @('--diagnostics', '--lang', 'en') -TimeoutMs $TimeoutMs
+    if ($diag.Started -and -not $diag.TimedOut -and $diag.Exit -eq 0) {
+        if ($null -eq $diag.Json) { $problems.Add("--diagnostics 的输出不是合法 JSON：$($diag.JsonError)") }
+    } else {
+        $problems.Add('--diagnostics 没能正常完成（起进程失败 / 超时 / 非零退出）')
+    }
+
+    $buildId = $null
+    $checks = @()
+    $checks += [pscustomobject]@{ Name = '--capabilities'; Query = $caps }
+    $checks += [pscustomobject]@{ Name = '--diagnostics'; Query = $diag }
+    foreach ($c in $checks) {
+        if ($null -eq $c.Query.Json) { continue }
+        $p = $c.Query.Json.program
+        if (-not $p) { $problems.Add("$($c.Name) 的输出里没有 program 这一组键"); continue }
+        foreach ($key in @('version', 'arch', 'buildId')) {
+            if (-not $p.$key) { $problems.Add("$($c.Name) 的 program.$key 缺失或为空") }
+        }
+        if ($p.version -and ([string]$p.version -ne $ExpectedVersion)) {
+            $problems.Add("$($c.Name) 报的版本 $([string]$p.version) 与声明的 $ExpectedVersion 不一致")
+        }
+        if ($p.arch -and ([string]$p.arch -ne $ExpectedArch)) {
+            $problems.Add("$($c.Name) 报的架构 $([string]$p.arch) 与声明的 $ExpectedArch 不一致")
+        }
+        if ($p.buildId) {
+            $id = [string]$p.buildId
+            if ($id -eq 'unknown') { $problems.Add("$($c.Name) 报 buildId=unknown：这份产物没有可核对的构建标识") }
+            elseif (-not $buildId) { $buildId = $id }
+            elseif ($buildId -ne $id) { $problems.Add("--capabilities 与 --diagnostics 报的 buildId 不一致：$buildId vs $id") }
+        }
+    }
+
+    $pe = Get-EcPeIdentity -Path $Exe
+    if (-not $pe.Known) {
+        $problems.Add("读不出这份 EXE 的 PE 头：$($pe.Error)")
+    } else {
+        $wantMachine = 0x8664
+        if ($ExpectedArch -eq 'arm64') { $wantMachine = 0xAA64 }
+        if ($pe.Machine -ne $wantMachine) {
+            $problems.Add(("PE Machine=0x{0:X4}，与声明的架构 {1}（期望 0x{2:X4}）不一致" -f $pe.Machine, $ExpectedArch, $wantMachine))
+        }
+        if ($buildId) {
+            $pattern = ('^{0}-{1}-([0-9A-Fa-f]{{8}})$' -f [regex]::Escape($ExpectedVersion), [regex]::Escape($ExpectedArch))
+            $m = [regex]::Match($buildId, $pattern)
+            if (-not $m.Success) {
+                $problems.Add("buildId $buildId 不是 $ExpectedVersion-$ExpectedArch-<8 位十六进制> 这个形状")
+            } else {
+                $stamp = [Convert]::ToUInt32($m.Groups[1].Value, 16)
+                if ($stamp -ne $pe.TimeDateStamp) {
+                    $problems.Add(("buildId 里的时间戳 {0:X8} 与 EXE PE 头里的 {1:X8} 不一致（不是同一份构建）" -f $stamp, $pe.TimeDateStamp))
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Ok = ($problems.Count -eq 0); Problems = @($problems); BuildId = $buildId
+        Caps = $caps.Json; Diagnostics = $diag.Json; Pe = $pe; VersionText = $ver.Text
+    }
 }
 
 # ----------------------------------------------------------------------------
