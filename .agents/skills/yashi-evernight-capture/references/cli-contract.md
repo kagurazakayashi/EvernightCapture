@@ -145,9 +145,10 @@ ECAPTURE.EXE --capabilities -v     # 另加 probes 段：每一问的原始答�
 | `cursor` | `option` / `default`（`default` = 不要求，本工具一个字都不改）/ `values` 三种取值；`switch` 那一条唯一的开关（`api` = `IGraphicsCaptureSession2::IsCursorCaptureEnabled`、`compiled` / `status` / `reason` / `minBuild` 19041 / `verifiedOnThisMachine`）；`paths[]` 每条已登记内部路径一行（`capability` 是 `settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`，`reason` 是那条路径的根据，`include` / `exclude` 各是三值 `yes` / `no` / `unknown` —— 问不出来就是 `unknown`，不折成任何一边）；`duplication.frame` / `screen.duplication` 那两条是 `capability: pointer_state_unverified` 且 `include` 与 `exclude` **两个都是 `no`**（`reason` = `desktop_frame_pointer_state_unverified`：那一幅桌面图像可能已经把指针画在上面，而这条路径没有可读回也没有可设的开关，所以两头都保证不了）；未登记的路径读 `unknown` 而不是猜一个答案；末尾 `pointerShapeCompositing: "never"` 与 `pixelRetouching: "never"` 说本工具不动指针形状、也不修图 |
 | `color` | `option` / `default`（`auto` = 不要求，本工具一个字都不改）/ `values` 三种取值（`auto` / `tonemap` / `refuse`）；`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 说的是这个构建带不带得回广色域帧 + tone mapping 怎么做，**不**去问那块屏此刻是不是 HDR 模式（`reason` = `hdr_display_mode_not_probed`，无可用显示拓扑时才是 `unavailable`）；`verifiedOnThisMachine` 恒 `no`（本项目没有能开 HDR 的显示器，不宣称色彩验收通过）。`paths[]` 每条已登记内部路径一行（`capability` 是 `wide_gamut_capable` / `wide_gamut_unverified` / `sdr_source_only` / `unregistered`，`reason` 是那条路径的根据，再加一条 `honorsExplicitPolicy`：本构建里只有 `wgc` 与 `screen.wgc` 为 `true`，`duplication` 那两条是 `wide_gamut_unverified` + `false`（采集之前不问色彩空间，所以不敢声称兑现得了显式 `tonemap` / `refuse`），其余是 `sdr_source_only` + `false`）。再加 `toneMapping`（那条固定曲线的名字）/ `floatIntermediateFrame: "per_pixel_registers"`（不分配整幅浮点帧）/ `encoderOutput: "sdr_bgra8"`（HDR 一律映射成 8 位 SDR 交付，不出 HDR 原生图）。caveats 恒含这四条 HDR token（`hdr_tone_mapping_not_verified_on_hdr_display`、`hdr_output_is_tone_mapped_to_sdr_bgra8`、`hdr_explicit_policy_only_fulfilled_by_wgc` 与 `hdr_pixel_layout_is_not_a_color_space`）|
 | `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与真实截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 判两处一致 |
+| `history` | 截图历史归档的**规则**自述（默认开启）：`enabledByDefault: true`、`relativeTo: "executable-directory"`、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`、`commit: "exclusive-create"`、`created: "after-first-delivered-image"`、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`、`partialSuccessExit: 7`。这一段没有一个是"这一次写成功了"那种断言——那一句在截图结果的 `images[].history` 里；这里连"那里写得动写不动"都没去试，也不建目录（`caveats` 恒带 `history_root_writability_not_probed`），全段是相对程序目录的写法、不含任何绝对路径 |
 | `limits` | `maxFrameSide` 16384、`maxFrameBytes` 1 GiB、`maxTimeoutMs` 86400000、`isolatedCallMs` 5000、`maxWgcRecreates` 4、`maxOrdinal` 65535、`maxPid` 4294967295、`stdoutTargetsMax` 1、`jpegQualityMin`/`Max` 1/100、`roiMaxValue` 16384（= `--roi` 与 `--scale` 那条边长的同一条线） |
 | `privacy` | 自述：`capturesScreen` / `showsDialog` / `uploads` / `enumeratesUserFiles` / `readsEnvironmentVariables` / `includesUsernames` / `includesPaths` 全为 `false` |
-| `caveats` | 稳定 ASCII token，列"这份报告没断言什么"：`no_capture_performed`、`no_consent_dialog_shown`、`available_is_not_a_guarantee`、`device_capability_not_predicted`、`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`；光标那一段恒带 `cursor_effective_is_a_setting_not_a_pixel_check`、`pointer_shape_never_composited_nor_erased` 与 `duplication_desktop_frame_pointer_not_guaranteed`；色彩那一段恒带 `hdr_tone_mapping_not_verified_on_hdr_display`、`hdr_output_is_tone_mapped_to_sdr_bgra8`、`hdr_explicit_policy_only_fulfilled_by_wgc` 与 `hdr_pixel_layout_is_not_a_color_space`；按本机情况追加 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium`（本进程低于中完整性，多半是它那个目录的标签带下去的；只报这一档，不把任何一条通道判成 `unavailable`）/ `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`。**这一段是 `-q` 会去掉的那一段**，所以要把"这份报告没说过什么"读全的时候就别加 `--quiet` |
+| `caveats` | 稳定 ASCII token，列"这份报告没断言什么"：`no_capture_performed`、`no_consent_dialog_shown`、`available_is_not_a_guarantee`、`device_capability_not_predicted`、`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`；光标那一段恒带 `cursor_effective_is_a_setting_not_a_pixel_check`、`pointer_shape_never_composited_nor_erased` 与 `duplication_desktop_frame_pointer_not_guaranteed`；色彩那一段恒带 `hdr_tone_mapping_not_verified_on_hdr_display`、`hdr_output_is_tone_mapped_to_sdr_bgra8`、`hdr_explicit_policy_only_fulfilled_by_wgc` 与 `hdr_pixel_layout_is_not_a_color_space`；按本机情况追加 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium`（本进程那一档低于中完整性；这一档*可能*来自它那个目录带的标签，但报告里说的是本进程自己那一份证据，见《进程完整性级别》一节；只报这一档，不把任何一条通道判成 `unavailable`）/ `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`；`history` 那一段恒带 `history_root_writability_not_probed`（那份查询没去试过写归档位置，也不预测某一次落盘必然成功）。**这一段是 `-q` 会去掉的那一段**，所以要把"这份报告没说过什么"读全的时候就别加 `--quiet` |
 
 `reason` 的取值同样稳定：`none`、`not_compiled`、`os_below_min_build`、`os_version_unavailable`、
 `no_display_topology`、`display_topology_unavailable`、`encoder_not_registered`。`cursor` 那一段的 `include` / `exclude` 同样三值；未登记的路径读 `unknown` 而 `reason` 写 `not_registered`，不猜一个答案。
@@ -173,24 +174,33 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
 
 ## 进程完整性级别（低于中完整性时挡了什么）
 
-一个目录可以带上显式的强制完整性标签（`icacls` 里那一行 `Mandatory Label\Low Mandatory Level`），并继承给目录里的
-每个文件；从那条路径启动的进程因此低于中完整性。这时候失败的不是一件事，而是**三类彼此无关**的事：
+**关于本进程那一档，唯一的证据是 `--capabilities` / `--diagnostics` 的 `session.integrityLevel`**（它问的是 ECAPTURE
+自己那个令牌的强制完整性级别）。下面三件事经常被混成一件，其实互不等价、谁也不能替谁下结论：目录带着的那条
+显式标签（`icacls` 看目录）、目录里档案继承到的标签、以及你那个父 shell 的 `whoami /groups`（那说的是 shell 自己
+那个进程）。目录带低标签是进程被带到低于中完整性的**一种成因**，不是双向的证明：看到标签不等于本进程一定低，
+没看到标签也不等于本进程一定不低。
+
+这时候失败的不是一件事，而是**三类彼此无关**的事（这一张表说的是"低于中完整性时通常会坏在哪几类"，
+不是"看到这对码就一定是这个原因"的对照表——存取被拒的成因不止一条，目标被占用、路径本身不合、那个目录
+真的不让写，都会给出同一对码）：
 
 | 落点 | 低完整性下的下场 | 在结果里的形状 |
 | --- | --- | --- |
 | `wgc` 取帧 | `GraphicsCaptureItem.CreateForWindow` 被拒 | `capture.failed` + `hresult: "0x80070005"`，`stage: "capture"` |
 | `printwindow` 取帧 | 跨进程绘制消息送不进中完整性窗口（UIPI） | `capture.failed` + `win32: 5`，`stage: "capture"` |
-| 落盘 | 不能在中完整性的目录里创建文件（**图已经在内存里拿到了**） | `io.write_failed` + `win32: 5`，`stage: "write"` / `"stdout"` |
+| 落盘 | 向中完整性的目录创建文件会被拒（**图已经在内存里拿到了**）；写进同样带这条标签的目录就成功 | `io.write_failed` + `win32: 5`，`stage: "write"` / `"stdout"`；主图已落地而**历史副本**那一份没落地时是 `history.write_failed` + `stage: "history"`，退出码按部分成功给 7 |
 
-本机实测**没有**被这一档挡掉的：`dwm.thumbnail` 照常出一整扇窗口（前提是输出目录让低完整性进程建文件），
+这台开发机上实测**没有**被这一档挡掉的：`dwm.thumbnail` 照常出一整扇窗口（前提是输出目录让低完整性进程建文件），
 `bitblt.screen` 与 `duplication.frame` 也照常出——那两条本来就要人亲自批准，属另一层，与完整性无关
-（见「截图授权」一节）。所以这一档**不等于**"这台机器截不了图"，反过来也没有任何一条路线因它被保证成功。
-`--capabilities` 里各条通道的 `status` 不因这一档改动：那个字段管的是版本下限与屏幕拓扑。
-实测范围只有那台 19045 x64 开发机，同一份逐字节的二进制放在别处（`%LOCALAPPDATA%\Temp`、
-`%APPDATA%\Roaming`、`%UserProfile%`、本仓库自己的 `build\`）全部正常。
+（见「截图授权」一节）。这两句是**一台机器上的一次实测**，不是对所有机器的承诺：这一档**不等于**"这台机器截不了图"，
+反过来也没有任何一条路线因它被保证成功；而 `dwm` 在窗口自己拿不到画面时会**升级到读桌面像素那条退路**
+（`dwm.screen`），那一条照旧一定弹框问人——完整性级别不改变授权分级。`--capabilities` 里各条通道的 `status`
+也不因这一档改动：那个字段管的是版本下限与屏幕拓扑。实测范围只有那台 19045 x64 开发机，同一份逐字节的二进制
+放在别处（`%LOCALAPPDATA%\Temp`、`%APPDATA%\Roaming`、`%UserProfile%`、本仓库自己的 `build\`）全部正常。
 
-怎么核对：`icacls "<放着 ECAPTURE.EXE 的目录>"` 看有没有那条标签；`whoami /groups` 看此刻进程那一档叫什么
-（`S-1-16-4096` 是 Low，`S-1-16-8192` 是 Medium，`S-1-16-12288` 是 High）。
+怎么核对（三条各问一件事，别拿一条替另一条）：`ECAPTURE.EXE --capabilities` 的 `session.integrityLevel` 是**本进程**
+那一档；`icacls "<放着 ECAPTURE.EXE 的目录>"` 看那个目录带没带那条标签（成因线索）；`whoami /groups` 看此刻这个
+shell 自己那一档（`S-1-16-4096` 是 Low，`S-1-16-8192` 是 Medium，`S-1-16-12288` 是 High），它不是 ECAPTURE 那一档。
 
 程序这一侧的两处出口，判据同一份（`src/ProcessIntegrity.h`）：
 
@@ -203,9 +213,11 @@ stderr 为空；`-v` 加 `probes`，`-q` 只去掉 `caveats`。
    （低完整性不会让任何一级授权变得更好走，也不会让它更严）。确认框上答"否"那一条同为 Win32 `5`，
    但它不在取帧 / 写文件 / 写标准输出这三步上，因此绝不会被补写——那是人的决定，不是这一档的成因。
 
-出路按代价从小到大：把 `--out` 指向同样带这条标签的目录里的路径（工具从不创建目录）；要窗口自己的画面时
-改用 `--capture dwm`；把这套 skill 装到没有被这样降级的目录，或由那个目录的所有者去掉标签
-（去标签属于改动安全设置，得由所有者自己决定）。**以管理员身份运行不是这条提示的解法**，
+出路按代价从小到大：把 `--out` 指向同样带这条标签的目录里的路径（工具从不创建目录）；要窗口自己的画面时改用
+`--capture dwm`（这条是**那台开发机的实测**，不是对所有机器的保证，而它内部升级到 `dwm.screen` 时照样一定弹框问人）；
+换一个没有被这样降级的安装位置，或由那个目录的所有者去掉标签。最后这一条属于改动系统安全设置：本工具
+**从不自动做**——不提权、不改 ACL、不改标签、也不为了"让截图或归档通过"去动安装位置，要做就由所有者自己决定并
+自己动手（AI 也不该替他们那么做，要说就先讲清后果再取得明确同意）。**以管理员身份运行不是这条提示的解法**，
 文案里也没有建议那么做。
 
 ## 只读的窗口查询（`--list` / `--inspect`）
@@ -641,6 +653,8 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
   `input` 仅 `--verbose`。**为空的字段整个键省略，不输出 `null` 占位。**
 - `images[]` 里的 `path` / `scope` / `rect` 是**隐私判据**（这一帧出自哪条内部路径、像素是窗口自己的还是屏幕上那块区域、
   当初批准采样的是哪一片），`--quiet` 不抑制它们——`images` 整个数组从来不会被抑制。
+- `images[].history` 同理是**交付事实**（主交付之外那份历史副本的下落，见「截图历史归档」一节），`--quiet` 也藏不掉；
+  它只说副本，改不到同一张图上的 `file` / `bytes` / `captured`。
 - 输出里**不含**工具名、版本、schema、stage、参数回显之类的元信息。
 - 只有只读查询那三份例外，它们各自带 `contract` / `contractVersion`：`windowquery` / `windowinspect`
   与 `capabilities` / `diagnostics`（见上面两节）。这两份**不**反推截图那份去加顶层元信息，
@@ -656,7 +670,7 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
 
 ### 窗口图（`images[]` 每一项）
 
-`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`requestedRect` / `capturedRect` / `clipped` / `rotation`（只有从整幅桌面帧裁目标的通道会写，见下面那段）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs`；给了 `--roi` / `--client-area` 时再多 `cropMode` `cropRect` `fullWidth` `fullHeight`（以及图像原点核实得出来时的 `cropScreenRect`），见「窗口内部裁剪」一节；写过 `--scale` 时再多 `scaleMethod` `scaleApplied` `scaleFromWidth` `scaleFromHeight`（见「等比缩小」一节）；写过 `--cursor` 时再多 `cursorRequested` `cursorEffective` `cursorBasis`（见下面「光标那三个键」那段）；明确写过 `--hdr` 时再多 `hdrRequested` `hdrEffective` `hdrBasis` `sourceColorSpace` `sourceBitDepth`（整条省略时这组键一个都不出现，见下面「HDR 那一组键」那段）
+`file` `bytes` `width` `height` `format` `source`（真正出图的那条通道）`path`（实际走的那条内部路径名）`scope`（`window` / `desktop`，由 `path` 算出）`rect`（`{"x","y","width","height"}`，那次授权允许采样的屏幕区域）`requestedRect` / `capturedRect` / `clipped` / `rotation`（只有从整幅桌面帧裁目标的通道会写，见下面那段）`hwnd`（`0x…` 字符串）`pid` `title` `class` `image`（映像文件名）`elapsedMs` `history`（`{"status","file"?,"code"?}`，主交付之外那份历史副本的下落，默认恒在，见「截图历史归档」一节）；给了 `--roi` / `--client-area` 时再多 `cropMode` `cropRect` `fullWidth` `fullHeight`（以及图像原点核实得出来时的 `cropScreenRect`），见「窗口内部裁剪」一节；写过 `--scale` 时再多 `scaleMethod` `scaleApplied` `scaleFromWidth` `scaleFromHeight`（见「等比缩小」一节）；写过 `--cursor` 时再多 `cursorRequested` `cursorEffective` `cursorBasis`（见下面「光标那三个键」那段）；明确写过 `--hdr` 时再多 `hdrRequested` `hdrEffective` `hdrBasis` `sourceColorSpace` `sourceBitDepth`（整条省略时这组键一个都不出现，见下面「HDR 那一组键」那段）
 
 **光标那三个键（写过 `--cursor` 才出现，`--quiet` 也不许藏）**：`cursorRequested` 是要求的那一种（`default` / `include` / `exclude`）；`cursorEffective` 是**这条路径实际**交回的那一种（`include` / `exclude` / `unverified`）；`cursorBasis` 说这个结论凭什么 —— `wgc_session_property_set`（按这次要求设过、再把读回来的值核对过）、`wgc_session_property_read`（没设过，只读当前值，即 `--cursor default`）、`path_excludes_cursor`（这条路径的来源像素里没有光标）、`path_pointer_state_unverified`（桌面复制那一帧：指针状态证明不了，见上面 `--cursor` 那一条）、`wgc_cursor_property_unavailable`（那一问没答案）、`path_capability_not_registered`（这条路径没进光标登记表，按严格处理而不是猜一个）；后三种与 `pointer_state_unverified` 那一类一样，`cursorEffective` 写的都是 `unverified`，不折成"画"或"不画"任何一边。三个键各说一件事，谁也不冒充谁：`effective` 说不到"这一张图里看得见或看不见指针"那一层（本 SDK 的会话接口没有 `IsCursorVisible` 那个只读属性，像素级的事本工具一条都不声称，而 `--capabilities` 把这条边界写成 `cursor_effective_is_a_setting_not_a_pixel_check`）。没写 `--cursor` 时三个键一个都不出现（那才是"默认不要求"与从前逐字节相同的保证）。
 
@@ -678,7 +692,7 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
 
 ### 屏幕图（`--monitor` 且无窗口条件时换这一组字段）
 
-`file` `bytes` `width` `height` `format` `source`（同上）`path`（`screen.wgc` / `screen.bitblt` / `screen.duplication`，三条都是桌面）`scope`（`desktop`）`rect`（那次授权允许采样的屏幕区域，= 那块屏的矩形）`requestedRect` / `capturedRect` / `rotation`（`duplication` 这条会写，见上面那段；整屏本该 `capturedRect` 等于 `rect`，裁不全就直接报 `capture.monitor_changed` 而不是交一张偏小的图）`monitor`（编号）`device`（`\DISPLAY1` 之类）`primary`（布尔）`elapsedMs`；写过 `--cursor` 时同样多 `cursorRequested` / `cursorEffective` / `cursorBasis`；明确写过 `--hdr` 时同样多 `hdrRequested` / `hdrEffective` / `hdrBasis` / `sourceColorSpace` / `sourceBitDepth`（屏幕目标走 `screen.wgc` / `screen.duplication` 时也可能带回广色域帧，同窗口目标一套键；整条省略时这组键不出现）
+`file` `bytes` `width` `height` `format` `source`（同上）`path`（`screen.wgc` / `screen.bitblt` / `screen.duplication`，三条都是桌面）`scope`（`desktop`）`rect`（那次授权允许采样的屏幕区域，= 那块屏的矩形）`requestedRect` / `capturedRect` / `rotation`（`duplication` 这条会写，见上面那段；整屏本该 `capturedRect` 等于 `rect`，裁不全就直接报 `capture.monitor_changed` 而不是交一张偏小的图）`monitor`（编号）`device`（`\DISPLAY1` 之类）`primary`（布尔）`elapsedMs` `history`（同窗口图那一项，规则也相同）；写过 `--cursor` 时同样多 `cursorRequested` / `cursorEffective` / `cursorBasis`；明确写过 `--hdr` 时同样多 `hdrRequested` / `hdrEffective` / `hdrBasis` / `sourceColorSpace` / `sourceBitDepth`（屏幕目标走 `screen.wgc` / `screen.duplication` 时也可能带回广色域帧，同窗口目标一套键；整条省略时这组键不出现）
 
 没有窗口可归属，所以 `hwnd` / `pid` / `title` / `class` / `image` 整个不出现——调用方按 `monitor` 是否存在区分两种图。
 `source` 两种图都有：`--capture auto` 回退成功时它写的是链上实际命中的那一条，不是请求值 `auto`。
@@ -695,7 +709,7 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
 | --- | --- |
 | `target` | 哪个目标：窗口给 `0x…` 句柄（与 `images[].hwnd` 同形），屏幕给设备名（如 `DISPLAY1`） |
 | `backend` | 哪条通道；`auto` 全链失败时列出真实试过的那几条，而不是 `auto`。授权类诊断（`stage=consent`）给的是**通道名**（`bitblt` / `dwm` / `wgc`…） |
-| `stage` | 哪一步：`parse` / `match` / `plan` / `consent` / `capture` / `encode` / `write` / `stdout` / `report`。`match` = 目标匹配求值这一步（`match.timeout`，以及 `cli.invalid_regex` —— 语法与复杂度两种下场都在这里判，解析层不构造正则），`consent` = 人工确认这一关（答"否"、弹不出、`--consent-timeout-ms` 内没人答），`capture` 里也可能出"批了之后目标挪了位置"（`capture.consent_stale`） |
+| `stage` | 哪一步：`parse` / `match` / `plan` / `consent` / `capture` / `encode` / `write` / `stdout` / `history` / `report`。`match` = 目标匹配求值这一步（`match.timeout`，以及 `cli.invalid_regex` —— 语法与复杂度两种下场都在这里判，解析层不构造正则），`consent` = 人工确认这一关（答"否"、弹不出、`--consent-timeout-ms` 内没人答），`capture` 里也可能出"批了之后目标挪了位置"（`capture.consent_stale`），`history` = 主交付之外那份副本那一段（目录创建与独占提交都算在这一步；它与 `write` / `stdout` 分得开，所以"主图在磁盘上而副本没落地"两种下场不会互相冒充） |
 | `value` | 出错那个取值/名字；**在 `stage=consent` 的授权诊断上它是内部路径名**（`bitblt.screen` / `dwm.screen` / `screen.wgc`…），与 `backend` 的通道名分开发，所以调用方既能按通道分支、也看得见实际走了哪条支路 |
 | `hresult` | 形如 `0x80070005` 的原值（照实传，不会被 `E_FAIL` / `E_NOINTERFACE` 顶掉） |
 | `win32` | `GetLastError` 的原值（数字，0 不写） |
@@ -731,7 +745,7 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
 | 4 | 无匹配窗口 |
 | 5 | 匹配多个窗口 |
 | 6 | 这次截图没拿到人的同意：人在这个只有「是 / 否」的确认框上答了"否"（`capture.access_denied` —— 人能给出的唯一拒绝就是点"否"，而工具把任何非"是"的结果都当拒绝），那个会话根本没有可交互的桌面、框弹不出来（`capture.consent_unavailable`），或在 `--consent-timeout-ms` 之内没有人回答（`capture.consent_timeout`）；也包括目标受保护 |
-| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`，含身份复核没过的 `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`，含屏幕那三条 `capture.monitor_changed` / `capture.monitor_unverifiable` / `match.monitor_id_unverifiable`，也含本工具辅助进程的机制故障 `capture.worker_failed`），也含交付图像放不下请求的裁剪 `capture.roi_invalid` / 定位裁剪所需那一问答不出 `capture.roi_unmeasurable`；也含要求的光标状态核实不了 `capture.cursor_unverifiable` 与本机给不了那个开关 `env.cursor_unsupported`；也含 `--hdr refuse` 核实来源是 HDR `capture.hdr_refused`、带回认不出的广色域格式 `capture.hdr_unverifiable`，以及 `auto` 链被色彩要求筛到空 `env.hdr_unsupported`（都不落地） |
+| 7 | 截图失败（含 `--timeout-ms` 预算耗尽的 `match.timeout` / `capture.timeout`，含身份复核没过的 `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`，含屏幕那三条 `capture.monitor_changed` / `capture.monitor_unverifiable` / `match.monitor_id_unverifiable`，也含本工具辅助进程的机制故障 `capture.worker_failed`），也含交付图像放不下请求的裁剪 `capture.roi_invalid` / 定位裁剪所需那一问答不出 `capture.roi_unmeasurable`；也含要求的光标状态核实不了 `capture.cursor_unverifiable` 与本机给不了那个开关 `env.cursor_unsupported`；也含 `--hdr refuse` 核实来源是 HDR `capture.hdr_refused`、带回认不出的广色域格式 `capture.hdr_unverifiable`，以及 `auto` 链被色彩要求筛到空 `env.hdr_unsupported`（都不落地）；也含**主图已交付而历史副本没落地**的 `history.*`（那时图仍在 `images` 里，见《截图历史归档》） |
 | 8 | 写文件失败（也含结果 JSON 没送到约定那条流，以及**那一步根本没开工**的 `io.timeout`）。注意：图**已经落地**、只是写完之后的期限复核越了线时，那张图仍留在 `images` 里、按部分成功报 `7`（已交付 + 出错），不是 `8` —— 见《期限与阻塞隔离》 |
 | 9 | 内部异常 |
 
@@ -755,6 +769,10 @@ ECAPTURE.EXE --hwnd 0x001A0B4C --capture wgc --yes --roi 0,0,800,600 --scale max
   内存耗尽与显卡设备被移除这类"换后端也不会有区别"的错误会明确终止整批。
 - **部分成功**：`--all` / `--monitor all` 里某些目标失败时，已写出的图照样在 `images` 里
   （`captured` 可以大于 0），但退出码仍是 7。所以"退出码非 0"不等于"什么都没拿到"。
+- **历史副本失败也是这一种部分成功**：`history.unavailable` / `history.write_failed` / `history.file_exists`
+  （以及那两种"根本没开始写副本"的 `history.budget_spent` / `history.same_file`）都是在图**已经按 `--out`
+  交出去**之后才说得出的事，所以退出码是 7 而不是 0，也绝不是"什么都没写"的 8；`images`、`captured` 与那张
+  主图原样保留，副本的下落写在 `images[].history` 上（见《截图历史归档》）。调用方**不要为此重拍一次**。
 
 ## 行为变更：省略 `--out` 不再折叠错误
 
@@ -875,6 +893,22 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 **`io.*`**
 `io.write_failed`（8，临时文件建不出来 / 写或刷新中断 / 提交为目标名失败；写标准输出时分两种现场，半张图留在管道里时 `message` 给已发字节数与总长，两种都**不算交付**、`images` 里没有它）`io.file_exists`（8，配合 `--no-overwrite`）`io.output_collision`（8，整批输出名撞车，一张都没截也没写）`io.timeout`（`stage=write` / `stdout`：①那一步**根本没开工**就发现预算已尽 → 这一张不写，一张都没落地时退出码 **8**；②写已经完成、只是**写完之后的期限复核**越了线 → 额外记这一条 `io.timeout`，而图仍在 `images` 里、`captured` 照计，本次按部分成功报 **7**（已交付 + 出错）。两头是刻意分开的：别对一个盘上存在的文件说"没写出来"，也别把越线那次超时藏起来）
 
+**`history.*`（主交付之外那份历史副本；全部只在**主图已经落地**之后才说得出，退出码因此是 7 而不是 8）**
+`history.unavailable`（副本的位置这一路本身说不通：问不出实际运行的程序在哪个目录（`module_path_unavailable`）、
+那个位置被一个文件占着（`root_is_a_file` / `path_component_is_a_file`）、或它是一个不可安全跟随的重解析点
+（`root_is_reparse_point` / `path_component_is_reparse_point`）。ASCII 原因 token 写在 `message` 末尾，`stage=history`，
+`value` 是那个位置。工具不猜别的目录、不提权、不改标签与 ACL，也不"顺着链接写下去"）
+`history.write_failed`（那一次目录创建或那一次独占提交失败，`win32` 是它自己交回的原值：没权限、盘满、父路径
+不存在、路径名不合都在这里照实传，不折成别的原因，也不被随后看见的超时覆盖）
+`history.file_exists`（归档名连着撞上已有的历史文件并且换名重试也没换来。历史**从不覆盖**已存下的那一张，
+所以下一次是再来一张，而不是"让它盖掉"）
+`history.budget_spent`（`images[].history.status = skipped`：主图刚落盘而 `--timeout-ms` 那份共用预算已经用尽，
+副本这一次**根本没开始写**。归档不另领一份预算，也不留一个谁也等不起的后台写入。这一条不写进 `errors`，
+因为它不是哪一步失败——它在 `images[].history` 那一格上，`--quiet` 也藏不掉）
+`history.same_file`（`status = skipped`：`--out` 写进了 `history\` 那棵树，而算出来的名字正好是这次要用的归档名。
+写下去就是把刚交出去的那一张自己盖掉，所以跳过副本；主图与它的交付事实原样保留。想两个都要就把主输出
+写在别处。也不写进 `errors`）
+
 **`note.*`（不是错误，`--quiet` 会去掉）**
 `note.dry_run` `note.capture_channel`（`auto` 回退后实际用了哪条）`note.duplicate_value`
 `note.extension_appended` `note.exe_path_looks_like_name`（`--exe` 传的像文件名不像完整路径）
@@ -893,6 +927,40 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 `note.window_query_stale`（每一次 `--list` / `--inspect` 都固定带这一条：交回的是**此刻的快照**，字段会过期，
 `hwnd` / `pid` / 类名不是可以长期持有的凭证；真去截图时仍会在取帧之前复核身份。`--quiet` 会连同整段 notes
 一起去掉，但 `policy` / `authorization` / `caveats` 里那三件自述不受 `--quiet` 影响）
+
+## 截图历史归档（默认开启，没有关闭它的开关）
+
+每张**完成主交付**的图，在主输出之外另存一份独立副本：`<实际运行的 ECAPTURE.EXE 所在目录>\history\<YYYY-MM-DD>\<文件名>`。
+开发版在 `build\` 里，所以开发时的历史是 `build\history\`；装在自定义目录时历史就在那一个目录里。归档跟着程序自己，
+**不**跟着当前目录、不跟着 `--out` 的目录、也不跟着某个固定的默认安装位置。
+
+- `images[].history` 的形状：`status`（`saved` / `failed` / `skipped`）、`file`（**只在 `saved` 出现**，此时磁盘上确实有
+  这一份）、`code`（`failed` / `skipped` 时那条稳定的 `history.*`）。它属于交付事实，`--quiet` 不抑制；`errors` 里
+  同码那一条带 `stage=history` 与 `win32` 原值。`images[].file` 仍是主输出的名字，`images[].path` 仍是捕获路线，
+  两个都不被副本改写。
+- 副本用的是主交付那一份**已经编码好的字节**：不重拍、不重新编码、不去读主输出文件、不建硬链接。所以之后删掉或
+  覆盖主输出都不影响历史那一张；反过来，主输出没完成时不发布副本（半段 stdout 也不算完成）。
+- 一次归档决策只取一次本地时间：目录名与文件名同源于它（跨午夜不会目录与文件名各写一天）。文件名
+  `YYYYMMDD-HHMMSS-<PID>-<标识>-<序号>.<扩展名>`，扩展名跟着这张图实际被编成的容器；不含窗口标题、设备名、
+  用户名或任何完整路径。提交复用生产那次"不许替换"的原子改名（独占创建），撞名就换下一个序号，
+  所以多进程同时截图与时钟回拨都盖不掉已经存下的那张。
+- 两次交付、两个位置（可能不同卷），各有各的结论，**不承诺跨这两个地方的全有或全无事务**。主图已落地而副本
+  失败时：主图不删、已发出的 stdout 不回滚、**不重拍**，退出码是按部分成功的 `7`（`history.budget_spent` /
+  `history.same_file` 那两种 `skipped` 也在这一族里，只是那一次根本没开始写副本）。
+- 归档与主交付共用同一份 `--timeout-ms` 自动预算，不另领一份、不做无期限的后台写入；不可中断的提交仍按真实落盘
+  事实 + 末尾期限复核处理。
+- 只在真实截图主交付成功之后才建目录与写文件：只读查询（`--capabilities` / `--diagnostics` / `--screens` / `--list` /
+  `--inspect`）、`--help` / `--version`、参数错、无匹配、`--dry-run`、被拒绝、以及一张有效图像都没有的那些次，
+  连一个目录都不建，也不去探测那里写得动写不动。
+- 不自动轮转、不按天数或容量删、不后台扫描、不上传、不改 ACL 与完整性标签、不提权。历史是持续保留的截图数据：
+  `.\clean.ps1` 与 `.\build.ps1 -Clean` 清产物但保留 `build\history`（不能安全保留时明确拒绝并说明原因）；安装包不含它，
+  `install-manifest.json` / `payload.sha256.txt` 也不把它列为发行物，升级与卸载都不碰它；换安装目录不迁移旧历史。
+- `--capabilities` 的 `history` 段说的是这套**规则**（`relativeTo` / `location` / `naming` / `source` / `commit` / `created` /
+  `retention` / `partialSuccessExit` 等，全段是相对程序目录的写法、不含绝对路径），并且明确
+  `writabilityProbed: false` —— 一次只读查询不预测某一次落盘必然成功；`caveats` 恒带
+  `history_root_writability_not_probed`。某一次有没有真存下副本，只看那次结果的 `images[].history`。
+- 确认框在人选"是"之前就写明"还会另存一份持久副本"（那一路归档本身说不通时就不写这句），所以调用方不必
+  额外替用户预告；但**归档失败绝不改变授权分级**：它不是重拍的理由，也不是换通道、换格式或加大预算能修好的事。
 
 ## 帧的形状与像素上限
 

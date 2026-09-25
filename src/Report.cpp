@@ -93,6 +93,20 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         j.Obj();
         OptString(j, L"file", img.file);
         j.Key(L"bytes").Value(static_cast<long long>(img.bytes));
+        // 历史副本（默认开启）：上面那个 file 之外那一份独立拷贝的下落。三个键各说一件事：
+        //   status  saved（副本已独占提交）/ failed（开始过而没提交）/ skipped（这次没开始写副本）
+        //   file    仅 saved 出现，且此时磁盘上确实有这一份；失败时不给一个"本来要写的名字"冒充已有
+        //   code    failed / skipped 时的稳定 history.* 码（细节在同一条 errors 记录里）
+        // 主交付与副本是两次交付、可能在不同卷上，所以这一格只说副本：它失败时上面那个 file 与
+        // captured 照旧是真的。与 path / scope / rect 同一性质：这是交付事实，--quiet 不许藏
+        //（images 段本来就不被抑制）。取值全是 ASCII 机器名，不随 --lang 变。
+        if (img.history.state != HistoryRecord::State::kNone) {
+            j.Key(L"history").Obj();
+            j.Key(L"status").Value(HistoryStateName(img.history.state));
+            OptString(j, L"file", img.history.file);
+            OptString(j, L"code", img.history.code);
+            j.End();
+        }
         j.Key(L"width").Value(static_cast<long long>(img.width));
         j.Key(L"height").Value(static_cast<long long>(img.height));
         OptString(j, L"format", img.format);

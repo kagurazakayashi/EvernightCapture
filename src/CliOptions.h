@@ -610,6 +610,25 @@ inline constexpr const wchar_t* kWriteFailed = L"io.write_failed";
 inline constexpr const wchar_t* kFileExists = L"io.file_exists";
 // 多个目标算出同一个输出名：整批一张都不截，也不静默改名
 inline constexpr const wchar_t* kOutputCollision = L"io.output_collision";
+// 截图历史归档（每张成功交付的图在主输出之外另存一份独立副本）。这几条码说的是**副本**那一头的
+// 结果，主交付的事实与它们无关（主图已经落地时，副本失败绝不把整次运行说成什么都没写）：
+//   history.unavailable    归档根目录这一路自己就说不通（问不出实际运行的程序在哪个目录、那个
+//                          位置被一个文件占着、或是不可安全跟随的重解析点）。不猜、不换目录、
+//                          不兜底到临时目录。退出码按部分成功算（图已在主输出上）。
+//   history.write_failed   目录创建或那一次提交失败（没权限、盘满、路径组件不合、改名没成）。
+//                          win32 原值在这一条里。
+//   history.file_exists    独占提交撞上了已有的历史文件并且换名重试也没换来。历史文件从不被
+//                          覆盖，所以这一条的下一步是再截一次，而不是"让它盖掉"。
+//   history.budget_spent   主图落地之后自动处理预算已经用尽，副本这一次**没开始写**。归档不另领
+//                          一份预算，也不做无期限的后台写入。
+//   history.same_file      主输出名字恰好算在 history 那棵树里、并且与这一次要用的归档名相同：
+//                          跳过副本，免得把刚写好的那张图自己盖掉。主图与它的交付事实原样保留。
+// 五条都只增不改名；细节（含 win32 原值）在同一条 errors 记录里，stage=history。
+inline constexpr const wchar_t* kHistoryUnavailable = L"history.unavailable";
+inline constexpr const wchar_t* kHistoryWriteFailed = L"history.write_failed";
+inline constexpr const wchar_t* kHistoryFileExists = L"history.file_exists";
+inline constexpr const wchar_t* kHistoryBudgetSpent = L"history.budget_spent";
+inline constexpr const wchar_t* kHistorySameFile = L"history.same_file";
 }  // namespace codes
 
 // 命令行取值的上限。数字只在这里写一次：解析判据与 --capabilities 报告的 limits 段读的都是
@@ -659,6 +678,9 @@ inline constexpr const wchar_t* kCapture = L"capture";  // 取帧后端
 inline constexpr const wchar_t* kEncode = L"encode";    // 编码成 png / jpg / ...
 inline constexpr const wchar_t* kWrite = L"write";      // 原子写文件
 inline constexpr const wchar_t* kStdout = L"stdout";    // 图片字节写标准输出
+// 历史归档那一次独立副本（目录创建与独占提交都算在这一步）。它与主输出的 write / stdout 分得开：
+// 主图已经落地而副本没落地时，调用方要能只看 stage 就分清是哪一头。
+inline constexpr const wchar_t* kHistory = L"history";  // 主交付之外的历史副本
 inline constexpr const wchar_t* kReport = L"report";    // 结果渲染与送出
 }  // namespace stages
 

@@ -7,7 +7,8 @@
 // {
 //   "captured": 1,
 //   "images": [ { "file","bytes","width","height","format","source",
-//                 "hwnd","pid","title","class","elapsedMs" } ],
+//                 "hwnd","pid","title","class","elapsedMs",
+//                 "history": { "status","file"?,"code"? } } ],
 //   "errors": [ { "code", "message"?, "option"?, "value"?, "hint"?,
 //                 "target"?, "backend"?, "stage"?, "hresult"?, "win32"? } ],   // 仅有错时出现
 //   "notes":  [ 同上 ]                                                     // 仅有提示时出现
@@ -16,6 +17,9 @@
 //
 // 规则：captured 与 images 恒在（空时是 []）；errors 只要非空就一定输出（--quiet 也不抑制），
 // notes 仅非空且未 --quiet 时出现，input 仅 --verbose 出现。所以调用方先看 errors 再读 images。
+// images[].history 是**主交付之外那一次独立拷贝**的下落（默认开启，位置跟着实际运行的程序目录）：
+// 主图已经落地时这一格只说副本，failed / skipped 都改不到 file / captured / bytes 那三件，
+// 而"图交出去了、副本没交出去"这一种部分成功由退出码 7 与 errors 里那条 history.* 一起说。
 // 这里读到的 opt.quiet 已经是解析层定过的最终值：--verbose 与 --quiet 同时给出时按 --verbose
 // 处理（quiet 归 false 并留一条 note.flag_overrides_quiet），所以"notes 为什么还在"永远有据可查。
 // 退出码始终有效：0 成功 / 1 参数错 / 2 未给条件 /

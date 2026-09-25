@@ -17,9 +17,30 @@
 
 namespace ecapture {
 
+// 截图历史归档：主交付之外那一份独立副本的下落（images[].history）。
+// 它记的是**第二次交付**这一头的事实，与"主图有没有落地"分得很开：主图成功而副本失败时，
+// images 里这一张照旧在、file 照旧是主输出的名字，只有这一格说副本没落地。
+// 三种状态（JSON 里写 HistoryStateName 那个 ASCII 词，只增不改名）：
+//   saved    副本已经以 file 那个名字独占提交，磁盘上现在有第二份、不靠主图存在的图
+//   failed  开始过而没提交：原因在 code（history.*），细节（含 win32 原值）在 errors 同码那一条
+//   skipped 这一次根本没开始写副本（code 说为什么没开始：预算已尽、或主输出名字就是这一份归档名）
+// file 只在真提交之后出现；没提交时不写一个"本来要写的名字"冒充已有副本。
+struct HistoryRecord {
+    enum class State { kNone, kSaved, kFailed, kSkipped };
+    State state = State::kNone;   // kNone = 这一次没有归档这一步（渲染时整个键不出现）
+    std::wstring file;            // 仅 kSaved：已提交的那份副本的绝对路径
+    std::wstring code;            // kFailed / kSkipped：稳定的 history.* 码
+};
+
+// 状态的机器名（进 JSON）。与 codes 一样只增不改名，调用方按它分支而不读 message。
+const wchar_t* HistoryStateName(HistoryRecord::State state);
+
 struct CapturedImage {
     std::wstring file;         // 已展开占位符的绝对路径；"-" 表示写到标准输出
     uint64_t bytes = 0;
+    // 主输出之外那一份历史副本的下落（默认开启）。file 与实际交付的那一个名字同源，
+    // 而这一格说的是**另一个位置**：两个目的可能在不同卷上，所以各自有各自的结论。
+    HistoryRecord history;
     uint32_t width = 0;
     uint32_t height = 0;
     std::wstring format;       // "png" 等

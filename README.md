@@ -70,6 +70,13 @@ confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
 - **Four message languages**: `zh-CN` / `zh-TW` / `en` / `ja`, defaulting to the system display language, all
   embedded as resources inside the exe
 - **Machine-readable JSON**: capture results and errors only — no tool name, version, schema or argument echo
+- **A history copy of every image that succeeded**: on by default, written into `history\<local date>\` **beside the
+  exe that is actually running**, from the very bytes the primary delivery already encoded (no re-capture, no
+  re-encode, no reading the primary output file back, no hard link), committed exclusively so an existing history
+  file is never overwritten. The primary image delivered while the copy did not land is a partial success (exit code
+  `7`, `images[].history` says which kind), nothing is rotated or deleted automatically, and pruning is the user's own
+  explicit job. Full rule set:
+  [Screenshot history archive](#screenshot-history-archive-on-by-default)
 - **Windows you can list and inspect without capturing**: `--list` returns the matched windows as structured JSON
   (handle, PID, class, title, image name, physical rectangle, visibility / minimized, z-order, and the identity
   fields a later capture re-checks) with paging instead of an ambiguity error; `--inspect` describes one window and
@@ -205,7 +212,7 @@ Output: success and failure are both JSON, holding only captured / images (plus 
        --help / --version and the no-conditions case are plain text
 Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
         6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
-Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
+Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist; every delivered image also keeps a copy under history next to the program (never pruned automatically)
 Runtime: 64-bit Windows, declared floor build 18362 (Windows 10 version 1903), tested only on build 19045; a route this machine's version cannot offer is reported before any frame or dialog as env.os_too_old / env.channel_unsupported (the first does not improve with another channel). --verbose echoes input.osBuild and input.captureChain
 
 Examples:
@@ -321,11 +328,21 @@ A window image (real shape of the output; the numbers come from one actual captu
       "title": "D:\\share\\EvernightCapture - File Explorer",
       "class": "CabinetWClass",
       "image": "explorer.exe",
-      "elapsedMs": 156
+      "elapsedMs": 156,
+      "history": {
+        "status": "saved",
+        "file": "D:\\shots\\history\\2026-10-10\\20261010-113122-31468-1a2b3c4d5e6f-1.png"
+      }
     }
   ]
 }
 ```
+
+This image also carries the `history` member: where that independent copy, in addition to the primary delivery,
+ended up (on by default, located beside the directory of the program that actually ran; rules and code meanings in
+[Screenshot history archive](#screenshot-history-archive-on-by-default)). It is the verdict about the **second
+delivery** and cannot change the `file`, `bytes` or `captured` above: when the copy fails, that image still counts as
+delivered while the exit code becomes the partial-success `7`.
 
 A screen image (`--monitor` with no window conditions) has no window to attribute, so it swaps those fields for
 `monitor` / `device` / `primary`, and `hwnd` / `pid` / `title` / `class` / `image` do not appear at all — callers
@@ -660,6 +677,11 @@ being removed (`DXGI_ERROR_DEVICE_REMOVED` / `DXGI_ERROR_DEVICE_RESET` / `DXGI_E
 batch deliberately instead of being retried one target at a time. An access denial is never a reason to keep
 falling back, and neither is a refusal: once somebody answers "No" (or no dialog can be shown), the rest of that
 request is not attempted — no other backend, no second ask, while every image already completed stays in `images`.
+**A failed history copy is exactly this kind of partial success**: the image has been delivered to `--out`,
+`images[].history.status` reads `failed` (or `skipped`) and `errors` gained a `history.*` entry (`stage` = `history`)
+— then the exit code is `7`, not `0`, and never the "nothing was written" `8`: the primary image is not deleted, the
+stdout already emitted is not rolled back, and the caller should not re-capture because of it (see
+[Screenshot history archive](#screenshot-history-archive-on-by-default)).
 
 Failure **classes** stay distinct — a verdict about identity, policy or the execution environment is never folded into
 a generic "capture failed", because the correct next step differs:
@@ -746,10 +768,19 @@ with the real HRESULT rather than being guessed at in advance.
 
 ### Process integrity level
 
-A directory can carry an explicit mandatory-integrity label — `icacls` shows it as
-`Mandatory Label\Low Mandatory Level` — and every file inside it inherits that label, so a process started from such
-a path runs below Medium. Three unrelated things then fail, and until now all three looked like one plain
-"capture failed / write failed", so callers switched backends, raised deadlines and retried — all wasted:
+**There is one piece of evidence about this process's own level, and only one**: `session.integrityLevel` from
+`--capabilities` / `--diagnostics`, which asks the token of ECAPTURE's own process. "The directory carries an explicit
+`Mandatory Label\Low Mandatory Level` label", "the label a file inside it inherits" and "`whoami /groups` of the shell
+you are in right now" are three facts that are not equivalent — the first two are *possible* causes of a process
+started from there running below Medium, while the third describes a different process altogether. A low-integrity
+process creating a file inside a medium-integrity directory is refused (`io.write_failed` + Win32 `5`), and
+**an access denial has more than one cause**: that same pair of codes can also come from something holding the file, a
+path that does not fit, or a directory that genuinely refuses writes. So this section is about what *usually* breaks
+below Medium, not a lookup table that reads "this code, therefore this cause".
+
+When a process started from such a path does run below Medium, three unrelated things typically break, and until now
+all three looked like one plain "capture failed / write failed", so callers switched backends, raised deadlines and
+retried — all wasted:
 
 - `wgc` is refused at the frame step: `GraphicsCaptureItem.CreateForWindow` returns `E_ACCESSDENIED`
   (`0x80070005`)
@@ -758,20 +789,25 @@ a path runs below Medium. Three unrelated things then fail, and until now all th
 - saving is refused: such a process cannot create a file inside a medium-integrity directory, so the write reports
   `io.write_failed` + `5` **with the image already in memory** — a directory carrying the same label accepts it
 
-What this level does **not** block: on the machine where it was measured, `dwm` (the `dwm.thumbnail` path) still
-delivers a window image as long as the output directory lets the file be created, and `bitblt.screen` /
-`duplication.frame` still deliver — those two always need a person's own answer, which is a different layer (see
-《Screenshot authorization and `--yes`》). Low integrity is therefore not "this machine cannot take screenshots",
-and nothing here promises that another route will succeed; `--capabilities` leaves each route's `status` untouched,
-because that field is the version-floor and screen-topology layer. The measurements cover one development machine
-(Windows 10 version 22H2, build 19045, x64, 2026-10-09): the byte-identical exe fails inside
+What this level did **not** block on the machine where it was measured: `--capture dwm` (the `dwm.thumbnail` path)
+still delivers a window image as long as the output directory lets a low-integrity process create the file, and
+`bitblt.screen` / `duplication.frame` still deliver — those two always need a person's own answer, which is a
+different layer (see [Screenshot authorization and `--yes`](#screenshot-authorization-and---yes)). Those two
+sentences are **one result measured on this development machine**, not a promise for every machine: low integrity is
+not "this machine cannot take screenshots", nothing here says another route will succeed, and the `dwm` path
+**escalates to the route that reads desktop pixels** when the window itself cannot yield its picture — that route
+still always asks a person, and the authorization tiers do not change with the integrity level. `--capabilities`
+leaves each route's `status` untouched, because that field is the version-floor and screen-topology layer. The
+measurements cover one development machine (Windows 10 version 22H2, build 19045, x64, 2026-10-09) and are not a
+general conclusion: the byte-identical exe fails inside
 `%UserProfile%\.agents` and its subdirectories, and works at every other place it was tried
 (`%LOCALAPPDATA%\Temp`, `%APPDATA%\Roaming`, `%UserProfile%`, this repository's own `build\`). To check a machine
-of your own:
+of your own, keep the three questions apart:
 
 ```powershell
-icacls "%UserProfile%\.agents"                # does the directory carry Mandatory Label\Low Mandatory Level?
-whoami /groups | findstr /i "Mandatory Label"   # the level this process runs at (this shell: S-1-16-8192 = Medium)
+icacls "%UserProfile%\.agents"                # does the directory carry Mandatory Label\Low Mandatory Level? (one possible cause)
+whoami /groups | findstr /i "Mandatory Label"   # the level of this shell itself (here: S-1-16-8192 = Medium) — not ECAPTURE's level
+ECAPTURE.EXE --capabilities | findstr integrityLevel   # the evidence about this tool's own process: below Medium it reads low
 ```
 
 The tool now names that layer. `--capabilities` / `--diagnostics` report `session.integrityLevel` as an ASCII token
@@ -789,9 +825,13 @@ Three ways out, cheapest first:
 
 1. Point `--out` at a path inside a directory that carries the same low label (the tool never creates directories,
    so that level has to exist already)
-2. Ask for the window's own pixels with `--capture dwm`, measured on this machine to still deliver at this level
+2. Ask for the window's own pixels with `--capture dwm` — measured on this development machine to still deliver at
+   this level, which is not a promise for every machine, and when that path escalates internally to the desktop-pixel
+   fallback it still always asks a person
 3. Install this skill somewhere that is not labelled down, or have the owner of that directory remove the label —
-   removing it changes a security setting, so it is the owner's decision, not this tool's suggestion
+   **changing a label, an ACL, the install location or an integrity level is never something this tool does by
+   itself**; that is a system security setting, so whoever owns it decides and authorises it separately. The tool
+   neither elevates nor changes those settings to "make the screenshot pass"
 
 **Running as administrator is not the answer this hint is pointing at**, and the message never suggests doing it.
 
@@ -838,9 +878,10 @@ Three rules:
 | `cursor`                              | the `--cursor` story: `default` (what happens when the option is absent), the three values, that one switch as `compiled` / `status` / `reason` / `minBuild` (19041) / `verifiedOnThisMachine`, then one row per registered internal path with `capability` (`settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`), `reason` and `include` / `exclude` each as `yes` / `no` / `unknown`, plus `pointerShapeCompositing: "never"` and `pixelRetouching: "never"`. The two duplication paths read `capability: pointer_state_unverified` with `include` and `exclude` both `no` — a desktop frame may already have the pointer drawn into it, and the tool never composites the pointer shape, which is not proof the pixels hold no pointer. Nothing is probed by capturing, so a path that is not in the registry reads `unknown` rather than a guessed answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `color`                               | the `--hdr` story: `default` (what happens when the option is absent), the three values (`auto` / `tonemap` / `refuse`), `compiled` / `status` / `reason` / `verifiedOnThisMachine`. `status` is about "can this build bring back a wide-gamut frame and how does it map", it does **not** ask whether this screen is currently in HDR mode (reason `hdr_display_mode_not_probed`); `verifiedOnThisMachine` is always `no` (this project has no HDR display, so it never claims color acceptance). One row per registered internal path, with `capability` = `wide_gamut_capable` (only `wgc` / `screen.wgc`) / `wide_gamut_unverified` (`duplication.frame` / `screen.duplication`: the desktop surface _can_ arrive FP16 or 10-bit, but this build never asks the display's color space before `DuplicateOutput`, so it cannot prove what it got) / `sdr_source_only` (everything that reads an 8-bit DC) / `unregistered`, plus `honorsExplicitPolicy` - `true` only for the two `wgc` rows, which is the machine-readable form of "only wgc can fulfil `tonemap` / `refuse` in this build". `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"` (HDR is always mapped to 8-bit SDR for delivery; no native-HDR output)                                                                                              |
 | `autoChainWindow` / `autoChainScreen` | the `auto` chain this machine can take now. Computed by the **same** `GateChannels` call that fills `input.captureChain` for a real run, and `tests\capabilities.ps1` compares the two                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `history`                             | the **rules** of the screenshot history archive, self-described (on by default): `enabledByDefault: true`, `relativeTo: "executable-directory"` (beside the exe that actually ran — not the working directory, not the directory of `--out`), `location: "history/YYYY-MM-DD/"`, `naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`, `source: "same-encoded-bytes"` (the copy uses the bytes the primary delivery already encoded: no re-capture, no re-encode, no reading the primary output file, no hard link), `commit: "exclusive-create"` (exclusive creation, never overwriting an existing history file), `created: "after-first-delivered-image"` (read-only queries and runs that delivered nothing create not one directory), `retention: "never-pruned-automatically"`, `uploads: false`, `backgroundPruning: false`, `writabilityProbed: false`, plus the partial-success exit code for a failed copy: `partialSuccessExit: 7`. Not one field here asserts "this run wrote successfully" — that answer is in the capture result's `images[].history`, and this section does not even try whether that location can be written (so `caveats` always carries `history_root_writability_not_probed`); every value is written relative to the program directory and no absolute path appears |
 | `limits`                              | maximum frame side and bytes, `--timeout-ms` ceiling, built-in isolated-call ceiling, WGC frame-pool rebuild count, ordinal and PID ceilings, `stdoutTargetsMax: 1`, JPEG quality range                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `privacy`                             | what this query declares it did not do: no screen captured, no dialog shown, nothing uploaded, no user files enumerated, no environment variables read, no usernames, no paths                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `caveats`                             | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` + `duplication_desktop_frame_pointer_not_guaranteed` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer", and a duplication desktop frame is not guaranteed pointer-free), and always `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc` (the HDR mapping math is verified offline but there is no HDR display to test end-to-end, HDR is always mapped down to 8-bit SDR, and an explicit `tonemap` / `refuse` request is only ever fulfilled by the two `wgc` paths) |
+| `caveats`                             | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` + `duplication_desktop_frame_pointer_not_guaranteed` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer", and a duplication desktop frame is not guaranteed pointer-free), and always `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc` (the HDR mapping math is verified offline but there is no HDR display to test end-to-end, HDR is always mapped down to 8-bit SDR, and an explicit `tonemap` / `refuse` request is only ever fulfilled by the two `wgc` paths), and always `history_root_writability_not_probed` (the `history` section states the archiving rules; this query never tried writing that location and does not predict that any one write will succeed) |
 
 Both documents come out of **one** judgement function (`BuildEnvReport` in `src/EnvReport.cpp`) and differ only
 in which sections they print: `--diagnostics` always includes the `build` section (PE link timestamp, machine
@@ -1477,6 +1518,55 @@ occupied still cannot be silently replaced. `--out -` is not a path: no expansio
 and since stdout delivers only one image per run, there is never a batch to write into that stream (see the output
 rules above).
 
+## Screenshot history archive (on by default)
+
+Every image whose **primary delivery completed** gets, in addition to the output the user asked for, an independent
+copy in `history\YYYY-MM-DD\` (one folder per local date) **inside the directory of the `ECAPTURE.EXE` that is
+actually running**. The development build lives in `build\`, so history taken while developing is in
+`build\history\`; install it into a custom folder and the history is in that folder — it follows the program itself,
+not the working directory, not the directory of `--out`, and not any fixed default install location.
+
+| Item | Behaviour |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source | the **already encoded bytes** of the primary delivery: no re-capture, no re-encode, and no reading the primary output file back (another program may be changing it), and no hard link. Deleting or overwriting the primary image afterwards leaves the history copy alone. |
+| Entry point | window, whole screen, `--all` / `--monitor all` batches, `--roi` / `--client-area`, `--scale`, all five encodings and `--out -` all go through this one archive entry point. |
+| When | the folder is created and the file written only after a real capture's primary delivery succeeded. `--capabilities` / `--diagnostics` / `--screens` / `--list` / `--inspect` / `--help` / `--version`, a bad command line, no match, `--dry-run`, a human answering "No", and any run that produced no valid image create not one directory and do not probe whether that location can be written. |
+| Naming | one archive decision reads the local clock **once**, and both the folder name and the file name come from it (so crossing midnight cannot put today in the directory and tomorrow in the name): `YYYYMMDD-HHMMSS-<PID>-<token>-<seq>.<ext>`. The extension follows the container this image was actually encoded as. The file name holds no window title, no device name, no user name and no path of any kind. |
+| Commit | reuses the production "never replace" atomic rename: exclusive creation; on a name that already exists it takes the next sequence number and tries again, and when none is left it reports `history.file_exists` truthfully. **It never overwrites an existing history file**, so neither a concurrent capture from another process nor a clock rolled backwards can replace an image already saved. |
+| Relation to the primary delivery | two deliveries in two places (possibly on different volumes), each with its own verdict; no all-or-nothing transaction across those two is promised. While the primary output is not finished no copy is published (a half-emitted stdout stream does not count as finished either); when the primary image landed and the copy failed, the primary is not deleted, the stdout already emitted is not rolled back and nothing is re-captured, `images` and `captured` stay as they are, and the exit code is the partial-success `7`. |
+| Retention | no rotation, nothing deleted by age or by size, no background scan, no upload. History is persistent screenshot data, not a cache that can be rebuilt at will: `.\clean.ps1` and `.\build.ps1 -Clean` clear build outputs but **preserve `build\history`** (when it cannot be preserved safely they refuse and say why, rather than silently deleting or moving it), the installer neither carries it nor lists it in a release manifest, and neither upgrade nor uninstall touches it. Pruning is the user's own explicit job. |
+| Changing the install directory | the archive follows whichever exe ran at the time, so changing folder **does not** migrate the old history; that tree stays in the old folder, and to find it again read `history.location` from `--capabilities` against the old location. |
+
+The member in the result is `images[].history` (a delivery fact, so `--quiet` cannot hide it):
+
+| Key | Meaning |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `status` | `saved` = the copy was committed exclusively; `failed` = it was started and never committed; `skipped` = writing a copy never started for this one |
+| `file`   | appears only with `saved`, and then that file really is on disk; on failure no "name we would have used" is passed off as an existing copy |
+| `code`   | the stable code when `failed` / `skipped`: `history.unavailable` / `history.write_failed` / `history.file_exists` / `history.budget_spent` / `history.same_file` |
+
+The details of a failure (the raw Win32 value, which route could not be completed) are on the `errors` entry carrying
+the same code, whose `stage` is `history`; the two `skipped` cases have no "which step failed" to report (that run
+never started), so they are stated in this field only.
+
+- `history.budget_spent`: the `--timeout-ms` automatic budget is one allowance shared by the whole batch; archiving
+  does not draw a separate one and leaves no background writer that nobody can wait for. For a run whose deadline was
+  crossed right after the primary image landed, the copy records this code and **the primary image and its delivery
+  facts stay exactly as they were**.
+- `history.same_file`: when `--out` writes straight into the `history\` tree and the planned name is precisely the
+  archive name this decision would use, no copy is written — writing it would overwrite the image that was just
+  delivered. Want both? Put the primary output somewhere else.
+- When the primary output sits inside the `history\` tree under a *different* name, the copy is still saved under its
+  own separate name: neither a self-overwrite nor a copying loop, because the copy's bytes come from the encoding
+  buffer in memory and never read the primary output file.
+
+The confirmation dialog states, before a person answers, that the program will also save a further persistent copy in
+its own directory (a route for which that archive cannot be stated coherently leaves the sentence out, instead of
+promising a copy that would never exist). The `history` section of `--capabilities` describes these rules themselves, not the
+outcome of any one run — it creates no directory and attempts no write, which is why `caveats` always carries
+`history_root_writability_not_probed`. An archive failure never changes the authorization tiers, and nothing is
+elevated, ACL-changed or re-labelled to make archiving succeed.
+
 ## Message language
 
 `--lang` (`-l`) takes `zh-CN` / `zh-TW` / `en` / `ja`; omitted or `auto` uses the Windows display language, falling
@@ -1519,6 +1609,12 @@ this list is what an automated caller should treat as a residual risk instead of
 - The declared support floor (build 18362) and the tested environment (build 19045, x64) are different numbers, and
   `verifiedOnThisMachine` compares this machine against the second one — it is an environment match, not a per-device
   test record. The binary cannot even load on Windows 7, and on Windows 8.1 it loads but has no encoder to use.
+- The primary output and the history copy are **not one cross-volume transaction**: they are two independent
+  deliveries, possibly on different volumes, so each side reports its own result. A failed copy never deletes the
+  primary image, never rolls back stdout that was already emitted, and never re-captures to "complete" the copy; in
+  reverse, an unfinished primary delivery publishes no copy. Archiving draws no separate budget and runs no unbounded
+  background writer. History is not rotated or deleted automatically, and this version offers no switch to turn it
+  off — what it gives is exactly "one extra copy by default" plus dependable failure semantics.
 
 **Recorded as unverified rather than inferred** (each row is what the named test reports as SKIP / "not verified" on
 this development machine; none of them is claimed as a pass):
@@ -1533,6 +1629,8 @@ this development machine; none of them is claimed as a pass):
 | Windows builds other than 19045 · ARM64 · Server · Remote Desktop · a session with no interactive desktop · a genuinely missing encoder | a second OS cannot be arranged here; the judgements are made against injected fake builds offline instead (`tests\compat.ps1`, `tests\capabilities.ps1`)    |
 | `tiff` and `gif` under `--scale`, and every other encoder-only behaviour                                                                | `tests\scale.ps1` checks `png` / `bmp` / `jpeg`; the two others share the encoder call but are not covered                                                  |
 | `--capabilities` probing by producing an image, and the consent dialog being actually displayed                                         | probing either would be doing the thing it only reports on (`encoder_state_not_probed`, `consent_dialog_state_inferred_not_probed`)                         |
+| The history copy meeting a genuinely full disk or a genuinely refused permission                                                       | staging those two would change this machine's storage settings or its ACLs, which this task does not allow; the offline layer judges the **classification** (the win32 value and the stable code that call returned go into `errors` unchanged, not folded into another cause and not overwritten by a deadline seen afterwards), while the on-device layer uses the two situations that can be created honestly: "that name is a file" and "that name is a reparse point" (`tests\history.ps1`) |
+| A real person answering "No" creating no history                                                                                       | the judgement never opens a real dialog and never answers one on anybody's behalf. "No copy is published unless the primary delivery succeeded" is judged offline (both the half-emitted-stdout and the write-failure cases assert the archive was never called), while "the directory really gained nothing" is covered by `tests\consent.ps1` and by section 7 of `tests\history.ps1` respectively |
 
 ## Guide for AI and scripts
 
@@ -1575,6 +1673,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    | `match.timeout`, `capture.worker_failed`, `capture.failed`, `capture.frame_timeout`, `capture.window_gone`, `capture.frame_invalid`, `capture.roi_invalid`, `capture.roi_unmeasurable`, `capture.monitor_changed`, `capture.monitor_unverifiable`, `capture.monitor_id_unverifiable`, `capture.consent_stale`, `capture.timeout`, `capture.hdr_refused`, `capture.hdr_unverifiable`, `capture.target_gone`, `capture.target_changed`, `capture.target_unverifiable` | 7    | read `stage` (`match` / `capture` / `encode`) before deciding; a fresh `--list` / `--screens` is usually the next call, not another `--capture`                                                                                                                                                                                                                                                                                 |
    | `env.os_too_old`, `env.channel_unsupported`, `env.hdr_unsupported`, `env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7    | this **machine** cannot do what was asked — see the paragraph below                                                                                                                                                                                                                                                                                                                                                             |
    | `io.write_failed`, `io.file_exists`, `io.output_collision`, `io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8    | create the directory, or pick a name that cannot collide; `io.file_exists` is `--no-overwrite` doing its job; the `io.timeout` here is the write that never got to start — when a file _did_ land and only the post-write deadline re-check crossed, that image stays in `images` and the run reports exit `7` (delivered + error) instead, see [Deadlines](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms) |
+   | `history.unavailable`, `history.write_failed`, `history.file_exists`, `history.budget_spent`, `history.same_file` | 7 | **the image WAS delivered, only that copy did not land** (the last two mean this run never started writing a copy at all). `images[].history.status` plus the `errors` entry with the same code (`stage=history`) say which route; **do not re-capture for it** — re-capturing neither supplies the copy nor avoids asking a person for one more picture. What to change is that location (writable, a directory, not a reparse point), not the command line |
    | `capture.hdr_unsupported`, `capture.cursor_unsupported`, `capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1    | that option pair was refused while parsing, before any dialog                                                                                                                                                                                                                                                                                                                                                                   |
 
    The four `env.*` codes are about this machine, not about the target, so retrying the same window is pointless:
@@ -1599,6 +1698,11 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
 4. **Do not treat a non-zero exit code as total failure**: on partial success `captured` is greater than 0 while the
    exit code is 7, the images already on disk are perfectly usable, and `images[].source` / `path` / `scope` name the
    channel, the route inside it, and whether that frame is the window's own pixels or desktop pixels.
+   `images[].history.status` is **a different question again**: that image was delivered, while its history copy may
+   be `failed` or `skipped`. Use the picture as it is and **do not re-capture** (a re-capture neither supplies the
+   copy nor comes free — it asks for one more approval); what needs attention is whether that location can be written
+   at all, or accept that this one has only its primary output. See
+   [Screenshot history archive](#screenshot-history-archive-on-by-default).
 5. **Exit code 0 does not mean the picture is correct**: protected content and some player drivers hand you black
    frames while reporting success. The tool now tells you when the whole image really is one colour — it compares
    every pixel against the top-left one (all four BGRA bytes, row padding excluded) and emits
@@ -1707,6 +1811,17 @@ to prove the install works by taking a screenshot.
   so it writes **no file at all** and stops with a non-zero exit code, recording the reason in its `/LOG` file.
 - **Uninstall** removes only the files the installer recorded. Files you added, logs, and neighbouring skills stay;
   nothing recursively deletes the parent folders (`.agents`, `skills`) or your chosen folder's other contents.
+- **Screenshot history** (`<install folder>\history\<date>\`, see
+  [Screenshot history archive](#screenshot-history-archive-on-by-default)) counts as the same class as "files you
+  added later" in the installer's eyes: it is not in the managed file list and not in the release manifest
+  (`install-manifest.json` / `payload.sha256.txt`). **Upgrade, reinstall and uninstall never delete it, never modify
+  it and never back it up as a user edit**; its presence does not make the installer treat the folder as one it does
+  not own (ownership is decided by the ownership marker alone). After uninstall the history is still there in that
+  folder, and the location is stated on the finish page and in this README; to clear it, delete that tree yourself
+  explicitly.
+- **History does not migrate when you change the install folder**: the old pictures stay beside the old folder's own
+  `history\` (the archive follows the exe that ran at the time). To keep using the old batch, move it over yourself
+  or let the tool know about both locations.
 - **A file is in use**: setup reports the locked file and rolls back. It does not kill a running program to force the
   install through, and it does not claim success.
 - **The install folder is blocked by a security policy**: when the chosen folder sits under a policy that forbids
@@ -1743,6 +1858,8 @@ to prove the install works by taking a screenshot.
 | `.\tests\cursor.ps1`        | `--cursor`: the per-path registry, how the chain narrows on both sides of the 19041 line, how `cursorRequested` / `cursorEffective` / `cursorBasis` are composed, and a source scan that fails if any pointer-shape fetching, cursor drawing or pointer-moving call ever appears                                                                                                                                                                                                               |
 | `.\tests\hdr.ps1`           | `--hdr`: DXGI format and display color-space classification (unrecognized stays `unknown`), the tone-curve properties, `ConvertWideFrameToSdrBgra8` point by point, the result-key group, and the honest SDR on-device case (keys absent by default, `note.hdr_source_sdr` when processing was asked of an SDR frame)                                                                                                                                                                          |
 | `.\tests\save.ps1`          | File delivery: every `--no-overwrite` boolean form against a real file, batch name planning and collision detection, atomic commit against a locked target / a directory / a missing directory / a killed run, and the concurrent `--no-overwrite` race                                                                                                                                                                                                                                        |
+| `.\tests\history.ps1`       | Screenshot history archive: the offline layer against the production `HistoryArchive` + `Delivery` + `FileSave` — naming and the local date from one clock reading, two images in the same instant / a clock rolled back / crossing midnight, exclusive commit on a taken name and the retry under the next one, failure classification per route, no self-overwrite when the planned primary name sits inside the history tree, plus "primary succeeded and the copy failed", "a failed primary and a half-emitted stdout publish no copy", "the copy never starts when the budget is spent after the primary landed" and "an exception from the archive does not erase the delivery facts" (`build\ecapture-history-tests.exe`); the on-device layer copies the exe into a per-run folder and checks with self-made windows that the landing point follows the program itself, that primary and copy match byte for byte / by SHA-256, the batch and the `--out -` route, that read-only and argument failures create no history at all, and the partial-success `7` at a reparse point and when "that name is a file" |
+| `.\clean.ps1`               | Shares the one judgement in `scripts\build-clean.psm1` with `.\build.ps1 -Clean`: clears the outputs under `build\` but **preserves `build\history`** beside the development exe (real screenshot data, not a build artifact); refuses, with the reason stated, when `build\` or `build\history` is a reparse point or when that name is held by a file, never silently deleting or moving it (`tests\history.ps1` section 10 checks that same body) |
 | `.\tests\screen.ps1`        | Whole-screen capture over the three desktop routes with a red-block placement and a negative control. Only `-SimulateConsent` answers, and only on a desktop dedicated to testing                                                                                                                                                                                                                                                                                                              |
 | `.\tests\smoke.ps1`         | End to end: capture its own test window, validate PNG size and pixel content                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `.\tests\invoker.ps1`       | The shared test invoker itself: argv quoting, both streams drained at once, binary output, a hung child, per-run scratch dirs                                                                                                                                                                                                                                                                                                                                                                  |

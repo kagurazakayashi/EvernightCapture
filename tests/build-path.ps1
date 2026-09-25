@@ -46,8 +46,11 @@ function New-RepoCopy {
     New-Item -ItemType Directory -Force -Path $Dest | Out-Null
     # tests\ 也要带上：CMakeLists.txt 里每个离线判据目标都写的是 tests/*_state.cpp，
     # 不复制过去连 cmake 配置阶段都过不去（缺文件是 configure 期的硬错误，整份构建矩阵
-    # 会在每一种怪路径上一样地失败，判不到构建脚本本身）。依旧绝不带 build\ 与 .git\。
-    foreach ($leaf in @('CMakeLists.txt', 'build.ps1', 'src', 'resources', 'tests')) {
+    # 会在每一种怪路径上一样地失败，判不到构建脚本本身）。
+    # scripts\ 也要带上：build.ps1 -Clean 用的是 scripts\build-clean.psm1 那一份共享判据
+    # （清产物但保留 build\history）。少了它 -Clean 那几条会在 Import-Module 上失败，
+    # 而那判的是构建脚本的依赖闭包，不是历史保留本身。依旧绝不带 build\ 与 .git\。
+    foreach ($leaf in @('CMakeLists.txt', 'build.ps1', 'src', 'resources', 'tests', 'scripts')) {
         Copy-Item -LiteralPath (Join-Path $Source $leaf) -Destination $Dest -Recurse -Force
     }
     return (Join-Path $Dest 'build.ps1')

@@ -78,16 +78,6 @@ BatchClock MakeBatchClock() {
     return clock;
 }
 
-std::wstring ExtensionFor(ImageFormat fmt) {
-    switch (fmt) {
-        case ImageFormat::kJpeg: return L".jpg";
-        case ImageFormat::kBmp: return L".bmp";
-        case ImageFormat::kTiff: return L".tif";
-        case ImageFormat::kGif: return L".gif";
-        default: return L".png";
-    }
-}
-
 bool HasExtension(const std::wstring& path) {
     const size_t slash = path.find_last_of(L"\\/");
     const size_t dot = path.find_last_of(L'.');
@@ -147,14 +137,26 @@ std::wstring Expand(const std::wstring& pattern, const OutputTarget& target, siz
     return out;
 }
 
+}  // namespace
+
+std::wstring ExtensionFor(ImageFormat fmt) {
+    switch (fmt) {
+        case ImageFormat::kJpeg: return L".jpg";
+        case ImageFormat::kBmp: return L".bmp";
+        case ImageFormat::kTiff: return L".tif";
+        case ImageFormat::kGif: return L".gif";
+        default: return L".png";
+    }
+}
+
 // 路径比较：不区分大小写（Windows 文件系统默认如此），并且刻意不走区域敏感规则 ——
 // culture 比较会把某些看似不同的名字判成相等，Ordinal 只按码位简单折叠大小写。
+// 除了整批输出名的碰撞预检，历史归档那一步也用同一个比较判"这一次要写的名字是不是就是主输出"
+// （判据只有一份，声明见 OutputPlan.h）。
 bool SameWindowsPath(const std::wstring& a, const std::wstring& b) {
     return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
                                 static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
-
-}  // namespace
 
 std::wstring SafeFileNamePart(const std::wstring& raw) {
     std::wstring s;

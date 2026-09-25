@@ -2,6 +2,15 @@
 /A*.md
 /build
 
+# 截图历史归档（history\）：那是持续保留的截图数据，不是构建产物、也不是可以随手重建的缓存，
+# 所以不入 git、不打进安装包、也不上传成 CI 工件。归档跟着"实际运行的那个 exe 所在目录"走，
+# 本仓库里会长出这一棵的只有下面两处：
+#   * build\history —— 开发版 ECAPTURE.EXE 就在 build\ 里，已由上面 /build 那条盖住，这里不再写。
+#   * 仓库内那份 Skill 目录 —— .agents\skills\<技能名>\history\，把 exe 放在那儿跑过一次真截图就有。
+# 定位到约定位置即可，绝不写 **/history/ 这种通配：那会把源码与测试夹具一并屏蔽掉。
+# tests\ 的临时夹具一律建在 %TEMP%（判据只清理本次自己拥有的目录），不在这里出现。
+/.agents/skills/*/history/
+
 # Created by https://www.toptal.com/developers/gitignore/api/c++,cmake,linux,macos,windows,visualstudio,visualstudiocode,ninja
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,cmake,linux,macos,windows,visualstudio,visualstudiocode,ninja
 

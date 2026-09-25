@@ -25,6 +25,15 @@ struct OutputTarget {
 // 整段撞上保留设备名（CON / COM1 / LPT1…）时加前缀。全被清空时返回 "_"。
 std::wstring SafeFileNamePart(const std::wstring& raw);
 
+// 一个编码格式对应的那个扩展名（带点）。整批输出名与历史归档名共用**这一份**映射：
+// 归档文件的扩展名要说的是"这一张真被编成了什么容器"，所以它必须由编码实际所用的那个
+// ImageFormat 算出来，而不是从主输出的名字里抠出来再猜一遍。
+std::wstring ExtensionFor(ImageFormat fmt);
+
+// Windows 路径比较（不区分大小写、Ordinal）。整批碰撞预检与"这一次要写的归档名是不是就是
+// 主输出那一个"共用同一条判据，免得两处对"同一个文件"给出两种答案。
+bool SameWindowsPath(const std::wstring& a, const std::wstring& b);
+
 // 替整批目标算出最终的绝对输出路径，下标与 targets 一一对应（序号从 1 起，就是 %i 的值）。
 // * 模板里没有 % 且目标多于一个 -> 沿用"在扩展名前追加 _序号"的约定；
 // * 没有扩展名 -> 按 --format 补上，并只发一条 note.output_extension_appended；

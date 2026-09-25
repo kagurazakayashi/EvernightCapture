@@ -297,6 +297,10 @@ ConsentReply DialogConsentPrompt::Ask(const ConsentQuestion& q) {
                                                                    L"consent.more_targets")) +
             L"\r\n\r\n";
     body += Msg(desktop ? L"consent.scope_desktop" : L"consent.scope_window") + L"\r\n";
+    // 副本这件事要说在人点头之前：批准的是"截这几扇窗口、写到这几个名字"，而程序自己的目录里
+    // 还会另存一份不自动清理的历史图。归档根解析不出来的那一次（那一路走不通）就不说这句，
+    // 免得承诺一份根本不会存在的拷贝。
+    if (q.historyCopy) body += Msg(L"consent.history") + L"\r\n";
     // 桌面那一级必须把"--yes 在这儿没用"写在人眼前：不然调用方以为加了开关就等于授权。
     if (desktop && q.yesGiven) body += Msg(L"consent.yes_desktop") + L"\r\n";
     if (!desktop && !q.yesGiven) body += Msg(L"consent.yes_window") + L"\r\n";
@@ -376,6 +380,10 @@ ConsentQuestion ConsentGate::MakeQuestion(const wchar_t* path, PixelScope scope,
                                  static_cast<long long>(t.area.bottom - t.area.top)));
     }
     q.outputs = snap.outputs;
+    // 历史副本这一句与目标清单、区域一起进同一轮问答：人点头批准的是"这些目标、这些输出、
+    // 并且程序自己那份目录里还会留一份持久副本"，不是只批准了前两样。它不参与区域与拓扑的
+    // 变化判定（一次运行里不会中途变），所以不必进快照那份。
+    q.historyCopy = config_.historyCopy;
     return q;
 }
 

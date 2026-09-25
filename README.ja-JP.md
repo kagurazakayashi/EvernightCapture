@@ -56,6 +56,12 @@ Windows 11 の `magnification.dll` はもはや `MagGetImage` をエクスポー
   プロセスで走るので、フリーズした対象ウィンドウがこのツールをフリーズできなくなりました
 - **4 か国語のメッセージ**：`zh-CN` / `zh-TW` / `en` / `ja`。既定はシステム表示言語に従い、すべて exe 内のリソースにコンパイル済み
 - **機械が読む JSON**：画面取得結果とエラーだけを含み、ツール名・バージョン・schema・引数のエコーバックのようなメタ情報は載せない
+- **納品した画像は履歴にもう 1 枚の独立したコピーを残す**：既定で有効で、**実際に走っているその exe の隣の**
+  `history\ローカル日付\`（`history\YYYY-MM-DD\`）に別のコピーを書く。使うのは主納品で**すでに符号化済みのバイト列**
+  （再取得も再符号化も主出力ファイルの読み直しもハードリンクもせず）、既存の履歴を決して上書きしない。主画像は納品済み
+  でコピーだけが着地しなかった場合は部分成功（終了コード `7`。どの型かは `images[].history` が書く）。自動の
+  ローテーションも自動削除もないので、整理はユーザー自身が明示的に行う。完全な規則は下文
+  [スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) を参照
 - **画面取得なしでウィンドウを一覧・検査できる**：`--list` は該当ウィンドウを構造化 JSON で返す（ハンドル、PID、クラス名、タイトル、イメージ名、物理矩形、表示/最小化、Z 順、後続の画面取得が再確認する身元欄）。複数一致は `--offset` / `--limit` でページ送りし、画面取得の歧義にしない。`--inspect` は 1 窓を項目ごとに検査し、複数一致なら代わりを選ばずに歧義として返す。この 2 つはピクセルも取らず確認も出さずファイルも書かずウィンドウに触れず、`--yes` は効果を持たず、返すものは明示されたスナップショットである
 - **能力を読み取りで照会できる**：`--capabilities` / `--diagnostics` は、ピクセルも取らず確認も出さずファイルも書かず通信もしないで、この機がいま通せる経路、`--yes` が実際に及ぶ範囲、検証可能なビルド識別子を返す。「このビルドにその経路がある」「いまこの機で通せる」「本プロジェクトがこういうシステムで実測した」は別々の欄として書き分け、答えが出なければ `unknown` をそのまま返す。実際の撮影や符号化で能力を探ることはしない
 
@@ -183,7 +189,7 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
           --help / --version、および条件なしのときはテキスト
 終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
         6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
-現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること
+現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること；引き渡せた画像はプログラムがある場所の history にもコピーを1枚残します（自動消去はしません）
 実行環境: 64 ビット版 Windows、宣言上の下限はビルド 18362（Windows 10 version 1903）、実測はビルド 19045 のみ。この機のバージョンでは提供されない経路は、取得も確認表示も前に env.os_too_old / env.channel_unsupported として報告します（前者は経路を変えても変わりません）。--verbose の input.osBuild と input.captureChain に今回の利用可能な経路が出力されます
 
 例:
@@ -291,11 +297,21 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
       "title": "D:\\share\\EvernightCapture - エクスプローラー",
       "class": "CabinetWClass",
       "image": "explorer.exe",
-      "elapsedMs": 156
+      "elapsedMs": 156,
+      "history": {
+        "status": "saved",
+        "file": "D:\\shots\\history\\2026-10-10\\20261010-113122-31468-1a2b3c4d5e6f-1.png"
+      }
     }
   ]
 }
 ```
+
+この 1 枚はほかに `history` の段を帯びている：主納品の外にもう 1 つ置いた独立コピーの行き先である（既定で有効で、
+位置は実際に走っているプログラムのディレクトリに付いて回る。規則と各コードの意味は
+[スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) 参照）。そこは**2 つ目の納品**の結論で、
+上の `file`・`bytes`・`captured` には手をつけない —— コピーが失敗してもその画像は納品済みのままであり、終了コードは
+部分成功の `7` になる。
 
 モニタの画像（`--monitor` かつウィンドウ条件が無いとき）は帰属するウィンドウが無いので、
 `monitor` / `device` / `primary` の 3 フィールドに置き換わり、`hwnd` / `pid` / `title` / `class` / `image` は
@@ -613,6 +629,11 @@ JSON は丸ごと stderr へ移り、各診断は実際にそのステップが�
 変わりがないエラー——メモリ枯渇、グラフィックデバイスの喪失（`DXGI_ERROR_DEVICE_REMOVED` / `DXGI_ERROR_DEVICE_RESET` /
 `DXGI_ERROR_DEVICE_HUNG`）——は 1 件ずつ試し続けるのではなく、一括分を明確に打ち切る。アクセス拒否や人の拒否は、
 フォールバックを続ける理由にならない。
+**履歴コピーの失敗もこの部分成功の一種である**：画像は `--out` のとおりに納品済みなのに
+`images[].history.status` が `failed`（または `skipped`）と書かれ、`errors` に `history.*`（`stage` は `history`）が
+1 件増えているなら、終了コードは `0` ではなく `7` であり、「何も書いていない」側の `8` でも決してない —— 主画像は
+消えず、すでに発出した標準出力はロールバックされず、呼び出し側がこのために再取得する必要もない
+（[スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) 参照）。
 
 読み取り専用の環境照会 3 つ（`--capabilities` / `--diagnostics` / `--screens`）が使う番号は `0` と `1` だけである。`0` =
 その文書を出し終えた（なかに「このマシンは古くてどの経路も使えない」と書いてあっても同じ。
@@ -679,17 +700,18 @@ HRESULT を返す。
 
 ### プロセスの完全性レベル
 
-ディレクトリには明示的な必須完全性ラベルを付けられる（`icacls` で `Mandatory Label\Low Mandatory Level` と表示される）。ラベルは中のファイルすべてに継承されるので、そのパスから起動したプロセスは medium 未満で走る。すると互いに無関係な 3 つが壊れる。これまで 3 つはどれも同じ「取得失敗／書き込み失敗」の一行にしか見えず、呼び出し側は経路を替え、期限を延ばし、再試行したが、いずれも無駄だった：
+**この層の証拠はただ 1 つある**：`--capabilities` / `--diagnostics` の `session.integrityLevel` だけで、そこで尋ねるのは ECAPTURE 自身のプロセスのトークンである。「そのディレクトリに `Mandatory Label\Low Mandatory Level` の明示的な必須ラベルが掛かっている」「その中のファイルが継承するラベル」「いまの自分の shell の `whoami /groups`」は互いに代わりがきかない 3 つの別事実 —— 上の 2 つはそこから起動したプロセスを medium 未満へ連れ込み*うる*成因で、3 つ目は別プロセスの話である。低完全性のプロセスが medium のディレクトリにファイルを作ろうとすれば拒否される（`io.write_failed` + Win32 `5`）が、**アクセス拒否の成因はこれ 1 つではない**：同じコードの組みはファイルにロックされている・パスそのものが不正・そのディレクトリが本当に書き込みを断っている、からも出る。よってこの節が語るのは「medium 未満のとき *たいてい* どの手のことが壊れるか」であって、「このコードを見たら必ずこの原因」という照合表ではない。そのパスから起動したプロセスが medium 未満へ連れ込まれると、壊れるのはふつう互いに無関係な次の 3 類であり、これまで 3 つはどれも同じ「取得失敗／書き込み失敗」の一行にしか見えず、呼び出し側は経路を替え、期限を延ばし、再試行したが、いずれも無駄だった：
 
 - `wgc`：フレーム取得が拒否される。`GraphicsCaptureItem.CreateForWindow` が `E_ACCESSDENIED`（`0x80070005`）を返す
 - `printwindow`：拒否される。Win32 エラー `5` —— 低完全性のプロセスは medium 完全性のウィンドウへプロセス横断の描画メッセージを送れない（UIPI）
 - 保存：低完全性のプロセスは medium 完全性のディレクトリにファイルを作れない。よって `io.write_failed` + `5` になるが、**画像はすでにメモリ内で得られている**。同じラベルの付いたディレクトリへの書き出しは成功する
 
-このレベルが**止めていない**もの（実測した機での話）：`dwm`（`dwm.thumbnail` 経路）は出力ディレクトリがファイル作成を通す限りそのまま 1 枚出す。`bitblt.screen` / `duplication.frame` もそのまま出る —— この 2 本はもともと本人の確認が要る別層の話で（《撮影の承諾と --yes》参照）、完全性レベルとは無関係だ。だから低完全性は「この機では画面を取得できない」ではなく、他の経路が必ず成功することも約束しない。`--capabilities` の各経路の `status` はこの層で変わらない。あの欄が扱うのはバージョン下限と画面トポロジーの話である。実測範囲はこの 19045 の開発機 1 台限り（Windows 10 version 22H2、build 19045、x64、2026-10-09）で、一般的な結論にはしない：1 バイトも同じ exe を `%UserProfile%\.agents` とその子ディレクトリに置くと失敗し、試した他の場所（`%LOCALAPPDATA%\Temp`、`%APPDATA%\Roaming`、`%UserProfile%`、このリポジトリの `build\`）はすべて成功した。確かめ方：
+この層が本機で**止めなかった**もの：`--capture dwm`（`dwm.thumbnail` 経路）は出力ディレクトリがファイル作成を通す限りそのまま 1 枚出す。`bitblt.screen` / `duplication.frame` もそのまま出る —— この 2 本はもともと本人が直接答える承認が要る別層の話である（《撮影の承諾と --yes》参照）。この 2 文は**この開発機 1 台で実測した 1 回の結果**であって、あらゆる機械への約束ではない：低完全性は「この機では画面を取得できない」の意味ではなく、他の経路に替えれば必ず成功するともここでは言わない。そして `dwm` のほうはウィンドウ自身が画面を返さないときに**デスクトップのピクセルを読む退路へ昇格する**ので、その場合はやっぱり必ず人に聞く —— 承諾の階層は完全性レベルでは変わらない。`--capabilities` の各経路の `status` はこの層で変わらない。あの欄が扱うのはバージョン下限と画面トポロジーの話である。実測範囲はこの 19045 の開発機 1 台限り（Windows 10 version 22H2、build 19045、x64、2026-10-09）で、一般的な結論にはしない：1 バイトも同じ exe を `%UserProfile%\.agents` とその子ディレクトリに置くと失敗し、試した他の場所（`%LOCALAPPDATA%\Temp`、`%APPDATA%\Roaming`、`%UserProfile%`、このリポジトリの `build\`）はすべて成功した。確かめるときは次の 3 行を別々の事実として読む：
 
 ```powershell
-icacls "%UserProfile%\.agents"                # ディレクトリに Mandatory Label\Low Mandatory Level が付いているか
-whoami /groups | findstr /i "Mandatory Label"   # いまのプロセスのレベル（この shell は S-1-16-8192 = Medium）
+icacls "%UserProfile%\.agents"                # そのディレクトリに Mandatory Label\Low Mandatory Level が付いているか（成因の手がかり 1 つ）
+whoami /groups | findstr /i "Mandatory Label"   # いまこの shell 自身の層（本機は S-1-16-8192 = Medium）。ECAPTURE の層ではない
+ECAPTURE.EXE --capabilities | findstr integrityLevel   # 本ツールのプロセス自身の証拠：medium 未満ならここに low と書かれる
 ```
 
 本ツールはこの層を報告する。`--capabilities` / `--diagnostics` の `session` に `integrityLevel` が加わり（ASCII token：`unknown` / `untrusted` / `low` / `medium` / `high` / `system` / `protected_process`。答えが出なければ `unknown` で、「十分」にも「降格済み」にも報告しない）、`medium` 未満では `caveats` に `process_integrity_below_medium` が 1 件増え、`--diagnostics -v` の probes には `tokenIntegrityLevel` の 1 問が増える。実際の撮影で自プロセスが `medium` 未満かつ、その 1 ラウンドに「システムの拒否」型の失敗（HRESULT `0x80070005` か Win32 `5`、フレーム取得・ファイル書き込み・標準出力書き込みの 3 段階のいずれか）があれば、各失敗の `hint` に実行可能な説明が 1 文足され、ラウンド全体として `notes` の `note.low_integrity` が 1 件（`target` / `backend` / `stage` 付き）加わる。`code`、`stage`、`hresult` / `win32`、終了コード、すでに納品した画像は一切そのままなので、`code` で分岐してきた呼び出し側は影響を受けない。`--yes` と承諾の階層も変わらない。`note.low_integrity` は notes なので `--quiet` で隠れるが、`errors` に足された `hint` は `--quiet` の影響を受けない。
@@ -697,8 +719,8 @@ whoami /groups | findstr /i "Mandatory Label"   # いまのプロセスのレベ
 対処は 3 つ、安い順：
 
 1. `--out` を同じ低完全性ラベルの付いたディレクトリ内のパスに向ける（ツールはディレクトリを作らないので、その階層は先に存在している必要がある）
-2. ウィンドウ自身の画面が欲しいときは `--capture dwm`（この機ではこのレベルでもそのまま出ることが実測済み）
-3. この skill を降格されていない場所へインストールするか、そのディレクトリの所有者がラベルを外す。ラベル外しはセキュリティ設定の変更なので、所有者自身の判断に任される
+2. ウィンドウ自身の画面が欲しいときは `--capture dwm`（この開発機ではこの層でもそのまま出ることが実測済み。ただしこれはあらゆる機械への約束ではなく、内部でデスクトップのピクセルを読む退路へ昇格したときはやっぱり必ず人に聞く）
+3. この skill を降格されていない場所へインストールするか、そのディレクトリの所有者がラベルを外す —— **ラベルの変更、ACL の変更、インストール先の変更、完全性レベルの変更は、いずれも本ツールが自動で行う範囲にない**。システムのセキュリティ設定を変える話なので、それを所有する者が個別に決め、個別に承認する。本ツールは昇格もこれらの設定変更も「画面取得を通すため」にはしない。
 
 **管理者として実行することがこのヒントの答えではない**し、メッセージはその行為も勧めていない。
 
@@ -738,9 +760,10 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
 | `cursor`                              | `--cursor` の話：`default`（このオプションを付けないときの扱い）、3 つの値、ただ 1 つのスイッチを `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine` で書き、続いて登録済みの内部経路 1 行ごとに `capability`（`settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`）、`reason`、`include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、加えて `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。duplication の 2 経路は `capability: pointer_state_unverified` で `include` / `exclude` とも `no` —— デスクトップ フレームにはポインターがすでに描かれている可能性があり、本ツールはポインター形状を合成しないが、それは画素にポインターが無い証明にはならない。撮って能力を探ることはしないので、登録表に無い経路は推測の答えではなく `unknown` を読む                                                                                                                                                                                                                                                                                                                                                                        |
 | `color`                               | `--hdr` の話：`default`（このオプションを付けないときの扱い）、3 つの値（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` は「このビルドが広色域フレームを運べるか + どう変換するか」を言い、その画面が今 HDR モードかどうかは聞かない（reason は `hdr_display_mode_not_probed`）。`verifiedOnThisMachine` は常に `no`（本プロジェクトに HDR ディスプレイが無いので色彩の受け入れ合格を主張しない）。登録済みの内部経路 1 行ごとに `capability` —— `wide_gamut_capable`（`wgc` / `screen.wgc` のみ）、`wide_gamut_unverified`（`duplication.frame` / `screen.duplication`。デスクトップ面は FP16 や 10 ビットで届く可能性がありますが、本ビルドは `DuplicateOutput` の前にディスプレイの色空間を尋ねないので、何を得たかの証明も保証もできない）、`sdr_source_only`（8 ビット DC を読む経路）、`unregistered` —— および `honorsExplicitPolicy`（`true` は `wgc` の 2 行だけ。「本ビルドで `tonemap` / `refuse` を実現できるのは wgc の 2 経路のみ」の機械可読版）。加えて `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR は常に 8 ビット SDR へ変換して納品し、HDR ネイティブ画像は出さない）              |
 | `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `history`                             | スクリーンショット履歴アーカイブの**規則**の自己申告（既定で有効）：`enabledByDefault: true`、`relativeTo: "executable-directory"`（実際に走っているあの exe に付いて回る。作業ディレクトリでも `--out` のディレクトリでもない）、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`（コピーは主納品で符号化済みのバイト列を使う：再取得・再符号化・主出力ファイルの読み直し・ハードリンクはいずれも無し）、`commit: "exclusive-create"`（排他的作成で、既存の履歴ファイルを絶対に上書きしない）、`created: "after-first-delivered-image"`（読み取り専用の照会と失敗した回はディレクトリを 1 つも作らない）、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`、加えてコピーだけが失敗したときの部分成功の終了コード `partialSuccessExit: 7`。この段のどのフィールドも「今回そこに書き込めた」という主張ではない —— あの話は撮影結果の `images[].history` にあり、ここでは「その場所へ書き込めるか」すら試していない（`caveats` に `history_root_writability_not_probed` が常に付く）。しかも段全体がプログラムディレクトリからの相対表記で、絶対パスは含まない |
 | `limits`                              | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `privacy`                             | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `caveats`                             | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品し、明示的な `tonemap` / `refuse` の要求を満たせるのは `wgc` の 2 経路だけ） |
+| `caveats`                             | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品し、明示的な `tonemap` / `refuse` の要求を満たせるのは `wgc` の 2 経路だけ）、そして常に `history_root_writability_not_probed`（`history` 段が語るのはアーカイブの規則であって、この照会はその場所へ書き込みを試しておらず、ある回の着地が必ず成功するとも予測しない） |
 
 両方の文書は**同一の**判定関数（`src/EnvReport.cpp` の `BuildEnvReport`）から出る。違いは段落の取捨だけで、
 `--diagnostics` は `build` 段（PE のリンク時刻・機械種別・イメージサイズ・subsystem）を常に載せ、
@@ -1373,6 +1396,37 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 しかも標準出力は 1 回に 1 枚しか渡さないため、あのストリームへ一括分の画像が並ぶことはない
 （「出力の形」の規則を参照）。
 
+## スクリーンショット履歴アーカイブ（既定で有効）
+
+**主納品を完了した**画像 1 枚ごとに、ユーザーが書いた出力とは別に、**実際に走っているその `ECAPTURE.EXE` のあるディレクトリ**下の `history\YYYY-MM-DD\`（ローカル日付ごとのディレクトリ）へ独立したコピーが 1 枚更に残される。開発版の exe は `build\` にあるので、開発中に撮った画像の履歴は `build\history\` に入る。カスタムディレクトリへインストールしたなら、履歴はそのディレクトリの中にある —— アーカイブはプログラム自身に付いて回り、作業ディレクトリにも `--out` のディレクトリにも、特定の既定インストール位置にも付いて回らない。
+
+| 項目 | 挙動 |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 出所 | 主納品で**すでに符号化済みのバイト列**を使う：再取得も再符号化もしないし、主出力ファイルを読み直すこともしない（あのファイルはほかのプログラムに書き換えられている可能性がある）、ハードリンクも作らない。その後で主出力を消したり上書きしたりしても、履歴側の 1 枚には影響しない。 |
+| 入口 | ウィンドウ、モニタ全体、`--all` / `--monitor all` の一括、`--roi` / `--client-area`、`--scale`、5 種類の符号化形式、`--out -` —— すべて同じアーカイブの入口を通る。 |
+| 時機 | 実際に画面を取得して主納品が成功したあとに限り、必要になった時点でディレクトリを作りファイルを書く。`--capabilities` / `--diagnostics` / `--screens` / `--list` / `--inspect` / `--help` / `--version`、引数エラー、一致なし、`--dry-run`、人が「いいえ」と答えた回、有効な画像が 1 枚も無い回はディレクトリを 1 つも作らず、その場所が書き込めるかどうかを探ることもしない。 |
+| 名前 | 1 回のアーカイブ判断でローカル時刻は 1 回だけ読む。ディレクトリ名とファイル名は同じ時刻から出る（日付をまたいだときに「ディレクトリは今日、ファイル名は明日」が起きない）：`YYYYMMDD-HHMMSS-<PID>-<識別子>-<連番>.<拡張子>`。拡張子は、その画像が実際に符号化されたコンテナに従う。ファイル名にウィンドウタイトル、デバイス名、ユーザー名、そして絶対パスは一切入らない。 |
+| 確定 | 本番の「置き換えを許さない」原子的リネームをそのまま使う：排他的作成で、既存の名前に当たったら次の連番をもう一度試し、それでも尽きたらはっきり `history.file_exists` と報告する。**既存の履歴ファイルを絶対に上書きしない**ので、複数プロセスが同時に撮ってもシステムの時計が巻き戻っても、すでに残っている 1 枚は消えない。 |
+| 主な成果物との関係 | 2 回の納品で 2 つの場所（別のボリュームに乗り得る）であり、結論もそれぞれ別である。この 2 か所をまたいでまとめて成功・まとめて失敗するトランザクションは約束しない。主出力が済んでいない間はコピーを公開しない（標準出力の半分出も済んだ扱いにはしない）。主画像が着地したあとでコピーだけが失敗したなら、主画像は消えず、発出済みの標準出力はロールバックされず、再取得もしない。`images` と `captured` はいつものとおりで、終了コードは部分成功の `7` を返す。 |
+| 保持 | 自動のローテーションなし、日数や容量による削除なし、バックグラウンドのスキャンなし、送信なし。履歴は永続の画面取得データであって、いつでも作り直せるキャッシュではない：`.\clean.ps1` と `.\build.ps1 -Clean` は成果物を消すが **`build\history` は残す**（安全に残せない場合は理由を述べて明示的に拒否し、黙って削除も移設もしない）、インストールパッケージには入らずリリース台帳にも書かれず、アップグレードもアンインストールも触らない。整理はユーザー自身が明示的に行う。 |
+| インストール先を変えたとき | アーカイブはそのときに走っていた exe に付いて回る。ディレクトリを替えても**古い履歴は移行しない**。古い一括は古いディレクトリに残ったままなので、そちらを探しに行くなら `--capabilities` の `history.location` を古い位置に対して見てください。 |
+
+結果のその段は `images[].history`（納品の事実なので `--quiet` でも隠れない）：
+
+| キー     | 意味                                                                                                                                     |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `status` | `saved` = コピーを排他的に確定した。`failed` = 書き始めたが確定しなかった。`skipped` = そもそもコピーの書き込みを開始しなかった |
+| `file`   | `saved` のときだけ現れ、そのときにはディスクに実在する。失敗時に「これから使うはずだった名前」をコピーの実在のふりで渡すことはしない |
+| `code`   | `failed` / `skipped` のときの安定コード：`history.unavailable` / `history.write_failed` / `history.file_exists` / `history.budget_spent` / `history.same_file` |
+
+失敗の詳細（Win32 の生の値や、どの経路で通らなかったかを含む）は `errors` の同じコードの 1 件で、`stage` は `history` と書かれる。`skipped` の 2 とおいは「どの段階が失敗したか」を報告する素材がない（あの回はその段階にすら入っていない）ので、この欄にしか現れない。
+
+- `history.budget_spent`：`--timeout-ms` の自動処理の予算は 1 回の依頼で全ターゲット・全リトライが共有するたった 1 つであり、アーカイブは別枠をもらわない。誰も待ち合わせきれないバックグラウンドの書き手も残さない。主画像がたった今着地して期限を跨いだ回は、コピーにこれが記録され、**主画像とその納品の事実はそのまま残る**。
+- `history.same_file`：`--out` が `history\` の下に直接向けられていて、計算された名前がちょうど今回のアーカイブ名になるならコピーは書かない —— 書いたらたった今納品した 1 枚を自分で上書きするからである。両方欲しいなら主出力を他所へ書くこと。
+- 主出力が `history\` ツリーの下で名前が違う場合は、コピーは別名で普通にもう 1 枚残る。自分で自分を覆すことも、コピーがコピーを又取りに行く循環も起きない：コピーのバイト列はメモリ内の符号化バッファから来て、主出力ファイルを読むことは絶対にない。
+
+確認ダイアログは、人が「はい」と答える前に「このプログラム自身のディレクトリにもう 1 枚の永続コピーが更に加わる」ことを箱の上に出す（その経路のアーカイブ自身が説明できない回はその一文を書かない —— 存在するはずのないコピーを約束しない）。`--capabilities` の `history` 段が語るのはこの規則そのものであって、ある回の結末ではない —— ディレクトリも作らなければ書き込みも試みないので、`caveats` に `history_root_writability_not_probed` が常に付く。アーカイブの失敗は承諾の階層を決して変えず、「アーカイブを通すために」昇格したり ACL やディレクトリのラベルを変えたりすることもしない。
+
 ## メッセージの言語
 
 `--lang`（`-l`）で `zh-CN` / `zh-TW` / `en` / `ja` を選ぶ。付けないか `auto` にしたときは Windows の表示言語を使い、
@@ -1414,6 +1468,12 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 - 宣言上の下限（ビルド 18362）と実際にテストした環境（ビルド 19045、x64）は別々の数字で、`verifiedOnThisMachine` は
   本機を後の数字と**比較**した答えにすぎません。このバイナリは Windows 7 では読み込めず、Windows 8.1 では読めても
   エンコーダがありません。
+- 主出力と履歴コピーは**ボリュームをまたいだ 1 つのトランザクションではない**：別々の 2 回の納品で異なるボリュームへ
+  乗り得るので、両側の結果はそれぞれ別に出る。コピーが失敗しても主画像を絶対に消さず、発出済みの標準出力を決して
+  ロールバックせず、「コピーを埋めるために」再取得することも絶対にない。逆に主画像が納品できなければコピーを公開
+  しない。アーカイブは予算を別枠でもらわず、期限のないバックグラウンド書き込みもしない。履歴は自動ローテーションも
+  自動削除もしないが、それを止めるスイッチもこの版には無い —— 今回渡すのは「既定でもう 1 枚残す」ことと、信頼できる
+  失敗の意味づけだけである。
 
 **導出せずに「未検証」として記録している項目**（各行は、名前を挙げたテストがこの開発機で SKIP / 「未検証」と
 報告している内容そのものです。どれ一つ通ったとは主張していません）：
@@ -1428,6 +1488,8 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 | 19045 以外の Windows バージョン・ARM64・Server・リモートデスクトップ・対話デスクトップのないセッション・実際にエンコーダが欠けている状態 | ここでもう 1 つの OS は用意できない。判定は注入した偽のビルドに対しオフラインで実施（`tests\compat.ps1`、`tests\capabilities.ps1`）                            |
 | `tiff` と `gif` の `--scale`、およびその他のエンコーダ側の挙動                                                                           | `tests\scale.ps1` が実機で見るのは `png` / `bmp` / `jpeg` の 3 形式。残り 2 つはエンコーダ呼び出しを共有しますが判定されていません                             |
 | 能力照会が画像生成やダイアログ表示で能力を探っていないこと、および確認ダイアログが実際に画面へ出ること                                   | どちらも、探ることが報告しようとしていることそのものを実行してしまうことになる（`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`）       |
+| 履歴コピーが「本物のディスク満杯」「本物のアクセス拒否」に当たった現場                                                                       | この 2 つを用意するには本機のストレージ設定か ACL を触ることになり、本タスクでは認められていない。オフラインの層で判定するのは**分類**である（その呼び出しが返した win32 と安定コードをそのまま `errors` へ載せ、別の原因へ丸めず、その後に見えたタイムアウトで上書きもしない）。実機の層では「その名前がファイルである」「その名前がリパースポイントである」の 2 とおり、正直に用意できる現場を使う（`tests\history.ps1`） |
+| 人が本物の確認ダイアログで「いいえ」と答えた回に履歴を作らないこと                                                                             | 判定は本物の確認ダイアログを出さず、その答えを誰かの代わりに出すこともしない。「主納品が成功しなければコピーを公開しない」はオフラインの層で判定する（標準出力の半分出と書き込み失敗の 2 とおりで、アーカイブが一度も呼ばれないことを主張）。そのディレクトリが実際に増えていない側は `tests\consent.ps1` と `tests\history.ps1` の第 7 節がそれぞれ担当する |
 
 ## AI / スクリプトからの呼び出しガイド
 
@@ -1472,6 +1534,7 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7          | 決める前に `stage`（`match` / `capture` / `encode`）を読む。次の一手は新しい `--list` / `--screens` であって、`--capture` を変えることではない                                                                                                                                                                                                                       |
    | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7          | この**マシン**が要求に応えられない —— 下の段落を参照                                                                                                                                                                                                                                                                                                                 |
    | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8          | ディレクトリを作るか、衝突し得ない名前を選ぶ。`io.file_exists` は `--no-overwrite` が仕事をしただけ。ここに出る `io.timeout` は「書き出しがそもそも開始できなかった」ほうで、ファイルが実際に届いたのに書き込み後の期限再チェックだけが越えた場合は、その画像は `images` に残り、実行は終了コード `7`（納品 + エラー）を返す。《実行期限とブロックする呼び出し》参照 |
+   | `history.unavailable`、`history.write_failed`、`history.file_exists`、`history.budget_spent`、`history.same_file`                                                                                                                                                                                                                                                                                                                                                     | 7          | **主画像は納品済みで、着地しなかったのはあの履歴コピーだけ**（後ろの 2 つは「あの回そもそもコピーの書き込みを開始していない」）。`images[].history.status` と同じコードの `errors`（`stage=history`）を見ればどの経路かが分かる。**このために再取得しないこと** —— 撮り直してもコピーは埋まらず、人が承認すべき 1 枚が余計に増えるだけ。変えるべきはコマンドラインではなくその位置そのもの（書き込めるか、ディレクトリか、リパースポイントでないか） |
    | `capture.hdr_unsupported`、`capture.cursor_unsupported`、`capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1          | その選択肢の組み合わせは解析時に拒否された。確認ダイアログより前の話です                                                                                                                                                                                                                                                                                             |
 
    `env.*` の 4 つはその対象ではなく**このマシン**の話なので、同じウィンドウの再試行に意味がありません：
@@ -1496,6 +1559,10 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 4. **0 以外の終了コードを即・全滅と扱わないこと**：部分成功では `captured` は 0 より大きく終了コードは 7 だが、
    すでに書き上がった画像はそのまま使える。`images[].source` / `path` / `scope` が、実際に走ったチャネル、その
    内部のどの経路、そしてそのフレームがウィンドウ自身の画素かデスクトップの画素かを語ります。
+   `images[].history.status` は**まったく別の話**：その画像は納品済みで、そこの履歴コピーは `failed` や `skipped` に
+   なり得る。そういうときも画像はそのまま使い、**再取得しないこと**（撮り直してもコピーは埋まらず、人が承認すべき 1 枚が
+   余計に増えるだけ）。対処の対象はその位置が書き込めるかどうかで、「この 1 枚は主出力だけ」を受け入れてもよい
+   （[スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) 参照）。
 5. **終了コード 0 は「画面が正しい」の意味ではない**：保護されたコンテンツや一部のプレイヤーの
    ドライバは、成功を返しながらいっしょに黒フレームを渡してくる。ツール自体が「全体が一色か
    どうか」を教える——各ピクセルを左上のピクセルとバイト単位で比べ（BGRA の 4 チャンネルすべて、
@@ -1578,6 +1645,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 - **フォルダを変える**と二つ目の独立したコピーになる。古いフォルダはそのまま残る（勝手に移行・削除しない）。両方ある場合、アンインストール項目は別々に並ぶので、不要な方を消すか、ツールを一方だけに向ける。
 - **同名で本製品のものでないフォルダ**：`install-manifest.json` が無いと報告し、何かをする前に確認する。既存の中身を黙って上書きすることはない。`/VERYSILENT` による無人インストールでは尋ねる相手がいないため、**ファイルを一つも書かず**に非 0 の終了コードで中止し、理由は `/LOG` の日誌に残す。
 - **アンインストール**はインストーラーが記録したファイルだけを消す。あとから足したファイル、ログ、隣の Skill は残る；`.agents` や `skills` といった親フォルダを再帰的に削除しない。
+- **スクリーンショット履歴**（`<インストール先>\history\日付\`、[スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) 参照）はインストーラーの目に「あとから足したファイル」と同じ種類に映る：管理対象のリストにも、`install-manifest.json` / `payload.sha256.txt` のこのリリース台帳にも入っていない。**アップグレードも再インストールもアンインストールも、それを消さず、変更せず、ユーザーの変更としてバックアップすることもしない**。フォルダにこの木が 1 本増えても、インストーラーがこの場所を「本製品のものでないディレクトリ」と誤判定することはない（所有の判定はあの ownership マーカーの 1 つだけを見る）。アンインストールのあとも履歴はそのディレクトリに残り、位置は完了ページと README に書いてある。整理するならその木を自分で明示的に削除してください。
+- **インストール先を替えたときに履歴は移行しない**：撮った画像は古いディレクトリのあの `history\` の隣に残ったままになる（アーカイブはそのときに走っていた exe に付いて回る）。古い一括を引き続き使うなら、自分で持っていくか、ツールに 2 か所を同時に知らせる。
 - **ファイルが使用中**：インストーラーはロックされたファイルを報告してロールバックする。インストールを通すために実行中のプログラムを終了させることはなく、成功したふりもしない。
 - **インストール先がセキュリティポリシーで制限されている**：選んだフォルダが「その中のプログラムは一時ディレクトリを作成してはいけない」という方針（企業向けエンドポイント保護でよくある）の下にあると、その場でのアンインストールは `Setup was unable to create the directory "…-uninstall.tmp". Error 5` で失敗し、同梱セルフテストの `delivery` 層が「一時ディレクトリが作れるか」で失敗する。これは環境が拒否しているだけで製品の不具合ではない：別のフォルダに入れて直すか、管理者にこのフォルダを許可してもらう。`verify-install.ps1` の読み取り専用部分（ファイルハッシュ、ドキュメント参照、バイナリの同一性）は影響を受けず、これまで通り照合できる。
 - **「入れたのに AI が無視する」**：まずそのフォルダがツールの走査対象かを確かめ（上記）、次に版の文字列ではなくバイナリの同一性を照合する——`install-manifest.json` の `version`・`arch`・`buildId` を `ECAPTURE.EXE --capabilities` と突き合わせる。ソースチェックアウト隣の古い `ECAPTURE.EXE` は遅れていることがあるが、**新しく入れたものはそうならない**（そのインストーラー自身のビルドから来るため）。
@@ -1605,6 +1674,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 | `.\tests\cursor.ps1`        | `--cursor`：経路ごとの登録表、19041 の下限の両側で列が狭まる判定、`cursorRequested` / `cursorEffective` / `cursorBasis` の合成、ポインター形状の取得・ポインター描画・マウス移動の呼び出しが `src/` のどこかに現れたら失敗する見張り                                                                                                       |
 | `.\tests\hdr.ps1`           | `--hdr`：DXGI 形式と表示色空間の分類（認識できないものは `unknown` のまま）、トーン曲線の性質、`ConvertWideFrameToSdrBgra8` の逐点検証、結果のキー群、そして正直な SDR の実機ケース（既定ではキーが現れず、SDR フレームに処理を要求したときだけ `note.hdr_source_sdr`）                                                                    |
 | `.\tests\save.ps1`          | ファイル納入：実ファイルに対する `--no-overwrite` の各真偽表記、一括分の出力名プランと衝突検出、ロックされたターゲット / ディレクトリ / ディレクトリ無し / 強制終了に対するアトミックな確定、並発の上書き禁止                                                                                                                              |
+| `.\tests\history.ps1`       | スクリーンショット履歴アーカイブ：オフラインの層は本番の `HistoryArchive` + `Delivery` + `FileSave` に対して、命名とローカル日付が同じ 1 回の時刻から出る、同じ瞬間の 2 枚 / 時計の巻き戻し / 日付をまたぐ、同じ名の排他的確定と名前を変えてのリトライ、その経路が通らないときの失敗の分類、主出力の名前が history ツリーの中に入っても自分で自分を覆さない、そして「主画像は成功したがコピーが失敗」「主画像の失敗と標準出力の半分出ではコピーを公開しない」「主画像が着地したあとに予算が尽きたらコピーは開始しない」「アーカイブが何かを投げても納品の事実を消さない」を判定する（`build\ecapture-history-tests.exe`）。実機の層は exe を今回のフォルダへコピーし、自前のウィンドウで次のとおり確かめる —— 着地点がプログラム自身に付いて回る、主出力とコピーがバイト単位 / SHA-256 で同じ、一括と `--out -` の 2 経路、読み取り専用と引数失敗は履歴を 1 つも作らない、リパースポイントと「その名前がファイル」のときの部分成功 `7` |
+| `.\clean.ps1`               | `.\build.ps1 -Clean` と `scripts\build-clean.psm1` の 1 つの判定を共有する：`build\` の成果物は消すが、開発版 exe の隣の `build\history` は残す（あれは本物の画面取得データで、ビルド成果物ではない）。`build\` か `build\history` がリパースポイント、あるいはその名前がファイルにふさがれているときは理由を述べて明示的に拒否し、黙って削除も移設もしない（`tests\history.ps1` 第 10 節がこの本体に対して判定する） |
 | `.\tests\screen.ps1`        | 3 本のデスクトップ経路でのモニタ全体取得を、赤い塊の配置と陰性対照で検証。答えるのは `-SimulateConsent` を付けたときだけで、テスト専用のデスクトップに限る                                                                                                                                                                                 |
 | `.\tests\smoke.ps1`         | エンドツーエンド：自分のテストウィンドウを撮影し、PNG のサイズとピクセル内容を検証                                                                                                                                                                                                                                                         |
 | `.\tests\invoker.ps1`       | 共有のテスト起動ラッパー自身：argv のクォーティング、2 ストリームの同時消費、バイナリ出力、ハングした子プロセス、実行ごとの一時ディレクトリ                                                                                                                                                                                                |

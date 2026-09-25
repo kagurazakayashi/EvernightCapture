@@ -47,6 +47,10 @@ z 序，而拿到的畫面與 `bitblt` 等價。這段依據記在 `src/CliOptio
   都跑在一個工具能夠停下的輔助處理程序裡，所以卡死的目標視窗再也卡不住這個工具
 - **四語文案**：`zh-CN` / `zh-TW` / `en` / `ja`，預設跟隨系統顯示語言，全部編在 exe 的資源裡
 - **機器讀的 JSON**：只裝擷取結果與錯誤，不含工具名、版本、schema、參數回顯之類的元資訊
+- **每張成功的圖另存一份歷史副本**：預設開啟，寫在**實際執行的那個 exe 旁邊**的 `history\本地日期\` 裡，用的是
+  主交付那一份已經編碼的位元組（不重拍、不重新編碼、不去讀主輸出檔案、也不建硬連結），獨佔提交從不覆蓋既有歷史。
+  主圖已交付而副本沒落地時是部分成功（退出碼 `7`，`images[].history` 說清是哪一種），不自動輪轉也不自動刪除，
+  清理由使用者自己顯式做。完整規則見下文《截圖歷史歸檔（預設開啟）》
 - **視窗可以不截圖就列出來看清**：`--list` 把命中的視窗列成結構化 JSON（句柄、PID、類名、標題、映像名、物理矩形、可見/最小化、Z 序，以及後續截圖要複核的身份欄位），命中多個按 `--offset` / `--limit` 分頁而不是報截圖歧義；`--inspect` 逐項查清一扇視窗，命中多扇仍算歧義而不會替你挑一個。兩條都不取畫素、不彈框、不寫檔案、不觸碰任何視窗，`--yes` 對它們沒有作用，交回的是一份被明確標註為快照的結果
 - **能力可唯讀查詢**：`--capabilities` / `--diagnostics` 在不動一個像素、不彈確認框、不寫檔案、不連網的前提下
   問出這台機器現在能走哪幾條通道、`--yes` 到底管到哪一層，以及可核對的建置識別碼；「這個建置裡有這條路徑」、
@@ -174,7 +178,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
       --help / --version 以及不給條件時是文字
 退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
         6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
-目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在
+目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
 執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
 
 示例:
@@ -277,11 +281,19 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
       "title": "D:\\share\\EvernightCapture - 檔案總管",
       "class": "CabinetWClass",
       "image": "explorer.exe",
-      "elapsedMs": 156
+      "elapsedMs": 156,
+      "history": {
+        "status": "saved",
+        "file": "D:\\shots\\history\\2026-10-10\\20261010-113122-31468-1a2b3c4d5e6f-1.png"
+      }
     }
   ]
 }
 ```
+
+上面這一張另外帶 `history` 那一段：主交付之外那份獨立副本的下落（預設開啟，位置跟著實際執行的程式目錄，
+規則與各碼含義見[截圖歷史歸檔](#截圖歷史歸檔預設開啟)）。它是**第二次交付**的結論，改不到上面那個 `file`、
+`bytes` 與 `captured`：副本失敗時那張圖仍然算已經交付，而退出碼按部分成功給 `7`。
 
 螢幕圖（`--monitor` 且沒有視窗條件時）沒有視窗可歸屬，換成 `monitor` / `device` / `primary` 三個欄位，
 `hwnd` / `pid` / `title` / `class` / `image` 整個不出現——呼叫端依 `monitor` 是否存在區分兩種圖。
@@ -555,6 +567,10 @@ HDR 與縮小同時生效（這台開發機開不了 HDR）、跨螢幕混合 DP
 也不會有分別的錯誤會明確終止整批，而不是一條條試下去。存取被拒不是繼續退回的理由，被人拒絕也不是：一旦有人答
 「否」（或這個工作階段根本彈不出框），本次請求剩下的目標一律不再嘗試——不換後端、不重試、也不再問第二遍，
 之前已經完成的圖全部留在 `images` 裡。
+**歷史副本失敗也是這一種部分成功**：圖已經按 `--out` 交出去了，而 `images[].history.status` 寫著 `failed`
+（或 `skipped`）並且 `errors` 裡多一條 `history.*`（`stage` = `history`）時，退出碼是 `7` 而不是 `0`，
+也絕不是「什麼都沒寫」的 `8`——主圖不會被刪，已發出的標準輸出不會被回滾，呼叫端也不該為此重拍一次（見
+[截圖歷史歸檔](#截圖歷史歸檔預設開啟)）。
 
 唯讀查詢那三條（`--capabilities` / `--diagnostics` / `--screens`）只用 `0` 與 `1` 兩個編號：`0` = 這份文件出完了（哪怕裡面寫著
 「這台機器版本太低、哪幾條都不可用」——**查詢成功與截圖能成是兩件事**，呼叫端依 `status` 分支，而不是依退出碼猜環境）；
@@ -613,17 +629,32 @@ Windows 8.1 **可以**裝載也可以啟動 —— 在那上面起作用的正�
 
 ### 處理序完整性層級
 
-目錄可以帶上明示的強制完整性標籤（`icacls` 裡寫作 `Mandatory Label\Low Mandatory Level`），並繼承給目錄裡的每個檔案；從這條路徑啟動的處理程序因此低於 medium。跟著壞掉的是三類彼此無關的事，而它們過去都只報成一句普通的「採集失敗／寫入失敗」，呼叫端據此換後端、加期限、重試，全是白做功：
+**這一檔的憑證只有一個**：`--capabilities` / `--diagnostics` 裡 `session.integrityLevel`，它問的是 ECAPTURE
+自己那個處理程序那一檔。「目錄帶著 `Mandatory Label\Low Mandatory Level` 這條明示標籤」、「目錄裡的檔案繼承到的標籤」
+與「你此刻那個 shell 的 `whoami /groups`」是三條互不等價的事實——前兩條是*可能*把從那條路徑啟動的處理程序
+帶到更低那一檔的成因，第三條說的是另一個處理程序。低完整性處理程序向中完整性的目錄建立檔案會被拒
+（`io.write_failed` + Win32 `5`），而**存取被拒的成因不只這一條**：同一對碼也可能出自佔用、路徑本身不合
+或那個目錄真的不讓寫。所以這一節說的是「低於 medium 時*通常*壞在哪幾類事上」，不是一張「看到這個碼就一定是
+這個原因」的對照表。從這條路徑啟動的處理程序被帶到低於 medium 時，壞掉的通常是這三類彼此無關的事，而它們過去
+都只報成一句普通的「採集失敗／寫入失敗」，呼叫端據此換後端、加期限、重試，全是白做功：
 
 - `wgc`：取影格那一步被拒，`GraphicsCaptureItem.CreateForWindow` 回 `E_ACCESSDENIED`（`0x80070005`）
 - `printwindow`：被拒，Win32 錯誤碼 `5`——低完整性處理程序不能向中完整性視窗發那條跨處理程序繪製訊息（UIPI）
-- 落盤：低完整性處理程序不能在中完整性的目錄裡建立檔案，於是報 `io.write_failed` + `5`，而**影像已經在記憶體裡拿到了**；寫進同樣帶這條標籤的目錄就成功
+- 落盤：向中完整性的目錄建立檔案會被拒，於是報 `io.write_failed` + `5`，而**影像已經在記憶體裡拿到了**；寫進同樣帶這條標籤的目錄就成功
 
-這一檔沒擋掉的：本機上 `dwm`（`dwm.thumbnail` 那條）照常出圖，只要輸出目錄讓低完整性處理程序建檔；`bitblt.screen` / `duplication.frame` 也照常出圖——這兩條本來就要人親自批准，屬另一層的事（見《截圖授權與 --yes》）。所以低完整性不是「這台機器截不了圖」，這裡也沒說換一條就一定成功；`--capabilities` 裡各條通道的 `status` 不因這一檔被改動，那個欄位管的是版本下限與螢幕拓撲。實測範圍只有這台 19045 開發機（Windows 10 版本 22H2 x64，2026-10-09），不是普遍結論：逐位元組相同的 exe 放在 `%UserProfile%\.agents` 及其子目錄裡失敗，放在試過的其他位置（`%LOCALAPPDATA%\Temp`、`%APPDATA%\Roaming`、`%UserProfile%`、本倉庫的 `build\`）全部正常。確認做法：
+這一檔在本機上沒擋掉的：`--capture dwm`（`dwm.thumbnail` 那條）照常出圖，前提是輸出目錄讓低完整性處理程序建檔；
+`bitblt.screen` / `duplication.frame` 也照常出圖——這兩條本來就要人親自批准，屬另一層的事（見《截圖授權與 --yes》）。
+這兩句是**這台開發機上實測過的一次結果**，不是對所有機器的承諾：低完整性不是「這台機器截不了圖」，這裡也沒說換一條
+就一定成功；而 `dwm` 這一條在視窗自己拿不到畫面時會**升級到讀桌面像素那條退路**，那一條照舊一定彈框問人——
+授權分級不因完整性層級而改變。`--capabilities` 裡各條通道的 `status` 不因這一檔被改動，那個欄位管的是版本下限與
+螢幕拓撲。實測範圍只有這台 19045 開發機（Windows 10 版本 22H2 x64，2026-10-09），不是普遍結論：逐位元組相同的 exe
+放在 `%UserProfile%\.agents` 及其子目錄裡失敗，放在試過的其他位置（`%LOCALAPPDATA%\Temp`、`%APPDATA%\Roaming`、
+`%UserProfile%`、本倉庫的 `build\`）全部正常。核對時兩條要分開看：
 
 ```powershell
-icacls "%UserProfile%\.agents"                # 這個目錄帶不帶 Mandatory Label\Low Mandatory Level
-whoami /groups | findstr /i "Mandatory Label"   # 此刻處理程序那一檔叫什麼（本機 shell 是 S-1-16-8192 = Medium）
+icacls "%UserProfile%\.agents"                # 那個目錄帶不帶 Mandatory Label\Low Mandatory Level（一條成因線索）
+whoami /groups | findstr /i "Mandatory Label"   # 此刻這個 shell 自己那一檔（本機 S-1-16-8192 = Medium），不等於 ECAPTURE 那一檔
+ECAPTURE.EXE --capabilities | findstr integrityLevel   # 本工具那個處理程序的證據：低於 medium 時這裡寫著 low
 ```
 
 現在程式會把這一檔報出來：`--capabilities` / `--diagnostics` 的 `session` 段帶 `integrityLevel`（ASCII token：`unknown` / `untrusted` / `low` / `medium` / `high` / `system` / `protected_process`；問不出來時是 `unknown`，既不報成夠用也不報成被降級），低於 `medium` 時 `caveats` 多一條 `process_integrity_below_medium`，`--diagnostics -v` 的 probes 段多一問 `tokenIntegrityLevel`。真的截圖時，本處理程序低於 `medium` 且這一輪裡有「系統不讓」那類失敗（HRESULT `0x80070005` 或 Win32 `5`，發生在取影格／寫檔案／寫標準輸出這三步上），這些失敗各自的 `hint` 就追加一句可操作的說明，整輪另追加一條 `notes` 裡的 `note.low_integrity`（帶 `target` / `backend` / `stage`）。`code`、`stage`、`hresult` / `win32`、退出碼與已經交付的影像全部原樣不動，按 `code` 分支的老呼叫端不受影響；`--yes` 與授權分級也不受影響。`note.low_integrity` 屬於 notes，`--quiet` 會隱藏它，補寫進 errors 的 `hint` 則不受 `--quiet` 影響。
@@ -631,8 +662,11 @@ whoami /groups | findstr /i "Mandatory Label"   # 此刻處理程序那一檔叫
 能做的三件事，按代價由小到大：
 
 1. 把 `--out` 指向同樣帶這條標籤的目錄裡的路徑（工具從不建立目錄，那一層要先存在）
-2. 要視窗自己的畫面時改用 `--capture dwm`（本機實測這一檔下它照常出圖）
-3. 把這套 skill 裝到沒有被這樣降級的目錄，或由那個目錄的所有者去掉這條標籤——去標籤屬於改動安全設定，得由所有者自己決定
+2. 要視窗自己的畫面時改用 `--capture dwm`（這台開發機實測這一檔下它照常出圖；這一條不是對所有機器的承諾，
+   而它內部升級到桌面像素那條退路時照樣一定彈框問人）
+3. 換一個沒有被這樣降級的安裝位置，或由那個目錄的所有者去掉這條標籤——**改標籤、改 ACL、改安裝位置、
+   改完整性層級都不在本工具會自動做的範圍裡**，那屬改動系統安全設定，要誰做誰自己單獨決定並授權；
+   本工具既不提權，也不改這些設定來「讓截圖通過」
 
 **以系統管理員身分執行不是這條提示的解法**，這條訊息也沒有建議那麼做。
 
@@ -664,9 +698,10 @@ ECAPTURE.EXE --capabilities -v           # 另加 probes 段：每一問的原�
 | `cursor`                              | `--cursor` 這一條的故事：`default`（不給這條選項時的下場）、三種取值、那唯一一條開關寫成 `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine`，然後每條已登記的內部路徑一行（`capability` 是 `settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`，加 `reason` 與 `include` / `exclude` 各三值 `yes` / `no` / `unknown`），末尾 `pointerShapeCompositing: "never"` 與 `pixelRetouching: "never"`。duplication 那兩條是 `capability: pointer_state_unverified`、`include` 與 `exclude` 都是 `no`——桌面那一影格可能已經把指標畫在裡面，而本工具從不合成指標形狀，這證明不了影格裡沒有指標。沒登記的路徑讀 `unknown` 而不是猜一個答案                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `color`                               | `--hdr` 這一條的故事：`default`（不給這條選項時的下場）、三種取值（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 說的是「這個建置帶不帶得回廣色域影格 + 怎麼對映」，**不**去問那塊螢幕此刻是不是 HDR 模式（reason 是 `hdr_display_mode_not_probed`）；`verifiedOnThisMachine` 恆為 `no`（本專案沒有 HDR 螢幕，不宣稱色彩驗收通過）。每條已登記的內部路徑一行，`capability` 分三檔：`wide_gamut_capable`（只有 `wgc` / `screen.wgc`）、`wide_gamut_unverified`（`duplication.frame` / `screen.duplication`：那塊桌面影格確實可能以 FP16 或 10 位元回來，但本建置在 `DuplicateOutput` 之前從不問顯示器的色彩空間，所以既證明不了拿到的是什麼、也就兌現不了策略）、`sdr_source_only`（凡是讀 8 位元 DC 的那幾條），另有 `unregistered`；再加上 `honorsExplicitPolicy`——只有那兩條 `wgc` 是 `true`，也就是「本建置裡兌現得了 `tonemap` / `refuse` 的只有 wgc」這句話的機器可讀版本。最後是 `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR 一律對映成 8 位元 SDR 交付，不出 HDR 原生圖）                              |
 | `autoChainWindow` / `autoChainScreen` | 本機現在能試的 `auto` 鏈。與截圖那次 `-v` 回顯的 `input.captureChain` 由**同一個** `GateChannels` 算出，`tests\capabilities.ps1` 逐條比對這兩處                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `history`                             | 截圖歷史歸檔的**規則**自述（預設開啟）：`enabledByDefault: true`、`relativeTo: "executable-directory"`（跟著實際執行的那一個 exe，不是工作目錄也不是 `--out` 的目錄）、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`（副本用主交付那一份已編碼的位元組：不重拍、不重新編碼、不去讀主輸出檔案、不建硬連結）、`commit: "exclusive-create"`（獨佔提交，從不覆蓋既有歷史檔案）、`created: "after-first-delivered-image"`（只讀查詢與失敗的那些次一個目錄都不建）、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`，再加副本失敗時那一種部分成功的退出碼 `partialSuccessExit: 7`。這一段沒有一個欄位是「這一次寫成功了」那種斷言——那一句在截圖結果的 `images[].history` 裡，這裡連「那裡寫不寫得動」都沒去試（`caveats` 裡恆帶 `history_root_writability_not_probed`），而且全段是相對程式目錄的寫法，不含任何絕對路徑 |
 | `limits`                              | 單邊像素上限、整影格位元組上限、`--timeout-ms` 上限、隔離開呼叫內建上限、WGC 影格池重建次數、編號與 PID 上限、`stdoutTargetsMax: 1`、JPEG 品質區間                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `privacy`                             | 自述這份查詢沒做的事：不擷取畫面、不彈框、不上傳、不列舉使用者檔案、不讀環境變數、不含使用者名、不含路徑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `caveats`                             | 穩定的 ASCII token，列「這份報告沒有斷言什麼」：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及依本機情況追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恆有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（滑鼠指標那幾個欄位只說得到設定與來源那一層，說不到「這一個圖裡看得見或看不見指標」），以及恆有的 `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR 的對映數學離線判過但沒有 HDR 螢幕實測、HDR 一律被對映成 8 位元 SDR 交付，而明確寫出的 `tonemap` / `refuse` 要求只有那兩條 `wgc` 路徑兌現得了） |
+| `caveats`                             | 穩定的 ASCII token，列「這份報告沒有斷言什麼」：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及依本機情況追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恆有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（滑鼠指標那幾個欄位只說得到設定與來源那一層，說不到「這一個圖裡看得見或看不見指標」），以及恆有的 `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR 的對映數學離線判過但沒有 HDR 螢幕實測、HDR 一律被對映成 8 位元 SDR 交付，而明確寫出的 `tonemap` / `refuse` 要求只有那兩條 `wgc` 路徑兌現得了），以及恆有的 `history_root_writability_not_probed`（`history` 那一段說的是歸檔規則，這份查詢沒去試過寫那個位置，也不預測某一次落盤必然成功） |
 
 兩份文件由**同一個**判準函式（`src/EnvReport.cpp` 的 `BuildEnvReport`）算出，只差段落取捨：`--diagnostics` 固定帶 `build` 那一段（PE 連結時間戳、機器類型、映像大小、子系統），`--capabilities` 只在 `--verbose` 時展開它。版本號、`status`、後端清單、`limits` 都是同一份，所以不存在「兩份會互相打臉的環境資訊」。
 
@@ -1158,6 +1193,47 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 `--out -` 不是路徑：不展開、不補副檔名、不查碰撞；而標準輸出一次只交付一張影格，所以那條串流上永遠不會有整批圖
 （見前面「輸出形式」的規則）。
 
+## 截圖歷史歸檔（預設開啟）
+
+每張**完成主交付**的圖，除了使用者寫的那條輸出之外，還會在**實際執行的那一個 `ECAPTURE.EXE` 所在目錄**下的
+`history\YYYY-MM-DD\`（依本地日期分目錄）裡另存一份獨立副本。開發版就躺在 `build\` 裡，所以開發時截的圖
+歷史在 `build\history\`；裝在自訂目錄時，歷史就在那個目錄裡——它跟著程式自己，不跟著工作目錄、
+不跟著 `--out` 的目錄，也不跟著某個固定的預設安裝位置。
+
+| 項目 | 行為 |
+| ---- | ---- |
+| 來源 | 主交付那一次**已經編好的位元組**：不重拍、不重新編碼、不去讀主輸出檔案（它可能正被別的程式改），也不建硬連結。之後刪掉或覆蓋主輸出都不影響歷史裡那一張。 |
+| 入口 | 視窗、整張螢幕、`--all` / `--monitor all` 批次、`--roi` / `--client-area`、`--scale`、五種編碼格式與 `--out -` 都經過同一個歸檔入口。 |
+| 時機 | 只在真實截圖主交付成功之後按需建立目錄與寫檔案。`--capabilities` / `--diagnostics` / `--screens` / `--list` / `--inspect` / `--help` / `--version`、參數錯、無匹配、`--dry-run`、人答「否」、以及一張有效影像都沒有的那些次，一個目錄都不建，也不探測那裡能不能寫。 |
+| 名字 | 一次歸檔決策只取一次本地時間，目錄名與檔案名同源自它（跨午夜不會出現「目錄寫今天、檔案名寫明天」）：`YYYYMMDD-HHMMSS-<PID>-<識別>-<序號>.<副檔名>`。副檔名跟著這張圖實際被編成的容器。檔案名裡沒有視窗標題、裝置名、使用者名，也沒有任何完整路徑。 |
+| 提交 | 複用生產那一次「不許替換」的原子改名：獨佔建立，撞上既有名字就換下一個序號再試，換不出來照實報 `history.file_exists`。**從不覆蓋既有歷史檔案**，多個處理程序同時截圖與系統時鐘回撥都蓋不掉已經存下的那一張。 |
+| 與主交付的關係 | 兩次交付、兩個位置（可能落在不同的卷上），各有各的結論，不承諾跨這兩個地方的全有或全無交易。主輸出沒完成時不發布副本（半段標準輸出也不算完成）；主圖已落地而副本失敗時，主圖不刪、已發出的標準輸出不回滾、也不重拍，`images` 與 `captured` 照舊，而退出碼是按部分成功給的 `7`。 |
+| 保留 | 不自動輪轉、不按天數或容量刪除、不背景掃描、不上傳。歷史是持續保留的截圖資料，不是可以隨手重建的快取：`.\clean.ps1` 與 `.\build.ps1 -Clean` 清掉產物但**保留 `build\history`**（不能安全保留時明確拒絕並說明為什麼，既不靜默刪除也不靜默搬移），安裝封裝不含它也不把它寫進發行清單，升級與卸載都不碰它。清理由使用者自己顯式做。 |
+| 換安裝目錄 | 歸檔跟著當時那一個 exe 走，換目錄**不會**把舊歷史遷移過去；舊的那一棵仍留在舊目錄裡，要找回它就照 `--capabilities` 的 `history.location` 對著舊位置看。 |
+
+結果裡那一段是 `images[].history`（屬於交付事實，`--quiet` 藏不掉）：
+
+| 鍵 | 含義 |
+| ---- | ---- |
+| `status` | `saved` = 副本已獨佔提交；`failed` = 開始過而沒提交；`skipped` = 這一次根本沒開始寫副本 |
+| `file` | 只在 `saved` 時出現，而且此時磁碟上確實有這一份；失敗時不給一個「本來要用的名字」冒充既有副本 |
+| `code` | `failed` / `skipped` 時的穩定碼：`history.unavailable` / `history.write_failed` / `history.file_exists` / `history.budget_spent` / `history.same_file` |
+
+失敗細節（含 Win32 原值、是哪一路走不通）在 `errors` 裡同碼的那一條，`stage` 寫作 `history`；`skipped`
+那兩種沒有「哪一步失敗」可報（那一次根本沒開始），所以只寫在這一格里。
+
+- `history.budget_spent`：`--timeout-ms` 那份自動預算是整批共用的一份，歸檔不另領一份，也不留一個誰也
+  等不起的背景寫入。主圖剛落盤而期限才跨的那些次，副本記這一條，而**主圖與它的交付事實原樣保留**。
+- `history.same_file`：`--out` 直接寫進 `history\` 那棵樹、而算出來的名字正好是這一次要用的歸檔名時不寫
+  副本——寫下去是把剛交出去的那一張自己蓋掉。兩個都想要就把主輸出寫在別處。
+- 主輸出落在 `history\` 樹下但名字不同時，副本照舊另存成另一個名字，既不自覆蓋也不會迴圈複製：副本的
+  位元組來自記憶體裡那一份編碼緩衝，從不去讀主輸出檔案。
+
+確認框在人點頭之前就把「程式自己那個目錄裡還會另存一份持久副本」寫在框上（那一路歸檔本身說不通的那些次就不
+寫這句，不承諾一份根本不會存在的副本）；`--capabilities` 的 `history` 段說的是這套規則本身，不是某一次的
+下場——它不建立目錄、不試寫，`caveats` 裡因此恆帶 `history_root_writability_not_probed`。歸檔失敗絕不改變
+授權分級，也絕不為了「讓歸檔成功」而提權、改 ACL 或改目錄標籤。
+
 ## 文案語言
 
 `--lang`（`-l`）選 `zh-CN` / `zh-TW` / `en` / `ja`，不給或給 `auto` 時用 Windows 顯示語言，判出來的結果不在這四種裡時用
@@ -1195,6 +1271,10 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 - 聲明的支援下限（內部版本 18362）與實測過的環境（內部版本 19045、x64）是兩個不同的數，而
   `verifiedOnThisMachine` 拿本機去比的是後面那一個——那是一份環境相符的判定，不是逐台裝置的實測記錄。這個二進位檔
   在 Windows 7 上連載入都做不到，在 Windows 8.1 上載得了、卻沒有編碼器可用。
+- 主輸出與歷史副本**不是一次跨卷交易**：那是兩次獨立的交付，可能落在不同的卷上，所以兩邊的結果各說各的。
+  副本失敗絕不刪主圖、絕不回滾已經發出的標準輸出、也絕不為「補上副本」而重拍一次；反過來主圖沒成交時不發布
+  副本。歸檔不另領一份預算，也不做無期限的背景寫入。歷史不自動輪轉、不自動刪除，也沒有開關去關掉它——這一版
+  給的只有「預設另存一份」與可靠的失敗語義。
 
 **照實記為未驗證、而不是推導出來**（每一行都是對應的測試在這台開發機上回報 SKIP／「未驗證」的東西，沒有一行被宣稱通過）：
 
@@ -1208,6 +1288,8 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | 19045 以外的 Windows 版本・ARM64・Server・遠端桌面・沒有可互動桌面的工作階段・真的缺編碼器 | 這裡安排不出第二個作業系統；那些判準改成離線注入假的內部版本來判（`tests\compat.ps1`、`tests\capabilities.ps1`）                  |
 | `tiff` 與 `gif` 在 `--scale` 之下的下場，以及其他只在編碼器那一層的行為                    | `tests\scale.ps1` 判的是 `png` / `bmp` / `jpeg`；另外兩種共用那道編碼呼叫，但沒被涵蓋                                             |
 | 能力查詢「靠截圖或靠彈框來探測」這件事，以及確認框真的被顯示出來的場景                     | 去探測就等於去做了它本來只回報的那件事（`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`）                  |
+| 歷史副本遇到「真盤滿」「真沒權限」那兩種現場                                               | 造這兩樣要改這台機器的儲存設定或 ACL，而本任務不許；離線那一層判的是**歸類**（那一次呼叫交回的 win32 與穩定碼原樣進 `errors`，不被摺成別的原因，也不被隨後看見的逾時覆蓋），真機那一層用「那個位置是檔案」與「是個重解析點」兩種能誠實造出來的現場（`tests\history.ps1`） |
+| 真人在確認框上答「否」那一次不建立歷史                                                     | 判準不彈真實確認框、也不替任何人答它。「主交付沒成功就不發布副本」由離線那一層判（半段標準輸出與寫入失敗那兩種都斷言歸檔一次都沒被呼叫），目錄確實沒多出來的那一條由 `tests\consent.ps1` 與 `tests\history.ps1` 第 7 節各自負責 |
 
 ## 給 AI / 腳本的呼叫指南
 
@@ -1244,6 +1326,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7      | 先讀 `stage`（`match` / `capture` / `encode`）再決定下一步；通常該重新問一次 `--list` / `--screens`，而不是再換一個 `--capture`                                                                                                                                                                 |
    | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7      | 是**這台機器**給不出你要的東西——見下面那一段                                                                                                                                                                                                                                                    |
    | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8      | 目錄要先存在，或挑一個撞不上的名字；`io.file_exists` 就是 `--no-overwrite` 在盡職；這裡的 `io.timeout` 指的是那一步根本沒開始的寫——如果一張檔案**已經落地**、只是寫完之後的期限複核越了線，那張圖仍留在 `images` 裡、本次按部分成功報告退出碼 `7`（已交付＋出錯），見《執行期限與會阻塞的呼叫》 |
+   | `history.unavailable`、`history.write_failed`、`history.file_exists`、`history.budget_spent`、`history.same_file` | 7      | **主圖已經交付，只有那份歷史副本沒落地**（後兩條是「這一次根本沒開始寫副本」）。看 `images[].history.status` 與同碼那條 `errors`（`stage=history`）就知道是哪一路；**不要為此重拍一次**——重拍既補不上副本，又多要人批准一張。想換的應該是那個位置本身（可寫、是目錄、不是重解析點），而不是命令列 |
    | `capture.hdr_unsupported`、`capture.cursor_unsupported`、`capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1      | 這一組選項搭配在解析期就被拒了，還沒有到彈框那一步                                                                                                                                                                                                                                              |
 
    那四條 `env.*` 說的是這台機器、不是這個目標，對同一扇視窗重試沒有任何意義：`env.os_too_old` 是本機 Windows
@@ -1264,6 +1347,9 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    [標準輸出圖片位元組的 shell 差別](#標準輸出圖片位元組的-shell-差別)。
 4. **別把非 0 退出碼當成全盤失敗**：部分成功時 `captured` 大於 0 而退出碼是 7，已經寫出的圖照樣可用；
    `images[].source` / `path` / `scope` 分別告訴你那張圖出自哪條通道、走了哪條內部路徑、像素是視窗自己的還是螢幕上的。
+   `images[].history.status` 是**另一件事**：那張圖已經交付了，而它那份歷史副本可能 `failed` 或 `skipped`。
+   這時候圖照用、**不要重拍**（重拍不會補上副本，只會再多要一次批准）；要處理的是那個位置寫不寫得下去，
+   或者接受「這一張只有主輸出」。見[截圖歷史歸檔](#截圖歷史歸檔預設開啟)。
 5. **退出碼 0 不等於畫面是對的**：受保護內容、某些播放器的驅動會在成功回傳的同時給你黑影格。工具
    自己會告訴你整幅是不是只有一個顏色——它把每個像素與左上角那個逐位元組比過（BGRA 四個通道都算，
    行末填充不算），確實單色就發 `note.frame_uniform`（顏色寫成 `0xAARRGGBB`）而圖片照常交付。單色
@@ -1339,6 +1425,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 - **換目錄**等於裝第二份獨立副本：舊目錄原樣保留（不會替你遷移或刪除）。兩份都在時，卸載項目會各自列出——刪掉不要的那份，或讓工具只指向其中一份。
 - **同名但不屬於本產品的目錄**：安裝程式會說缺少 `install-manifest.json`，並在動手前問你，絕不會靜默覆蓋原有內容。無人值守安裝（`/VERYSILENT`）沒有可問的人，於是它**一個檔案都不寫**，以非 0 退出碼中止，原因記在 `/LOG` 那份日誌裡。
 - **卸載**只刪安裝程式記錄過的檔案。你後來加的檔案、日誌、相鄰的其它 Skill 一律保留；不會遞迴刪除 `.agents`、`skills` 這些父目錄或你目錄裡的其它內容。
+- **截圖歷史**（`<安裝目錄>\history\日期\`，見[截圖歷史歸檔](#截圖歷史歸檔預設開啟)）在安裝程式眼裡與「你後來加的檔案」同一類：它不在受管清單裡，也不在 `install-manifest.json` / `payload.sha256.txt` 這份發行清單裡。**升級、重裝與卸載都不刪它、不改它、也不把它當使用者改動備份**；目錄裡多出這一棵也不會讓安裝程式把這個位置誤判成「不屬於本產品的目錄」（歸屬只認那個 ownership 標記）。卸載後歷史仍然留在那個目錄裡，位置會在完成頁與 README 裡說明；要清理由你自己顯式刪那棵目錄。
+- **換安裝目錄時歷史不遷移**：舊的截圖仍然留在舊目錄那一個 `history\` 旁邊（歸檔跟著當時執行的 exe 走）。想繼續用舊的那一批就自己拿過去，或讓工具同時知道兩個位置。
 - **檔案被佔用**：安裝程式如實報出被佔用的檔案並回復，不會為了讓安裝通過去結束你的程式，也不會假報成功。
 - **安裝位置被安全策略限制**：若所選目錄落在某種「該目錄裡的程式不許建立臨時目錄」的策略之下（企業終端防護常見），原地解除安裝會報 `Setup was unable to create the directory "…-uninstall.tmp". Error 5`，隨包自檢的 `delivery` 那層會報「臨時目錄建立得出來」失敗。這是環境在拒絕，不是產品壞了：換一個目錄重裝，或請管理員放行這個目錄；`verify-install.ps1` 的唯讀部分（檔案雜湊、文件引用、二進位身分）不受影響，照常核對。
 - **「裝了但 AI 不理它」**：先確認那個目錄確實是工具會掃描的（見上），然後核對二進位身分而不是版本號字串——把 `install-manifest.json` 的 `version`、`arch`、`buildId` 與 `ECAPTURE.EXE --capabilities` 對上。原始碼檢出旁的舊 `ECAPTURE.EXE` 可能滯後；**新裝的那份不會**，因為它來自本次安裝程式自己的建置。
@@ -1366,6 +1454,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 | `.\tests\cursor.ps1`        | `--cursor`：那張按路徑登記的表、鏈在 19041 那道門檻兩側怎麼收窄、`cursorRequested` / `cursorEffective` / `cursorBasis` 怎麼合成，外加一條原始碼層級的掃描——只要 `src/` 裡出現取指標形狀、畫滑鼠指標、動使用者滑鼠那類呼叫就紅                                                                                         |
 | `.\tests\hdr.ps1`           | `--hdr`：DXGI 格式與顯示色彩空間的分類（認不出就留 `unknown`）、tone 曲線的性質、`ConvertWideFrameToSdrBgra8` 逐點判、那組結果鍵，以及誠實的 SDR 真機場景（預設那些鍵不出現、對 SDR 影格要求處理時發 `note.hdr_source_sdr`）                                                                                            |
 | `.\tests\save.ps1`          | 檔案交付：每種 `--no-overwrite` 布林寫法對真實檔案的效果、整批輸出名規劃與撞名偵測、原子提交對著被佔用的目標／是目錄的目標／不存在的目錄／寫到一半被硬殺，以及併發禁止覆蓋那場競態                                                                                                                                      |
+| `.\tests\history.ps1`       | 截圖歷史歸檔：離線那一層對著生產的 `HistoryArchive` + `Delivery` + `FileSave` 判命名與本地日期同源、同刻兩張／時鐘回撥／跨午夜、同名獨佔提交與換名重試、那一路走不通的失敗歸類、主輸出名字落在 history 樹裡時不自覆蓋，以及「主圖成功而副本失敗」「主圖失敗與半段標準輸出都不發布副本」「主圖落盤後預算才耗盡時副本不開始」「歸檔拋出東西不抹掉交付事實」（`build\ecapture-history-tests.exe`）；真機那一層把 exe 複製進本次目錄，用自建視窗核對落點跟著程式自己、主輸出與副本逐位元組／SHA-256 相同、批次與 `--out -` 那兩路、唯讀與參數失敗一個歷史都不建、重解析點與「那個位置是檔案」時的部分成功 `7` |
+| `.\clean.ps1`               | 與 `.\build.ps1 -Clean` 共用 `scripts\build-clean.psm1` 那一份判準：清掉 `build\` 裡的產物，但保留開發版 exe 旁邊的 `build\history`（那是真實截圖資料，不是建置產物）；`build\` 或 `build\history` 是重解析點、或那個名字被檔案佔著時明確拒絕並說明原因，既不靜默刪除也不靜默搬移（`tests\history.ps1` 第 10 節對著這份本體判） |
 | `.\tests\screen.ps1`        | 整張螢幕的三條桌面路徑，加紅塊定位與陰性對照。只有 `-SimulateConsent` 會代答，而且只該在專門騰給測試的桌面上這麼用                                                                                                                                                                                                      |
 | `.\tests\smoke.ps1`         | 端對端：截自己建立的測試視窗，校驗 PNG 尺寸與像素內容                                                                                                                                                                                                                                                                   |
 | `.\tests\invoker.ps1`       | 共用的測試程序呼叫器本身：argv 引號、兩條流同時消費、二進位不被轉碼、卡死的子程序、每次執行各自的暫存目錄                                                                                                                                                                                                               |

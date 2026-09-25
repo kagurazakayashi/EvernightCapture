@@ -17,7 +17,7 @@
 .EXAMPLE
     .\build.ps1                # Release
     .\build.ps1 -Config Debug
-    .\build.ps1 -Clean         # 删除 build 目录后重新配置
+    .\build.ps1 -Clean         # 清掉 build 里的产物后重新配置（保留 build\history 那份截图历史）
 #>
 [CmdletBinding()]
 param(
@@ -233,9 +233,16 @@ function Start-Build {
     $tool = Resolve-VcVarsPath
     $pathAdd = Resolve-ToolDirs -Vs $tool.Vs
 
-    if ($Clean -and (Test-Path -LiteralPath $buildDir)) {
-        Write-Host "清理 $buildDir" -ForegroundColor Yellow
-        Remove-Item -LiteralPath $buildDir -Recurse -Force
+    if ($Clean) {
+        # 与 clean.ps1 共用同一份判据（scripts\build-clean.psm1）：清掉产物，但**保留
+        # build\history** —— 开发版 exe 就在这里，默认归档的那份截图历史也在它旁边，
+        # 那是持续保留的截图数据而不是构建产物。判据说"不能安全保留"时这里直接停下来，
+        # 不静默删除、也不静默搬移。
+        Import-Module (Join-Path $PSScriptRoot 'scripts\build-clean.psm1') -Force
+        $verdict = Remove-EcBuildArtifacts -BuildDir $buildDir
+        # "本来就没有 build\"是正常空操作（全新检出上 -Clean 就该照样往下配置），只有**被拒绝**才中断。
+        if (-not $verdict.Removed -and -not $verdict.NothingToDo) { throw "清理被拒绝：$($verdict.Reason)" }
+        if ($verdict.Removed) { Write-Host $verdict.Reason -ForegroundColor Yellow }
     }
 
     Write-Host "配置/构建 ($Config) ..." -ForegroundColor Cyan

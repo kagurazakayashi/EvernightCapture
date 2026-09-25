@@ -10,10 +10,11 @@ namespace ecapture {
 namespace {
 
 // 提交之后那一段入账只允许「用开工之前备好的容量 + 搬移不抛的对象」，这一条就是它的另一半凭据：
-// 以后谁给 CapturedImage / Diagnostic 加了会在搬移时分配的东西，这里先编译不过，而不是等一次
-// 真分配失败把已经落到磁盘上的那张图从报告里抹掉。
+// 以后谁给 CapturedImage / Diagnostic / HistoryRecord 加了会在搬移时分配的东西，这里先编译不过，
+// 而不是等一次真分配失败把已经落到磁盘上的那张图从报告里抹掉。
 static_assert(std::is_nothrow_move_constructible_v<CapturedImage> &&
-                  std::is_nothrow_move_constructible_v<Diagnostic>,
+                  std::is_nothrow_move_constructible_v<Diagnostic> &&
+                  std::is_nothrow_move_assignable_v<HistoryRecord>,
               "交付之后的入账需要不抛的搬移");
 
 // 两条 io.timeout 里不依赖"提交之后才有读数"的那六件：稳定码、哪一路输出、写到哪个名字、哪个
@@ -54,6 +55,25 @@ void StampIoError(Diagnostic* d, const DeliveryTarget& target, const wchar_t* st
     if (d->stage.empty()) d->stage = stage;
 }
 
+// 历史那一条 errors 记录的骨架：稳定码、哪一段、哪个目标、哪条通道 —— 四件全都不依赖"提交之后
+// 才有读数"，所以能在开工之前填好并留在栈上。归档那一步抛出东西时，这条记录是唯一还能如实
+// 入账的那一份：它不说为什么失败（那一句问不出来了），只说副本没落地、说的是哪一张。
+void StampHistoryFailure(Diagnostic* d, const DeliveryTarget& target) {
+    d->code = codes::kHistoryWriteFailed;
+    d->stage = stages::kHistory;
+    d->target = target.tag;
+    d->backend = target.backend;
+}
+
+// 归档那一位交回来的失败细节：只补缺的那几件，不覆盖它写过的 code / message / win32 / value。
+void StampHistoryDetail(Diagnostic* d, const DeliveryTarget& target) {
+    if (!d) return;
+    if (d->code.empty()) d->code = codes::kHistoryWriteFailed;
+    if (d->target.empty()) d->target = target.tag;
+    if (d->backend.empty()) d->backend = target.backend;
+    if (d->stage.empty()) d->stage = stages::kHistory;
+}
+
 }  // namespace
 
 void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingImage pending,
@@ -80,14 +100,26 @@ void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingI
     // 跨限记录的六件稳定字段全部排在输出之前备好。
     // 备这些自己就要分配：现在还没有任何东西收不回来，reserve 抛出去就是一次普通失败，由调用方
     // 那层记一条真实原因，而 images 里本来就不该有这一张 —— 两头仍然一致。
-    // errors 备两条：一条交付这一段自己的结论（没交付的那次原因，或那条跨限），一条调用方那层。
+    // errors 备四条：一条交付这一段自己的结论（没交付的那次原因，或那条跨限）、一条历史副本失败、
+    // 一条"交付之后才看见跨限"，再加调用方那层那一条。
     const size_t pendingNotes = pending.notes.size();
     outcome->images.reserve(outcome->images.size() + 1);
     outcome->notes.reserve(outcome->notes.size() + pendingNotes);
-    outcome->errors.reserve(outcome->errors.size() + 2);
+    outcome->errors.reserve(outcome->errors.size() + 4);
     // 只有真设了预算才可能"交付之后才看见跨限"（没设预算时 Spent() 恒为 false，这一条用不上）。
     Diagnostic lateTimeout;
     if (run.dl && run.dl->Enabled()) StampIoTimeout(&lateTimeout, stage, target);
+    // 历史那一份结论也在开工之前备好：码位（含最长那条 history.* 的容量）与那条 errors 记录的骨架
+    // 都不再需要"提交之后才有的分配"。归档那一段抛出东西时，"副本没落地"这一句仍然说不出口，
+    // 而已经落地的主图与它刚入列的那一条账一个字都不动。
+    HistoryRecord preparedHistory;
+    Diagnostic lateHistory;
+    if (run.history) {
+        preparedHistory.state = HistoryRecord::State::kFailed;
+        preparedHistory.code.reserve(32);   // 四条 history.* 码最长的那一条也在这个数之内
+        preparedHistory.code = codes::kHistoryWriteFailed;
+        StampHistoryFailure(&lateHistory, target);
+    }
 
     // ---- 3) 开工：这一段没有可安全中断的等待点，只能让它跑完 ----
     Diagnostic ioErr;
@@ -138,11 +170,63 @@ void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingI
     // ---- 4b) 交付事实先入列：质量提示这时才有意义（说的是你手上这张图） ----
     // 到这里为止不会再分配：容量在第 2 段备足，入列只做不抛的搬移（见上面那条编译期断言）。
     image.bytes = encoded.size();
+    if (run.history) image.history = std::move(preparedHistory);   // 搬移不抛；下面 4c 只往这一格里改
     for (Diagnostic& n : pending.notes) outcome->notes.push_back(std::move(n));
     outcome->images.push_back(std::move(image));
     step->recorded = true;
 
-    // ---- 4c) 期限合规：另一件事，另记一条 ----
+    // ---- 4c) 历史副本：主交付之外的第二次交付，两个位置可能在不同卷上 ----
+    // 用的是**同一份编码缓冲**（不重拍、不重新编码、不去读主输出文件、不建硬链接），所以主图后来
+    // 被删被改都不影响这一份。这一段排在期限核对之前：归档自己也可能花时间，而那句"这一批没在
+    // 预算内结束"要说的是整段自动处理，包含它。
+    // 三种下场只有"失败"那一种进 errors：skipped（预算已尽 / 主输出名字就是这一份归档名）那两次
+    // 根本没开始写副本，没有"哪一步失败"可报，而它的结论在 images[].history 那一格里，--quiet
+    // 藏不掉（images 段从来不被抑制）。
+    if (run.history) {
+        HistoryRecord rec;
+        Diagnostic detail;
+        bool archived = false;
+        try {
+            if (run.dl && run.dl->Spent()) {
+                // 主图刚落盘而期限已经跨过：副本不开始。归档不另领一份预算，也不留一个
+                // 谁也等不起的后台写入 —— 主图保住，这一句照实说。
+                rec.state = HistoryRecord::State::kSkipped;
+                rec.code = codes::kHistoryBudgetSpent;
+            } else {
+                archived = run.history->Archive(target.file, run.format, encoded, &rec, &detail);
+            }
+        } catch (...) {
+            // 归档那一段抛出东西：按"副本没落地"记，而这一句用的是第 2 段备好的那一份码位与
+            // 骨架（都只做不抛的搬移），不需要任何新的分配。原因编不出来就不编一条冒充 ——
+            // errors 里入的是那条骨架（谁、哪条通道、哪一段）。
+            archived = false;
+            rec.state = HistoryRecord::State::kFailed;
+            rec.file.clear();          // 清空不分配：这一格维持"没有副本名字"
+            rec.code.clear();          // 空码 = 沿用这一张已经备好的那条默认稳定码
+            detail = std::move(lateHistory);
+        }
+        if (!archived && rec.state == HistoryRecord::State::kNone) {
+            // 归档那一位说"没提交"却没说自己是哪一种下场：按最保守的那一条记，
+            // 绝不折成"这一次根本没有这一步"。
+            rec.state = HistoryRecord::State::kFailed;
+        }
+        HistoryRecord& slot = outcome->images.back().history;
+        slot.state = rec.state;                        // 平凡赋值，不分配
+        slot.file = std::move(rec.file);               // 只有真提交过的那一份才有名字
+        if (archived) {
+            // 成功那一份不许带着"本来会失败"的那条码：码位在第 2 段就填上了默认值，这里清掉它。
+            slot.code.clear();
+        } else if (!rec.code.empty()) {
+            slot.code = rec.code;   // 长度在第 2 段备好的容量之内
+        }
+        if (!archived && slot.state == HistoryRecord::State::kFailed) {
+            if (detail.code.empty()) detail = std::move(lateHistory);   // 抛出来那一种：只能用骨架
+            else StampHistoryDetail(&detail, target);
+            outcome->errors.push_back(std::move(detail));
+        }
+    }
+
+    // ---- 4d) 期限合规：另一件事，另记一条 ----
     // 文件已经在磁盘上 / 字节已经全部到达标准输出，这一条超时不许把它删掉，也不许让 captured
     // 少一。它要说的是"这一批没在预算内结束"，所以带齐是哪个目标、哪条通道、写到哪个名字，
     // 以及那一次交付实际交回去的字节数。

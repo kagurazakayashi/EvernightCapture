@@ -550,6 +550,21 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // ---- --yes 的适用范围 ----
     r.consentPaths = ConsentTable();
 
+    // ---- 截图历史归档：这一段只说**规则** ----
+    // 每一条取值都是这套实现自己写死的那几件事（判据本体在 src/HistoryArchive.h/.cpp），所以这里
+    // 不去问环境、不去建目录、也不去试写：一次只读查询不能因为"想看看那里能不能写"就多出一个
+    // 目录，更不能承诺某一次落盘必然成功。字符串里刻意不含反斜杠与盘符 —— 这份文档的隐私规矩是
+    // "不输出任何绝对路径"，定位规则用相对程序目录的写法表达。
+    r.history.enabledByDefault = true;
+    r.history.relativeTo = L"executable-directory";
+    r.history.location = L"history/YYYY-MM-DD/";
+    r.history.naming = L"YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>";
+    r.history.source = L"same-encoded-bytes";
+    r.history.commit = L"exclusive-create";
+    r.history.created = L"after-first-delivered-image";
+    r.history.retention = L"never-pruned-automatically";
+    r.history.partialSuccessExit = EX_CAPTURE_FAILED;   // 主图已交付、副本没落地：已交付 + 有错误
+
     // ---- caveats：把"这份报告没说过什么"写出来，免得调用方把 available 读成保证 ----
     r.caveats.push_back(caveat::kNoCapture);
     r.caveats.push_back(caveat::kNoDialog);
@@ -575,6 +590,10 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // 这一条守着 color.toneMapping 那一句被读歪的可能：那张曲线表只在**给了可靠输出色彩空间**
     // 的时候适用，本构建不从像素布局倒推色彩空间（10 位包不等于 PQ）。
     r.caveats.push_back(caveat::kHdrLayoutIsNotColorSpace);
+    // 历史那一段（history）说的是规则，不是这一次的下场：这份查询没有去试过写那个位置，也没有
+    // 为"看看能不能建目录"建过任何东西。某一张图的副本有没有落地，看的是截图结果里
+    // images[].history 那一格与同码的那条 errors 记录。
+    r.caveats.push_back(caveat::kHistoryWritabilityNotProbed);
     if (!probe.buildIdKnown) r.caveats.push_back(caveat::kBuildIdUnavailable);
     if (r.matchesVerifiedEnv == Tri::kNo) r.caveats.push_back(caveat::kNotTestedHere);
     if (r.matchesVerifiedEnv == Tri::kUnknown) r.caveats.push_back(caveat::kTestedEnvUnknown);
@@ -729,6 +748,29 @@ void WriteFormats(Json& j, const std::vector<FormatReport>& formats) {
         j.Key(L"registered").Value(TriOrNull(f.registered));
         j.End();
     }
+    j.End();
+}
+
+// 截图历史归档那一段。每个键说的都是"这套实现是怎么规定的"，没有一个键是本次落盘的断言；
+// 字符串里不出现反斜杠与盘符（这份文档的隐私规矩：不输出任何绝对路径）。
+void WriteHistory(Json& j, const EnvHistoryReport& h) {
+    j.Obj();
+    j.Key(L"enabledByDefault").Value(h.enabledByDefault);
+    j.Key(L"relativeTo").Value(h.relativeTo);
+    j.Key(L"location").Value(h.location);
+    j.Key(L"naming").Value(h.naming);
+    // 副本的字节来源：与主交付**同一份**已编码缓冲。这一条要说得出口，因为"另存一份"如果靠
+    // 重拍一次、重新编码一次或去读主输出文件，就不是同一张图了（而且硬链接根本不独立）。
+    j.Key(L"source").Value(h.source);
+    j.Key(L"commit").Value(h.commit);
+    j.Key(L"created").Value(h.created);
+    j.Key(L"retention").Value(h.retention);
+    j.Key(L"uploads").Value(h.uploads);
+    j.Key(L"backgroundPruning").Value(h.backgroundPruning);
+    // 这一条恒 false：这份只读查询没去试过写那个位置，也不预测某一次落盘必然成功。
+    j.Key(L"writabilityProbed").Value(h.writabilityProbed);
+    // 主图已交付而副本没落地时的那一种部分成功给哪一个退出码（不是 0，也不是"什么都没写"）。
+    j.Key(L"partialSuccessExit").Value(static_cast<long long>(h.partialSuccessExit));
     j.End();
 }
 
@@ -951,6 +993,11 @@ std::wstring RenderEnvJson(const EnvReport& r, bool verbose, bool quiet) {
     WriteFormats(j, r.formats);
     WriteStringArray(j, L"autoChainWindow", r.autoChainWindow);
     WriteStringArray(j, L"autoChainScreen", r.autoChainScreen);
+    // 历史归档这一段紧跟 autoChain：调用方（含 AI）在决定"这一张要写到哪个名字"之前就该知道
+    // 程序自己那份目录里还会另存一份持久副本，以及它的定位规则与保留策略。这一段全是**规则**，
+    // 没有一个字段是"这一次写成功了"那种断言（那一句在截图结果的 images[].history 里）。
+    j.Key(L"history");
+    WriteHistory(j, r.history);
 
     j.Key(L"limits").Obj();
     j.Key(L"maxFrameSide").Value(static_cast<long long>(r.limits.maxFrameSide));

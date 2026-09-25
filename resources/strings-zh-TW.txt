@@ -17,7 +17,7 @@ help.output1	輸出: 成功與錯誤都是 JSON，只含 captured / images（另
 help.output2	      --help / --version 以及不給條件時是文字
 help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
 help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
-help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在
+help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
 help.system	執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
 
 help.examples	示例:
@@ -184,6 +184,14 @@ io.dir_missing	輸出目錄不存在，請先建立目錄
 io.write_interrupted	寫檔案中斷
 io.stdout_failed	寫標準輸出失敗
 io.stdout_partial	寫標準輸出中斷：已發出 %1 / %2 位元組，這一張沒有完整交付（管線裡留下的是一段殘缺的流）
+history.unavailable_reason	歷史副本的位置這條路走不通（%1）
+history.unavailable_hint	主圖照常交付，只有那一份副本沒寫。檢查程式所在目錄是否允許本行程建立目錄與寫檔案；這裡不換別的目錄，也不提權
+history.dir_failed_reason	歷史副本的目錄建不出來（錯誤碼 %1）
+history.write_failed_hint	主圖已經落地，這一條只說那份副本沒寫成。歷史從不覆蓋已有檔案，也不悄悄改存到別處
+history.file_exists_hint	換一張再來一次；歷史歸檔名撞上已有檔案時寧可報失敗，也不覆蓋已經存下的那一張
+history.commit_failed	歷史副本沒提交成功
+history.same_file	主輸出的名字恰好就是這一次要用的歷史歸檔名，副本已跳過（免得蓋掉剛交出去的那一張）
+history.same_file_hint	把圖寫進 history 那棵樹裡時會出現這一條。主圖與它的交付事實原樣保留；想要副本就換一個不在 history 裡的輸出名
 io.timeout_delivered	圖已完整交付（%1 位元組），但這一次交付結束時自動預算 %2 ms 已用盡（實際用時 %3 ms）
 io.timeout_delivered_hint	已經落地（或已全部抵達標準輸出）的這一張不會被撤回，也不會從 images 裡消失；這條說的只是這一批沒在預算內結束。加大 --timeout-ms，或換一條不會在提交那一步等很久的輸出：目標目錄搬到本機磁碟，或先把讀走標準輸出的那一方準備好
 io.output_collision	多個目標算出同一個輸出名，整批沒有截圖也沒有寫檔案
@@ -370,6 +378,7 @@ consent.title	EvernightCapture 要截圖，需要你同意
 consent.head	本工具準備截取畫面，需要你同意。
 consent.targets	目標（共 %1 個）：%2
 consent.plan	取圖方式 %1，實際路徑 %2，圖片寫往 %3
+consent.history	每張成功交付的圖還會在程式自己那目錄下的 history 子目錄裡另存一份獨立副本（按本地日期分目錄，不會自動清理）。
 consent.dialog_closes	本對話框會在截圖開始前關閉，不會出現在圖裡。
 consent.ask	允許現在截圖嗎？
 consent.target_line	%1（區域 %2,%3 尺寸 %4x%5）

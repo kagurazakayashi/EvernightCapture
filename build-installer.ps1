@@ -335,6 +335,19 @@ $forbidden = @(Get-ChildItem -LiteralPath $payload -Recurse -File | Where-Object
 })
 if ($forbidden.Count) { $problems += "载荷里混进了不该随包的东西：" + (($forbidden | ForEach-Object { $_.FullName.Substring($payload.Length) }) -join ', ') }
 
+# 截图历史绝不进包：归档住在"实际运行的 exe 所在目录\history\日期\"里，开发版的 exe 就在 build\，
+# 所以 build\history 是真实用户截图数据。它不是产物、不是载荷、也不进 payload.sha256 这份发行清单
+# （进了就等于把别人的截图当成发行物核对与分发）。这里按路径分段判，而不是靠扩展名：tif / gif
+# 这类扩展名不在上面那条里，而历史目录里出现的文件名根本不该由打包决定。
+$historyLeaves = @(Get-ChildItem -LiteralPath $payload -Recurse -Force | Where-Object {
+    $rel = $_.FullName.Substring($payload.Length).TrimStart('\')
+    (@($rel.Split('\') | Where-Object { $_ -eq 'history' }).Count -gt 0)
+})
+if ($historyLeaves.Count) {
+    $problems += '载荷里混进了截图历史（那是持续保留的用户数据，不随包分发、也不进发行清单）：' +
+                 (($historyLeaves | ForEach-Object { $_.FullName.Substring($payload.Length) }) -join ', ')
+}
+
 # SKILL.md frontmatter 名与目录名一致
 $skillName = [string]$manifest.skill.dirName
 $skillMd = Get-Content -LiteralPath (Join-Path $payload 'SKILL.md') -Raw -Encoding UTF8

@@ -322,6 +322,7 @@ $suites = @(
     [pscustomobject]@{ Name = 'cursor';       Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--cursor 逐路径登记表与结果三键' },
     [pscustomobject]@{ Name = 'hdr';          Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--hdr 色彩事实分层与 tone mapping 数学' },
     [pscustomobject]@{ Name = 'delivery';     Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '交付事实与期限合规分开记' },
+    [pscustomobject]@{ Name = 'history';      Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '主交付之外那一份历史副本：命名、独占提交、失败归类与清理/落点跟随' },
     [pscustomobject]@{ Name = 'save';         Real = 'desktop'; OfflineLayer = '';            Note = '原子写、覆盖保护、批次命名' },
     [pscustomobject]@{ Name = 'image';        Real = 'desktop'; OfflineLayer = '';            Note = '帧形状判据与像素操作' },
     [pscustomobject]@{ Name = 'crop';         Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--roi / --client-area' },

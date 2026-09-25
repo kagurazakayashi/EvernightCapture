@@ -54,6 +54,9 @@ struct ConsentQuestion {
     std::vector<std::wstring> targets;  // 给人看的目标行
     std::vector<std::wstring> outputs;  // 展开后的绝对输出，或"标准输出"
     bool yesGiven = false;              // 调用方给了 --yes：桌面路径要明说它不生效
+    // 这一次会不会在程序目录下另存一份历史副本（归档根解析得通时为真）。副本这件事要写在人
+    // 批准的那段文字里：不能批了一张主输出、事后才发现别处还留着一份持久截图。
+    bool historyCopy = false;
 };
 
 enum class ConsentAnswer {
@@ -193,6 +196,10 @@ struct GateConfig {
     bool yes = false;                       // --yes
     std::vector<GateTarget> targets;        // 本次全部目标
     std::vector<std::wstring> outputs;      // 整批展开后的输出（"-" 用"标准输出"那行代替）
+    // 这一次会不会另外留一份历史副本（归档根解析得出来时才为真）。它属于"人要批准的那件事"的
+    // 一部分：副本落在程序自己的目录里、而且不自动清理，所以不能只写在 README 与 JSON 里就
+    // 当成已经告知过 —— 确认框上那一句与 images[].history 说的是同一件事，谁也不冒充谁。
+    bool historyCopy = false;
     std::wstring captureLabel;              // 弹框里那句"取图方式"（人话，随 --lang 变）
     // 人工确认最多等多久（--consent-timeout-ms）。0 = 一直等。
     // 这一段计时与 --timeout-ms 那份自动处理预算**分开**：等一个人不是在处理任务，

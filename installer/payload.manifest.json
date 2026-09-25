@@ -35,6 +35,7 @@
     { "from": "build/ecapture-screens-tests.exe",      "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-hdr-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-delivery-tests.exe",     "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-history-tests.exe",      "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-crop-tests.exe",         "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-image-tests.exe",        "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-wgc-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
@@ -45,7 +46,7 @@
     "offlineTests": [
       "invoker", "orchestration", "cli",
       "windows", "screens", "capabilities", "compat",
-      "hdr", "delivery", "crop", "scale", "wgc", "identity", "dup"
+      "hdr", "delivery", "history", "crop", "scale", "wgc", "identity", "dup"
     ],
     "offlineSuiteDeps": {
       "invoker":      { "scripts": ["tests/invoker.ps1"], "binaries": [], "aux": ["tests/helper/ec_window.cs"], "note": "只用 Windows 自带的 .NET Framework csc 现编一个测试窗口程序，且只在临时目录里跑" },
@@ -61,6 +62,7 @@
       "scale":        { "scripts": ["tests/scale.ps1"], "binaries": ["ecapture-image-tests.exe"], "aux": [], "note": "缩放几何与 image 状态判据同一个测试程序" },
       "wgc":          { "scripts": ["tests/wgc.ps1"], "binaries": ["ecapture-wgc-tests.exe"], "aux": [], "note": "离线层跑 WGC 几何与帧池重建" },
       "identity":     { "scripts": ["tests/identity.ps1"], "binaries": ["ecapture-identity-tests.exe"], "aux": [], "note": "离线层跑身份复核与 Z 序选择" },
+      "history":      { "scripts": ["tests/history.ps1"], "binaries": ["ecapture-history-tests.exe"], "aux": ["tests/helper/ec_window.cs"], "note": "离线层判归档命名/独占提交/失败归类与交付编排（真磁盘写入）；真机层用自建窗口核对主输出与副本逐字节相同，其中第 10 节「构建清理保留 build\\history」需要 scripts\\build-clean.psm1，安装目录不发构建脚本，那一节在安装版如实记 SKIP" },
       "dup":          { "scripts": ["tests/dup.ps1"], "binaries": ["ecapture-dup-tests.exe"], "aux": [], "note": "离线层跑桌面复制几何" }
     },
     "offlineTestsNote": "offlineSuiteDeps 是这套离线计划的依赖闭包，打包与安装自检都读同一份表：少一个文件就在打包阶段失败，不会等安装后去补编译。ECAPTURE.EXE 与全部测试程序都是 CRT 静态链接（CMakeLists.txt 里 MSVC_RUNTIME_LIBRARY=MultiThreaded），所以安装版不需要 VC++ 运行库、Visual Studio、源码树或网络。build\\ 下其余状态测试二进制不在闭包里，不随包发出。",

@@ -145,6 +145,11 @@ inline constexpr const wchar_t* kHdrPolicyWgcOnly = L"hdr_explicit_policy_only_f
 // unverified（见 images[].hdrEffective / hdrBasis）。
 inline constexpr const wchar_t* kHdrLayoutIsNotColorSpace =
     L"hdr_pixel_layout_is_not_a_color_space";
+// 历史归档那一段（history）只说规则，不说这一次写不写得下去：**这份查询没有去试过写那个位置**，
+// 也没有为"看看能不能建目录"而建过任何东西。某一张图的副本究竟有没有落地，看的是截图结果里
+// images[].history 那一格与同码的那条 errors 记录，不是这里。
+inline constexpr const wchar_t* kHistoryWritabilityNotProbed =
+    L"history_root_writability_not_probed";
 }  // namespace caveat
 
 // 本项目**唯一实测过**这套工具的环境。README《系统支持》与 AGENTS.md 里"已实测"记的就是它，
@@ -330,6 +335,27 @@ struct EnvHdrReport {
     std::wstring encoderOutput;           // 编码输入恒是 8 位 SDR BGRA（本工具不出 HDR 图）
 };
 
+// 截图历史归档（默认开启）这一段：说的是"每张完成主交付的图，在主输出之外还另存一份独立副本"
+// 这件事的**规则**，不是某一次落盘的结果。三条边界与这份查询的其它段一致：
+//   * 不建目录、不试写、不探测可写性（writabilityProbed 恒 false）—— 一次只读查询不该为了
+//     "看看那里能不能写"就多出一个目录，也不该预测某一次落盘必然成功。
+//   * 不写任何绝对路径：定位规则用相对于程序目录的写法表达（relativeTo 说清锚点是谁）。
+//   * 副本的下落逐张写在截图结果的 images[].history 里，那才是"这一次到底有没有存下来"的凭据。
+struct EnvHistoryReport {
+    bool enabledByDefault = true;      // 没有关掉它的开关：这一版每条成功交付都另存一份
+    std::wstring relativeTo;           // "executable-directory"：跟着实际运行的那一个 exe
+    std::wstring location;             // 相对定位规则（history/YYYY-MM-DD/）
+    std::wstring naming;               // 文件名规则（本地时间 + 进程标识 + 抗冲突段 + 序号）
+    std::wstring source;               // 副本的字节从哪来：与主交付同一份已编码字节
+    std::wstring commit;               // 提交语义：独占创建，从不覆盖既有历史文件
+    std::wstring created;              // 目录什么时候才被建出来
+    std::wstring retention;            // 保留策略：不自动轮转、不按天数或容量删
+    bool uploads = false;              // 恒 false：不上传、不后台扫描
+    bool backgroundPruning = false;    // 恒 false：不启动清理任务
+    bool writabilityProbed = false;    // 恒 false：这份查询没去试过写
+    int partialSuccessExit = 7;        // 主图成功而副本失败时的退出码（已交付 + 有错误）
+};
+
 struct FormatReport {
     std::wstring name;               // png / jpeg / ...
     bool compiled = true;
@@ -381,6 +407,8 @@ struct EnvReport {
     // HDR 这件事（--hdr）：默认值 + 三种取值 + 每条路径带不带得回广色域帧 + tone mapping 的做法自述。
     EnvHdrReport hdr;
     std::vector<FormatReport> formats;
+    // 截图历史归档（默认开启）那一段的规则自述：只说规则，不探测可写性，也不预测某一次落盘。
+    EnvHistoryReport history;
     // 本机现在能试的 auto 链（两种目标各一份，被版本挡掉的那几条不在里面）。
     // 与 GateChannels 同源：查询里给的那一份和真去截图时用的那一份必须是同一个判据算的。
     std::vector<std::wstring> autoChainWindow;

@@ -54,6 +54,7 @@ add_executable(ecapture
   src/OutputPlan.cpp
   src/FileSave.cpp
   src/Delivery.cpp
+  src/HistoryArchive.cpp
   src/Consent.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
@@ -626,4 +627,36 @@ target_link_libraries(ecapture-delivery-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-delivery-tests PROPERTIES OUTPUT_NAME "ecapture-delivery-tests")
 set_property(TARGET ecapture-delivery-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 截图历史归档（主交付之外那一份独立副本）的离线判据：tests/history_state.cpp。
+# 判的是生产那三份本体：src/HistoryArchive.cpp（归档根解析、本地日期目录、命名、独占提交与失败
+# 归类）+ src/Delivery.cpp（交付那一步把它排在主交付之后、期限核对之前，以及三种下场怎么入账）
+# + src/FileSave.cpp（与主输出共用的那一次"不许替换"的原子改名）。落点、本地时钟与抗冲突标识从
+# 测试注入（生产的 HistoryArchive 也照样真用，那些"副本字节与主交付相同""同名不覆盖"判的都是真
+# 磁盘上的文件），于是"同刻两张""时钟回拨""跨午夜""那个位置是个文件""名字已被占满"这些现场
+# 排得出来 —— 真机上它们要么要改用户的存储设置/ACL/完整性标签，要么根本等不到那一刻。
+# 这里不链取帧通道、不链编码器、不弹框：进来的已经是编好的字节。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-history-tests
+  tests/history_state.cpp
+  src/HistoryArchive.cpp
+  src/Delivery.cpp
+  src/FileSave.cpp
+  src/OutputPlan.cpp
+  src/Deadline.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-history-tests PRIVATE resources src)
+target_compile_features(ecapture-history-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-history-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-history-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-history-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-history-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-history-tests PROPERTIES OUTPUT_NAME "ecapture-history-tests")
+set_property(TARGET ecapture-history-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

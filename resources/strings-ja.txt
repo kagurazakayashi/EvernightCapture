@@ -16,7 +16,7 @@ help.output1	出力: 成功もエラーも JSON で、captured / images のみ�
 help.output2	          --help / --version、および条件なしのときはテキスト
 help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
 help.exit2	        6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
-help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること
+help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること；引き渡せた画像はプログラムがある場所の history にもコピーを1枚残します（自動消去はしません）
 help.system	実行環境: 64 ビット版 Windows、宣言上の下限はビルド 18362（Windows 10 version 1903）、実測はビルド 19045 のみ。この機のバージョンでは提供されない経路は、取得も確認表示も前に env.os_too_old / env.channel_unsupported として報告します（前者は経路を変えても変わりません）。--verbose の input.osBuild と input.captureChain に今回の利用可能な経路が出力されます
 
 help.examples	例:
@@ -183,6 +183,14 @@ io.dir_missing	出力ディレクトリが存在しません。先に作成し�
 io.write_interrupted	ファイル書き出しが中断されました
 io.stdout_failed	標準出力への書き出しに失敗しました
 io.stdout_partial	標準出力への書き出しが中断されました：%1 / %2 バイトが送出済みで、この画像は完全には引き渡されていません（パイプには不完全な列が残っています）
+history.unavailable_reason	履歴コピーの置き場所がこの経路では通れません（%1）
+history.unavailable_hint	主画像は通常どおり引き渡されました。書けなかったのはあのコピーだけです。実行ファイルと同じ場所へディレクトリとファイルを書けるかを確認してください。別の場所へ置き換えも、権限の昇格もしません
+history.dir_failed_reason	履歴用ディレクトリを作成できません（エラー %1）
+history.write_failed_hint	主画像はディスクにあります。この項目はコピーが書けなかった事実だけを伝えます。履歴は既存ファイルを上書きせず、内緒で他の場所へ移すもしません
+history.file_exists_hint	別の画像でもう一度実行してください。履歴の名前が既存ファイルと衝突したときは、保存済みのものを上書きせず失敗として報告します
+history.commit_failed	履歴コピーを確定できませんでした
+history.same_file	出力名がちょうど今回使う履歴の確定名なので、コピーをスキップしました（たった今引き渡したものを自分で上書きしないため）
+history.same_file_hint	history のツリー内へ書き込むときにこれが現れます。主画像とその引き渡し事実はそのままです。コピーも欲しければ history の外に出力名を選んでください
 io.timeout_delivered	画像は完全に引き渡されました（%1 バイト）が、その書き出しが終わった時点で自動予算 %2 ms を使い切っていました（実時間 %3 ms）
 io.timeout_delivered_hint	すでにディスクへ書き出した分（または標準出力へ送出し終えた分）は巻き戻されず、images からも消えません。この 1 件は「この一括処理が予算内に終わらなかった」だけを意味します。--timeout-ms を大きくするか、確定の時点で長く待たない出力先を選んでください：保存先をローカルディスクへ移す、または標準出力を読み取る側を先に用意しておく
 io.output_collision	複数のターゲットが同じ出力名に解決されるため、画面取得も書き出しも行われませんでした
@@ -369,6 +377,7 @@ consent.title	EvernightCapture が画面を撮影しようとしています。�
 consent.head	このツールはピクセルを取得しようとしています。同意が必要です。
 consent.targets	対象（%1 件）：%2
 consent.plan	取得方式 %1、実際の経路 %2、出力先 %3
+consent.history	引き渡せた各画像は、このプログラム自身のディレクトリにある history サブフォルダにも独立したコピーとして1枚残ります（現地日付ごとのフォルダ、自動では消去しません）。
 consent.dialog_closes	このダイアログは取得開始前に閉じるので、画像には写りません。
 consent.ask	今取得することを許可しますか？
 consent.target_line	%1（領域 %2,%3 サイズ %4x%5）

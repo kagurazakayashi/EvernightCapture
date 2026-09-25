@@ -17,8 +17,8 @@ stable exit codes and stable diagnostic `code` values, so it is meant to be driv
 Three kinds of call, and the difference matters:
 
 - **Read-only queries** - `--capabilities`, `--diagnostics`, `--screens`, `--list`, `--inspect`, `--dry-run`. They take
-  no pixel, show no dialog, write no file, change no display setting, and never probe by capturing something. Use them
-  to decide. They need no output path.
+  no pixel, show no dialog, write no file, create not even the history folder, change no display setting, and never
+  probe by capturing something. Use them to decide. They need no output path.
 - **A real capture of a window's own content** (`wgc` / `printwindow` / `dwm.thumbnail`) - runs unattended once you
   pass `--yes`.
 - **A real capture that samples desktop pixels** (any whole screen, `bitblt`, `duplication`, DWM's `dwm.screen`
@@ -108,11 +108,15 @@ Do not assume the tool is on `PATH`.
    from a fresh query when the choice matters. Re-query instead of reusing a handle from an earlier session - `0x…`
    values get recycled.
 4. **Capture, pointing the output at a real file.** `--out D:\shots\name.png` (the directory must already exist),
-   `--yes` only when the route stays a window-content one, and a budget only after reading *Time* below.
+   `--yes` only when the route stays a window-content one, and a budget only after reading *Time* below. The tool also
+   keeps one more copy of every delivered image under `history\<local date>\` next to the executable it was actually
+   run from - say so when you tell a user where their pictures went, and remember that it is persistent data this tool
+   never prunes, uploads or deletes.
 5. **Branch on `errors[].code`.** Check `errors` before `images`; `captured` always equals the number of `images`
    entries. `images[].source` / `path` / `scope` say which channel and which internal route really produced the frame
-   and whether its pixels are the window's own or the screen's. Never branch on `message` (follows `--lang`) or on the
-   exit code alone.
+   and whether its pixels are the window's own or the screen's. `images[].history` says what happened to that extra
+   copy - a *second* delivery, so `failed` / `skipped` there never means the image is missing, and never re-capture
+   because of it (see the table below). Never branch on `message` (follows `--lang`) or on the exit code alone.
 
 ## Evidence layers: `--capabilities`, and what it never said
 
@@ -128,13 +132,21 @@ Three facts per row, and they are three different kinds of evidence:
 involved. Read-only queries never probe by capturing - that is why some rows stay `unverified` instead of being
 answered by taking a screenshot.
 
-`session.integrityLevel` is a fourth kind of fact, about **this process** rather than about the machine: the mandatory
-integrity level the executable is running at, because the folder it sits in may carry a `Low Mandatory Level` label
-(`icacls` shows it, and every file under that folder inherits it). Below Medium the tool is neither "supported" nor
-"broken": `wgc` and `printwindow` get refused, a file cannot be created in a normal (Medium) directory even after the
-frame was acquired, while `dwm.thumbnail` and the two desktop-pixel routes still deliver. `status` says nothing about
-any of that - that column is the version floor and screen topology - so read this field as its own layer, and treat an
-`unknown` there as a question that went unanswered rather than as either a downgrade or an all-clear.
+`session.integrityLevel` is a fourth kind of fact, and it is the **only** evidence about the mandatory integrity
+level of *this* process - the one the executable actually runs at. Three things are often conflated and are not the
+same fact: the label a folder carries (`icacls` on that folder), the label a file inherits from it, and
+`whoami /groups` in the shell that launched the tool (that one describes your shell, not ECAPTURE). A low label on
+the folder is one way a process ends up below Medium, not a proof either way - read this field itself.
+Below Medium this tool is neither "supported" nor "broken": on the one development machine this project measured,
+`wgc` and `printwindow` were refused, creating a file in a normal (Medium) directory failed even after the frame was
+already acquired, while `dwm.thumbnail` and the two desktop-pixel routes still delivered - that is one measurement,
+not a promise for every machine, and `dwm` escalates to the desktop-pixel route when the window hands back no
+picture, which still always requires the person's own answer. Nor is `io.write_failed` + `win32: 5` proof of this
+cause: an occupied target, a path that does not parse, or a directory that genuinely refuses writes produce the same
+code pair. `status` says nothing about any of that - that column is the version floor and screen topology - so read
+this field as its own layer, and treat an `unknown` there as a question that went unanswered rather than as either
+a downgrade or an all-clear. Changing a label, an ACL, an install location, or elevation is a separate,
+owner-authorized decision; this tool never does any of it, and it never elevates.
 
 ## Snapshots, identity and matching (what a query does *not* buy you)
 
@@ -235,6 +247,15 @@ any of that - that column is the version floor and screen topology - so read thi
   changing any fact. At minimum compare `width` / `height` with the target rectangle, and for a screen-reading route
   check `clipped` / `capturedRect`: a window straddling two monitors is captured only on the output it overlaps most,
   so the image may not be the whole window.
+- **Every delivered image also gets a history copy** (on by default, and there is no switch to turn it off in this
+  build): an independent copy of the same already-encoded bytes in `history\<local date>\` **next to the
+  `ECAPTURE.EXE` that is actually running** - next to the installed one when it is installed, next to
+  `build\ECAPTURE.EXE` when you run the development binary. Not the working directory, not the `--out` directory.
+  It is a second delivery, so it has its own verdict: `images[].history.status` is `saved` / `failed` / `skipped`,
+  `history.file` appears only when the copy really was committed, and `history.code` carries the stable
+  `history.*` code on `failed` / `skipped` (details on the matching `errors` entry, `stage: history`). `--quiet`
+  cannot hide any of it. Say so when you tell a user where their pictures went: the tool keeps a second persistent
+  copy, and it never rotates, prunes, uploads or deletes it - removing history is the user's own deliberate action.
 - **Partial success is real**: with `--all` or `--monitor all`, `captured` can be greater than 0 while the exit code is
   7. Never throw away what already landed.
 - Every output name of the batch is planned before the first frame, and writes are atomic. Two targets expanding to the
@@ -307,8 +328,9 @@ repair a field you then read as an affirmation.
 | Explicit cursor or HDR state the named channel cannot deliver | `capture.cursor_unsupported` / `capture.hdr_unsupported`, 1 | **no channel was substituted**: change the requirement or the channel deliberately; see below for what duplication can and cannot promise |
 | Policy verdict after the frame | `capture.hdr_refused` / `capture.hdr_unverifiable`, 7 | the user's own requirement produced it; the chain stops, no silent downgrade on another backend |
 | Machine-level requirement | `env.os_too_old` 7 (whole tool, `--capture` cannot help) / `env.channel_unsupported` 7 (that channel only) / `env.cursor_unsupported`, `env.hdr_unsupported` 7 (requirement unmet here) | read `--capabilities`; retrying the same target changes nothing |
-| **The process is below Medium integrity** - the executable sits in a folder carrying a `Mandatory Label\Low Mandatory Level` label (`.agents` skill roots are a known case), and that round also carries `note.low_integrity` | `capture.failed` 7 with `hresult: 0x80070005` (`wgc`) or `win32: 5` (`printwindow`), and / or `io.write_failed` 8 with `win32: 5` **after the frame was already acquired** | this is not "that window is protected" and not "this machine cannot capture": check `session.integrityLevel` from `--capabilities` (a `low` / `untrusted` value plus the `process_integrity_below_medium` caveat says it), and confirm with `icacls "<the EXE's folder>"`. Raising `--timeout-ms`, renaming the target, reinstalling codecs or looping through backends cannot change it. What still works here: `--capture dwm` for a window's own picture, and writing `--out` into a folder that carries the same low label (never into a normal directory - that is the `io.write_failed` above). Desktop-pixel routes still need the person's own Yes; the level changes nothing about authorization. Telling the user to run as administrator is not the fix; moving the install, or the owner removing the label, is |
+| **`access denied` while `session.integrityLevel` says below Medium** - the executable may sit in a folder carrying a `Mandatory Label\Low Mandatory Level` label (`.agents` skill roots are a known case on the machine this project measured), and that round also carries `note.low_integrity` | `capture.failed` 7 with `hresult: 0x80070005` (`wgc`) or `win32: 5` (`printwindow`), and / or `io.write_failed` 8 with `win32: 5` **after the frame was already acquired** | low integrity is **one possible cause of this code pair, not its only one**: an occupied target, a path that does not parse, or a directory that genuinely refuses writes look the same in the code, so check `session.integrityLevel` from `--capabilities` (that field, not `icacls` on the folder and not your parent shell's `whoami /groups`, is the statement about this process). Raising `--timeout-ms`, renaming the target, reinstalling codecs or looping through backends cannot change it. What was measured to still work on that one development machine: `--capture dwm` for a window's own picture - which is a measurement, not a guarantee elsewhere, and it escalates to the desktop-pixel route when the window gives no picture - and writing `--out` into a folder that carries the same low label. Desktop-pixel routes still need the person's own Yes; the level changes nothing about authorization. Telling the user to run as administrator is not the fix. Relocating the install, removing the label or changing an ACL is a security-setting change: **propose it and let the owner do it deliberately, never do it yourself as part of making a capture "pass"** |
 | Output problem | `io.write_failed`, `io.file_exists`, `io.output_collision` (8) | create the directory, or choose a name that cannot collide; keep what already landed |
+| **The image was delivered but its history copy was not** | `history.unavailable`, `history.write_failed`, `history.file_exists` (a copy never overwrites an existing history file), `history.budget_spent`, `history.same_file` - exit **7** with the image still in `images`, `images[].history.status` = `failed` / `skipped`, `stage: history` | **do not capture again**: re-shooting cannot produce that copy, it costs the user another authorization and it puts a second frame on disk. Use the image you already have, and say plainly that the extra copy did not land. `skipped` is not a failure of anything (`budget_spent` = the shared budget was already spent; `same_file` = the `--out` name *is* that archive name, so writing it would overwrite the deliverable). What could actually change it is the location - writable, a real directory, not a reparse point - never a different `--capture`, a different format or a bigger budget. Never escalate, re-label or re-ACL anything to make the archive pass |
 | Timeout at the write stage | `io.timeout` 8 when nothing landed; **7 with the image kept** when the budget only crossed after the commit | fix the budget tail; do not re-capture a picture that is already delivered |
 | Encode step could not run at all | `capture.encoder_unavailable`, 7 | no image can be produced here whatever the target; check the media components / this session |
 
@@ -398,8 +420,10 @@ reporting outlets and the three ways out) · **只读的窗口查询** (`windowq
 `readability`) · **只读的屏幕枚举** · **窗口内部裁剪** · **等比缩小** · **截图授权** (the two tiers, the full
 `images[].path` / `scope` registry, what the dialog lists and how the consent snapshot is bound) ·
 **期限与阻塞隔离** (the four clocks, the helper's segmented deadlines, the pipe shutdown boundary, the honest limits) ·
-**JSON 结构** (complete key tables for a window image and a screen image) · **退出码** · **行为变更** (why an omitted
-`--out` no longer hides the real code) · **诊断码全表** (every code, including the ones above) · **帧的形状与像素上限** ·
+**JSON 结构** (complete key tables for a window image and a screen image, `images[].history` included) · **退出码** · **行为变更** (why an omitted
+`--out` no longer hides the real code) · **诊断码全表** (every code, including the ones above, plus the `history.*` family) ·
+**截图历史归档** (where the extra copy goes, the naming and exclusive-commit rules, the two-delivery partial success,
+retention and what the read-only queries do *not* probe) · **帧的形状与像素上限** ·
 **输出名占位符** (`%i %h %p %n %d %t`) · **各 shell 的坑** · **常用配方**.
 
 For humans and for the product story, the repository README (`README.md`, plus `README.zh-CN.md`, `README.zh-TW.md`,

@@ -17,7 +17,7 @@ help.output1	输出: 成功与错误都是 JSON，只含 captured / images（另
 help.output2	      --help / --version 以及不给条件时是文本
 help.exit1	退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无匹配窗口 / 5 匹配多个窗口 /
 help.exit2	        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
-help.status	当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在
+help.status	当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在；每张成功交付的图另存一份到程序目录的 history 下（不自动清理）
 help.system	运行环境: 64 位 Windows，声明的最低内部版本 18362（Windows 10 版本 1903），只在内部版本 19045 上实测过；本机版本提供不了的路线在取帧、弹框之前就报 env.os_too_old / env.channel_unsupported（前者换通道也没用），--verbose 的 input.osBuild 与 input.captureChain 回显这一次能走哪几条
 
 help.examples	示例:
@@ -190,6 +190,14 @@ io.dir_missing	输出目录不存在，请先建好目录
 io.write_interrupted	写文件中断
 io.stdout_failed	写标准输出失败
 io.stdout_partial	写标准输出中断：已发出 %1 / %2 字节，这一张没有完整交付（管道里留下的是一段残缺的流）
+history.unavailable_reason	历史副本的位置这一路走不通（%1）
+history.unavailable_hint	主图照常交付，只有那一份副本没写。检查程序所在目录是否允许本进程建目录与写文件；这里不换别的目录，也不提权
+history.dir_failed_reason	历史副本的目录建不出来（错误码 %1）
+history.write_failed_hint	主图已经落地，这一条只说那份副本没写成。历史从不覆盖已有文件，也不悄悄改存到别处
+history.file_exists_hint	换一张再来一次；历史归档名撞上已有文件时宁可报失败，也不覆盖已经存下的那一张
+history.commit_failed	历史副本没提交成功
+history.same_file	主输出的名字恰好就是这一次要用的历史归档名，副本已跳过（免得盖掉刚交出去的那一张）
+history.same_file_hint	把图写进 history 那棵树里时会出现这一条。主图与它的交付事实原样保留；想要副本就换一个不在 history 里的输出名
 io.timeout_delivered	图已完整交付（%1 字节），但这一次交付结束时自动预算 %2 ms 已用尽（实际用时 %3 ms）
 io.timeout_delivered_hint	已经落地的这一张不会被回滚，也不会从 images 里消失；这条说的只是这一批没在预算内结束。加大 --timeout-ms，或换一条不在提交那一步等很久的输出：目标目录挪到本地盘，或先把读走标准输出的那一方准备好
 io.output_collision	多个目标算出同一个输出名，整批没有截图也没有写文件
@@ -376,6 +384,7 @@ consent.title	EvernightCapture 要截图，需要你同意
 consent.head	本工具准备截取画面，需要你同意。
 consent.targets	目标（共 %1 个）：%2
 consent.plan	取图方式 %1，实际路径 %2，图片写往 %3
+consent.history	每张成功交付的图还会在程序自己那目录下的 history 子目录里另存一份独立副本（按本地日期分目录，不会自动清理）。
 consent.dialog_closes	本对话框会在截图开始前关闭，不会出现在图里。
 consent.ask	允许现在截图吗？
 consent.target_line	%1（区域 %2,%3 尺寸 %4x%5）

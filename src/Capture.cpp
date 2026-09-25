@@ -32,6 +32,7 @@
 #include "Encoder.h"
 #include "FallbackChain.h"   // auto 那条回退链本体与"换后端有没有意义"的判据（离线判据注入假后端）
 #include "FileSave.h"
+#include "HistoryArchive.h"   // 主交付之外那一份历史副本（命名、独占提交与失败归类都在那一层）
 #include "ImageOps.h"
 #include "Lang.h"
 #include "OutputPlan.h"
@@ -781,11 +782,17 @@ CaptureOutcome RunCapture(const Options& opt) {
     //（见 CaptureOneChannel）。带 --yes 的窗口内容路径可以一次都不弹；会拍到桌面像素的
     // 那几条一定会弹，且 --yes 在其中不起作用。
     // 确认框的等待时长走 --consent-timeout-ms（与上面那份自动预算分开计时）：0 = 一直等人。
+    // 历史归档的位置在弹框**之前**就解析出来：确认框上要写"程序自己那份目录里还会另存一份持久
+    // 副本"，而那一句只有在这一次真能走到归档根时才说得出（解析不出来的那一路不承诺副本）。
+    // 这一步只问模块位置与那个位置此刻是什么属性，一个目录都不建、一个字节都不写。
+    HistoryArchive historyArchive;
+
     DialogConsentPrompt prompt(opt.consentTimeoutMs);
     GateConfig gateCfg;
     gateCfg.yes = opt.yes;
     gateCfg.captureLabel = CaptureMethodName(opt.capture);
     gateCfg.consentTimeoutMs = opt.consentTimeoutMs;
+    gateCfg.historyCopy = historyArchive.root().usable;
     // 真人等待从上面那份整批自动预算里暂停出去（判定器只在真要弹框时套上暂停作用域；
     // --consent-timeout-ms 有自己的秒表，不跟着冻结）。dl 比判定器活得久，这里只借指针。
     gateCfg.autoBudget = &dl;
@@ -809,11 +816,14 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 哪怕一张都没写成，stdout 也不会冒出文字。
     if (opt.output == L"-") ClaimStdout();
 
-    // 交付那一步的三件事：整批共用的那一份预算（不是一个目标一份）、真的出口（文件 / 标准输出），
-    // 以及量 elapsedMs 的那把时钟。时钟必须与下面每个目标开工时记的 started 同一把，否则
-    // images[].elapsedMs 会跟着预算那把 QPC 一起漂；预算本身仍是 Deadline 里那份，不在这里另领。
+    // 交付那一步的几件事：整批共用的那一份预算（不是一个目标一份）、真的出口（文件 / 标准输出）、
+    // 量 elapsedMs 的那把时钟，以及主交付之外那一份历史副本（命名、独占提交与失败归类都在
+    // src/HistoryArchive.h 那一层，六条后端一条都不必知道历史的存在）。时钟必须与下面每个目标
+    // 开工时记的 started 同一把，否则 images[].elapsedMs 会跟着预算那把 QPC 一起漂；预算本身仍是
+    // Deadline 里那份，不在这里另领 —— 归档也不另领（预算已尽时它记成 skipped 而不是重来一次）。
     RealOutputSink sink;
-    const DeliveryRun delivery{&dl, &sink, [] { return GetTickCount64(); }};
+    const DeliveryRun delivery{&dl, &sink, [] { return GetTickCount64(); }, &historyArchive,
+                               opt.format};
 
     for (size_t i = 0; i < targets.size(); ++i) {
         Target& t = targets[i];

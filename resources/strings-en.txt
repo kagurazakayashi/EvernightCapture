@@ -17,7 +17,7 @@ help.output1	Output: success and failure are both JSON, holding only captured / 
 help.output2	       --help / --version and the no-conditions case are plain text
 help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
 help.exit2	        6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
-help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist
+help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist; every delivered image also keeps a copy under history next to the program (never pruned automatically)
 help.system	Runtime: 64-bit Windows, declared floor build 18362 (Windows 10 version 1903), tested only on build 19045; a route this machine's version cannot offer is reported before any frame or dialog as env.os_too_old / env.channel_unsupported (the first does not improve with another channel). --verbose echoes input.osBuild and input.captureChain
 
 help.examples	Examples:
@@ -184,6 +184,14 @@ io.dir_missing	Output directory does not exist - create it first
 io.write_interrupted	Write to file interrupted
 io.stdout_failed	Failed to write to stdout
 io.stdout_partial	Stdout write interrupted: %1 of %2 bytes were emitted, so this image was not delivered - the pipe holds a truncated stream
+history.unavailable_reason	The history copy has nowhere to go on this route (%1)
+history.unavailable_hint	The primary image was delivered as usual; only that extra copy was not written. Check whether this process may create the directory and files next to the executable - no other directory is substituted and no elevation happens
+history.dir_failed_reason	Cannot create the history directory (error %1)
+history.write_failed_hint	The primary image is on disk; this entry is only about the copy that did not land. History never overwrites an existing file and is never quietly relocated elsewhere
+history.file_exists_hint	Run it again on another image; when a history name collides with an existing file this reports a failure instead of overwriting what is already saved
+history.commit_failed	The history copy was not committed
+history.same_file	The output name is exactly the history name this decision would use, so the copy was skipped (nothing just delivered gets overwritten by itself)
+history.same_file_hint	This happens when you write into the history tree itself. The primary image and its delivery facts stay as they are; want a copy too, choose an output name outside history
 io.timeout_delivered	The image was delivered in full (%1 bytes), but the automatic budget of %2 ms had run out when that write finished (%3 ms elapsed)
 io.timeout_delivered_hint	What already landed on disk (or reached stdout) is not rolled back and stays in images; this only says the batch did not finish inside the budget. Raise --timeout-ms, or pick an output that does not wait that long to commit: move the target folder onto a local disk, or have whatever reads stdout ready first
 io.output_collision	Several targets resolve to the same output name; nothing was captured or written
@@ -370,6 +378,7 @@ consent.title	EvernightCapture wants to take a screenshot
 consent.head	This tool is about to capture pixels and needs your consent.
 consent.targets	Target(s), %1 in total: %2
 consent.plan	Channel %1, actual path %2, image goes to %3
+consent.history	Every image that is delivered also keeps an independent copy under the history folder next to this program itself (one directory per local date, never pruned automatically).
 consent.dialog_closes	This dialog closes before the capture starts, so it will not appear in the image.
 consent.ask	Allow the capture now?
 consent.target_line	%1 (area %2,%3 size %4x%5)

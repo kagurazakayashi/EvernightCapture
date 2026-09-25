@@ -23,7 +23,8 @@
          判"要么整套是新的、要么整套是旧的"，不许出现半新半旧的混装；并且用户后加的文件不受影响。
          Inno 的回滚边界以这一例实测为准（.iss 顶部注释记的就是这里看到的）。
       7. 卸载：只删安装器自己记录的文件与那个归属标记；用户新增文件、备份目录里的原件、
-         相邻的别的产品目录都必须在卸载后还在。
+         相邻的别的产品目录都必须在卸载后还在。截图历史 <安装目录>\history\ 也必须在：它不在
+         受管清单里，升级与卸载都只许"不碰"，内容逐字节不变。
       8. verify-install.ps1 的预算参数非法时在起任何进程之前就拒绝（退出码 2）。
       9. 声明的安装后可跑离线计划真的能在这个隔离目录里跑完（不依赖源码树、Visual Studio 或网络）；
          这条最重，用 -SkipOffline 跳过时要如实记 SKIP。
@@ -196,10 +197,37 @@ try {
     Assert-Ec ($nowSkill -ne $edited) '重装后 SKILL.md 没有被更新成包里的版本'
     Assert-Ec ($nowSkill -notmatch [regex]::Escape($userEdit)) '新装出来的 SKILL.md 里还留着用户的补充（说明覆盖没生效）'
 
+    # 截图历史：归档住在实际运行的 exe 旁边，所以升级现场它就在安装目录里。它不属于本产品的受管
+    # 清单，安装器对它只有"不碰"这一种正确行为：不覆盖、不搬走、不当成用户改动备份、也不写进
+    # 发行清单。这里放一个哨兵，判的正是这四件事。
+    $histDir = Join-Path $d1 'history\2026-01-02'
+    New-Item -ItemType Directory -Force -Path $histDir | Out-Null
+    $histFile = Join-Path $histDir 'sentinel.png'
+    $histBody = 'ECAPTURE-HISTORY-SENTINEL-' + [Guid]::NewGuid().ToString('N')
+    Set-Content -LiteralPath $histFile -Value $histBody -Encoding ASCII
+    # 判的是"有没有一棵截图历史被打进包里 / 列进发行清单"，所以按**路径分段**比，不能按 'history'
+    # 这个子串比：随包发出的 tests\history.ps1 与 build\ecapture-history-tests.exe 本来就该在清单里，
+    # 拿子串比会把正常的测试文件名误判成"把用户截图打进包了"。
+    $mf = Get-Content -LiteralPath (Join-Path $d1 'install-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $manifestHistoryPaths = @($mf.files | Where-Object {
+        @(([string]$_.path).Replace('\', '/').Split('/') | Where-Object { $_ -eq 'history' }).Count -gt 0
+    })
+    Assert-Ec ($manifestHistoryPaths.Count -eq 0) `
+        "install-manifest.json 把截图历史当成了发行载荷（$(($manifestHistoryPaths | ForEach-Object { $_.path }) -join ', ')）"
+    $hashHistoryPaths = @(Get-Content -LiteralPath (Join-Path $d1 'payload.sha256.txt') -Encoding UTF8 | Where-Object {
+        $p = ($_ -split '\s+', 2)[-1]
+        (@($p.Replace('\', '/').Split('/') | Where-Object { $_ -eq 'history' }).Count -gt 0)
+    })
+    Assert-Ec ($hashHistoryPaths.Count -eq 0) `
+        'payload.sha256.txt 把截图历史列进了发行清单（那些是要被核对与分发的截图）'
+
     # 再装一次：此时磁盘上的东西与标记记的一致，不该再算"用户改动"
     $r4 = Install-To -Dir $d1
     Assert-Ec ($r4.Exit -eq 0) "第三次重装退出码 $($r4.Exit)"
     Assert-Ec ((Count-Backups -Dir $d1) -eq 1) '第三次重装把上次刚装下来的文件又当成用户改动备份了'
+    Assert-Ec (Test-Path -LiteralPath $histFile) '升级把截图历史目录删掉了'
+    Assert-Ec ((Get-Content -LiteralPath $histFile -Raw -Encoding ASCII).Trim() -eq $histBody.Trim()) `
+        '升级改写了截图历史里的内容（它不属于本产品的受管文件）'
 
     # 备份目录与用户后加的文件都不属于本产品：卸载前它们就在，卸载后也必须在（见第 6 步）
     $userFile = Join-Path $d1 '我的笔记.txt'
@@ -290,6 +318,9 @@ try {
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'tests\hdr.ps1'))) '卸载后随包测试脚本还在'
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'evernightcapture.owner.ini'))) '卸载没清掉自己写的归属标记'
     Assert-Ec (Test-Path -LiteralPath $userFile) '卸载删掉了用户新增的文件'
+    Assert-Ec (Test-Path -LiteralPath $histFile) '卸载删掉了截图历史（历史是持续保留的截图数据，不是缓存也不是产物）'
+    Assert-Ec ((Get-Content -LiteralPath $histFile -Raw -Encoding ASCII).Trim() -eq $histBody.Trim()) `
+        '卸载改写了截图历史里的内容'
     Assert-Ec ((Count-Backups -Dir $d1) -ge 1) '卸载删掉了备份目录'
     Assert-Ec (Test-Path -LiteralPath $bSkill) '备份目录里的用户原件被卸载带走了'
     Assert-Ec (Test-Path -LiteralPath $sibling) '卸载把相邻目录带走了'
