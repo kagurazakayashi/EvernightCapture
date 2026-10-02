@@ -196,14 +196,22 @@ void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingI
                 archived = run.history->Archive(target.file, run.format, encoded, &rec, &detail);
             }
         } catch (...) {
-            // 归档那一段抛出东西：按"副本没落地"记，而这一句用的是第 2 段备好的那一份码位与
-            // 骨架（都只做不抛的搬移），不需要任何新的分配。原因编不出来就不编一条冒充 ——
-            // errors 里入的是那条骨架（谁、哪条通道、哪一段）。
-            archived = false;
-            rec.state = HistoryRecord::State::kFailed;
-            rec.file.clear();          // 清空不分配：这一格维持"没有副本名字"
-            rec.code.clear();          // 空码 = 沿用这一张已经备好的那条默认稳定码
-            detail = std::move(lateHistory);
+            // 归档那一段抛出东西：先分"抛出之前有没有已经宣布提交成功"，再决定这一格怎么记。
+            //  * kSaved = 副本已经按 rec.file 那个名字落到磁盘，那是收不回的外部事实。这一句抛出
+            //    不许把它改写成"没有提交"——那会把已存下的副本从结果里抹掉，还可能诱导调用方
+            //    重拍一张来"补"一个其实不存在的失败。状态与路径原样留给下面的成功入账。
+            //  * 其余下场（kNone / kFailed / kSkipped）都没把副本收进磁盘：按"没落地"记，用的
+            //    是第 2 段备好的那一份码位与骨架（都只做不抛的搬移，不需要任何新的分配）。
+            //    原因编不出来就不编一条冒充 —— errors 里入的是那条骨架（谁、哪条通道、哪一段）。
+            if (rec.state == HistoryRecord::State::kSaved) {
+                archived = true;
+            } else {
+                archived = false;
+                rec.state = HistoryRecord::State::kFailed;
+                rec.file.clear();          // 清空不分配：这一格维持"没有副本名字"
+                rec.code.clear();          // 空码 = 沿用这一张已经备好的那条默认稳定码
+                detail = std::move(lateHistory);
+            }
         }
         if (!archived && rec.state == HistoryRecord::State::kNone) {
             // 归档那一位说"没提交"却没说自己是哪一种下场：按最保守的那一条记，

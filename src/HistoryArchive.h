@@ -69,6 +69,14 @@ struct HistoryRoot {
 // 其它问答不出来的情况（例如属性那一步本身失败）**不**在这里下结论，交给提交那一步如实报错。
 HistoryRoot ResolveHistoryRoot();
 
+// 副本落盘的那一次"文件提交接口"：生产直接走与主输出同一份的 SaveFileAtomic（overwrite=false，
+// 即历史"不许替换"的独占改名语义）。离线判据需要能把分配闸门开在"这一次提交刚刚返回成功"那一刻，
+// 才能摆出"副本已经收下、而提交之后的记账刚好缺内存"这一瞬（tests\history_state.cpp 第 13 节）；
+// 换的只是那一次调用的**观察点**——测试的包装直接调生产 FileSave、只在返回成功后开闸，被 judged 的
+// 提交本体一个都没换。生产构造永远不给它，走的路径与没有这一格时完全一致。
+using HistoryCommitFn = std::function<bool(const std::wstring& path,
+                                           const std::vector<uint8_t>& bytes, Diagnostic* err)>;
+
 // 交付层只按这个接口问归档：给它主输出的名字、实际编码所用的格式与那一份编好的字节，
 // 拿回 images[].history 那一份事实。交付层不认识日期目录、命名规则与重解析点。
 class HistoryArchiver {
@@ -92,9 +100,12 @@ public:
     HistoryArchive();
 
     // 离线判据用的构造：给定根目录、本地时钟、固定的抗冲突标识与起始序号，于是归档名可以被
-    // 现场算出来（判据要的是"提前摆好一个同名文件"这种确凿现场）。生产调用点一律走上面那个。
+    // 现场算出来（判据要的是"提前摆好一个同名文件"这种确凿现场）；commit 用来把分配闸门开在
+    // 那一次文件提交返回成功的瞬间（见 HistoryCommitFn 那段——包装里仍然是生产 SaveFileAtomic）。
+    // 生产调用点一律走上面那个构造。
     explicit HistoryArchive(HistoryRoot root, HistoryClockFn clock = nullptr,
-                            std::wstring nonce = std::wstring(), uint64_t first_seq = 1);
+                            std::wstring nonce = std::wstring(), uint64_t first_seq = 1,
+                            HistoryCommitFn commit = nullptr);
 
     const HistoryRoot& root() const { return root_; }
     uint64_t next_sequence() const { return next_seq_; }
@@ -115,6 +126,7 @@ private:
     HistoryClockFn clock_;
     std::wstring nonce_;
     uint64_t next_seq_ = 1;
+    HistoryCommitFn commit_;   // 空 = 直接走生产 SaveFileAtomic（overwrite=false）
 };
 
 // 归档目录名（history\ 下面那一层）：本地日期 YYYY-MM-DD。命名判据只有这一份，

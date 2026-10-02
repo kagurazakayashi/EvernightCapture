@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <iterator>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -33,6 +34,16 @@
 
 namespace ecapture {
 namespace {
+
+// 提交成功之后的那几步必须是真正不分配、不抛的记账（保证见本文件顶部的保证边界）。这一条断言
+// 写在实际使用的那个表达式对应的类型上：`record->file = std::move(path)` 走
+// std::wstring::operator=(std::wstring&&) —— 上一版的 path 声明为 const，std::move 拿到的只是
+// const 引用，那一行实际退化成**拷贝赋值**、可以在副本已经落到磁盘之后抛 bad_alloc，把真实
+// 成功的历史副本从结果里抹掉。以后谁把这里的交接改回可分配的形状，这一条先编译不过。
+static_assert(std::is_nothrow_move_assignable_v<std::wstring>,
+              "提交后的路径交接用 wstring 搬移赋值：它一旦可能抛，已提交的历史副本就会从结果里消失");
+static_assert(std::is_nothrow_default_constructible_v<HistoryRecord>,
+              "HistoryRecord 默认构造排在那一次提交之前；它一旦可能抛，成功提交后的记账链就断了");
 
 // 撞名就换下一个序号再试。次数是有界的：反复撞名说明有别的东西在按同一条规则起名字，
 // 那是"这一份不该由我提交"的信号，不是"再多试几次"的理由。
@@ -200,9 +211,10 @@ HistoryArchive::HistoryArchive() : root_(ResolveHistoryRoot()), clock_(LocalHist
                                    nonce_(ProcessNonce()) {}
 
 HistoryArchive::HistoryArchive(HistoryRoot root, HistoryClockFn clock, std::wstring nonce,
-                               uint64_t first_seq)
+                               uint64_t first_seq, HistoryCommitFn commit)
     : root_(std::move(root)), clock_(std::move(clock)),
-      nonce_(nonce.empty() ? ProcessNonce() : std::move(nonce)), next_seq_(first_seq ? first_seq : 1) {}
+      nonce_(nonce.empty() ? ProcessNonce() : std::move(nonce)), next_seq_(first_seq ? first_seq : 1),
+      commit_(std::move(commit)) {}
 
 bool HistoryArchive::EnsureDateDirectory(const HistoryInstant& when, std::wstring* dir,
                                          Diagnostic* err) {
@@ -270,7 +282,8 @@ bool HistoryArchive::CommitCopy(const std::wstring& dir, const HistoryInstant& w
     Diagnostic last_err;
     for (int attempt = 0; attempt < kHistoryAttempts; ++attempt) {
         const uint64_t seq = next_seq_++;   // 本次决策用掉一个序号：同一进程连截多张也各有各的名
-        const std::wstring path = dir + L"\\" + HistoryFileName(when, pid, nonce_, seq, format);
+        // 不是 const：提交成功之后那一次路径交接要**真的搬移**（见文件顶部的编译期断言）。
+        std::wstring path = dir + L"\\" + HistoryFileName(when, pid, nonce_, seq, format);
 
         // 主输出恰好算在这棵 history 树里、而且名字与这一次要用的归档名相同：那就**不写副本**。
         // 写下去是把刚交出去的那一张自己盖掉，而"另存一份独立副本"说的从来不是这一件事。
@@ -290,10 +303,16 @@ bool HistoryArchive::CommitCopy(const std::wstring& dir, const HistoryInstant& w
         }
 
         Diagnostic err;
-        if (SaveFileAtomic(path, bytes, /*overwrite=*/false, &err)) {
+        // 那一次文件提交：生产走与主输出同一份的 SaveFileAtomic；判据注入的包装只是观察点，
+        // 里面调的还是它（commit_ 为空的构造与没有这一格时走的路径完全一致）。
+        const bool committed = commit_ ? commit_(path, bytes, &err)
+                                       : SaveFileAtomic(path, bytes, /*overwrite=*/false, &err);
+        if (committed) {
+            // 从这一刻起每一步都不许再要内存：副本已经被那个名字收下，那是收不回的外部事实，
+            // 不能因为提交之后的任何一次分配失败而从调用方的结果里消失。
             record->state = HistoryRecord::State::kSaved;
-            record->file = std::move(path);   // 只有真提交了才把这个名字交出去（搬移不抛）
-            record->code.clear();
+            record->file = std::move(path);   // 真搬移、不分配：只有真提交了才把这个名字交出去
+            record->code.clear();             // clear 只置长度：不分配、不抛
             return true;
         }
         last_err = ToHistoryError(std::move(err));

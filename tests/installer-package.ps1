@@ -7,9 +7,16 @@
 
       1. staging 归属：合法自有目录可重用与重建；build 本身、仓库根、staging 根本身、盘符根、
          相邻前缀（build-backup）、`..` 逃逸出范围、更深层子目录、别的卷、没有 ownership 标记的
-         已有目录、标记指向别的仓库、目录本身是 junction、树里藏 junction —— 全部拒绝。
-         每种拒绝都先放哨兵文件，再判"文件一个字节都没被动过"。归一化后仍在范围内的 `..`
-         写法不该被误杀，这条也判。
+         已有目录、标记指向别的仓库、目录本身是 junction、树里藏 junction、**祖先层（build）是
+         junction 或断开的链接** —— 全部拒绝；后者要求从仓库根到 staging 的每一层组件都过一遍，
+         只查首末两层时对面两层可以都"看起来正常"。每种拒绝都先放哨兵文件，再判
+         "文件一个字节都没被动过"。归一化后仍在范围内的 `..` 写法不该被误杀，这条也判。
+      1b. 归属标记字段判据（Test-EcOwnershipMarker，与 verify-install 同一份）：正确标记通过；
+         错误的 product、错误的 AppId、不认得的 markerversion、缺字段、markerversion 2 却没有
+         内容哈希的记录、缺 --files-- 段、空记录段、形状坏的记录 —— 逐条拒绝。上一代
+         markerversion 1（只有大小/时间、没有内容基线）按"认得"通过，但不算内容证据。
+         旧写法 @($lines -contains 'x').Count -gt 0 是恒真的（-contains 交回布尔，@($false) 的
+         .Count 也是 1），这里的结论挂在解析后的字段值上。
       2. 载荷清单与离线依赖闭包：清单声明的每套离线套件都要有依赖条目，闭包里的脚本 / 二进制 /
          辅助文件在真实源码树里必须存在（少一个就是打包该拦住的东西）；声明了套件却没写依赖条目，
          读表这一步就该失败。
@@ -109,7 +116,6 @@ try {
     $t1 = New-TreeStaging -Name 'guard'
     $ok = Test-EcStagingAllowed -StageDir (Join-Path $t1.Managed '0.4.0-x64') -BuildDir $t1.Build -RepoRoot $t1.Repo
     Assert-Ec $ok.Allowed "合法的新建 staging 应该放行（实际：$($ok.Reason)）" -Quiet
-
     # 归一化以后仍然落在受管范围内的 .. 写法：不能误杀，否则正常用法也过不了
     $insideDotDot = Test-EcStagingAllowed -StageDir (Join-Path $t1.Managed 'tmp\..\0.4.0-x64') -BuildDir $t1.Build -RepoRoot $t1.Repo
     Assert-Ec $insideDotDot.Allowed "归一化后仍在范围内的 .. 写法被误杀了（实际：$($insideDotDot.Reason)）" -Quiet
@@ -204,6 +210,139 @@ try {
         Skip-Ec '目录里有 junction 时拒绝清理' '本机建不出 junction，这条判据没跑到'
     }
 
+    # ---- 祖先层跳转：build 本身是 junction，指向另一棵树；对面的 installer-stage 与目标目录
+    #      都是普通目录 —— 只查首末两层时两问都绿，实际创建/删除会整段落进别人家。
+    #      判定必须拒绝（Test 与 Remove 两条路都是同一份判定），外部哨兵树一个条目都不许多、不许少。
+    $t5 = New-TreeStaging -Name 'ancestor-junction'
+    $outer = Join-Path $run.Path 'repo-outer-target'
+    New-Item -ItemType Directory -Force -Path (Join-Path $outer 'installer-stage\mine') | Out-Null
+    $outerKeep = Join-Path $outer 'installer-stage\mine\keep.txt'
+    Set-Content -LiteralPath $outerKeep -Value 'OUTER SENTINEL' -Encoding ASCII
+    $outerBefore = @(Get-ChildItem -LiteralPath $outer -Recurse -Force | ForEach-Object { $_.FullName }) -join "`n"
+    Remove-Item -LiteralPath $t5.Build -Recurse -Force     # 只删本次自建的 build，换成 junction
+    if (New-Junction -Link $t5.Build -Target $outer) {
+        try {
+            $vAnc = Test-EcStagingAllowed -StageDir (Join-Path $t5.Managed 'mine') -BuildDir $t5.Build -RepoRoot $t5.Repo
+            Assert-Ec (-not $vAnc.Allowed) 'build 祖先是 junction 时 staging 仍被判合格（中间层跳转没查出来）' -Quiet
+            Assert-Ec ([bool]$vAnc.Reason) '祖先 junction 的拒绝没有给出原因' -Quiet
+            $dAnc = Remove-EcManagedStaging -StageDir (Join-Path $t5.Managed 'mine') -BuildDir $t5.Build -RepoRoot $t5.Repo
+            Assert-Ec (-not $dAnc.Removed) '祖先 junction 形状下清理请求没有被同样拒绝'
+            Assert-Ec (Test-Path -LiteralPath $outerKeep) '外部哨兵树里的文件被这次判定删掉了'
+            Assert-Ec ((Get-Content -LiteralPath $outerKeep -Raw -Encoding ASCII).Trim() -eq 'OUTER SENTINEL') '外部哨兵内容被改过'
+            $outerAfter = @(Get-ChildItem -LiteralPath $outer -Recurse -Force | ForEach-Object { $_.FullName }) -join "`n"
+            Assert-Ec ($outerAfter -eq $outerBefore) '外部树在这次判定下多了或少了条目'
+        } finally {
+            # rmdir 只掐断 junction 本身、不走进目标（Remove-Item -Recurse 会跟着走，不能用在这里）。
+            $null = & cmd.exe /c "rmdir `"$($t5.Build)`"" 2>&1
+        }
+    } else {
+        Skip-Ec 'build 祖先是 junction' '本机建不出 junction（mklink /J 失败），这条判据没跑到'
+    }
+
+    # ---- 断开的链接：build 指向一个不存在的目标。Test-Path 会说"这个路径没有"，
+    #      旧写法把它直接等价成"没有重解析点"——而条目本体还带着重解析标记，后面照样可能跟着走。
+    #      这一形状必须按"重解析点/确认不了"拒绝。
+    $t6 = New-TreeStaging -Name 'broken-ancestor'
+    $gone = Join-Path $run.Path 'no-such-target-anywhere'
+    Remove-Item -LiteralPath $t6.Build -Recurse -Force     # 只删本次自建的 build
+    $null = & cmd.exe /c "mklink /J `"$($t6.Build)`" `"$gone`"" 2>&1
+    $t6Parent = New-Object IO.DirectoryInfo([IO.Path]::GetDirectoryName($t6.Build))
+    $entry = @($t6Parent.GetFileSystemInfos()) |
+              Where-Object { $_.Name -eq 'build' } | Select-Object -First 1
+    if ($entry -and (([int]$entry.Attributes) -band [IO.FileAttributes]::ReparsePoint)) {
+        $vBrk = Test-EcStagingAllowed -StageDir (Join-Path $t6.Managed '0.4.0-x64') -BuildDir $t6.Build -RepoRoot $t6.Repo
+        Assert-Ec (-not $vBrk.Allowed) '断开的祖先链接被放行了（Test-Path false 被当成了「没有重解析点」）' -Quiet
+        Assert-Ec ([bool]$vBrk.Reason) '断开链接的拒绝没有给出原因' -Quiet
+    } else {
+        Skip-Ec '断开的祖先链接' '本机没能建出断开 junction，这条判据没跑到'
+    }
+    $null = & cmd.exe /c "rmdir `"$($t6.Build)`"" 2>&1
+
+    # =========================================================================
+    Write-Host "`n=== 1b) 归属标记字段判据：受控输入逐条核对（Test-EcOwnershipMarker）==="
+    # =========================================================================
+    # verify-install 与安装全周期判据用的都是这同一份判据。背景：旧写法
+    # @($lines -contains 'product=...').Count -gt 0 里 -contains 交回的是布尔，@($false) 也是
+    # 一个元素、.Count 恒 1 —— 标记被写成什么样都绿。这里判的是解析成字段后的**值比较**。
+    $mfSrc1b = Get-EcPayloadManifest -Path $manifestPath
+    $guid1b = ([regex]::Match([string]$mfSrc1b.appId, '\{\{([0-9A-Fa-f\-]{20,40})\}')).Groups[1].Value
+    $wantApp1b = '{' + $guid1b + '}'
+    $hash64 = ('a' * 64)
+    function New-MarkerLines {
+        param([string]$Markerversion = '2', [switch]$NoProduct, [switch]$NoAppId, [switch]$NoVersion,
+              [string]$Product = 'EvernightCapture', [string]$AppId = '', [switch]$NoFiles,
+              [string[]]$Records = @("SKILL.md|123|160000000000000000|$hash64",
+                                     "ECAPTURE.EXE|456|160000000000000001|$hash64"))
+        if (-not $AppId) { $AppId = $wantApp1b }
+        $lines = @('# EvernightCapture 安装器写下的目录归属标记')
+        if (-not $NoProduct) { $lines += "product=$Product" }
+        if (-not $NoAppId) { $lines += "appid=$AppId" }
+        if (-not $NoVersion) { $lines += "markerversion=$Markerversion" }
+        if (-not $NoFiles) { $lines += '--files--'; $lines += $Records }
+        return ,@($lines)
+    }
+    $accepted1b = @($mfSrc1b.markerAcceptedVersions | ForEach-Object { [string]$_ })
+    $wantMk1b = [string]$mfSrc1b.markerVersion
+
+    $good = Test-EcOwnershipMarker -Lines (New-MarkerLines) -ExpectedProduct ([string]$mfSrc1b.product) `
+             -ExpectedAppId $wantApp1b -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec $good.Accepted "合格标记被判了失败：$(@($good.Problems) -join ' | ')"
+    Assert-Ec ($good.FileCount -eq 2 -and $good.HashedRecordCount -eq 2) '受管文件记录或哈希条数不对'
+
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -Product 'SomeoneElseTool') `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) '错误的 product 被放行了' -Quiet
+    Assert-Ec ((@($bad.Problems) -join ' ') -match 'product') 'product 不符没说清是哪一条'
+
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -AppId '{00000000-0000-0000-0000-000000000000}') `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) '错误的 appid 被放行了' -Quiet
+
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -Markerversion '99') `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) '不认得的 markerversion 被放行了' -Quiet
+
+    foreach ($missingKey in @('NoProduct', 'NoAppId', 'NoVersion')) {
+        $lines1b = switch ($missingKey) {
+            'NoProduct' { New-MarkerLines -NoProduct }
+            'NoAppId'   { New-MarkerLines -NoAppId }
+            default     { New-MarkerLines -NoVersion }
+        }
+        $bad = Test-EcOwnershipMarker -Lines $lines1b -ExpectedProduct ([string]$mfSrc1b.product) `
+               -ExpectedAppId $wantApp1b -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+        Assert-Ec (-not $bad.Accepted) "缺 $($missingKey.Substring(2)) 字段的标记被放行了（缺字段不能算通过）" -Quiet
+    }
+
+    # 本代（2）标记的记录必须带内容哈希；缺哈希 = 覆盖前保护没有基线，判失败而不是伪造。
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -Records @('SKILL.md|123|160000000000000000')) `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) 'markerversion 2 的记录不带内容哈希却被放行了' -Quiet
+
+    # 上一代（1）标记：认得（归属核对通过），但它是"没有内容基线"的那一档 —— 记录保持三段形状。
+    $legacy = Test-EcOwnershipMarker -Lines (New-MarkerLines -Markerversion '1' -Records @('SKILL.md|123|160000000000000000')) `
+             -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+             -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec $legacy.Accepted "上一代合格标记被判了失败：$(@($legacy.Problems) -join ' | ')" -Quiet
+    Assert-Ec ($legacy.FileCount -eq 1 -and $legacy.HashedRecordCount -eq 0) '上一代记录的条数/哈希数形状不对'
+
+    # 记录形状坏的、整段缺的：都拒绝。
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -Records @('not-a-record')) `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) '形状不合的文件记录被放行了' -Quiet
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -NoFiles) `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) '缺 --files-- 记录段的标记被放行了' -Quiet
+    $bad = Test-EcOwnershipMarker -Lines (New-MarkerLines -Records @()) `
+          -ExpectedProduct ([string]$mfSrc1b.product) -ExpectedAppId $wantApp1b `
+          -AcceptedMarkerVersions $accepted1b -HashRequiredVersion $wantMk1b
+    Assert-Ec (-not $bad.Accepted) '空的记录段被放行了' -Quiet
+
     # =========================================================================
     Write-Host "`n=== 2) 载荷清单与离线依赖闭包 ==="
     # =========================================================================
@@ -286,6 +425,13 @@ try {
     Assert-Ec ([bool]$guid) "载荷清单里的 appId 不是 {{{{GUID}} 这种 Inno 转义形状：$appIdJson"
     Assert-Ec ($issText -match ('AppId=\{\{' + [regex]::Escape($guid) + '\}')) 'ecapture.iss 的 [Setup] AppId 与载荷清单的 appId 不是同一个 GUID'
     Assert-Ec ($issText -match ('#define AppIdGuid "\{' + [regex]::Escape($guid) + '\}"')) 'ecapture.iss 里的 AppIdGuid 默认值与载荷清单不一致（归属标记会认不出自己的目录）'
+    # 归属标记的格式版本与产品名同样只许一份来源（载荷清单）：.iss 的默认值与常量写法都要对得上，
+    # verify-install 与安装器读的都是随包清单里那一份，不许各抄一份会漂开的定义。
+    Assert-Ec (@($manifest.markerAcceptedVersions).Count -ge 1) '载荷清单的 markerAcceptedVersions 至少要有认得的那一档' -Quiet
+    Assert-Ec ($issText -match ('#define MarkerVersion "' + [regex]::Escape([string]$manifest.markerVersion) + '"')) 'ecapture.iss 的 MarkerVersion 默认值与载荷清单的 markerVersion 不一致（标记版本漂成两份定义）'
+    Assert-Ec ($issText -match "MARKER_VERSION\s*=\s*'\{#MarkerVersion\}'") 'ecapture.iss 的 MARKER_VERSION 常量没有取 /DMarkerVersion（清单）那一份'
+    $issProduct = [regex]::Match($issText, "PRODUCT_NAME\s*=\s*'([^']+)'").Groups[1].Value
+    Assert-Ec ($issProduct -eq [string]$manifest.product) "ecapture.iss 的 PRODUCT_NAME（$issProduct）与载荷清单的 product（$([string]$manifest.product)）不一致"
     Assert-Ec ($issText -match '(?m)^\s*#error .*managed-list') 'ecapture.iss 缺少"没有编译期受管清单就编不过"的守卫'
     Assert-Ec ($issText -match '(?m)^\s*#error .*arm64') 'ecapture.iss 缺少拒绝 -Arch arm64 的守卫'
     Assert-Ec ($issText -match 'ArchitecturesAllowed=x64compatible') 'ecapture.iss 应限制在 x64compatible 上安装'

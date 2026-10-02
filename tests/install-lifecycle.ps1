@@ -10,12 +10,18 @@
     并且在第一例前后核对那个真实目录没被动过。判的几条：
 
       1. 空目录安装：退出码 0，ECAPTURE.EXE / SKILL.md / install-manifest.json / 测试程序都到位，
-         安装器写下归属标记（product / appid / markerversion + 逐文件大小与写入时间），
-         随包 verify-install.ps1 在这个目录里跑只读自检通过。
+         安装器写下归属标记（product / appid / markerversion 2 + 逐文件的大小、写入时间与内容
+         SHA-256；字段逐条与随包清单核对，判据与 verify-install 同一份），随包 verify-install.ps1
+         在这个目录里跑只读自检通过；把标记改坏（错误 product / 错误 AppId / 错误标记版本 /
+         缺字段）后，实际的 verify-install 必须失败 —— 归属核对与载荷哈希是两份不同的证据。
       2. 原样重装：不该产生任何备份目录（没有东西被改过）。
       3. 用户改过 SKILL.md 再重装：覆盖前把原件复制进 .ecapture-backup-<时间>\ 并留 BACKUP-INFO.txt，
          备份内容等于用户改过的那份，装出来的那份是包里的新版本；再用同一包装一次，
          不该把备份再当"用户改动"重复备份（标记里记的是上次装下来的样子）。
+      3b. 等长、同时间戳的替换（旧"大小+时间"判据的盲区）：本代标记记了内容 SHA-256，
+         必须认得出变了并先备份原件；重装写下新基线后，原样再来一次不再备份。
+      3c. 上一代标记（markerversion 1、只有大小/时间）：目录归属仍然认得（不拦"未知目录"确认），
+         但不给它伪造内容基线 —— 将被覆盖、无法证明未改动的原件先备份再继续。
       4. 陌生目录保护：只有 install-manifest.json（假 / 空 / 别的产品的）而无合格归属标记的非空目录，
          静默安装必须**不写任何东西、如实中止**（退出码非 0，原有文件与哨兵内容不变）。
       5. 归属标记被写坏（产品名 / AppId 不对，或格式不合格）同样按陌生目录处理。
@@ -146,14 +152,21 @@ try {
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'AGENTS.md'))) '开发用的 AGENTS.md 不该随包发出'
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'src'))) '安装目录里不该有源码目录'
     $marker = Read-OwnerMarker -Dir $d1
-    # 按行拆开来判：归属标记是 CRLF 的文本，^...$ 会被行尾的 \r 绊住，逐行比更可靠。
-    $mLines = @($marker -split "`r?`n")
+    # 按字段值比（判据本体在随包 tests\harness.psm1 的 Test-EcOwnershipMarker，与 verify-install 同一份）：
+    # 旧写法 @($mLines -contains 'product=...').Count -gt 0 里 -contains 交回布尔、@($false) 的 .Count 也
+    # 是 1，标记被写成什么样都绿，属于恒真断言，这里不再用那种形状。
     Assert-Ec ([bool]$marker) '安装器没写下归属标记'
-    Assert-Ec (@($mLines -contains 'product=EvernightCapture').Count -gt 0) '归属标记里的 product 不对'
-    Assert-Ec (@($mLines | Where-Object { $_ -like 'appid={B7A2E1C4-*' }).Count -eq 1) '归属标记里的 AppId 不对'
-    Assert-Ec (@($mLines -contains 'markerversion=1').Count -gt 0) '归属标记里的 markerversion 不对'
-    Assert-Ec (@($mLines | Where-Object { $_ -match '^-\-files-\-$' }).Count -eq 1) '归属标记里没有文件记录段'
-    Assert-Ec (@($mLines | Where-Object { $_ -match '^(.+)\|\d+\|\d+$' }).Count -ge 40) '归属标记记下的文件数量不对劲'
+    $mf1 = Get-Content -LiteralPath (Join-Path $d1 'install-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $wantAppId1 = (([string]$mf1.appId) -replace '^\{\{', '{') -replace '\}\}$', '}'
+    $owner1 = Test-EcOwnershipMarker `
+        -Lines @(@($marker -split "`r?`n") | ForEach-Object { $_.Trim() }) `
+        -ExpectedProduct ([string]$mf1.product) -ExpectedAppId $wantAppId1 `
+        -AcceptedMarkerVersions @($mf1.markerAcceptedVersions | ForEach-Object { [string]$_ }) `
+        -HashRequiredVersion ([string]$mf1.markerVersion)
+    foreach ($p in @($owner1.Problems)) { Assert-Ec $false "归属标记：$p" }
+    Assert-Ec ($owner1.FileCount -ge 40) "归属标记记下的文件数量不对劲（$($owner1.FileCount) 条）"
+    Assert-Ec ($owner1.FileCount -gt 0 -and $owner1.HashedRecordCount -eq $owner1.FileCount) `
+        '本代归属标记的每条受管文件记录都应带内容 SHA-256'
     Assert-Ec ((Count-Backups -Dir $d1) -eq 0) '空目录安装不该产生备份目录'
 
     Write-Host "`n=== 2) 隔离安装目录里的只读自检 ==="
@@ -171,6 +184,41 @@ try {
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $d1 'verify-install.ps1'),
         '-InstallDir', $d1, '-OverallTimeoutSec', '999999') -TimeoutSec 120
     Assert-Ec ($badOverall.Exit -eq 2) '非法 -OverallTimeoutSec 应在起进程前被拒绝' -Quiet
+
+    # 标记归属判据必须真的抓得住被改坏的标记：归属标记不在载荷哈希的核对清单里，这份证据与
+    # "文件字节等于发行清单"是两件事 —— 载荷哈希全绿时，被改过的归属字段也得让实际自检失败。
+    $markerPath1 = Join-Path $d1 'evernightcapture.owner.ini'
+    $markerOrigBytes = [IO.File]::ReadAllBytes($markerPath1)
+    $markerOrigText = [Text.Encoding]::UTF8.GetString($markerOrigBytes)
+    try {
+        foreach ($tamper in @(
+            @{ Key = 'product'; To = 'product=SomeoneElseTool'; Label = '错误 product' },
+            @{ Key = 'appid'; To = 'appid={00000000-0000-0000-0000-000000000000}'; Label = '错误 AppId' },
+            @{ Key = 'markerversion'; To = 'markerversion=99'; Label = '错误 markerversion' },
+            @{ Key = 'markerversion'; To = $null; Label = '缺 markerversion 字段' })) {
+            $tLines = @($markerOrigText -split "`r?`n")
+            $hit = $false
+            for ($ti = 0; $ti -lt $tLines.Count; $ti++) {
+                if ($tLines[$ti].Trim() -match ('^' + $tamper.Key + '=')) {
+                    if ($null -ne $tamper.To) { $tLines[$ti] = $tamper.To } else { $tLines[$ti] = '' }
+                    $hit = $true
+                }
+            }
+            Assert-Ec $hit ("判据摆不出来：归属标记里本来就该有 $($tamper.Key) 行")
+            [IO.File]::WriteAllText($markerPath1, ($tLines -join "`r`n"), (New-Object Text.UTF8Encoding($false)))
+            $badMk = Invoke-Installer -Exe (Get-Process -Id $PID).Path -Arguments @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $d1 'verify-install.ps1'),
+                '-InstallDir', $d1) -TimeoutSec 600
+            Assert-Ec ($badMk.Exit -ne 0) "$($tamper.Label)：改了归属标记后 verify-install 仍然整体通过（恒真判据没修好？）"
+            Assert-Ec (($badMk.Stdout + $badMk.Stderr) -match '归属标记') "$($tamper.Label)：失败原因里没落到「归属标记」这一节"
+        }
+    } finally {
+        [IO.File]::WriteAllBytes($markerPath1, $markerOrigBytes)
+    }
+    $selfOk = Invoke-Installer -Exe (Get-Process -Id $PID).Path -Arguments @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $d1 'verify-install.ps1'),
+        '-InstallDir', $d1) -TimeoutSec 600
+    Assert-Ec ($selfOk.Exit -eq 0) '恢复原标记后只读自检应重新全绿（恢复没做干净？）' -Quiet
 
     # =========================================================================
     Write-Host "`n=== 3) 原样重装不该备份，用户改动该被备份 ==="
@@ -232,6 +280,74 @@ try {
     # 备份目录与用户后加的文件都不属于本产品：卸载前它们就在，卸载后也必须在（见第 6 步）
     $userFile = Join-Path $d1 '我的笔记.txt'
     Set-Content -LiteralPath $userFile -Value '用户自己的文件' -Encoding UTF8
+
+    # =========================================================================
+    Write-Host "`n=== 3b) 等长、同时间戳的替换：覆盖前保护判的是内容证据 ==="
+    # =========================================================================
+    # 这一例正是旧"大小 + LastWriteTime"判据的盲区：把受管文本换成等长的不同内容、再把时间戳
+    # 恢复原样，大小与时间都分毫不动。本代标记对每条记录都存了内容 SHA-256 —— 这一刻必须认得出
+    # "变过"，先把原件备份再覆盖；备份里存的得是被改过那份，装出来的得是包里的新版本。
+    $skillNow = Get-Item -LiteralPath $skill
+    $origLen = [int]$skillNow.Length
+    $origTicks = $skillNow.LastWriteTimeUtc.Ticks
+    $origHash = (Get-FileHash -LiteralPath $skill -Algorithm SHA256).Hash
+    $raw = [IO.File]::ReadAllBytes($skill)
+    $mutated = New-Object byte[] $raw.Length
+    for ($mi = 0; $mi -lt $raw.Length; $mi++) { $mutated[$mi] = [byte]($raw[$mi] -bxor 0x20) }
+    [IO.File]::WriteAllBytes($skill, $mutated)
+    (Get-Item -LiteralPath $skill).LastWriteTimeUtc = [DateTime]::new($origTicks, [DateTimeKind]::Utc)
+    $sk2 = Get-Item -LiteralPath $skill
+    $mutHash = (Get-FileHash -LiteralPath $skill -Algorithm SHA256).Hash
+    Assert-Ec ($sk2.Length -eq $origLen) '反例布置失败：替换后的内容不是等长'
+    Assert-Ec ($sk2.LastWriteTimeUtc.Ticks -eq $origTicks) '反例布置失败：原时间戳没有恢复回去'
+    Assert-Ec ($mutHash -ne $origHash) '反例布置失败：内容实际上没有变'
+
+    $bBefore3b = Count-Backups -Dir $d1
+    $r3b = Install-To -Dir $d1
+    Assert-Ec ($r3b.Exit -eq 0) "等长同时间戳替换后的重装退出码 $($r3b.Exit)"
+    Assert-Ec ((Count-Backups -Dir $d1) -eq ($bBefore3b + 1)) `
+        '等长、同时间戳的替换没被认出来（没有多出备份目录 —— 只比大小/时间不够，内容证据必须判到）'
+    $b3b = @(Get-ChildItem -LiteralPath $d1 -Directory -Force -Filter '.ecapture-backup-*' | Sort-Object Name)[-1]
+    $bSkill3b = Join-Path $b3b.FullName 'SKILL.md'
+    Assert-Ec (Test-Path -LiteralPath $bSkill3b) '被替换的原件没有被备份'
+    Assert-Ec ((Get-FileHash -LiteralPath $bSkill3b -Algorithm SHA256).Hash -eq $mutHash) '备份出来的不是被改过那一份原件'
+    Assert-Ec (Test-Path -LiteralPath (Join-Path $b3b.FullName 'BACKUP-INFO.txt')) '备份目录里缺少说明文件'
+    # 重装后标记写的就是包里的新基线：原样再来一次不该再备份（内容一致 = 证明了未改动）。
+    $bAfter3b = Count-Backups -Dir $d1
+    $r3b2 = Install-To -Dir $d1
+    Assert-Ec ($r3b2.Exit -eq 0) "对照重装退出码 $($r3b2.Exit)"
+    Assert-Ec ((Count-Backups -Dir $d1) -eq $bAfter3b) '内容基线一致的原样重装又被当成用户改动备份了（新基线没记上？）'
+
+    # =========================================================================
+    Write-Host "`n=== 3c) 上一代标记（只有大小/时间）：认得目录，但不给它伪造内容基线 ==="
+    # =========================================================================
+    # 把标记改回旧版安装器的形状（markerversion=1、记录三段）。目录归属必须仍然认得 —— 不该把
+    # 装过本产品的用户拦在"未知目录"确认上；但旧记录没有内容基线，"一模一样"断言不了：
+    # 将被覆盖、又无法证明未改动的原件一律先备份再继续。
+    $mkPath = Join-Path $d1 'evernightcapture.owner.ini'
+    $curMk = [IO.File]::ReadAllText($mkPath)
+    $legacyLines = @($curMk -split "`r?`n" | ForEach-Object {
+        $l = $_
+        if ($l -match '^markerversion=') { 'markerversion=1' }
+        elseif ($l -match '^(.+)\|\d+\|\d+\|.*$') { $f = $l -split '\|'; $f[0] + '|' + $f[1] + '|' + $f[2] }
+        else { $l }
+    })
+    [IO.File]::WriteAllText($mkPath, ($legacyLines -join "`r`n"), (New-Object Text.UTF8Encoding($false)))
+    $bBefore3c = Count-Backups -Dir $d1
+    $r3c = Install-To -Dir $d1
+    Assert-Ec ($r3c.Exit -eq 0) "上一代标记下重装应仍认得是本产品自己的目录（退出码 $($r3c.Exit)）"
+    Assert-Ec ((Count-Backups -Dir $d1) -eq ($bBefore3c + 1)) `
+        '上一代标记没有触发"无法证明未改动就先备份原件"（拿大小/时间当内容证据了？）'
+    $b3c = @(Get-ChildItem -LiteralPath $d1 -Directory -Force -Filter '.ecapture-backup-*' | Sort-Object Name)[-1]
+    $b3cFiles = @(Get-ChildItem -LiteralPath $b3c.FullName -Recurse -File | Where-Object { $_.Name -ne 'BACKUP-INFO.txt' })
+    Assert-Ec ($b3cFiles.Count -ge 40) "上一代标记场景备份的原件数量不对劲（只有 $($b3cFiles.Count)）"
+    Assert-Ec (Test-Path -LiteralPath (Join-Path $b3c.FullName 'BACKUP-INFO.txt')) '备份目录里缺少说明文件'
+    Assert-Ec (Test-Path -LiteralPath $histFile) '上一代标记下的升级动到了截图历史'
+    Assert-Ec ([IO.File]::ReadAllText($mkPath) -match 'markerversion=2') '重装后标记没有升级成带内容基线的本代格式'
+    $bAfter3c = Count-Backups -Dir $d1
+    $r3c2 = Install-To -Dir $d1
+    Assert-Ec ($r3c2.Exit -eq 0) "升级基线后的对照重装退出码 $($r3c2.Exit)"
+    Assert-Ec ((Count-Backups -Dir $d1) -eq $bAfter3c) '本代内容基线一致时又重复备份了'
 
     # =========================================================================
     Write-Host "`n=== 4) 陌生目录与坏标记：静默安装必须不写任何东西 ==="

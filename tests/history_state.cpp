@@ -17,6 +17,9 @@
 //     "那个位置是个文件""路径名不合""父路径不存在"这三种都逐条判了。
 //   * "重解析点""多进程同时截图"要真建 junction、真起两个 ECAPTURE 进程，写在 tests\history.ps1
 //     里判（那一套还核对主输出与历史副本的 SHA-256 相同）。
+// 第 13 节判的是提交与记账的接缝：分配闸门开在**文件提交接口返回成功**那一刻（包装里调的还是
+// 生产 SaveFileAtomic），"副本已经收下、记账刚好缺内存"这一瞬不许把 saved 与路径从结果里抹掉，
+// 负向对照（提交前就被拒绝）也不许伪报成功。
 //
 // 只用 C 风格的 printf 汇报，判据写在断言里；任何一条不过就返回非 0。
 #include <cstdio>
@@ -37,6 +40,93 @@
 #include "../src/FileSave.h"
 #include "../src/HistoryArchive.h"
 #include "../src/Lang.h"
+
+// ---------------------------------------------------------------------------
+// 分配故障注入：与 tests\delivery_state.cpp 同一套纪律（计数闸门、只打一次、每一判自己确认闸门
+// 的下落）。这一批判据要的现场是"副本的文件提交接口刚刚返回成功"那一刻之后的第一次分配 ——
+// 它落在生产 CommitCopy 的返回路上（旧版就是在那里用 const path 的拷贝赋值交接名字，副本已经
+// 上了磁盘却可能抛出 bad_alloc），假出口与假归档器都排不出来，必须让那一次分配真的倒下。
+// 全局 operator new 换成闸门；被拦的仍然是生产 src\HistoryArchive.cpp + src\FileSave.cpp 那两条
+// 本体。窗口之外一律原样放行，前面十二节的正常判据不受影响。
+// ---------------------------------------------------------------------------
+namespace fault {
+
+struct Header {
+    std::size_t magic;
+    std::size_t bytes;
+};
+constexpr std::size_t kMagic = 0x4543484F756C7401ull;
+
+bool armed = false;
+long long allow = 0;
+int fired = 0;   // 窗口里真抛出去过几次
+
+void Arm(long long allowCount) {
+    armed = true;
+    allow = allowCount;
+    fired = 0;
+}
+
+void* Allocate(std::size_t n, bool throwOnFault) {
+    if (armed) {
+        if (allow > 0) {
+            --allow;
+        } else {
+            armed = false;
+            ++fired;
+            if (!throwOnFault) return nullptr;
+            throw std::bad_alloc{};
+        }
+    }
+    void* raw = std::malloc(n + sizeof(Header));
+    if (!raw) return nullptr;
+    const Header head{kMagic, n};
+    std::memcpy(raw, &head, sizeof(head));
+    return static_cast<char*>(raw) + sizeof(Header);
+}
+
+void Release(void* p) {
+    if (!p) return;
+    Header head{};
+    std::memcpy(&head, static_cast<char*>(p) - sizeof(Header), sizeof(head));
+    std::free(head.magic == kMagic ? static_cast<char*>(p) - sizeof(Header) : p);
+}
+
+// allowCount < 0 = 构造时先不开窗（开闸交给提交包装那一刻），出作用域一定关窗。
+class Guard {
+public:
+    explicit Guard(long long allowCount) {
+        if (allowCount >= 0) Arm(allowCount);
+    }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+    ~Guard() { armed = false; }
+};
+
+}  // namespace fault
+
+void* operator new(std::size_t n) {
+    void* p = fault::Allocate(n, true);
+    if (!p) throw std::bad_alloc{};
+    return p;
+}
+void* operator new[](std::size_t n) {
+    void* p = fault::Allocate(n, true);
+    if (!p) throw std::bad_alloc{};
+    return p;
+}
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+    return fault::Allocate(n, false);
+}
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+    return fault::Allocate(n, false);
+}
+void operator delete(void* p) noexcept { fault::Release(p); }
+void operator delete[](void* p) noexcept { fault::Release(p); }
+void operator delete(void* p, std::size_t) noexcept { fault::Release(p); }
+void operator delete[](void* p, std::size_t) noexcept { fault::Release(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { fault::Release(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { fault::Release(p); }
 
 namespace {
 
@@ -351,6 +441,38 @@ public:
             detail->stage = stages::kHistory;
             detail->message = L"arranged";
             detail->win32 = win32;
+        }
+        return false;
+    }
+};
+
+// 提交接缝的包装：调的还是生产 SaveFileAtomic（独占改名一条没换），只在它**返回成功**那一刻
+// 开分配闸门 —— 下一次分配就是"副本已经收下之后"的第一次，正是这一批判据要打中的位置。
+// 顺带把共用时钟推过预算，模拟"副本提交自己花了很久"：期限那条记录随后要组的文字
+// 是固定会要内存的一次分配，闸门便落在提交之后的返回路上（生产或判据的哪一处都行——
+// 两头判的是同一条要求：已提交的副本必须带着 saved 与路径留在结果里）。
+struct CommitArmer {
+    MemSink* sink;
+    uint64_t spendMs;
+    bool operator()(const std::wstring& path, const std::vector<uint8_t>& bytes,
+                    Diagnostic* err) const {
+        const bool ok = SaveFileAtomic(path, bytes, /*overwrite=*/false, err);
+        if (ok) {
+            sink->clock_ms += spendMs;
+            fault::Arm(0);   // 收不回来的那一刻之后才开始缺内存
+        }
+        return ok;
+    }
+};
+
+// 提交接口直接返回失败（"还没收下就被拒绝"，win32 5 那种）：负向对照用的注入落点。
+struct CommitDenier {
+    DWORD gle;
+    bool operator()(const std::wstring&, const std::vector<uint8_t>&, Diagnostic* err) const {
+        if (err) {
+            err->code = codes::kWriteFailed;
+            err->message = L"arranged-by-test";
+            err->win32 = gle;
         }
         return false;
     }
@@ -1021,6 +1143,138 @@ void TestArchiverThrowAndBufferIdentity() {
     Check(out3.notes.size() == out4.notes.size(), "质量提示条数与有没有归档无关");
 }
 
+// ===========================================================================
+// 13) 提交与记账的接缝：副本收下之后才缺内存，不许把真实成功的历史副本抹掉
+//     （真 HistoryArchive + 真 Delivery + 真 FileSave；归档侧只是给那一次提交加了观察闸）
+// ===========================================================================
+void TestPostCommitSeam() {
+    Section("13) 副本提交后的分配失败：saved 与路径留在结果里");
+    Scratch s(L"post-commit");
+    if (!s.Require("临时目录建得起来")) return;
+
+    const std::wstring out_dir = s + L"out";
+    CreateDirectoryW(out_dir.c_str(), nullptr);
+    const std::wstring out_file = out_dir + L"\\shot.png";
+    const std::vector<uint8_t> encoded = MakeBytes(64, 17);
+
+    // a) 整条生产链：主交付成功 → 副本按真名字独占提交成功 → 闸门在提交返回 true 那一刻开。
+    //    倒下的应当是"副本已经收进磁盘之后"的第一次分配（旧版是 CommitCopy 里的 const path
+    //    拷贝交接；修好后那一段不再要内存，闸就落在 4d 期限记录的文案上——位置随实现走，
+    //    判据钉的是结果）：已提交的副本必须仍按 saved + 真实路径留在 images[].history 里，
+    //    抛出之后不重拍、不重发，磁盘上两份字节都原样。
+    {
+        MemSink sink;
+        Deadline dl =
+            Deadline::FromTotalMs(1000, [&sink] { return static_cast<int64_t>(sink.clock_ms); });
+        HistoryArchive archiver(UsableRoot(s + L"root-a"), nullptr, L"c0mm1t0a", 1,
+                                CommitArmer{&sink, 1200});
+        const DeliveryRun run{&dl, &sink, [&sink] { return sink.clock_ms; }, &archiver,
+                              ImageFormat::kPng};
+        CaptureOutcome out;
+        DeliveryStep step;
+        bool threw = false;
+        {
+            const fault::Guard guard(-1);   // 开闸交给提交包装；出作用域一定关闸
+            try {
+                DeliverImage(run, MakeTarget(out_file), MakePending(out_file), encoded, &out,
+                             &step);
+            } catch (const std::bad_alloc&) {
+                threw = true;
+            }
+        }
+        Check(threw, "提交之后的那一次分配确实倒了（没倒等于这一判没跑）");
+        CheckEqU(static_cast<uint64_t>(fault::fired), 1,
+                 "注入打中的是提交成功之后的那一次分配（只打一次）");
+        Check(step.delivered, "主交付的交付事实写在接口返回那一刻");
+        Check(step.recorded, "这一张的账已经记完：调用方不补第二条，更不会拿去重拍");
+        CheckEqU(static_cast<uint64_t>(out.images.size()), 1, "images 里那张图没被抹掉");
+        Check(out.images[0].history.state == HistoryRecord::State::kSaved,
+              "副本按 saved 留住：提交之后的抛出不能把它改写成「没有提交」");
+        Check(!out.images[0].history.file.empty(), "saved 带着那个副本真实的路径");
+        Check(Exists(out.images[0].history.file), "history.file 指的真是磁盘上那一份");
+        Check(ReadAll(out.images[0].history.file) == encoded, "副本的字节一个都没少");
+        Check(out.images[0].history.code.empty(), "saved 不带着失败码");
+        Check(ReadAll(out_file) == encoded, "主图原样在磁盘上");
+        // 期限合规是第三条事实：骨架先入列、给人看的文字倒在了闸上——机器字段不靠文案撑着。
+        CheckEqU(static_cast<uint64_t>(out.errors.size()), 1, "只剩那条期限记录（不是历史失败那条）");
+        if (!out.errors.empty()) {
+            Check(out.errors[0].code == codes::kIoTimeout, "那一条说的是期限，不是副本「失败」");
+            Check(out.errors[0].message.empty(), "倒下的是那句人读的文字");
+        }
+        CheckEqU(static_cast<uint64_t>(OutcomeExitCode(out)), EX_CAPTURE_FAILED,
+                 "有交付 + 有错 = 部分成功");
+    }
+
+    // b) 提交返回成功之后的那一段返回路本身不再要内存：闸门从提交成功一直开到调用返回，
+    //    若中间还有分配点就会被打中（抛出并污染结果）。fired==0 且正常返回、结果完整，
+    //    判的是"那一次提交成功之后到返回之间没有分配"这一条不变量（配套编译期断言在
+    //    src/HistoryArchive.cpp 顶部）。
+    {
+        const std::wstring root_b = s + L"root-b";
+        MemSink sink_b;
+        FakeHistoryClock clock;
+        clock.next = InstantOf(2026, 10, 11, 1, 2, 3);
+        HistoryArchive archiver(UsableRoot(root_b), clock.fn(), L"c0mm1t0b", 1,
+                                CommitArmer{&sink_b, 0});
+        HistoryRecord rec;
+        Diagnostic detail;
+        bool ok = false;
+        bool threw = false;
+        {
+            const fault::Guard guard(-1);
+            try {
+                ok = archiver.Archive(L"-", ImageFormat::kPng, encoded, &rec, &detail);
+            } catch (...) {
+                threw = true;
+            }
+        }
+        Check(!threw, "提交成功之后的返回路上没有东西倒下");
+        CheckEqU(static_cast<uint64_t>(fault::fired), 0,
+                 "闸门从提交成功一直开着：一分配都没来（提交之后的交接不抛、不分配）");
+        Check(ok && rec.state == HistoryRecord::State::kSaved, "归档正常成功且结论是 saved");
+        Check(rec.file == root_b + L"\\2026-10-11\\20261011-010203-" +
+                                std::to_wstring(GetCurrentProcessId()) + L"-c0mm1t0b-1.png",
+              "交接出去的是那一次独占提交的真实名字");
+        Check(Exists(rec.file) && ReadAll(rec.file) == encoded, "磁盘上那份就是判的名字、字节一致");
+    }
+
+    // c) 负向对照：提交接口在**收下之前**就返回失败（win32 5 那种被拒现场）——绝不许伪报
+    //    saved，也不许留下半份副本；失败归类与原因原样入账，主图不受影响。
+    {
+        const std::wstring root_c = s + L"root-c";
+        MemSink sink_c;
+        HistoryArchive archiver(UsableRoot(root_c), nullptr, L"c0mm1t0c", 1,
+                                CommitDenier{static_cast<DWORD>(ERROR_ACCESS_DENIED)});
+        const DeliveryRun run_c{nullptr, &sink_c, [] { return GetTickCount64(); }, &archiver,
+                                ImageFormat::kPng};
+        CaptureOutcome out_c;
+        DeliveryStep step_c;
+        DeliverImage(run_c, MakeTarget(out_file), MakePending(out_file), encoded, &out_c, &step_c);
+        Check(step_c.delivered, "主图照常交付（副本的失败不牵连它）");
+        Check(out_c.images[0].history.state == HistoryRecord::State::kFailed,
+              "提交被拒绝时结论是 failed，不伪报 saved");
+        Check(out_c.images[0].history.file.empty(), "failed 不带着任何副本名字");
+        Check(out_c.images[0].history.code == codes::kHistoryWriteFailed,
+              "码是 history.write_failed");
+        CheckEqU(static_cast<uint64_t>(out_c.errors.size()), 1, "另记一条副本自己的失败");
+        if (!out_c.errors.empty()) {
+            CheckEqU(out_c.errors[0].win32, static_cast<DWORD>(ERROR_ACCESS_DENIED),
+                     "那一次调用交回的原值留着（成因不折）");
+            Check(out_c.errors[0].stage == stages::kHistory, "stage 说的是归档那一段");
+        }
+        size_t copies = 0;
+        WIN32_FIND_DATAW fd{};
+        HANDLE h = FindFirstFileW((root_c + L"\\*\\*").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) ++copies;
+            } while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        CheckEqU(copies, 0, "失败的这一路没在树里留下半份副本");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1037,6 +1291,7 @@ int main() {
     TestPrimaryFailureNeverPublishesHistory();
     TestBudgetAfterPrimary();
     TestArchiverThrowAndBufferIdentity();
+    TestPostCommitSeam();
     if (g_usedModuleDir) {
         std::printf("提示：本轮至少有一个临时目录没能建在系统临时目录里，"
                     "改建在本测试 exe 自己的目录（判据与落点无关，一条都没放宽）。\n");

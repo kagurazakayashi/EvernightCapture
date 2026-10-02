@@ -412,7 +412,52 @@ void TestIntegrityDenials() {
         // 否则一句"你的目录被降级了"会盖掉"这个人不同意"。
         Check(refused.hint.empty(), "the consent refusal is never reinterpreted");
     }
-    // 4) 负向对照：同一条路上别的错误码不许被当成这一档的证据。
+    // 4) 历史副本的落点与写盘同源：归档根就在实际运行的 exe 旁边，把进程带到 low 的正是那个
+    //    目录的标签。主图已交付而副本被系统拒绝时，这一条也要拿到成因解释 —— 而且只补
+    //    "系统说不让"那一种：同一段 history 里的盘满、撞名各有各的原值，不许被折成低完整性。
+    Diagnostic histDenied;
+    histDenied.code = codes::kHistoryWriteFailed;
+    histDenied.stage = stages::kHistory;
+    histDenied.target = L"0x0010ABCD";
+    histDenied.backend = L"wgc";
+    histDenied.win32 = static_cast<uint32_t>(ERROR_ACCESS_DENIED);
+    histDenied.value = L"C:\\tools\\history\\2026-10-11\\cap.png";
+    histDenied.hint = L"primary-image-landed";   // 归档自己那条 hint：补写只能追加，不能顶掉
+    {
+        Diagnostic histFull = histDenied;
+        histFull.win32 = static_cast<uint32_t>(ERROR_DISK_FULL);
+        Diagnostic histExists = histDenied;
+        histExists.code = codes::kHistoryFileExists;
+        histExists.win32 = static_cast<uint32_t>(ERROR_FILE_EXISTS);
+        std::vector<Diagnostic> errors{histDenied, histFull, histExists};
+        std::vector<Diagnostic> notes;
+        Check(AnnotateIntegrityDenials(Integrity::kLow, &errors, &notes) == 1,
+              "only the history access-denied gets the cause note appended");
+        Check(errors[0].hint.find(L"low") != std::wstring::npos &&
+                  errors[0].hint.find(L"primary-image-landed") == 0,
+              "the history denial names the level and keeps its own hint first");
+        Check(errors[1].hint == histFull.hint && errors[2].hint == histExists.hint,
+              "a full disk and a name collision are not re-told as an integrity denial");
+        Check(errors[0].code == codes::kHistoryWriteFailed &&
+                  errors[0].win32 == static_cast<uint32_t>(ERROR_ACCESS_DENIED) &&
+                  errors[0].stage == stages::kHistory,
+              "code / win32 / stage survive untouched (the primary image's facts stay too)");
+        Check(notes.size() == 1 && notes[0].code == codes::kLowIntegrity,
+              "one note for the whole run, no per-image spam");
+        Check(!notes.empty() && notes[0].stage == stages::kHistory &&
+                  notes[0].backend == L"wgc" && notes[0].target == L"0x0010ABCD",
+              "the note borrows the history failure's coordinates when that is the first hit");
+    }
+    // 4b) 中完整性对同一条 history 拒绝什么都不写：低完整性只在自己的现场出现。
+    {
+        std::vector<Diagnostic> errors{histDenied};
+        std::vector<Diagnostic> notes;
+        Check(AnnotateIntegrityDenials(Integrity::kMedium, &errors, &notes) == 0,
+              "medium annotates the history denial exactly as much as everything else: not at all");
+        Check(notes.empty() && errors[0].hint == histDenied.hint,
+              "and neither the hint nor a note moves");
+    }
+    // 5) 负向对照：同一条路上别的错误码不许被当成这一档的证据。
     {
         Diagnostic other = wgc;
         other.hresult = L"0x80070057";  // 参数不对那一类，不是"不让"
@@ -422,11 +467,11 @@ void TestIntegrityDenials() {
               "an unrelated HRESULT is not called an integrity denial");
         Check(notes.empty(), "and no note is invented for it");
     }
-    // 5) IsAccessDenied 只认那两个原值：文字随 --lang 变，永远不作为判据。
+    // 6) IsAccessDenied 只认那两个原值：文字随 --lang 变，永远不作为判据。
     Check(IsAccessDenied(wgc), "E_ACCESSDENIED as an HRESULT counts");
     Check(IsAccessDenied(pw), "Win32 error 5 counts");
     // 数值这一问本身不看 stage：确认框上"人答了否"同为 win32 5，把它挡在补写之外的
-    // 是上面那三步的落点筛选（DeniableStage），不是这一问走了眼。两条判据分开才说得准。
+    // 是上面那几类落点的筛选（DeniableStage），不是这一问走了眼。两条判据分开才说得准。
     Check(IsAccessDenied(refused), "the numeric test itself stays stage-blind");
     Diagnostic noCode;
     noCode.message = L"Access is denied";

@@ -1,4 +1,4 @@
-; EvernightCapture 安装器（Inno Setup 6.3+）
+; EvernightCapture 安装器（Inno Setup 6.4+：除 x64compatible 外还要 GetSHA256OfFile 的内容基线判据）
 ;
 ; 由仓库根的 build-installer.ps1 生成：它先构建、再按 installer\payload.manifest.json 收集载荷、
 ; 校验后把载荷目录、版本/架构/输出路径，以及一份"这次铺下去的相对路径清单"（编译期展开的
@@ -20,13 +20,20 @@
 ;     既不自动提权，也不改装到管理员账户目录，更不改显示/系统设置。
 ;   * 目录归属只认安装器自己写下的 ownership 标记（默认 evernightcapture.owner.ini）：
 ;     目标目录里有 install-manifest.json 并不代表它属于本产品。标记缺失、格式不对、产品或 AppId
-;     对不上，一律按"未知目录"处理 —— 继续前必须当面确认，静默模式默认按"否"中止，不写任何文件。
+;     对不上、版本不在认得的集合里（本代 2 与上一代 1），一律按"未知目录"处理 —— 继续前必须
+;     当面确认，静默模式默认按"否"中止，不写任何文件。
 ;     这只是"别把用户目录当自己的东西"的工程约束，不是防恶意本机用户的安全边界。
 ;   * 确认属于本产品的重装/升级，覆盖前会把两类文件先复制进 <安装目录>\.ecapture-backup-<UTC 时间>\
 ;     （保留相对路径；时间戳目录已存在时追加序号，绝不覆盖旧备份）：
-;       1) 上次归属标记里记过、但现状的大小或写入时间已经不同的（用户改过，或被别的构建换过）；
+;       1) 上次归属标记里记过、但现状与记录对不上的。本代标记（markerversion 2）对每个受管文件
+;          记录 大小 + 写入时间 + 内容 SHA-256：大小或时间先不同就判"变了"；两者一致时**仍要**
+;          拿 GetSHA256OfFile 比内容 —— 同大小、同时间戳的修改（故意恢复时间戳的替换）也认得出，
+;          哈希调用或读取失败不算"未变化"。上一代标记（markerversion 1）只有大小/时间，没有内容
+;          基线：不能凭它们断言"一模一样"，将被覆盖又无法证明未改动的原件一律先备份再继续；
+;          给旧标记伪造内容基线是禁止的。
 ;       2) 这次要写的同名文件在标记里没有记录（不能只说一句"这是产品文件"就覆盖）。
 ;     备份读写失败就中止安装，不带不确定的东西往下写。备份目录不是本产品的文件，卸载不碰它。
+;     这里的哈希用于**变化检测**，不是签名校验，也不构成对本机攻击者的防护（标记本身不是安全边界）。
 ;   * 升级/重装尽量沿用上次选过的目录（UsePreviousAppDir）；换目录时旧目录原样保留，不隐式删除或迁移。
 ;   * 卸载只删安装器自己记录过的文件，外加那个 ownership 标记（[UninstallDelete] 里点名这一个）；
 ;     用户添加的文件、备份目录与相邻 Skill 一律保留，绝不递归通配删除父目录。
@@ -39,11 +46,12 @@
 ;     让它如实失败并可回滚，而不是强杀。
 ;   * ISPP 会把**行首**的 # 当成预处理器指令：续行如果以 #13#10 开头，6.7.1 实测报
 ;     "Unknown preprocessor directive" 并中止编译，所以长表达式里的 #13#10 必须留在行中间。
-;   * 事务边界（本机 6.7.1 + Windows 10.0.19045 实测，判据见 tests\install-lifecycle.ps1）：
+;   * 事务边界（本机 2026-10-11 实测重跑，判据见 tests\install-lifecycle.ps1）：
 ;       - 未知目录被静默拒绝时，安装器返回退出码 1，目录里一个文件都没写（不是"退出码 2"）。
-;       - 文件复制阶段失败时（实测把 ECAPTURE.EXE 以独占方式打开后重装，退出码 5），Inno 会把本次
-;         已复制的文件撤回去，磁盘上要么整套仍是失败前那份、要么整套是新包，不会留半新半旧的混装；
-;         用户在安装目录里后加的文件不受影响。
+;       - 引入内容基线后，"ECAPTURE.EXE 被独占打开再重装"这种占用现场在 PrepareToInstall 的备份读取
+;         处就中止（实测退出码 7）：文件复制阶段根本没开始，目录里整套保持失败前原样，
+;         用户后加的文件不受影响。旧版（只比大小/时间、无需备份读取）当时的实测是复制阶段失败、
+;         退出码 5，Inno 会把已复制的文件撤回去 —— 两种走法都不留半新半旧的混装。
 ;       - ssPostInstall 里安装器自己写的归属标记不在 Inno 的回滚记录范围内，所以中途失败时它不会被
 ;         重写（实测失败现场里标记仍是上一次成功安装时写的那份）。
 
@@ -70,6 +78,11 @@
 #endif
 #ifndef OwnershipMarker
   #define OwnershipMarker "evernightcapture.owner.ini"
+#endif
+; 归属标记的格式版本：本代（2）的每条受管文件记录带内容 SHA-256。build-installer.ps1 从载荷清单
+; 的 markerVersion 用 /DMarkerVersion 递下来，默认值必须与那份清单一致（打包阶段有静态核对）。
+#ifndef MarkerVersion
+  #define MarkerVersion "2"
 #endif
 #ifndef AppIdGuid
   #define AppIdGuid "{B7A2E1C4-5D3F-4E6A-9C21-8F0B3D5E7A10}"
@@ -128,7 +141,11 @@ const
   SKILL_REL_DIR     = '.agents\skills\yashi-evernight-capture';
   PRODUCT_NAME      = 'EvernightCapture';
   PRODUCT_APP_ID    = '{#AppIdGuid}';
-  MARKER_VERSION    = '1';
+  MARKER_VERSION    = '{#MarkerVersion}';
+  { 上一代标记（1）只有 大小|写入时间、没有内容基线。目录归属上仍然认它 —— 不该把装过本产品的
+    用户拦在"未知目录"确认上；但覆盖前保护不拿它的 大小/时间 断言"一模一样"：认得出那是
+    没有内容证据的记录，将被覆盖的原件先备份再继续。 }
+  MARKER_VERSION_LEGACY = '1';
   BACKUP_PREFIX     = '.ecapture-backup-';
   FILES_SECTION_TAG = '--files--';
 
@@ -191,8 +208,11 @@ end;
 
 { ---------------------------------------------------------------------------
   ownership 标记：安装器在 ssPostInstall 写下，记录"这个目录里哪些文件是本产品装的、
-  装下来时大小与写入时间是多少"；下次重装/升级靠它认出被改过的已管理文件。
-  格式：若干 key=value 头 + 一行 --files-- + 若干 relpath|大小|写入时间(FILETIME, Int64)
+  装下来时是什么样子"；下次重装/升级靠它认出被改过的已管理文件。
+  格式：若干 key=value 头 + 一行 --files-- + 若干文件记录行。
+    markerversion 2：相对路径|大小|写入时间(FILETIME, Int64)|内容SHA-256(小写十六进制)
+    markerversion 1（上一代）：相对路径|大小|写入时间 —— 没有内容基线，只能当"认得这个目录"，
+    不能当"这个文件没被改过"的证据；将被覆盖的原件按"无法证明未改动"先备份。
   --------------------------------------------------------------------------- }
 function MarkerFileIn(const Dir: String): String;
 begin
@@ -270,9 +290,10 @@ begin
     Log('目录里的归属标记 AppId 与本产品的不一致，按未知目录处理。');
     Exit;
   end;
-  if MarkerVer <> MARKER_VERSION then
+  if (MarkerVer <> MARKER_VERSION) and (MarkerVer <> MARKER_VERSION_LEGACY) then
   begin
-    Log('目录里的归属标记版本是 ' + MarkerVer + '，本安装器认的是 ' + MARKER_VERSION + '，按未知目录处理。');
+    Log('目录里的归属标记版本是 ' + MarkerVer + '，本安装器认的是 ' + MARKER_VERSION +
+        '（或上一代 ' + MARKER_VERSION_LEGACY + '），按未知目录处理。');
     Exit;
   end;
   Result := True;
@@ -311,6 +332,25 @@ begin
   Result := 0;
   if Index < GetArrayLength(Fields) then
     Result := StrToInt64Def(Trim(Fields[Index]), 0);
+end;
+
+{ 那一个文件此刻的内容 SHA-256（小写十六进制）：用 Inno Setup 自带的 GetSHA256OfFile。
+  "调用抛异常"与"返回空串/长度不对"两种失败都按读不出来处理 —— 读不出来不等于未变化：
+  升级这一头的哈希是**变化检测**（覆盖前保护要问"能不能证明这个原件没被动过"），
+  不是签名校验，也不是对本机攻击者的防护；归属标记自己就不是安全边界。 }
+function TryFileSha256(const FullPath: String; var Hash: String): Boolean;
+begin
+  Hash := '';
+  Result := False;
+  try
+    Hash := Lowercase(GetSHA256OfFile(FullPath));
+    Result := Length(Hash) = 64;
+    if not Result then Hash := '';
+  except
+    Log('GetSHA256OfFile 失败（读不出来？）：' + FullPath);
+    Hash := '';
+    Result := False;
+  end;
 end;
 
 function DirHasEntries(const Dir: String): Boolean;
@@ -415,8 +455,8 @@ begin
   Note[1] := '这个目录里的文件是安装器在覆盖前复制出来的原件。安装器不拥有这些备份，卸载不会删除它们。';
   Note[2] := '产品：' + PRODUCT_NAME + '   本次安装版本：{#AppVersion} ({#Arch})';
   Note[3] := '备份条目数：' + IntToStr(BackupCount);
-  Note[4] := '判定依据：上一次安装记下的归属标记里的大小 / 写入时间与磁盘现状不一致；';
-  Note[5] := '或者这个同名文件从没在归属标记里记录过。确认不需要原件之后可以自己删掉整个目录。';
+  Note[4] := '判定依据：与上一次安装记下的归属基线（大小 / 写入时间 / 内容 SHA-256）对不上；';
+  Note[5] := '或者那份标记是上一代、只有大小/时间而没有内容基线；或者这个同名文件从没在归属标记里记录过。确认不需要原件之后可以自己删掉整个目录。';
   if not SaveStringsToFile(AddBackslash(BackupRoot) + 'BACKUP-INFO.txt', Note, False) then
     Log('备份说明写不出来：' + BackupRoot);
 end;
@@ -424,13 +464,14 @@ end;
 { 返回非空字符串 = 中止安装（Inno 会把它作为错误信息报出来，不写任何文件）。 }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  Dir, RelPath, Reason: String;
+  Dir, RelPath, Reason, Target: String;
   Product, AppId, MarkerVer: String;
   OldFiles, Fields: TArrayOfString;
   I, L: Integer;
   Size: Int64;
   WriteTime: Int64;
-  Recorded, Same, Found: Boolean;
+  CurSha: String;
+  Recorded, Proven: Boolean;
 begin
   Result := '';
   Dir := ExpandConstant('{app}');
@@ -457,30 +498,46 @@ begin
   begin
     RelPath := ManagedPaths[I];
     if RelPath = '' then Continue;
-    if not FileExists(AddBackslash(Dir) + ToNative(RelPath)) then Continue;   { 这个位置还没有同名文件 }
+    Target := AddBackslash(Dir) + ToNative(RelPath);
+    if not FileExists(Target) then Continue;   { 这个位置还没有同名文件 }
 
-    Found := False;
+    { "未改动"必须是**证明**出来的：本代记录（4 条字段带内容 SHA-256）先比大小/写入时间这个
+      快速判别，两者一致时仍要拿内容证据；上一代记录（3 条字段）只有大小/时间，一致也
+      拿不出内容证据，同样不算证明。证明不了又将被覆盖的原件 → 先备份再继续。 }
     Recorded := False;
-    Same := False;
+    Proven := False;
+    Reason := '';
     for L := 0 to GetArrayLength(OldFiles) - 1 do
     begin
       if not SplitByChar(OldFiles[L], '|', Fields) then Continue;
-      if GetArrayLength(Fields) <> 3 then Continue;
+      if (GetArrayLength(Fields) < 3) or (GetArrayLength(Fields) > 4) then Continue;
       if Trim(Fields[0]) <> RelPath then Continue;
       Recorded := True;
-      if FileFacts(AddBackslash(Dir) + ToNative(RelPath), Size, WriteTime) then
-      begin
-        Same := (Size = FieldAsInt64(Fields, 1)) and (WriteTime = FieldAsInt64(Fields, 2));
-        Found := True;
-      end;
+      if not FileFacts(Target, Size, WriteTime) then
+        Reason := '现状的大小 / 写入时间读不出来，证明不了未改动'
+      else if (Size <> FieldAsInt64(Fields, 1)) or (WriteTime <> FieldAsInt64(Fields, 2)) then
+        Reason := '归属标记里记过，但现状的大小或写入时间已经变了'
+      else if GetArrayLength(Fields) < 4 then
+        Reason := '上一代标记只有大小/时间、没有内容基线；同大小同时间戳的改动证明不了是未改动'
+      else if Trim(Fields[3]) = '' then
+        Reason := '标记里这个文件没有内容哈希记录，不伪造基线'
+      else if not TryFileSha256(Target, CurSha) then
+        Reason := '现状文件的内容哈希读不出来（被占用？），证明不了未改动'
+      else if Lowercase(CurSha) = Lowercase(Trim(Fields[3])) then
+        Proven := True
+      else
+        Reason := '大小与写入时间没变，但内容 SHA-256 与记录不同（同大小同时间戳的修改）';
       Break;
     end;
 
-    if Recorded and Found and Same then Continue;                 { 与上次装下来时一模一样，不用备份 }
-    if Recorded then
-      Reason := '归属标记里记过，但现状的大小或写入时间已经变了'
-    else
-      Reason := '要写的同名文件从没在本产品的归属标记里记录过';
+    if Recorded and Proven then Continue;    { 内容与上次装下来时逐字节一致，不用备份 }
+    if Reason = '' then
+    begin
+      if Recorded then
+        Reason := '归属标记里记过，但现状证明不了未改动'
+      else
+        Reason := '要写的同名文件从没在本产品的归属标记里记录过';
+    end;
     Result := BackupFile(Dir, RelPath, Reason);
     if Result <> '' then Exit;
   end;
@@ -549,6 +606,7 @@ var
   I, N: Integer;
   Size: Int64;
   WriteTime: Int64;
+  Sha: String;
   Recorded: Integer;
 begin
   Dir := ExpandConstant('{app}');
@@ -576,9 +634,13 @@ begin
       Log('装完找不到这个文件，不记进归属标记：' + Src);
       Continue;
     end;
+    { 内容基线尽力记全：这一刻读不出哈希（极少见，例如被别的进程独占）就把第四段留空 ——
+      空基线不冒充"有记录"，下次升级会把这份原件当作"证明不了未改动"先备份再继续。 }
+    if not TryFileSha256(Src, Sha) then
+      Log('这个文件的内容哈希此刻读不出来，标记里留空（下次覆盖前会先备份它）：' + Src);
     N := GetArrayLength(OutLines);
     SetArrayLength(OutLines, N + 1);
-    OutLines[N] := RelPath + '|' + IntToStr(Size) + '|' + IntToStr(WriteTime);
+    OutLines[N] := RelPath + '|' + IntToStr(Size) + '|' + IntToStr(WriteTime) + '|' + Sha;
     Recorded := Recorded + 1;
   end;
   if SaveStringsToFile(MarkerFileIn(Dir), OutLines, False) then

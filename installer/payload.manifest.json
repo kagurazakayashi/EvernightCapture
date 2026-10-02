@@ -3,6 +3,8 @@
   "product": "EvernightCapture",
   "appId": "{{B7A2E1C4-5D3F-4E6A-9C21-8F0B3D5E7A10}}",
   "ownershipMarkerFile": "evernightcapture.owner.ini",
+  "markerVersion": "2",
+  "markerAcceptedVersions": ["1", "2"],
   "skill": {
     "dirName": "yashi-evernight-capture",
     "entryFile": "SKILL.md",

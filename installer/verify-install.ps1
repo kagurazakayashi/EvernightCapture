@@ -181,18 +181,30 @@ Assert-Ec ($help.Exit -eq 3) "--help 退出码为 3（约定值，不是失败�
 
 # 安装器写下的归属标记：存在就必须说清这是本产品装的；不存在只如实报告，不当成失败
 # （手工复制出来的目录没有标记，但文件与身份照样可以核对）。
+# 这一节与上面的载荷哈希是两份**不同**的证据：哈希全绿不能替归属字段免检，反过来也一样。
+# 期望值全部取自随包 install-manifest.json 的同源字段（product / appId / 标记版本），
+# 本脚本不藏第二份产品名或 AppId 的定义 —— 免得安装器、自检与判据各抄一份慢慢漂开。
+# 旧写法 @($ownerLines -contains '...').Count -gt 0 是恒真的：-contains 交回的是布尔，
+# @($false) 也是一个元素、.Count 恒 1。判据本体在随包 tests\harness.psm1 的 Test-EcOwnershipMarker：
+# 先把 key=value 头与 --files-- 记录段解析成字段表，再拿字段值与期望比、并核对记录形状。
 if (Test-Path -LiteralPath $ownerIni) {
-    # 归属标记是 CRLF 文本：按行比，别让 ^...$ 被行尾的 \r 绊住。
-    $ownerLines = @((Get-Content -LiteralPath $ownerIni -Encoding UTF8) | ForEach-Object { $_.Trim() })
-    Assert-Ec (@($ownerLines -contains 'product=EvernightCapture').Count -gt 0) '归属标记写明产品是 EvernightCapture'
-    Assert-Ec (@($ownerLines -contains 'markerversion=1').Count -gt 0) '归属标记的 markerversion 是本安装器认得的那一档'
-    if ($mf.appId) {
-        $plainAppId = ([string]$mf.appId) -replace '^\{\{', '{'
-        $plainAppId = $plainAppId -replace '\}\}$', '}'
-        $wantAppId = 'appid=' + $plainAppId
-        Assert-Ec (@($ownerLines -contains $wantAppId).Count -gt 0) "归属标记里的 AppId 与清单不一致（要找：$wantAppId）"
+    foreach ($key in @('product', 'markerVersion', 'markerAcceptedVersions')) {
+        Assert-Ec ($null -ne $mf.$key) "清单带有 $key（核对归属标记要用它；缺关键身份不能算通过）"
     }
-    Assert-Ec (@($ownerLines | Where-Object { $_ -match '^(.+)\|\d+\|\d+$' }).Count -ge 1) '归属标记里要有已管理文件的记录（下次重装靠它认出被改过的文件）'
+    $ownerLines = @((Get-Content -LiteralPath $ownerIni -Encoding UTF8) | ForEach-Object { $_.Trim() })
+    $wantAppId = ''
+    if ($mf.appId) {
+        $wantAppId = (([string]$mf.appId) -replace '^\{\{', '{') -replace '\}\}$', '}'
+    }
+    $ownerCheck = Test-EcOwnershipMarker -Lines $ownerLines -ExpectedProduct ([string]$mf.product) `
+        -ExpectedAppId $wantAppId `
+        -AcceptedMarkerVersions @($mf.markerAcceptedVersions | ForEach-Object { [string]$_ }) `
+        -HashRequiredVersion ([string]$mf.markerVersion)
+    foreach ($p in @($ownerCheck.Problems)) { Assert-Ec $false "归属标记归属核对：$p" }
+    if ($ownerCheck.Accepted) {
+        Assert-Ec $true ('归属标记与清单一致（product / appid / markerversion，受管文件记录 {0} 条、带内容 SHA-256 的 {1} 条）' -f `
+                        $ownerCheck.FileCount, $ownerCheck.HashedRecordCount)
+    }
 } else {
     Skip-Ec '安装器归属标记' ("没有 {0}：多半不是安装器铺的目录，而是手工复制出来的或开发目录" -f $ownerIni)
 }

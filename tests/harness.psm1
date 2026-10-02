@@ -1220,6 +1220,118 @@ function Get-EcColorDistance {
 # ----------------------------------------------------------------------------
 # 断言套件
 # ----------------------------------------------------------------------------
+function Test-EcOwnershipMarker {
+    <#
+    .SYNOPSIS
+        解析并核对安装器写下的归属标记（evernightcapture.owner.ini）：把 product / appid /
+        markerversion 解析成字段表后**比值**，受管文件记录按形状逐条核对。
+    .DESCRIPTION
+        为什么单独一个判据：installer\verify-install.ps1 旧写法是
+        @($ownerLines -contains 'product=...').Count -gt 0 —— -contains 交回的是**布尔**，
+        @($false) 也是一个元素、.Count 恒 1，那条断言不管标记被写成什么样都是绿的（恒真）。
+        这里的结论不挂在那种形状上：先把 key=value 头与 --files-- 之后的记录行拆开，再拿
+        字段值与期望比。期望值（产品名 / AppId / 认得的标记版本）**全部由调用方从随包
+        install-manifest.json 递进来**，本模块不藏第二份产品或 AppId 的定义，比较文案也不
+        单独硬编码 —— 免得安装器、自检脚本与判据各抄一份慢慢漂开。
+        标记归属与载荷哈希是两份**不同**的证据：本函数只判"标记里的归属字段与记录形状
+        对不对"，文件的字节是否等于发行清单，由调用方的哈希那一节判；哈希全绿不能替归属
+        字段免检，反之也一样。
+        返回：[pscustomobject] Fields（字段表）、Records（记录段原始行）、FileCount、
+        HashedRecordCount、Accepted（$true = 每一条判据都对得上）、Problems（每条差异一句话，
+        空 = 合格）。本函数只读入参，不动磁盘。
+    .PARAMETER AcceptedMarkerVersions
+        本安装器认得的标记版本集合：新装下来的一代与仍然可读的上一代（上一代的记录没有
+        内容哈希基线，只是**认得**，不等于能证明内容没被改过——那是安装器升级保护的判据）。
+    .PARAMETER HashRequiredVersion
+        带这个标记版本的记录，每条都必须带内容 SHA-256（64 位十六进制）；通常传清单里
+        本次安装包自己写的那一个版本。给空串则不额外要求（只核对形状）。
+    #>
+    param(
+        # 归属标记是逐行的文本：空行与 # 注释本来就要被跳过，所以允许集合里出现空串元素。
+        [Parameter(Mandatory)][AllowEmptyCollection()][AllowEmptyString()][string[]]$Lines,
+        [Parameter(Mandatory)][string]$ExpectedProduct,
+        [string]$ExpectedAppId = '',
+        [Parameter(Mandatory)][string[]]$AcceptedMarkerVersions,
+        [string]$HashRequiredVersion = ''
+    )
+
+    $problems = New-Object System.Collections.Generic.List[string]
+    $fields = [ordered]@{}
+    $records = @()
+    $inFiles = $false
+    foreach ($raw in @($Lines)) {
+        $line = ([string]$raw).Trim()
+        if (-not $line) { continue }
+        if ($line.StartsWith('#')) { continue }
+        if (-not $inFiles) {
+            if ($line -eq '--files--') { $inFiles = $true; continue }
+            $m = [regex]::Match($line, '^([A-Za-z][A-Za-z0-9_]*)=(.*)$')
+            if ($m.Success) {
+                $key = $m.Groups[1].Value
+                if (-not $fields.Contains($key)) { $fields[$key] = $m.Groups[2].Value.Trim() }
+            }
+            continue
+        }
+        $records += $line
+    }
+
+    foreach ($key in @('product', 'appid', 'markerversion')) {
+        if (-not $fields.Contains($key) -or -not [string]$fields[$key]) {
+            $problems.Add("归属标记缺少 $key 字段（缺字段不能当成通过）")
+        }
+    }
+    if ($fields.Contains('product') -and [string]$fields['product'] -ne $ExpectedProduct) {
+        $problems.Add("product 是「$($fields['product'])」，与清单期望「$ExpectedProduct」不一致")
+    }
+    if ($fields.Contains('appid')) {
+        if ($ExpectedAppId) {
+            if ([string]$fields['appid'] -ne $ExpectedAppId) {
+                $problems.Add("appid 与清单不一致（标记「$($fields['appid'])」，期望「$ExpectedAppId」）")
+            }
+        } else {
+            $problems.Add('清单没有声明 appId，标记里却有 appid 字段：归属无法核对')
+        }
+    }
+    if ($fields.Contains('markerversion') -and
+        @($AcceptedMarkerVersions) -cnotcontains [string]$fields['markerversion']) {
+        $problems.Add("markerversion 是「$($fields['markerversion'])」，本安装器认的是 $(@($AcceptedMarkerVersions) -join ' / ')")
+    }
+
+    if (-not $inFiles) {
+        $problems.Add('归属标记里没有 --files-- 记录段（下次重装靠它认出被改过的文件）')
+    } elseif (@($records).Count -eq 0) {
+        $problems.Add('--files-- 记录段是空的（没有任何受管文件记录）')
+    }
+    $hashed = 0
+    $missingHash = 0
+    $badShape = @()
+    foreach ($rec in @($records)) {
+        if ($rec -match '^(.+)\|\d+\|\d+\|([0-9a-fA-F]{64})$') { $hashed++ }
+        elseif ($rec -match '^(.+)\|\d+\|\d+\|$') { $missingHash++ }
+        elseif ($rec -match '^(.+)\|\d+\|\d+$') { $missingHash++ }   # 上一代的三条记录：没有内容基线
+        else { $badShape += $rec }
+    }
+    if (@($badShape).Count) {
+        $problems.Add("有 $(@($badShape).Count) 条记录形状不合（应为 相对路径|大小|写入时间[|SHA-256]，例如：$($badShape[0])）")
+    }
+    if ($HashRequiredVersion -and $fields.Contains('markerversion') -and
+        [string]$fields['markerversion'] -eq $HashRequiredVersion -and
+        (@($records).Count -gt 0)) {
+        if ($missingHash -gt 0) {
+            $problems.Add("标记版本 $HashRequiredVersion 的每条记录都应带内容 SHA-256，实际有 $missingHash 条没有（覆盖前保护不能伪造内容基线）")
+        }
+    }
+
+    return [pscustomobject]@{
+        Accepted          = [bool]($problems.Count -eq 0)
+        Problems          = @($problems)
+        Fields            = $fields
+        Records           = @($records)
+        FileCount         = @($records).Count
+        HashedRecordCount = $hashed
+    }
+}
+
 function Reset-EcSuite {
     $script:EcFailures = New-Object System.Collections.Generic.List[string]
     $script:EcSkips = New-Object System.Collections.Generic.List[string]

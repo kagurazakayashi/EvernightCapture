@@ -15,10 +15,18 @@ namespace {
 // Untrusted，两份错答案看起来都像"问出来了"，只有对着自己机器上的标签值才看得出。判据
 // （tests\compat.ps1 的真机层）就是拿系统给的名字核对这一组符号，别再拿实现里的数字当期望。
 
-// "这一步是不是被完整性规则挡住的那一类落点"：取帧、写文件、写标准输出。
+// "这一步是不是被完整性规则挡住的那一类落点"：取帧、写文件、写标准输出，以及历史副本的落盘。
 // 匹配、编码、确认框那几步不是（低完整性不参与那里的决定）。
+// 历史副本的落点算在这一组里：归档根住在实际运行的 exe 旁边，把进程带到低完整性的正是那个目录
+// 的标签，副本写不下去时交回的是同一个 win32 5 / 0x80070005 —— 旧版只挑 capture/write/stdout
+// 三种，主图成功而副本被系统拒绝的那一条就没有成因解释，调用方只能对着 history.write_failed 猜。
+// 这一格也只认"系统说不让"那两个原值：盘满、目标是个文件、重解析点、撞名、超时那些 history 失败
+// 各有各的 win32/HRESULT，不会被折成低完整性；确认框上的人答"否"不在 history 段，也绝不被补写。
+// 提示本身只说进程令牌这一问与那一路径的真实拒绝（Diagnostic.value 带着受阻的那个路径），
+// 不预测"这个目录一定写得进/写不进"，也不改 code、stage、images 与退出码。
 bool DeniableStage(const std::wstring& stage) {
-    return stage == stages::kCapture || stage == stages::kWrite || stage == stages::kStdout;
+    return stage == stages::kCapture || stage == stages::kWrite || stage == stages::kStdout ||
+           stage == stages::kHistory;
 }
 
 }  // namespace
@@ -131,7 +139,8 @@ size_t AnnotateIntegrityDenials(Integrity integrity, std::vector<Diagnostic>* er
     size_t touched = 0;
     const std::wstring level = IntegrityName(integrity);
     for (auto& e : *errors) {
-        // 只补"系统说不让"这一类，而且限定在会被完整性规则影响的三步上。
+        // 只补"系统说不让"这一类，而且限定在会被完整性规则影响的那四类落点上（取帧、写盘、
+        // 标准输出、历史副本）。
         // 成因不明的 access-denied（更高完整性/不同归属的目标窗口）也被补，但补的那句话本身
         // 就写着"这一档完整性通常是主因，但不是唯一成因"，不替调用方下结论。
         if (!DeniableStage(e.stage) || !IsAccessDenied(e)) continue;
@@ -141,8 +150,8 @@ size_t AnnotateIntegrityDenials(Integrity integrity, std::vector<Diagnostic>* er
     }
     if (touched == 0) return 0;
 
-    // 整轮只追加一条：这三类失败在低完整性下经常同时出现（auto 链里 wgc 与 printwindow 都被拒，
-    // 紧接着落盘又被挡），逐条发同一句话会让调用方以为有 N 件不同的事要处理。
+    // 整轮只追加一条：这几类失败在低完整性下经常同时出现（auto 链里 wgc 与 printwindow 都被拒，
+    // 紧接着落盘又被挡，历史副本再挡一次），逐条发同一句话会让调用方以为有 N 件不同的事要处理。
     Diagnostic note;
     note.code = codes::kLowIntegrity;
     note.message = Msgf(L"env.integrity_denied", level, static_cast<uint64_t>(touched));

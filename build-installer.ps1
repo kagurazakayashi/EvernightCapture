@@ -25,7 +25,10 @@
          编译前还会把"这次铺下去的受管相对路径清单"生成到 staging 目录并用 /DManagedList 传给 ISCC：
          安装器在复制文件之前就要知道哪些文件归自己管，而那时 {app} 里还没有载荷，Inno 6.7.1 也没有逐文件
          覆盖前的钩子，所以这份清单只能编译期烘进去（缺它时 .iss 自己 #error 拒绝编译）。
-         载荷清单的 appId 与 .iss 的 [Setup] AppId / AppIdGuid 三处必须是同一个 GUID，不一致就拒绝打包。
+         载荷清单的 appId 与 .iss 的 [Setup] AppId / AppIdGuid 三处必须是同一个 GUID，不一致就拒绝打包；
+         归属标记的格式版本（markerVersion / markerAcceptedVersions）同样以载荷清单为唯一来源，
+         .iss 的 MarkerVersion 默认值与 MARKER_VERSION 常量写法都要与它一致，编译时再用 /DMarkerVersion
+         递下去 —— 安装器、随包自检与判据不许各抄一份会漂开的产品名或标记版本。
 
     预算：-IdentityTimeoutSec（每条只读查询，默认 120s）与 -IsccTimeoutSec（编译器，默认 900s）都在
     合法区间之外直接被拒绝；毫秒换算走 [long] 再夹到 [int]，不会溢出成负数而一上来就"超时"。
@@ -37,7 +40,8 @@
     运行库：ECAPTURE.EXE 与全部测试程序都是 CRT 静态链接（CMakeLists.txt 里 MSVC_RUNTIME_LIBRARY=MultiThreaded），
     所以安装包不带 VC++ 运行库，也不带 Visual Studio、源码或网络依赖。
 
-    编译器要求：**Inno Setup 6.3 或更高**（.iss 用到 6.3 引入的 ArchitecturesAllowed=x64compatible）。
+    编译器要求：**Inno Setup 6.4 或更高**（.iss 用到 6.3 引入的 ArchitecturesAllowed=x64compatible，
+    以及 6.4 引入的 GetSHA256OfFile —— 归属标记的内容基线判据靠它）。
     本脚本不自动下载或安装任何工具：找不到 ISCC.exe 时给出诊断并以退出码 32 结束，可用 -IsccPath 显式指定。
 
     不改 git、不发布、不替换任何已跟踪的发布产物；staging、安装包、日志与哈希都落在 build\（已在 .gitignore 里）。
@@ -411,6 +415,8 @@ $installManifest = [ordered]@{
     product         = [string]$manifest.product
     appId           = [string]$manifest.appId
     ownershipMarker = [string]$manifest.ownershipMarkerFile
+    markerVersion   = [string]$manifest.markerVersion
+    markerAcceptedVersions = @($manifest.markerAcceptedVersions | ForEach-Object { [string]$_ })
     version         = $Version
     arch            = $Arch
     config          = $Config
@@ -468,6 +474,27 @@ if ($issText -notmatch ('#define AppIdGuid "\{' + [regex]::Escape($appIdGuid) + 
     Write-Host "installer\ecapture.iss 里的 AppIdGuid 默认值与载荷清单的 appId 不一致（$appIdGuid），拒绝打包。" -ForegroundColor Red
     exit 12
 }
+# 归属标记的格式版本与产品名同样只许一份定义：载荷清单是来源，.iss 的默认值必须与它一致
+# （编译时还会用 /DMarkerVersion 把清单的值递下去）。verify-install 与安装器比对时都读随包
+# install-manifest.json 里这一份，不允许各自再硬写一份会漂开的产品名 / 标记版本。
+$markerVersion = [string]$manifest.markerVersion
+if (-not $markerVersion -or -not (@($manifest.markerAcceptedVersions).Count -ge 1)) {
+    Write-Host '载荷清单缺 markerVersion 或 markerAcceptedVersions，拒绝打包（归属核对没有比较基准就不能装）。' -ForegroundColor Red
+    exit 12
+}
+if ($issText -notmatch ('#define MarkerVersion "' + [regex]::Escape($markerVersion) + '"')) {
+    Write-Host "installer\ecapture.iss 的 MarkerVersion 默认值与载荷清单的 markerVersion 不一致（清单 $markerVersion），拒绝打包。" -ForegroundColor Red
+    exit 12
+}
+if ($issText -notmatch "MARKER_VERSION\s*=\s*'\{#MarkerVersion\}'") {
+    Write-Host 'installer\ecapture.iss 的 MARKER_VERSION 常量没有取 /DMarkerVersion 那一份（会漂成第二份定义），拒绝打包。' -ForegroundColor Red
+    exit 12
+}
+$issProduct = [regex]::Match($issText, "PRODUCT_NAME\s*=\s*'([^']+)'").Groups[1].Value
+if ($issProduct -ne [string]$manifest.product) {
+    Write-Host "installer\ecapture.iss 的 PRODUCT_NAME（$issProduct）与载荷清单的 product（$([string]$manifest.product)）不一致，拒绝打包。" -ForegroundColor Red
+    exit 12
+}
 $managedLines = @('  SetArrayLength(ManagedPaths, {0});' -f $managedRelPaths.Count)
 $i = 0
 foreach ($rel in $managedRelPaths) {
@@ -510,7 +537,7 @@ function Resolve-Iscc([string]$Explicit) {
 $iscc = Resolve-Iscc $IsccPath
 if (-not $iscc) {
     Write-Host '找不到 Inno Setup 编译器 ISCC.exe。' -ForegroundColor Red
-    Write-Host '  要求：Inno Setup 6.3 或更高（.iss 使用 ArchitecturesAllowed=x64compatible）。' -ForegroundColor Red
+    Write-Host '  要求：Inno Setup 6.4 或更高（.iss 使用 ArchitecturesAllowed=x64compatible 与 GetSHA256OfFile）。' -ForegroundColor Red
     Write-Host '  安装后可用 -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" 指定。' -ForegroundColor Red
     Write-Host '  本脚本不会自动下载或安装任何工具。' -ForegroundColor Red
     exit 32
@@ -528,6 +555,7 @@ $isccArgs = @(
     "/DOutputDir=$OutputDir",
     "/DOutputBase=$outBase",
     ("/DAppIdGuid={0}" -f $appIdPlain),
+    ("/DMarkerVersion={0}" -f $markerVersion),
     "/DManagedList=$managedListPath",
     "/DIconFile=$(Join-Path $repo 'resources\icon.ico')",
     $issPath

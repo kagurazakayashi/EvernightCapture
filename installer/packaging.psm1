@@ -9,6 +9,10 @@
     1. staging 所有权：只承认「仓库 build\installer-stage 下的直接子目录」这一种形状，并且必须带着
        本模块写下的 ownership 标记。归一化后比较目录边界（父目录补分隔符再比前缀），所以
        build 本身、仓库根、盘符根、build-backup 这类相邻前缀、逃逸用的 .. 一律不合格。
+       形状之外还要**从仓库根逐组件走到 staging**：路上任何一层（build、installer-stage、目标）
+       是重解析点、断开的链接或属性读不出来，整条拒绝 —— 中间层 junction 会让首末两层各自都
+       "看起来正常"，实际创建 / 写入 / 递归删除全部落到另一棵树里。重解析判定读的是目录条目
+       本体（FindFirstFile 形状，不跟链接走），"Test-Path 返回 false"不等于"没有重解析点"。
        清理之前还要确认整棵树里没有重解析点（junction / symlink）——PowerShell 5.1 的
        Remove-Item -Recurse 会跟着 junction 走进范围外，这一点必须拦在前面。
        判不出来、证明不了所有权、有歧义：一律保留原文件并给出可操作的错误，不做"先删掉看看"。
@@ -71,15 +75,24 @@ function Test-EcPathInside {
 function Test-EcReparsePoint {
     <#
         这个**具体**路径自己是不是重解析点（junction / symlink / mount point）。
-        用 Win32 FindFirstFile 直接读重解析标记：Get-Item 在某些情况下会把属性归到目标上，判不出真实形状。
-        读不到属性时按"形状不明"处理（返回 $true），宁可拒绝清理也不越界。
+        读的是"目录条目本体"：GetFileAttributesW 走 FindFirstFile 那一问，交回链接条目自己的
+        属性，不跟着它走进目标。旧写法先问 Test-Path、false 就当"没有重解析点"——断开的链接
+        （目标已被删）正是从这一缝里漏掉的：Test-Path 说"没有"，条目却还带着重解析标记，
+        后面跟着它写照样走到范围外。
+        返回：$true = 是重解析点，或属性读不出来（形状不明按拒绝处理，宁可不动也不越界）；
+              $false = 条目是普通的东西，或那一个名字确实还不在（这一层是待建的正常起点）。
     #>
     param([Parameter(Mandatory)][string]$Path)
 
-    if (-not (Test-Path -LiteralPath $Path)) { return $false }
     try {
         $attr = [int][IO.File]::GetAttributes($Path)
         return [bool](($attr -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+    } catch [IO.FileNotFoundException] {
+        return $false
+    } catch [IO.DirectoryNotFoundException] {
+        # 更上面的层还不存在：那一层由它自己那一问回答（逐组件的检查从锚点往下走时，
+        # 不存在的层交回 false，下面跟着的也只是"同一棵待建的树"）。
+        return $false
     } catch {
         return $true
     }
@@ -125,7 +138,9 @@ function Test-EcStagingAllowed {
           * 能解析成绝对路径，且不是盘符根；
           * 是受管 staging 根（仓库 build\installer-stage）的**直接子目录**，不是根本身；
           * 不等于仓库根、不等于 build 目录；叶子名里没有 .. 与路径分隔符；
-          * staging 根与目标目录本身都不是重解析点；
+          * staging 根、目标目录本身，以及**从仓库根到它们的每一层组件**（build、installer-stage）
+            都不是重解析点、属性都读得出来；中间某层是 junction（含断开的链接）整条拒绝——
+            只查首末两层时对面两层可以都是"普通目录"，实际落点却在别人家；
           * 目标已存在时：必须是真实目录，且带着与本仓库一致的 ownership 标记。
         任一条件不满足 → Allowed=$false 并给出 Reason，调用方保留原文件不动。
     #>
@@ -171,6 +186,27 @@ function Test-EcStagingAllowed {
     }
     if (Test-EcReparsePoint -Path $full) {
         return (& $deny "staging 目录本身是重解析点或属性读不出来：$full" $full)
+    }
+    # 中间层跳转是这一问要防的形状：只查首末两层时，build 那一层是 junction、对面
+    # installer-stage 与目标目录都可以是"普通目录"，两问都绿，实际落点却在一棵谁也没批准过的树里。
+    # 所以从仓库根起**逐组件**走：build、installer-stage、目标目录每一层都要么是能读出来的普通
+    # 条目、要么确实还不存在（待建）；任何一层是重解析点（含断开的链接）或属性读不出来，整条拒绝。
+    # 已有的 staging 所有权标记不抵消路径逃逸：标记记的是仓库拼写，junction 两侧能拼出同一个字符串，
+    # 而真实落点在别处。创建日志、首次建目录与重用/删除走的是同一份判定（调用方先问这一问再动手）。
+    # 声明的边界：仓库根自己可以是合法别名（映射盘 / 链接目录）—— 本判定以传入的仓库根拼写为唯一
+    # 锚点，字符串比较与实际操作走同一条路；仓库根以上不归本工具过问。也不防同等权限的进程在
+    # 判定通过后的间隙里把某层换成 junction —— 这是误用防护与工程纪律，不是对本机攻击者的边界。
+    if (-not (Test-EcPathInside $layout.Repo $layout.Build)) {
+        return (& $deny "build 目录不在仓库根之下，staging 的祖先链无法锚定在这个仓库：$($layout.Build)（仓库根：$($layout.Repo)）" $full)
+    }
+    $anchor = [IO.Path]::GetFullPath($layout.Repo.TrimEnd('\', '/'))
+    $tail = $full.Substring($anchor.Length)
+    $walkCur = $anchor
+    foreach ($seg in @($tail -split '[\\/]+' | Where-Object { $_ })) {
+        $walkCur = Join-Path $walkCur $seg
+        if (Test-EcReparsePoint -Path $walkCur) {
+            return (& $deny "从仓库根到 staging 的路上，这一层是重解析点（含断开的链接）或属性读不出来：$walkCur（staging：$full）" $full)
+        }
     }
 
     $exists = Test-Path -LiteralPath $full
@@ -263,9 +299,11 @@ function Get-EcPayloadManifest {
     if (-not $text) { throw "载荷清单是空的：$Path" }
     $mf = $text | ConvertFrom-Json
     $missing = @()
-    foreach ($key in @('manifestVersion', 'product', 'appId', 'ownershipMarkerFile', 'entries', 'skill', 'installPlan')) {
+    foreach ($key in @('manifestVersion', 'product', 'appId', 'ownershipMarkerFile',
+                       'markerVersion', 'markerAcceptedVersions', 'entries', 'skill', 'installPlan')) {
         if ($null -eq $mf.$key) { $missing += $key }
     }
+    if (@($mf.markerAcceptedVersions).Count -lt 1) { $missing += 'markerAcceptedVersions（空集合）' }
     $plan = $mf.installPlan
     foreach ($key in @('offlineTests', 'offlineSuiteDeps', 'excludedFromInstall')) {
         if ($null -eq $plan.$key) { $missing += "installPlan.$key" }
