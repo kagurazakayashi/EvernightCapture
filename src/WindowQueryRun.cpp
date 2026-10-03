@@ -30,7 +30,9 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
     WindowQuerySpec spec = MakeWindowQuerySpec(opt);
     spec.monitorLabel = MonitorLabelOf(opt);
     result.spec = spec;
-    result.limit = spec.limit != 0 ? spec.limit : cli_limits::kDefaultWindowListLimit;
+    // 生效条数由那一份三档判据给（--limit / 配置的 query.window_list_limit / 内置默认），
+    // 不在这里重算一次默认值。
+    result.limit = EffectiveListLimit(spec);
     result.limitDefaulted = (spec.limit == 0);
 
     std::vector<RECT> onScreens;

@@ -40,6 +40,7 @@ grp.consent	Capture authorization (a real capture asks first; --yes skips window
 grp.timeout	Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
 grp.output	Output
 grp.behavior	Miscellaneous
+grp.config	User preference configuration (reads ECAPTURE.ini next to the running program; nothing else is searched)
 grp.query	Capability queries (read-only: no capture, no dialog, no file)
 opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images; to name a specific monitor use an identifier from --screens: device:<name> (this desktop attach) or id:<monitor device path> (the cross-session one) - a number can point at a different screen after a replug or a mode change
 opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
@@ -455,3 +456,51 @@ note.hdr_source_unverified_hint	The image is still delivered, but that is not ev
 env.hdr_unsupported	This machine cannot deliver the %1 HDR request: it would have tried %2, reasons %3
 env.hdr_unsupported_hint	This is about the channels this machine offers, not about the target: after the version and cursor gates, no channel left in the chain really fulfills the HDR request, so not one pixel was captured and no dialog was shown. Changing --capture cannot invent a channel that fulfills it, and retrying the same target ends the same way. Read the color section of --capabilities (honorsExplicitPolicy per path) to see what is settled on this machine right now
 note.hdr_channel_skipped	%1 in the auto chain cannot deliver the %2 HDR request and was dropped (%3); the rest are still tried in order
+
+# ---------------------------------------------------------------------------
+# User preference configuration (ECAPTURE.ini): which file is read, per-key
+# validation, and the read-only configuration view.
+# The judgment lives in src/Config.h and the merge step of src/CliOptions.cpp.
+# For this family the code and the message key are the same (config.*).
+# ---------------------------------------------------------------------------
+opt.config	read this INI instead (a relative path is made absolute against the current directory); a missing or unreadable file is an error, it does not fall back to the default one
+opt.no-config	ignore the configuration file completely for this run and use built-in defaults plus this command line; the isolation entry for debugging and self-checks, it neither deletes nor rewrites the configuration
+opt.show-config	read-only view of this run's configuration: which file was read, whether it was read, and which source each effective setting came from (no window selection, no pixels, no dialog, no directories created)
+opt.history	whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
+opt.integrity-hints	whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission
+opt.no-crop	cancel the crop group coming from the configuration file (no cropping at all this run); conflicting with this run's --roi / --client-area
+opt.no-scale	cancel the scale group coming from the configuration file (no scaling this run); conflicting with this run's --scale
+config.not_found	the configuration file to read does not exist
+config.not_found_hint	an --config path never falls back to the default file: naming a file is explicit, and guessing a different one would swap in settings nobody chose. Check the path (relative forms resolve against the current directory), or drop --config and use the file beside the program
+config.read_failed	the configuration file could not be read
+config.read_failed_hint	the file exists but cannot be read: another process holds it exclusively, permissions deny it, or that name is a directory. The default location reports this too when the program's own directory cannot be determined; nothing is guessed and no file is written
+config.too_large	the configuration file exceeds the 256 KiB limit and was not read
+config.too_large_hint	the limit is checked before allocating: an oversized file should not be pulled into memory first and only then rejected. ECAPTURE.ini holds preferences, not data; pasting capture notes, scripts or another program's configuration here is the wrong place
+config.line_too_long	a line in the configuration file exceeds the 4096 character limit
+config.encoding	the configuration file is not valid UTF-8
+config.encoding_hint	this file is read as UTF-8 (a leading BOM is allowed). An invalid byte sequence is not re-guessed through the system code page: the same bytes would yield two different values, and both would look like an answer
+config.syntax	this line in the configuration file does not parse
+config.duplicate_section	a section appears twice in this file
+config.duplicate_section_hint	write each section once: splitting one group over two places means only one of them gets edited, and both still pass per-key validation
+config.duplicate_key	a key appears twice
+config.duplicate_key_hint	neither "last wins" nor "first wins": only you can say which of two different writings in one file was meant. Remove the extra line
+config.unknown_section	the configuration file contains an unrecognised section
+config.unknown_key	the configuration file contains an unrecognised key
+config.unknown_key_hint	a misspelled key does not fall back to its default: that keeps "this line never took effect" hidden. --show-config lists every setting this build knows; compare against ECAPTURE.example.ini
+config.unsupported_version	this configuration file uses a format version this build does not know
+config.unsupported_version_hint	it is not "read as a compatible format anyway": guessing the wrong slot would capture an image according to settings nobody wrote. Edit the file to a known version following ECAPTURE.example.ini, and back it up first - this tool never rewrites your configuration
+config.invalid_number	this number in the configuration file is not written correctly
+config.invalid_boolean	a boolean in the configuration file must be exactly true or false
+config.invalid_boolean_hint	1 / yes / on do not mean true here. A configuration file gets edited again and again, and a "looks true" spelling eventually reads as the other meaning
+config.invalid_value	this value in the configuration file is not in the allowed list
+config.out_of_range	this number in the configuration file is outside the allowed range
+config.invalid_combination	these entries in the configuration file do not work together
+config.crop_roi_invalid	the four numbers in crop.roi are not written correctly
+config.crop_roi_invalid_hint	only x,y,width,height as decimal numbers (comma separated, no spaces, no sign); x / y may be 0, width / height must be at least 1. The spelling and the limits are exactly the ones --roi uses
+config.crop_roi_missing	crop.mode=roi without a usable crop.roi
+config.crop_roi_missing_hint	roi mode needs valid x,y,width,height. It does not "fall back to the whole window": that silently turns one mistyped crop into a different crop. Supply crop.roi, or set crop.mode back to none
+cli.config_view_conflict	--show-config reads this configuration read-only and cannot be combined with capture intent or another query command
+cli.config_view_conflict_hint	the configuration view accepts --config / --no-config and the preference overrides you want to observe (--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / crop and scale / the two timeouts / --history / --integrity-hints / --limit); window conditions, --monitor, selection strategies, --yes / --dry-run and the other query commands belong to a separate run
+cli.onoff_value	this value must be on or off
+cli.crop_cancel_conflict_hint	--no-crop cancels the crop group coming from the configuration file; it says the opposite of the --roi / --client-area you wrote this run. Drop --no-crop, or drop that crop
+cli.scale_cancel_conflict_hint	--no-scale cancels the scale group coming from the configuration file; it cannot hold together with the --scale you wrote this run. Drop --no-scale, or drop that --scale

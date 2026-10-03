@@ -69,7 +69,10 @@ function Codes($list) {
 # 期限故意给 15 秒：这台机器上正常返回是几十毫秒量级，等满就是行为变了。
 function Invoke-Query {
     param([string[]]$Arguments, [int]$TimeoutMs = 15000, [string]$WorkingDirectory)
-    $args = @('--lang', 'zh-CN') + @($Arguments)
+    # 既有契约检查一律显式带 --no-config：这一套判的是"这份产物自己说这台机器是什么样子"，
+    # 不该被开发者目录里那份 ECAPTURE.ini 改得飘忽（安装自检同一条约定，见 installererify-install.ps1）。
+    # 需要观察配置本身的判据在 tests\config.ps1，那里才有带配置与不带配置的对照。
+    $args = @('--lang', 'zh-CN', '--no-config') + @($Arguments)
     return (Invoke-EcProcess -FilePath $Exe -Arguments $args -TimeoutMs $TimeoutMs `
                              -WorkingDirectory $WorkingDirectory)
 }
@@ -263,7 +266,7 @@ try {
 
     $baseline = (Invoke-Query -Arguments @('--capabilities')).Stdout
     foreach ($lang in @('zh-CN', 'zh-TW', 'en', 'ja')) {
-        $body = (Invoke-EcProcess -FilePath $Exe -Arguments @('--capabilities', '--lang', $lang) `
+        $body = (Invoke-EcProcess -FilePath $Exe -Arguments @('--capabilities', '--lang', $lang, '--no-config') `
                                   -TimeoutMs 15000).Stdout
         Assert-Ec ($body -eq $baseline) "$lang 那份与默认那份不同（查询文档不该随 --lang 变）"
     }

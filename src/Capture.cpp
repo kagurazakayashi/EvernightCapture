@@ -785,14 +785,21 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 历史归档的位置在弹框**之前**就解析出来：确认框上要写"程序自己那份目录里还会另存一份持久
     // 副本"，而那一句只有在这一次真能走到归档根时才说得出（解析不出来的那一路不承诺副本）。
     // 这一步只问模块位置与那个位置此刻是什么属性，一个目录都不建、一个字节都不写。
-    HistoryArchive historyArchive;
+    //
+    // **只在本次要归档时才构造**：history.enabled=false（配置或 --history off）那一路连归档根
+    // 都不去解析，于是一个目录都不建、也不读任何已有历史。用 optional 而不是先建好再判，
+    // 是因为那个构造本身就会去解析归档根 —— 关闭的意思就是"这一步没有开始"。
+    std::optional<HistoryArchive> historyArchive;
+    if (opt.historyEnabled) historyArchive.emplace();
 
     DialogConsentPrompt prompt(opt.consentTimeoutMs);
     GateConfig gateCfg;
     gateCfg.yes = opt.yes;
     gateCfg.captureLabel = CaptureMethodName(opt.capture);
     gateCfg.consentTimeoutMs = opt.consentTimeoutMs;
-    gateCfg.historyCopy = historyArchive.root().usable;
+    // 关闭的那一路绝不写"还会另存一份"：框上承诺了一份持久副本而实际一张都不存，
+    // 是拿人批准的那句话去说一件不会发生的事。
+    gateCfg.historyCopy = historyArchive && historyArchive->root().usable;
     // 真人等待从上面那份整批自动预算里暂停出去（判定器只在真要弹框时套上暂停作用域；
     // --consent-timeout-ms 有自己的秒表，不跟着冻结）。dl 比判定器活得久，这里只借指针。
     gateCfg.autoBudget = &dl;
@@ -822,8 +829,12 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 开工时记的 started 同一把，否则 images[].elapsedMs 会跟着预算那把 QPC 一起漂；预算本身仍是
     // Deadline 里那份，不在这里另领 —— 归档也不另领（预算已尽时它记成 skipped 而不是重来一次）。
     RealOutputSink sink;
-    const DeliveryRun delivery{&dl, &sink, [] { return GetTickCount64(); }, &historyArchive,
-                               opt.format};
+    // 关闭那一档交的是"没有归档这一步 + 这是主动关闭"两件事：交付层因此给每张已交付的图
+    // 留一格 history.status=disabled，而不是把这一格整个省掉（省掉会被读成"这次根本没有副本
+    // 这回事"），也不会把一个没人尝试过的失败编出来。
+    const DeliveryRun delivery{&dl, &sink, [] { return GetTickCount64(); },
+                               historyArchive ? &*historyArchive : nullptr, opt.format,
+                               !opt.historyEnabled};
 
     for (size_t i = 0; i < targets.size(); ++i) {
         Target& t = targets[i];

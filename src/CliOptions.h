@@ -229,6 +229,30 @@ struct HdrRequest {
 };
 
 
+// ---------------------------------------------------------------------------
+// 取值表：一份概念只写一处。
+//
+// --help 的取值列、解析层的合法性判定（CliOptions.cpp 的 Apply）与配置文件那一路的 schema
+// （src/Config.cpp）读的都是这几份数组（末尾的 nullptr 是结束标记）。配置里多出来的那两个词
+//（cursor / hdr 的 unset、format 的 auto）**不在这里**：那是配置自己的写法，说的是"本次没有提出
+// 这项要求"与"继续按扩展名推断"两件 CLI 没有对应词的事，翻译发生在合并那一步。
+// 数字区间不在这一节：它们统一在下面的 cli_limits 里，两边引用同一份。
+// ---------------------------------------------------------------------------
+namespace option_values {
+inline constexpr const wchar_t* kLang[] = {L"auto", L"zh-CN", L"zh-TW", L"en", L"ja", nullptr};
+inline constexpr const wchar_t* kCapture[] = {L"wgc", L"dwm", L"printwindow", L"bitblt",
+                                              L"duplication", L"auto", nullptr};
+inline constexpr const wchar_t* kCursor[] = {L"default", L"include", L"exclude", nullptr};
+inline constexpr const wchar_t* kHdr[] = {L"auto", L"tonemap", L"refuse", nullptr};
+inline constexpr const wchar_t* kFormat[] = {L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif",
+                                             nullptr};
+// 裁剪方式：--roi / --client-area 两个写法与配置里 crop.mode 的三个取值说的是同一件事。
+inline constexpr const wchar_t* kCropMode[] = {L"none", L"client-area", L"roi", nullptr};
+// 新偏好在命令行上的覆盖写法（--history / --integrity-hints）。配置那一侧用 true / false，
+// 命令行这一侧用 on / off：两种都只有明确的一个意思，不做"看着像真就算真"的模糊推断。
+inline constexpr const wchar_t* kOnOff[] = {L"on", L"off", nullptr};
+}  // namespace option_values
+
 struct Options {
     MatchOptions match;
     MonitorSelector monitor;    // --monitor / -m
@@ -237,6 +261,12 @@ struct Options {
     bool outputImplicitStdout = false;  // 未给输出路径 => 按 "--out -" 处理，PNG 写标准输出
     ImageFormat format = ImageFormat::kPng;
     bool formatExplicit = false;      // 是否显式指定过 --format
+    // 实际定下 format 的那一条根据（机器名，ASCII，不随 --lang 变）：
+    //   cli-format / cli-output-extension / config-format / config-output-extension /
+    //   stdout-default-png / default-png
+    // --show-config 与 -v 的 input 都报它，所以"读到了配置"与"这一项由扩展名推断出来"
+    // 是两件事，调用方不必猜。判据只写在 DecideFormat 那一处（两条路共用）。
+    std::wstring formatBasis;
     int jpegQuality = 100;            // --quality，只认十进制 1..100
     bool overwrite = true;            // --no-overwrite 置 false（=true 与裸开关同义，=false 取消）
 
@@ -309,14 +339,52 @@ struct Options {
     uint64_t offset = 0;              // --offset：跳过命中列表开头多少个（0 起）
     uint64_t limit = 0;               // --limit：这一次最多交多少个（0 = 用默认值）
 
+    // ---- 偏好配置（ECAPTURE.ini）的落地结果 ----
+    // 这些字段是**合并之后**的最终取值，来源优先级为 CLI > INI > 内置默认；判据与逐键校验本体
+    // 在 src/Config.h，这里只落"这一次按哪个来源的那一份数办事"。
+    // historyEnabled：本次要不要给每张完成主交付的图另存一份历史副本。默认开启；
+    // 关掉是**主动决定**，与"目录不可写所以没存上"两件事（后者是 history.write_failed）。
+    bool historyEnabled = true;
+    // integrityHints：要不要给"系统说不让"那一类失败补完整性方面的解释文字。
+    // 它只管解释：错误码、win32/HRESULT 原值、交付事实与 --capabilities 里那些能力事实字段
+    // 从来不受这条影响，关掉它也修不好权限。
+    bool integrityHints = true;
+    // 窗口查询在**本次 CLI 没写 --limit** 时使用的每页条数。0 = 用 cli_limits::kDefaultWindowListLimit
+    // （写 0 而不是直接抄那个数：两份数字不许各写一套，见 WindowQuery.cpp 那一条收敛）。
+    uint64_t listLimitDefault = 0;
+    // 只读的配置视图（--show-config）：不选窗口、不取像素、不弹框、不建输出与历史目录。
+    bool showConfig = false;
+
+    // 每一项生效偏好的来源记账，供 --show-config 与 -v 的 input.config 核对。
+    // id 是稳定的 "section.key"（与 src/Config.h 的 schema 同名），value 是**规范化后**的生效取值，
+    // source 是 "cli" / "config" / "builtin"。顺序即 schema 顺序。
+    struct ResolvedSetting {
+        std::wstring id;
+        std::wstring value;
+        std::wstring source;
+    };
+    std::vector<ResolvedSetting> settings;
+    std::wstring configPath;   // 实际读取（或尝试读取）的绝对路径；本次没读时为空
+    std::wstring configState;  // "not_read" / "absent" / "loaded" / "failed"（ASCII 机器名）
+    // 这一份是**怎么**定下来的（--show-config 里与文件位置并排报出）：
+    //   default   程序同目录那份 ECAPTURE.ini
+    //   explicit  --config 点名的一份（相对调用方 CWD 定绝对路径）
+    //   none      --no-config，或 --help / --version 那一路（本次一条都不读）
+    std::wstring configSelection;
+
     bool HasAnyCondition() const { return !match.IsEmpty(); }
     // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面
     bool ScreenMode() const { return monitor.given && match.IsEmpty(); }
     // 这一次是查询而不是截图（任意一条查询命令给出即为真）
-    bool QueryMode() const { return capabilities || diagnostics || screens ||
+    bool QueryMode() const { return capabilities || diagnostics || screens || showConfig ||
                                     windowAction != WindowAction::kNone; }
     // 只读的环境查询（--capabilities / --diagnostics / --screens）：只接受 --lang / -v / -q
     bool EnvQueryMode() const { return capabilities || diagnostics || screens; }
+    // 只读的配置视图（--show-config）。它与环境查询**同族而不同类**：同族是因为它同样不取像素、
+    // 不弹框、不写文件；不同类是因为它的用途正是"让人看清每一项偏好最后落在哪个来源"，
+    // 所以要允许带着偏好覆盖参数一起跑（--lang / --history / --capture / --quiet 那些），
+    // 而依旧拒绝目标选择器与截图意图。允许清单写在 CliOptions.cpp 的 AllowedWithConfigView。
+    bool ConfigViewMode() const { return showConfig; }
     // 只读的屏幕枚举（--screens）：与环境查询同一套允许清单，但交回的是另一份契约文档
     bool ScreenQueryMode() const { return screens; }
     // 只读的窗口查询（--list / --inspect）：额外接受窗口条件、--monitor、--timeout-ms 等
@@ -376,11 +444,44 @@ inline constexpr const wchar_t* kQueryConflict = L"cli.query_conflict";
 // 「只接受 --lang / -v / -q」去解释窗口查询会把人引向错误的下一步。退出码同为 1，
 // 一次列全所有冲突项，一个像素都不取。
 inline constexpr const wchar_t* kWindowQueryConflict = L"cli.window_query_conflict";
+// 只读的配置视图（--show-config）与别的查询命令、或与截图那一级同时给出。与环境查询那一条
+// 分开给码：它的允许清单本来就宽（要观察的偏好都得能带着跑），拿"查询只接受 --lang / -v / -q"
+// 去解释这一路会把人引向"那我删掉 --history"这种与本意相反的下一步。退出码同为 1。
+inline constexpr const wchar_t* kConfigViewConflict = L"cli.config_view_conflict";
 // 多个目标却要写到标准输出：标准输出一次只能交付一张图，属参数用法错误（退出码 1）。
 // 判据是"实际命中的目标数"，所以 --all / --monitor all 只命中一个时仍然放行。
 inline constexpr const wchar_t* kStdoutMultipleTargets = L"cli.stdout_multiple_targets";
 // 参数层（退出码 2 / 3）
 inline constexpr const wchar_t* kNoCondition = L"cli.no_condition";
+// ---------------------------------------------------------------------------
+// 配置文件这一族（ECAPTURE.ini）。两条退出码各有归属，不许互相折成一条：
+//   * 读不出来的那一类是 **I/O 失败（8）**：config.not_found（显式 --config 指的文件不在）、
+//     config.read_failed（被占用、权限、那个名字是个目录、问不出模块位置）。
+//     默认位置的 ECAPTURE.ini **不存在是正常状态**，不发这一条，也不发任何一条。
+//   * 说不通的那一类是 **用法错（1）**：下面所有语法、类型、区间、组合与版本问题。
+// 共同点是它们全部发生在选目标、弹确认框、取任何一个像素**之前**：一份读不懂的配置不该
+// 被"那就按默认值拍另一种图"绕过去，也不该先打扰人一次再告诉他参数写错了。
+// 每条都带 config.path（截断后的文件位置）、line、value="section.key" 与不随 --lang 变的
+// detail 原因 token；调用方按 code 分支，不必从 message 里抠。
+inline constexpr const wchar_t* kConfigNotFound = L"config.not_found";
+inline constexpr const wchar_t* kConfigReadFailed = L"config.read_failed";
+inline constexpr const wchar_t* kConfigTooLarge = L"config.too_large";
+inline constexpr const wchar_t* kConfigLineTooLong = L"config.line_too_long";
+inline constexpr const wchar_t* kConfigEncoding = L"config.encoding";
+inline constexpr const wchar_t* kConfigSyntax = L"config.syntax";
+inline constexpr const wchar_t* kConfigDuplicateSection = L"config.duplicate_section";
+inline constexpr const wchar_t* kConfigDuplicateKey = L"config.duplicate_key";
+inline constexpr const wchar_t* kConfigUnknownSection = L"config.unknown_section";
+inline constexpr const wchar_t* kConfigUnknownKey = L"config.unknown_key";
+inline constexpr const wchar_t* kConfigUnsupportedVersion = L"config.unsupported_version";
+inline constexpr const wchar_t* kConfigInvalidNumber = L"config.invalid_number";
+inline constexpr const wchar_t* kConfigInvalidBoolean = L"config.invalid_boolean";
+inline constexpr const wchar_t* kConfigInvalidValue = L"config.invalid_value";
+inline constexpr const wchar_t* kConfigOutOfRange = L"config.out_of_range";
+// 逐键都合法，但合起来说不通：crop.mode=roi 而 crop.roi 没给，或给的 roi 语法不合。
+// 与 cli.crop_conflict 分开给码：那一条说的是"这一次同时写了两种裁剪写法"，这一条说的是
+// "配置里那两条自己没配上"，下一步一个是删一条 CLI，一个是补一个键。
+inline constexpr const wchar_t* kConfigInvalidCombination = L"config.invalid_combination";
 // 提示（不影响退出码）
 inline constexpr const wchar_t* kDuplicateValue = L"note.duplicate_value";
 inline constexpr const wchar_t* kExtensionAppended = L"note.extension_appended";
@@ -702,6 +803,12 @@ struct Diagnostic {
     std::wstring stage;
     std::wstring hresult;  // "0x80070005" 形式
     uint32_t win32 = 0;    // GetLastError 的原值，0 = 不适用
+    // 配置文件里的那一处（只有 config.* 那一族会写）。line 是**源文件行号**，1 起，
+    // 0 = 这一条与行无关（例如整个文件读不出来）；detail 是不随 --lang 变的 ASCII 原因 token
+    // （例如 "range:1-100" / "byte:offset=17" / "missing-equals"）。
+    // 两条都是追加字段：老调用方读不到它们也不影响按 code 分支。
+    uint32_t line = 0;
+    std::wstring detail;
 };
 
 struct ParseResult {
@@ -727,6 +834,11 @@ const std::vector<OptionInfo>& OptionCatalog();
 
 // 解析 argc/argv（宽字符，来自主动 --help 之外的 wmain）。
 ParseResult ParseCommandLine(int argc, wchar_t* const* argv);
+
+// 严格十进制：只认 [0-9]+，不许空白、正负号、0x 前缀、下划线与任何单位后缀，溢出即 false。
+// 命令行取值与配置文件里的数**共用这一份**判据（src/Config.cpp 调它），否则 INI 会接受
+// CLI 当场拒掉的写法 —— 那正是"两处各写一套规则"最早出问题的地方。
+bool ParseStrictDecimal(const std::wstring& raw, uint64_t* out);
 
 // 退出码
 enum ExitCode : int {

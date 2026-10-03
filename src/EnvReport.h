@@ -104,6 +104,10 @@ inline constexpr const wchar_t* kNotElevated = L"unelevated_process_may_miss_ele
 // 建文件也会被拒，而 `dwm.thumbnail` 与桌面像素那几条在本机实测照常出图 ——
 // 哪个具体目标截得到，仍然只有那一步自己交回真实错误码才算数。
 inline constexpr const wchar_t* kLowIntegrity = L"process_integrity_below_medium";
+// 历史那一段说的是**规则与出厂默认**，不是这一次的下场：这一次有没有关（--history off 或
+// 配置里 history.enabled=false）、那一张到底存没存上，都要看 --show-config 与截图结果里
+// images[].history 那一格。写这一条是为了没人把 enabledByDefault=true 读成"刚才那张一定在"。
+inline constexpr const wchar_t* kHistoryRunStateNotReported = L"history_run_state_not_reported";
 // 光标（--cursor）那一段的边界：结果里 cursorEffective 断言到的是"这条会话被设置成画 / 不画
 // 光标"与"这条路径的来源像素里本来就没有光标"这两层，**不是**"这一张图里看得见或看不见指针"。
 // 本 SDK 的会话接口没有 IsCursorVisible 那个只读属性，像素级的事这一层一条都不声称，
@@ -342,7 +346,12 @@ struct EnvHdrReport {
 //   * 不写任何绝对路径：定位规则用相对于程序目录的写法表达（relativeTo 说清锚点是谁）。
 //   * 副本的下落逐张写在截图结果的 images[].history 里，那才是"这一次到底有没有存下来"的凭据。
 struct EnvHistoryReport {
-    bool enabledByDefault = true;      // 没有关掉它的开关：这一版每条成功交付都另存一份
+    bool supported = true;             // 这套实现有历史归档这一步（与"本次有没有开"是两件事）
+    bool enabledByDefault = true;      // 出厂默认：没有关掉它的开关时，每条成功交付都另存一份
+    // 关闭它是**一项用户偏好**而不是能力差别：配置里 history.enabled=false，或本次 --history off。
+    // 这两条写在这里，是为了让脚本不必读源码就能把"支持""默认开启""本次关了"三件事分开。
+    std::wstring configKey;            // "history.enabled"
+    std::wstring configOverride;       // "--history on|off"
     std::wstring relativeTo;           // "executable-directory"：跟着实际运行的那一个 exe
     std::wstring location;             // 相对定位规则（history/YYYY-MM-DD/）
     std::wstring naming;               // 文件名规则（本地时间 + 进程标识 + 抗冲突段 + 序号）

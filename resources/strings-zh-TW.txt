@@ -40,6 +40,7 @@ grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes �
 grp.timeout	執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
 grp.output	輸出
 grp.behavior	其他
+grp.config	使用者偏好設定（預設讀程式同目錄的 ECAPTURE.ini；不搜目前目錄與別處）
 grp.query	查詢（唯讀：不截圖、不彈框、不寫檔案）
 opt.monitor	截圖目標屏的編號，從 1 開始、只認十進位（本次列舉的順序，不保證等於「顯示設定」裡寫的識別號；要認螢幕請看結果裡的 device）；primary = 主螢幕，all = 每張螢幕各一張。不給視窗條件時 = 整張螢幕截圖，給視窗條件時 = 只算與該螢幕有重疊的視窗。取值可省略（= 主螢幕），省略時不吃後面的參數，所以 --monitor out.png 仍然可用。整張螢幕拍的是桌面像素，一定要先彈框問人，--yes 也跳不過；按螢幕篩選視窗出的仍是視窗圖；要點名叫螢幕請用 --screens 交回的身分：device:<裝置名>（本次桌面連線的名字）或 id:<螢幕裝置路徑>（跨工作階段那一條）。編號在拔插或改解析度之後可能指到另一張螢幕
 opt.hwnd	視窗句柄。純數字按十進位，0x 前綴或含 a-f 按十六進位；推薦寫 0x。不接受正負號與空白，底線只能夾在兩位十六進位數字之間
@@ -453,3 +454,50 @@ note.hdr_source_unverified_hint	圖照常交付，但這不能當成「HDR 已�
 env.hdr_unsupported	這台機器給不出 %1 這個 HDR 處理：本來要試的是 %2，原因 %3
 env.hdr_unsupported_hint	這一條說的是本機給得出的通道，與目標視窗無關：版本與滑鼠指標兩道閘門篩過之後，鏈裡沒有一條真兌現得了這次的 HDR 要求，所以一個像素都不取、確認框也不彈。換 --capture 變不出一條兌現得了的通道，同一個目標重試也是同樣下場。想知道本機現在判到什麼，跑 --capabilities 讀 color 那一段（每條路徑的 honorsExplicitPolicy）
 note.hdr_channel_skipped	auto 鏈裡的 %1 兌現不了 %2 這個 HDR 處理，已摘除（%3），剩下的照順序試
+
+# ---------------------------------------------------------------------------
+# 使用者偏好設定（ECAPTURE.ini）：讀哪一份、逐鍵檢查與唯讀設定檢視
+# 判據本體在 src/Config.h 與 src/CliOptions.cpp 的合併那一段。
+# 這一族的 code 與 key 同名（config.*），診斷裡的 message 就是這裡這一句。
+# ---------------------------------------------------------------------------
+opt.config	本次改用指定的那份 INI（相對路徑按目前目錄定絕對路徑）；檔案不在或讀不出就報錯，不回退到預設那份
+opt.no-config	本次完全忽略設定檔，只用內建預設與本次命令列；排障與自檢的隔離入口，不刪除也不改寫設定
+opt.show-config	唯讀地交出本次這份設定：讀的是哪個檔案、有沒有讀到、每一項生效偏好各來自哪個來源（不選視窗、不取像素、不彈框、不建目錄）
+opt.history	本次要不要為每張完成交付的圖另存一份歷史副本（on / off），覆蓋設定裡那條
+opt.integrity-hints	本次要不要附完整性方面的解釋文字（on / off）；錯誤碼、原值與交付事實從來不受它影響，關掉它也修不好權限
+opt.no-crop	取消設定檔裡那一組裁剪（本次一個裁剪都不做）；與本次的 --roi / --client-area 同時給出算衝突
+opt.no-scale	取消設定檔裡那一組縮放（本次不縮放）；與本次的 --scale 同時給出算衝突
+config.not_found	要讀的設定檔不存在
+config.not_found_hint	--config 指的那一條沒有回退到預設那份：這是明確點名，猜一份別處的設定等於替這次呼叫換了一份誰都沒改過的設定。核對一下路徑（相對寫法按目前目錄算），或去掉 --config 改用程式同目錄那份
+config.read_failed	設定檔讀不出來
+config.read_failed_hint	檔案在而讀不到：可能被別的程序獨佔、權限不夠，或那個名字其實是個目錄。預設位置那份問不出程式自己在哪裡時也是這一條；這裡不猜目前目錄，也不寫一份新的
+config.too_large	設定檔超過 256 KiB 的上限，沒有讀
+config.too_large_hint	上限在分配之前判：一份超限的檔案不該先被整個搬進記憶體再報錯。ECAPTURE.ini 裝的是偏好，不是資料；把截圖說明、腳本或別程式的設定並進來是放錯了地方
+config.line_too_long	設定檔有一行超過 4096 個字元的上限
+config.encoding	設定檔不是合法的 UTF-8
+config.encoding_hint	這份檔案按 UTF-8 讀（允許開頭的 BOM）。非法位元組序列不當系統代碼頁再猜一遍：同一份檔案按代碼頁與按 UTF-8 會讀出兩個不同的值，而那時兩種都「看起來像有個答案」
+config.syntax	設定檔這一行說不通
+config.duplicate_section	同一個節在這份檔案裡出現了兩次
+config.duplicate_section_hint	每個節只寫一次：分兩處寫同一組設定，改的時候只會改到其中一處，而兩處都能通過逐鍵檢查
+config.duplicate_key	同一個鍵出現了兩次
+config.duplicate_key_hint	不取「最後一個」也不取「第一個」：一份檔案裡兩處不同的寫法到底要聽哪一條，只有你自己說得清。刪掉多餘那一條
+config.unknown_section	設定檔裡有一個不認識的節
+config.unknown_key	設定檔裡有一個不認識的鍵
+config.unknown_key_hint	拼錯的鍵不會退回預設值：那會把「settings 裡那條其實沒生效」這件事一直藏下去。--show-config 能列出目前認識的每一項；對照 ECAPTURE.example.ini 改
+config.unsupported_version	這份設定用的是本建構不認識的格式版本
+config.unsupported_version_hint	不「當成相容格式猜讀」：猜錯那一格就會按一份誰都沒寫過的設定拍一張圖。請照 ECAPTURE.example.ini 改成認識的版本，改之前先備份那份檔案——本工具不會替你改寫設定
+config.invalid_number	設定檔裡這個數不合寫法
+config.invalid_boolean	設定檔裡這個布林值只認 true 或 false
+config.invalid_boolean_hint	1 / yes / on 在設定裡不算真。一份設定檔會被反覆編輯，「看起來像真」的寫法遲早被讀成另一個意思
+config.invalid_value	設定檔裡這個取值不在允許的清單裡
+config.out_of_range	設定檔裡這個數超出允許的區間
+config.invalid_combination	設定檔裡這幾項合起來說不通
+config.crop_roi_invalid	crop.roi 那四個數不合寫法
+config.crop_roi_invalid_hint	只認 x,y,width,height 四個十進位數（逗號分隔，不許空白與正負號）；x / y 可以是 0，width / height 至少 1。寫法與 --roi 完全相同，上限也共用同一條
+config.crop_roi_missing	crop.mode=roi 而沒有可用的 crop.roi
+config.crop_roi_missing_hint	roi 模式必須有有效的 x,y,width,height。不「那就整窗交出」：那等於把一次寫歪的裁剪靜默改成另一種裁剪。補上 crop.roi，或把 crop.mode 改回 none
+cli.config_view_conflict	--show-config 唯讀地問這份設定，不能與截圖意圖或別的查詢命令同時給出
+cli.config_view_conflict_hint	設定檢視接受 --config / --no-config 與要觀察的偏好覆蓋參數（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / 裁剪縮放 / 兩條期限 / --history / --integrity-hints / --limit）；視窗條件、--monitor、選擇策略、--yes / --dry-run 與別的查詢命令請另起一次
+cli.onoff_value	這個取值只認 on 或 off
+cli.crop_cancel_conflict_hint	--no-crop 是用來取消設定檔裡那一組裁剪的，它與本次親手寫的 --roi / --client-area 說的正好相反。去掉 --no-crop，或去掉那一條裁剪
+cli.scale_cancel_conflict_hint	--no-scale 是用來取消設定檔裡那一組縮放的，與本次寫的 --scale 不能同時成立。去掉 --no-scale，或去掉那一條 --scale

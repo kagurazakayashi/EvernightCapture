@@ -1,6 +1,7 @@
 #include "CliOptions.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cwctype>
 #include <functional>
 #include <iterator>
@@ -11,6 +12,7 @@
 #endif
 #include <windows.h>
 
+#include "Config.h"        // 用户偏好配置：读哪一份、逐键校验、来源合并（判据本体在那一层）
 #include "ScreenMatch.h"   // 只要那条 inline 的 StripScreenDevicePrefix：设备名前缀的形状只写一处
 #include "CursorControl.h"  // 只要 inline 的那张光标登记表：解析期判"这条通道做不做得到"
 #include "HdrColor.h"       // 只要 inline 的那张 HDR 登记表：解析期判"这条通道带不带得回广色域帧"
@@ -357,8 +359,9 @@ bool LooksLikeOptionalValue(const std::wstring& name, const std::wstring& raw) {
 // 选项目录（CLI 契约的唯一来源：解析、--help 的 JSON 与文本都由它生成）
 // ---------------------------------------------------------------------------
 
-constexpr const wchar_t* kFormatValues[] = {
-    L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif", nullptr};
+// 取值表本体在 CliOptions.h 的 option_values（--help 的取值列、这里的合法性判定与
+// src/Config.cpp 的 schema 读的是同一份数组）。下面这些只是给本文件用的别名，不另写一份词表。
+constexpr const wchar_t* const* kFormatValues = option_values::kFormat;
 
 // --timeout-ms / --consent-timeout-ms、--index 与 --monitor 的编号、--pid 的上限：
 // 数字本体在 CliOptions.h 的 cli_limits 里（--capabilities 报告的 limits 段读的是同一份），
@@ -368,21 +371,22 @@ using cli_limits::kMaxOrdinal;
 using cli_limits::kMaxPid;
 // --offset / --limit 的上限与 --capabilities 那份 limits 同源（数字只在 cli_limits 写一次）。
 using cli_limits::kMaxWindowListItems;
-constexpr const wchar_t* kCaptureValues[] = {
-    L"wgc", L"dwm", L"printwindow", L"bitblt", L"duplication", L"auto", nullptr};
+constexpr const wchar_t* const* kCaptureValues = option_values::kCapture;
 
 // --cursor 的取值。default 是这条选项的默认值，含义是"本工具对光标这件事一个字都不改"
 // （不调任何通道的开关，结果里也不出现那三个键）；判据本体在 src/CursorControl.h。
-constexpr const wchar_t* kCursorValues[] = {L"default", L"include", L"exclude", nullptr};
+constexpr const wchar_t* const* kCursorValues = option_values::kCursor;
 
 // --hdr 的取值。auto 是这条选项的默认值，含义是"本工具对 HDR 色彩这件事一个字都不改"
 // （照 B8G8R8A8 那条路线取帧，结果里也不出现色彩那组键）；判据本体在 src/HdrColor.h。
-constexpr const wchar_t* kHdrValues[] = {L"auto", L"tonemap", L"refuse", nullptr};
+constexpr const wchar_t* const* kHdrValues = option_values::kHdr;
 
 // --lang 的规范写法。宽容输入（zh_TW / zh-Hant / cht / jp）由 LanguageFromTag 负责，
 // 这里只列推荐值，用于 --help 与取值非法时的提示。
-constexpr const wchar_t* kLangValues[] = {
-    L"auto", L"zh-CN", L"zh-TW", L"en", L"ja", nullptr};
+constexpr const wchar_t* const* kLangValues = option_values::kLang;
+
+// --history / --integrity-hints 的覆盖写法：只有 on / off 两个词，各一个明确的意思。
+constexpr const wchar_t* const* kOnOffValues = option_values::kOnOff;
 
 struct OptionSpec {
     const wchar_t* name;        // 规范名（不含前导 -）
@@ -444,6 +448,11 @@ constexpr OptionSpec kOptions[] = {
     // valueHint 保持 ASCII，不翻译（与其它选项同一做法）；数字上限见 cli_limits::kRoiMaxValue。
     {L"roi", L"", true, L"crop", L"<x,y,w,h>", nullptr, L"opt.roi"},
     {L"client-area", L"", false, L"crop", L"", nullptr, L"opt.client-area"},
+    // 取消**配置文件**里那两组裁剪/缩放。它们不与 INI 的另一模式拼在一起（拼起来会生出
+    // "配置要客户区、命令行要 roi"这种根本没法同时成立的组合），而是整组替换 / 整组取消：
+    // 判据写在合并那一步，冲突（与本次其他裁剪参数同时给出）在下面那一段报。
+    {L"no-crop", L"", false, L"crop", L"", nullptr, L"opt.no-crop"},
+    {L"no-scale", L"", false, L"crop", L"", nullptr, L"opt.no-scale"},
     // 等比缩小（--scale）：只缩小、只在超过天花板时动手，绝不放大。取值是 key=N 的清单
     // （max-width / max-height / max-pixels），可以一条里用逗号串、也可以把这一条写多次；
     // 三条天花板互相独立。valueHint 保持 ASCII，不翻译（与其它选项同一做法）；
@@ -468,14 +477,29 @@ constexpr OptionSpec kOptions[] = {
     {L"verbose", L"v", false, L"behavior", L"", nullptr, L"opt.verbose"},
     {L"quiet", L"q", false, L"behavior", L"", nullptr, L"opt.quiet"},
     {L"lang", L"l", true, L"behavior", L"<language>", kLangValues, L"opt.lang"},
+    // 两条新偏好的**本次**覆盖入口。它们覆盖配置里的 true/false（off 覆盖 true，on 覆盖 false），
+    // 而 --yes 不在这条线上：那条继续只从当前命令行读，且对桌面像素那几条不起作用。
+    {L"history", L"", true, L"behavior", L"<on|off>", kOnOffValues, L"opt.history"},
+    {L"integrity-hints", L"", true, L"behavior", L"<on|off>", kOnOffValues,
+     L"opt.integrity-hints"},
     {L"help", L"h", false, L"behavior", L"", nullptr, L"opt.help"},
     {L"version", L"", false, L"behavior", L"", nullptr, L"opt.version"},
+    // ---- 配置文件的选择 ----
+    // 默认读**实际运行的那一个 exe 同目录**的 ECAPTURE.ini：不搜当前目录、PATH、源码树、注册表，
+    // 也不搜用户目录里的别处（判据在 src/Config.h）。这三条只管"这次看哪一份配置、看不看"，
+    // 都不写文件也不修文件：--no-config 是排障与测试的隔离入口，不是"把配置删掉"。
+    {L"config", L"", true, L"config", L"<path>", nullptr, L"opt.config"},
+    {L"no-config", L"", false, L"config", L"", nullptr, L"opt.no-config"},
     // ---- 只读查询 ----
     // 这两条既不截图也不弹框，也不写文件，问的是"这台机器现在能让哪几条路线走"。
     // 与截图意图那一整套选项互斥（cli.query_conflict）：它们对流与输出的约定都不一样，
     // 一起给出时替用户挑一个执行，不如把这条用法当场说清楚。见 src/EnvReport.h。
     {L"capabilities", L"", false, L"query", L"", nullptr, L"opt.capabilities"},
     {L"diagnostics", L"", false, L"query", L"", nullptr, L"opt.diagnostics"},
+    // 只读的配置视图：这次读的是哪一个文件、有没有读到、每一项生效偏好各来自哪个来源。
+    // 它与环境查询同族（不选窗口、不取像素、不弹框、不建输出与历史目录），而允许清单不同 ——
+    // 它的用途正是观察偏好，所以带着覆盖参数一起跑是合法的（判据见 AllowedWithConfigView）。
+    {L"show-config", L"", false, L"query", L"", nullptr, L"opt.show-config"},
     // 只读的屏幕枚举：本机现在有哪几块屏、每块屏的三种身份各稳在哪一层。
     // 与上面两条同一家族（不取像素、不弹框、不写文件），所以冲突与允许清单也走同一条判据。
     // 判据与渲染在 src/ScreenQuery.h，屏幕身份的问答在 src/ScreenIdentity.h。
@@ -708,6 +732,13 @@ void SelectLanguageFromCommandLine(int argc, wchar_t* const* argv) {
 }  // namespace
 
 // 以下为 ecapture 命名空间的公开辅助函数（供 main.cpp 复用）
+
+// 严格十进制的对外出口：本体就是上面那个 DecimalLiteral，这里只把它请出匿名命名空间。
+// 配置文件里的数（src/Config.cpp）与命令行取值读的是**同一份**语法，两处不许各写一套 ——
+// 否则 INI 会接受 CLI 当场拒掉的写法（" 12"、"+12"、"1_000"、"1e3"），而那是同一份区间判据
+// 两边的数对不上的开始。
+bool ParseStrictDecimal(const std::wstring& raw, uint64_t* out) { return DecimalLiteral(raw, out); }
+
 const wchar_t* FormatName(ImageFormat f) {
     switch (f) {
         case ImageFormat::kPng: return L"png";
@@ -835,6 +866,496 @@ bool ContainsPlaceholder(const std::wstring& path) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
+// 配置合并：CLI 显式值 > INI 显式值 > 内置默认
+// ---------------------------------------------------------------------------
+//
+// 这一层是"来源"唯一被摊开的地方。四条结构性判据写在这里，不分散到各个调用点：
+//   1. **判"有没有写过"用 cliGiven 与快照里的 present，不用取值。** 显式写了 false / 0 /
+//      none / unset 都是写出过：拿"非零非空"当判据会把它们当成"没给"，于是下一档偷偷生效。
+//   2. **不重跑 argv。** INI 的值落到 Options 用的是同一份类型判据与同一份区间，但**不**进
+//      ScanArgv 那套冲突收集 —— 否则出厂的截图默认会被当成"用户向 --capabilities 提交的截图意图"，
+//      凭空生出 cli.query_conflict。
+//   3. **只读查询不被污染。** capture / crop / scale / output 这些截图那一级的偏好在查询这一路
+//      根本不写进 Options（applyEffects=false），而 --show-config 仍把每一项的来源报全：
+//      它回答的是"这份配置会被怎么用"，不是"这一次截不截"。
+//   4. **分组覆盖按整组算。** CLI 写了任一裁剪写法就替换整个 INI 的 crop 组；本次第一次写
+//      --scale 就丢掉整个 INI scale 组，免得配置里那条 max_pixels 在背后继续缩图。
+//      --no-crop / --no-scale 是同一条线上的"本次取消"，不是"改一条"。
+namespace {
+
+// 命令行给的一条路径：相对写法相对**调用方 CWD**定绝对路径。
+std::wstring AbsoluteFromCwd(const std::wstring& raw) {
+    if (raw.empty()) return raw;
+    wchar_t buffer[8192];
+    const DWORD n = GetFullPathNameW(raw.c_str(), static_cast<DWORD>(std::size(buffer)), buffer,
+                                     nullptr);
+    if (n == 0 || n >= std::size(buffer)) return raw;  // 说不通就原样交回去，由对面如实报错
+    return std::wstring(buffer, n);
+}
+
+// INI 里的一条路径：已经是绝对写法就原样，否则相对**那个被选中的 INI 自己所在的目录**。
+// 这一步做完之后，下游（OutputPlan / FileSave / 历史归档）看到的仍旧只是一条绝对路径，
+// 它们不需要、也不该知道这条路径来自命令行还是来自配置。
+std::wstring AbsoluteFromConfigDir(const std::wstring& configPath, const std::wstring& raw) {
+    if (raw.empty()) return raw;
+    if (raw.size() >= 2 && raw[1] == L':' &&
+        std::isalpha(static_cast<unsigned char>(raw[0])))
+        return raw;                                       // 带盘符（D:\…）
+    if (raw[0] == L'\\' || raw[0] == L'/') return raw;    // 根 / UNC
+    const size_t slash = configPath.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return raw;
+    return AbsoluteFromCwd(configPath.substr(0, slash) + L"\\" + raw);
+}
+
+// 一条 --history / --integrity-hints 的覆盖写法：只认 on / off（忽略大小写与首尾空白）。
+// 认不了的整条作废并报码，不退化成"那就算默认开启"。
+bool ParseOnOff(const std::wstring& raw, bool* on) {
+    const std::wstring v = ToLower(Trim(raw));
+    if (v == L"on") { *on = true; return true; }
+    if (v == L"off") { *on = false; return true; }
+    return false;
+}
+
+// 合并这一步要交给后面那一段（输出与格式）的几件事。它们不是"配置里的值"，而是
+// **格式推断先后**要用到的判据，所以单独交出去，不在两处各写一套优先级。
+struct ConfigOutputFacts {
+    bool outputFromConfig = false;   // 生效的输出路径来自 INI
+    bool formatFromConfig = false;   // INI 的 output.format 不是 auto
+    ImageFormat configFormat = ImageFormat::kPng;
+    // 这一次**会被用上的**那条输出名（本次没执行的那一路也算）：--show-config 要用它算
+    // 输出格式的依据，而 Options 里的 output 在只读查询那一路是空的。
+    std::wstring effectiveOutput;
+};
+
+using ConfigErrFn = std::function<void(const wchar_t*, std::wstring, std::wstring, std::wstring,
+                                       std::wstring)>;
+
+// 输出格式那一条优先级链的**唯一**实现：
+//   显式 CLI --format > 显式 CLI --out 的已知扩展名 > 配置里非 auto 的 format >
+//   配置 output.path 的已知扩展名 > png
+// 真实截图那一路与 --show-config 那一路读的都是这一个函数、同一批输入，所以两条路不会
+// 对"这一张编成了什么、根据是哪一条"给出两种答案。三条 note 的触发条件也从这里出，
+// 调用点只负责发文案，不再在任何一处重判一次优先级。
+struct FormatChoice {
+    ImageFormat format = ImageFormat::kPng;
+    const wchar_t* basis = L"default-png";
+    bool cliExtensionMismatch = false;       // 显式 --format 与实际输出名的已知扩展名不一致
+    bool defaultedToPngWithUnknownExt = false;  // 该发 note.format_defaulted_png
+    bool stdoutDefault = false;              // 落在标准输出的默认 png（显式 --out - 才发那条 note）
+};
+
+FormatChoice DecideFormat(bool cliFormatExplicit, ImageFormat cliFormatValue,
+                          const std::wstring& output, bool outputFromConfig, bool cfgFormatNonAuto,
+                          ImageFormat cfgFormatValue) {
+    FormatChoice c;
+    if (output.empty() || output == L"-") {
+        c.stdoutDefault = true;
+        if (cliFormatExplicit) {
+            c.format = cliFormatValue;
+            c.basis = L"cli-format";
+        } else if (cfgFormatNonAuto) {
+            c.format = cfgFormatValue;
+            c.basis = L"config-format";
+        } else {
+            c.format = ImageFormat::kPng;
+            c.basis = L"stdout-default-png";
+        }
+        return c;
+    }
+    const std::wstring ext = ExtensionOf(output);
+    const auto fromExt = FormatFromExtension(ext);
+    if (cliFormatExplicit) {
+        c.format = cliFormatValue;
+        c.basis = L"cli-format";
+        if (fromExt && *fromExt != cliFormatValue) c.cliExtensionMismatch = true;
+        return c;
+    }
+    if (fromExt && !outputFromConfig) {
+        // 这条路径是用户**这一次亲手写下**的输出名，它排在一切配置之前。
+        c.format = *fromExt;
+        c.basis = L"cli-output-extension";
+        return c;
+    }
+    if (cfgFormatNonAuto) {
+        // 同一份文件里，"编成什么"写得比路径的扩展名更具体时，用户要的就是那一条。
+        c.format = cfgFormatValue;
+        c.basis = L"config-format";
+        return c;
+    }
+    if (fromExt) {
+        c.format = *fromExt;
+        c.basis = L"config-output-extension";
+        return c;
+    }
+    c.format = ImageFormat::kPng;
+    c.basis = L"default-png";
+    if (!ext.empty()) c.defaultedToPngWithUnknownExt = true;
+    // 扩展名为空时不在这里提示：真正补 .png 的动作在 Capture.cpp 里，那里会发
+    // note.output_extension_appended
+    return c;
+}
+
+void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
+                            const std::vector<std::wstring>& cliGiven, bool positionalOutput,
+                            bool applyEffects, ConfigOutputFacts* facts, const ConfigErrFn& Err) {
+    const auto gave = [&](const wchar_t* name) {
+        return std::find(cliGiven.begin(), cliGiven.end(), std::wstring(name)) != cliGiven.end();
+    };
+    // 一条偏好的最终来源：CLI 写过就是 cli；否则文件写过就是 config；否则内置默认。
+    const auto sourceFor = [&](const wchar_t* cliName, const wchar_t* fieldId) {
+        if (cliName && *cliName && gave(cliName)) return SettingSource::kCli;
+        return snap.Has(fieldId) ? SettingSource::kConfig : SettingSource::kBuiltin;
+    };
+    std::vector<Options::ResolvedSetting> settings;
+    settings.reserve(ConfigSchema().size());
+    // schema 里那一条出厂默认（--show-config 报 builtin 那一档时的取值）。
+    const auto fieldDefault = [](const wchar_t* id) -> std::wstring {
+        for (const ConfigField& f : ConfigSchema()) {
+            if (f.id == id) return f.defaultValue;
+        }
+        return std::wstring();
+    };
+    // 记一项的最终值。**取值必须由获胜的那一档来源给，而不是由"有没有写进 Options"给**：
+    // --show-config 那一路不执行截图那一级的偏好（applyEffects=false），那时 Options 里还是
+    // 内置默认，而这一项的来源是 config —— 照着 Options 报就会给出"值是 wgc、来源是配置文件"
+    // 这种自相矛盾的一句话（配置文件里明明写着 auto）。
+    // 所以：config 那一档取快照里判定过的值，builtin 取 schema 默认，cli 取调用点算好的值。
+    const auto recordValue = [&](const wchar_t* id, std::wstring value, SettingSource s) {
+        settings.push_back(
+            Options::ResolvedSetting{id, std::move(value), SettingSourceName(s)});
+    };
+    const auto record = [&](const wchar_t* id, std::wstring cliValue, SettingSource s) {
+        if (s == SettingSource::kConfig) recordValue(id, snap.ValueOf(id), s);
+        else if (s == SettingSource::kBuiltin) recordValue(id, fieldDefault(id), s);
+        else recordValue(id, std::move(cliValue), s);
+    };
+    const std::wstring& cfgFile = snap.path;
+
+    // ---- config.version ----
+    record(L"config.version",
+           snap.Has(L"config.version") ? snap.ValueOf(L"config.version") : std::wstring(L"1"),
+           snap.Has(L"config.version") ? SettingSource::kConfig : SettingSource::kBuiltin);
+
+    // ---- general.language ----
+    // 语言在合并之前就已经定了（文件里那一条只在整份配置读得通时才生效，而 CLI 的 --lang 优先），
+    // 这里记的是**当前生效的那一档来自哪里**；auto 的解析结果就是现在这一份语言。
+    record(L"general.language", LanguageTag(CurrentLanguage()),
+           sourceFor(L"lang", L"general.language"));
+
+    // ---- general.verbosity（一个偏好组：本次的 quiet 不该被配置里的 verbose 抵消）----
+    {
+        const bool cliVerbosity = gave(L"verbose") || gave(L"quiet");
+        std::wstring text = L"normal";
+        SettingSource src = SettingSource::kBuiltin;
+        if (cliVerbosity) {
+            text = opt.verbose ? std::wstring(L"verbose")
+                                : (opt.quiet ? std::wstring(L"quiet") : std::wstring(L"normal"));
+            src = SettingSource::kCli;
+        } else if (snap.Has(L"general.verbosity")) {
+            text = snap.ValueOf(L"general.verbosity");
+            src = SettingSource::kConfig;
+            opt.verbose = text == L"verbose";
+            opt.quiet = text == L"quiet";
+        }
+        record(L"general.verbosity", text, src);
+    }
+
+    // ---- capture.method ----
+    if (!gave(L"capture") && snap.Has(L"capture.method") && applyEffects) {
+        const std::wstring v = snap.ValueOf(L"capture.method");
+        opt.capture = v == L"wgc"           ? CaptureMethod::kWgc
+                      : v == L"dwm"         ? CaptureMethod::kDwmThumbnail
+                      : v == L"printwindow" ? CaptureMethod::kPrintWindow
+                      : v == L"bitblt"      ? CaptureMethod::kBitBlt
+                      : v == L"duplication" ? CaptureMethod::kDuplication
+                                            : CaptureMethod::kAuto;
+        // 配置写过的取法同样是"本次实际要求的取法"：显式标记要跟着置真，
+        // 后面那条"这条通道兑不兑得了光标/HDR 要求"的判据才看得见这一份要求。
+        opt.captureExplicit = true;
+    }
+    record(L"capture.method", CaptureMethodName(opt.capture),
+           sourceFor(L"capture", L"capture.method"));
+
+    // ---- capture.cursor ----
+    // 配置里写过的值是一条**实际要求**：given 跟着置真，于是后端筛选、回退与结果字段都照它判；
+    // 而 unset 保持"本次没有提出这项要求"，与这条选项存在之前逐字节等价（结果里那三个键不出现）。
+    if (!gave(L"cursor") && applyEffects && snap.Has(L"capture.cursor")) {
+        const std::wstring v = snap.ValueOf(L"capture.cursor");
+        if (v == L"include") { opt.cursor.mode = CursorMode::kInclude; opt.cursor.given = true; }
+        else if (v == L"exclude") { opt.cursor.mode = CursorMode::kExclude; opt.cursor.given = true; }
+        else if (v == L"default") { opt.cursor.mode = CursorMode::kDefault; opt.cursor.given = true; }
+    }
+    record(L"capture.cursor",
+           opt.cursor.given ? std::wstring(CursorModeName(opt.cursor.mode))
+                             : std::wstring(L"unset"),
+           sourceFor(L"cursor", L"capture.cursor"));
+
+    // ---- capture.hdr ----（与 cursor 同一条规矩，判据本体在 src/HdrColor.h）
+    if (!gave(L"hdr") && applyEffects && snap.Has(L"capture.hdr")) {
+        const std::wstring v = snap.ValueOf(L"capture.hdr");
+        if (v == L"tonemap") { opt.hdr.policy = HdrPolicy::kToneMap; opt.hdr.given = true; }
+        else if (v == L"refuse") { opt.hdr.policy = HdrPolicy::kRefuse; opt.hdr.given = true; }
+        else if (v == L"auto") { opt.hdr.policy = HdrPolicy::kAuto; opt.hdr.given = true; }
+    }
+    record(L"capture.hdr",
+           opt.hdr.given ? std::wstring(HdrPolicyName(opt.hdr.policy)) : std::wstring(L"unset"),
+           sourceFor(L"hdr", L"capture.hdr"));
+
+    // ---- output.path ----
+    {
+        const bool cfgHas = snap.Has(L"output.path");
+        const std::wstring cfgPath = cfgHas ? snap.ValueOf(L"output.path") : std::wstring();
+        // "-" 与"没写这一项"是同一件事（都走标准输出），差别只在来源里看得见。把它当成一次
+        // 显式 --out - 会改掉 implicitStdout 与那两条 note 的判据，所以这里不这么办。
+        const bool cfgUsable = cfgHas && !cfgPath.empty() && cfgPath != L"-";
+        const bool cliOutput = gave(L"out") || positionalOutput;
+        // 配置里的相对路径**相对被选中的那份 INI 自己所在的目录**定绝对路径；命令行给的那条
+        // 继续相对调用方 CWD。原点先定，后面模板展开与落盘看到的就恒是一条绝对路径。
+        const std::wstring cfgAbsolute = cfgUsable ? AbsoluteFromConfigDir(cfgFile, cfgPath)
+                                                   : cfgPath;
+        // **来源判据与"本次执不执行"分开**：只读那一路不写 Options，但输出格式那条链仍然要
+        // 知道"这条路径是谁给的"。否则配置文件里的 shot.png 会被报成"命令行输出名的扩展名"，
+        // 而这份视图唯一该说对的恰恰就是这件事。
+        if (!cliOutput && cfgUsable) {
+            facts->outputFromConfig = true;
+            if (applyEffects) opt.output = cfgAbsolute;
+        }
+        // 这一项**不能**走 record 那个通用取值：配置文件那一档要报的是"实际会被用的那条路径"
+        // （已经按 INI 目录定过绝对路径），而不是文件里那一段原文 —— 后者会让人以为输出会落在
+        // 当前目录下，而那正是这条规则要排除的误解。
+        if (cliOutput) recordValue(L"output.path", opt.output, SettingSource::kCli);
+        else if (cfgHas) recordValue(L"output.path", cfgAbsolute, SettingSource::kConfig);
+        else recordValue(L"output.path", std::wstring(L"-"), SettingSource::kBuiltin);
+        facts->effectiveOutput =
+            !opt.output.empty() ? opt.output : (cfgUsable ? cfgAbsolute : std::wstring(L"-"));
+    }
+
+    // ---- output.format ----
+    // 真正的赋值排在下面那一段（优先级要连着扩展名推断一起判），这里只登记判据：
+    //   显式 CLI --format > 显式 CLI --out 的已知扩展名 > 配置的非 auto format >
+    //   配置 output.path 的已知扩展名 > png
+    // 配置里 format=auto **不关掉**原有的扩展名推断，它只是"这一项没有提出新要求"。
+    {
+        const bool cfgHas = snap.Has(L"output.format");
+        const std::wstring cfgValue = cfgHas ? snap.ValueOf(L"output.format") : std::wstring();
+        const bool cfgNonAuto = cfgHas && cfgValue != L"auto";
+        if (cfgNonAuto) {
+            facts->formatFromConfig = true;
+            facts->configFormat = ParseFormat(cfgValue).value_or(ImageFormat::kPng);
+        }
+        // --show-config 报的是**这一项设置的写法**：path 带 .jpg 而 format=auto 时这一项仍是
+        // auto，最终编成 jpeg 那件事在 -v 的 input.format 里看得见。
+        record(L"output.format", cfgHas ? std::wstring(cfgValue) : std::wstring(L"auto"),
+               opt.formatExplicit   ? SettingSource::kCli
+               : cfgHas             ? SettingSource::kConfig
+                                    : SettingSource::kBuiltin);
+    }
+
+    // ---- output.jpeg_quality ----
+    if (!gave(L"quality") && snap.Has(L"output.jpeg_quality")) {
+        uint64_t q = 0;
+        if (ParseStrictDecimal(snap.ValueOf(L"output.jpeg_quality"), &q) &&
+            q >= static_cast<uint64_t>(cli_limits::kJpegQualityMin) &&
+            q <= static_cast<uint64_t>(cli_limits::kJpegQualityMax) && applyEffects) {
+            opt.jpegQuality = static_cast<int>(q);
+        }
+    }
+    record(L"output.jpeg_quality", std::to_wstring(opt.jpegQuality),
+           sourceFor(L"quality", L"output.jpeg_quality"));
+
+    // ---- output.overwrite ----
+    if (!gave(L"no-overwrite") && snap.Has(L"output.overwrite") && applyEffects) {
+        opt.overwrite = snap.ValueOf(L"output.overwrite") == L"true";
+    }
+    record(L"output.overwrite", opt.overwrite ? L"true" : L"false",
+           sourceFor(L"no-overwrite", L"output.overwrite"));
+
+    // ---- crop.mode / crop.roi（整组替换或整组取消）----
+    {
+        const bool cliCrop = gave(L"roi") || gave(L"client-area");
+        const bool noCrop = gave(L"no-crop");
+        const bool cfgHasMode = snap.Has(L"crop.mode");
+        const bool cfgHasRoi = snap.Has(L"crop.roi");
+        const std::wstring cfgMode = cfgHasMode ? snap.ValueOf(L"crop.mode") : std::wstring();
+        const std::wstring cfgRoi = cfgHasRoi ? snap.ValueOf(L"crop.roi") : std::wstring();
+        const bool cfgGroupLive = !cliCrop && !noCrop;   // 整组还在不在
+
+        // 非空的 roi 写法**无论当前是不是 roi 模式**都得语法合：一条写坏的矩形不该等到
+        // 哪天把模式改成 roi 才第一次被发现。上限与 --roi 共用 ParseRoiValue 那一条判据。
+        if (cfgGroupLive && cfgHasRoi && !cfgRoi.empty()) {
+            CropRequest probe;
+            if (!ParseRoiValue(cfgRoi, &probe)) {
+                Err(codes::kConfigInvalidCombination, Msg(L"config.crop_roi_invalid"), cfgFile,
+                    L"crop.roi", Msg(L"config.crop_roi_invalid_hint"));
+            }
+        }
+        // roi 模式必须有有效的 x,y,width,height：写了 mode=roi 而 roi 空着是说不通，
+        // 不"那就整窗交出"（那正是这条选项要避免的静默改道）。
+        if (cfgGroupLive && cfgHasMode && cfgMode == L"roi" &&
+            (!cfgHasRoi || cfgRoi.empty())) {
+            Err(codes::kConfigInvalidCombination, Msg(L"config.crop_roi_missing"), cfgFile,
+                L"crop.mode", Msg(L"config.crop_roi_missing_hint"));
+        }
+        if (applyEffects && cfgGroupLive && cfgHasMode && opt.crop.mode == CropMode::kNone) {
+            if (cfgMode == L"client-area") {
+                opt.crop.mode = CropMode::kClientArea;
+                // roiGiven / clientAreaGiven **不置**：那两条记的是"命令行同时写了哪两个写法"，
+                // 拿配置去填会凭空造出一条 cli.crop_conflict。
+            } else if (cfgMode == L"roi" && cfgHasRoi && !cfgRoi.empty()) {
+                CropRequest parsed;
+                if (ParseRoiValue(cfgRoi, &parsed)) {
+                    const std::wstring written = parsed.written;
+                    opt.crop = parsed;
+                    opt.crop.written = written.empty() ? cfgRoi : written;
+                    opt.crop.mode = CropMode::kRoi;
+                }
+            }
+        }
+        std::wstring modeShown = CropModeName(opt.crop.mode);
+        if (noCrop) modeShown = L"none";
+        record(L"crop.mode", modeShown,
+               (cliCrop || noCrop)   ? SettingSource::kCli
+               : cfgHasMode          ? SettingSource::kConfig
+                                     : SettingSource::kBuiltin);
+        std::wstring roiShown;
+        SettingSource roiSrc = SettingSource::kBuiltin;
+        if (opt.crop.roiGiven) {
+            roiShown = std::to_wstring(opt.crop.x) + L"," + std::to_wstring(opt.crop.y) + L"," +
+                       std::to_wstring(opt.crop.width) + L"," + std::to_wstring(opt.crop.height);
+            roiSrc = SettingSource::kCli;
+        } else if (cfgGroupLive && cfgHasRoi) {
+            roiShown = cfgRoi;
+            roiSrc = SettingSource::kConfig;
+        }
+        record(L"crop.roi", roiShown, roiSrc);
+    }
+
+    // ---- scale.*（本次第一次写 --scale 就丢掉整个 INI scale 组）----
+    {
+        const bool cliScale = gave(L"scale");
+        const bool noScale = gave(L"no-scale");
+        const bool groupLive = !cliScale && !noScale;
+        if (applyEffects && groupLive) {
+            uint64_t w = 0, h = 0, p = 0;
+            const bool hasW = snap.Has(L"scale.max_width") &&
+                              ParseStrictDecimal(snap.ValueOf(L"scale.max_width"), &w);
+            const bool hasH = snap.Has(L"scale.max_height") &&
+                              ParseStrictDecimal(snap.ValueOf(L"scale.max_height"), &h);
+            const bool hasP = snap.Has(L"scale.max_pixels") &&
+                              ParseStrictDecimal(snap.ValueOf(L"scale.max_pixels"), &p);
+            // 0 表示"这一条没有设"：三条都是 0 时完全不缩放，也不声称这是一次显式 scale。
+            if (hasW && w > 0 && w <= cli_limits::kScaleMaxSide) {
+                opt.scale.hasMaxWidth = true;
+                opt.scale.maxWidth = static_cast<uint32_t>(w);
+            }
+            if (hasH && h > 0 && h <= cli_limits::kScaleMaxSide) {
+                opt.scale.hasMaxHeight = true;
+                opt.scale.maxHeight = static_cast<uint32_t>(h);
+            }
+            if (hasP && p > 0 && p <= cli_limits::kScaleMaxPixels) {
+                opt.scale.hasMaxPixels = true;
+                opt.scale.maxPixels = p;
+            }
+            if (opt.scale.hasMaxWidth || opt.scale.hasMaxHeight || opt.scale.hasMaxPixels) {
+                opt.scale.given = true;
+                opt.scale.written.clear();  // 来源不是命令行，回显不许冒充用户敲过的那一条
+            }
+        }
+        const auto scaleValue = [&](const wchar_t* id) -> uint64_t {
+            if (id == std::wstring(L"scale.max_width")) return opt.scale.maxWidth;
+            if (id == std::wstring(L"scale.max_height")) return opt.scale.maxHeight;
+            return opt.scale.maxPixels;
+        };
+        for (const ConfigField& f : ConfigSchema()) {
+            if (f.section != std::wstring(L"scale")) continue;
+            record(f.id, std::to_wstring(scaleValue(f.id)),
+                   (cliScale || noScale) ? SettingSource::kCli
+                   : snap.Has(f.id)      ? SettingSource::kConfig
+                                         : SettingSource::kBuiltin);
+        }
+    }
+
+    // ---- timeouts.* ----
+    if (!gave(L"timeout-ms") && snap.Has(L"timeouts.processing_ms")) {
+        uint64_t v = 0;
+        if (ParseStrictDecimal(snap.ValueOf(L"timeouts.processing_ms"), &v) &&
+            v <= cli_limits::kMaxTimeoutMs && applyEffects)
+            opt.timeoutMs = v;
+    }
+    if (!gave(L"consent-timeout-ms") && snap.Has(L"timeouts.consent_ms")) {
+        uint64_t v = 0;
+        if (ParseStrictDecimal(snap.ValueOf(L"timeouts.consent_ms"), &v) &&
+            v <= cli_limits::kMaxTimeoutMs && applyEffects)
+            opt.consentTimeoutMs = v;
+    }
+    record(L"timeouts.processing_ms", std::to_wstring(opt.timeoutMs),
+           sourceFor(L"timeout-ms", L"timeouts.processing_ms"));
+    record(L"timeouts.consent_ms", std::to_wstring(opt.consentTimeoutMs),
+           sourceFor(L"consent-timeout-ms", L"timeouts.consent_ms"));
+
+    // ---- history.enabled ----
+    if (!gave(L"history") && snap.Has(L"history.enabled")) {
+        opt.historyEnabled = snap.ValueOf(L"history.enabled") == L"true";
+    }
+    record(L"history.enabled", opt.historyEnabled ? L"true" : L"false",
+           sourceFor(L"history", L"history.enabled"));
+
+    // ---- diagnostics.integrity_hints ----
+    // 这一条连只读查询也应用：--capabilities 里那句完整性的解释文字同样归它管，
+    // 而 session.integrityLevel 那一条**能力事实**从来不受它影响。
+    if (!gave(L"integrity-hints") && snap.Has(L"diagnostics.integrity_hints")) {
+        opt.integrityHints = snap.ValueOf(L"diagnostics.integrity_hints") == L"true";
+    }
+    record(L"diagnostics.integrity_hints", opt.integrityHints ? L"true" : L"false",
+           sourceFor(L"integrity-hints", L"diagnostics.integrity_hints"));
+
+    // ---- query.window_list_limit ----
+    // 这一项是"未给 --limit 时的**默认**条数"，与本次 --limit 写过没有是两件事：命令行给了
+    // --limit 也不该把配置里那份默认抹回 50（否则 pagination.defaultLimit 会在用户明明配过 7 的
+    // 机器上报 50，读起来像"配置没生效"）。本次到底用哪个条数、来自哪一档，由
+    // WindowQuery.cpp 的 EffectiveListLimit / ListLimitSource 一起回答（判据只在那一处）。
+    opt.listLimitDefault = 0;
+    if (snap.Has(L"query.window_list_limit")) {
+        uint64_t v = 0;
+        if (ParseStrictDecimal(snap.ValueOf(L"query.window_list_limit"), &v) && v >= 1 &&
+            v <= cli_limits::kMaxWindowListItems)
+            opt.listLimitDefault = v;
+    }
+    {
+        // 来源按**这一项设置**判：配置文件写过就是 config；本次 --limit 不改这一项的来源，
+        // 它是另一条更高的覆盖（分页结果里的 limitSource 才报这件事）。
+        const SettingSource src =
+            snap.Has(L"query.window_list_limit") ? SettingSource::kConfig : SettingSource::kBuiltin;
+        recordValue(L"query.window_list_limit",
+                    std::to_wstring(opt.listLimitDefault != 0
+                                        ? opt.listLimitDefault
+                                        : cli_limits::kDefaultWindowListLimit),
+                    src);
+    }
+
+    // 输出格式那条链在这里做一次**预报**（只算根据，不改 opt.format —— 实际赋值由下面那一段
+    // 用同一个 DecideFormat 与同一批输入做）。只读查询那一路不会走那一段，而 --show-config
+    // 要报"这一项最后按哪条根据定下来"，所以两条路都要能从同一个函数拿到答案。
+    {
+        const std::wstring previewOutput =
+            !opt.output.empty() ? opt.output : (facts->effectiveOutput.empty()
+                                                    ? std::wstring(L"-")
+                                                    : facts->effectiveOutput);
+        const FormatChoice preview =
+            DecideFormat(opt.formatExplicit, opt.format, previewOutput, facts->outputFromConfig,
+                         facts->formatFromConfig, facts->configFormat);
+        opt.formatBasis = preview.basis;
+        // 只读那一路不会走下面那段真正的赋值，所以格式也在这里按同一条链算一次；
+        // 真实截图那一路随后用同一个函数与同一批输入覆盖它，两条路不会给出两种答案。
+        if (!applyEffects) opt.format = preview.format;
+    }
+
+    opt.settings = std::move(settings);
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
 // 解析主流程
 // ---------------------------------------------------------------------------
 ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
@@ -856,6 +1377,120 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             Diagnostic{code, std::move(msg), std::move(option), std::move(value), std::move(hint)});
     };
     auto& warnings = result.warnings;  // PushUnique 直接用它记 note
+
+    // ---- 配置文件：先决定"读哪一份"，再谈每一项落在哪个来源 ----
+    // 这一遍扫描与正式解析共用同一个 ScanArgv（消费规则不可能分叉）。先把条目收下来，是为了
+    // 在**任何一条截图诊断产生之前**把配置读出来：一份读不懂的配置必须停在选目标、弹确认框、
+    // 取任何一个像素之前，而不是先打扰人一次再告诉他文件写坏了。
+    // 收下来的 items 由下面那一路重放给 Apply，不存在"第二份解析器"。
+    std::vector<ScannedItem> items;
+    if (argc > 1) items.reserve(static_cast<size_t>(argc - 1));
+    // cliGiven 是合并那一步唯一的"CLI 写过没有"判据（记规范名）。它在**重放给 Apply 的那两处**
+    // 登记，而不是在这里扫一遍就算：`--no-crop=false` 这类"普通开关写 =false 等于没写"的写法
+    // 压根不会落到 Options 上，把它记成"写过"会凭空造出一条冲突来。两处必须是同一条判据。
+    std::vector<std::wstring> cliGiven;
+    bool configGiven = false;
+    bool configValueMissing = false;
+    std::wstring configRaw;
+    bool noConfigGiven = false;
+    bool helpSeen = false;
+    bool versionSeen = false;
+    ScanArgv(argc, argv, [&](const ScannedItem& it) {
+        items.push_back(it);
+        if (it.kind != ScannedItem::Kind::kOption) return;
+        const std::wstring bare = it.option.spec->name;
+        if (bare == L"config") {
+            configGiven = true;
+            configRaw = it.option.value;
+            configValueMissing = it.option.missingValue;
+        } else if (bare == L"no-config") {
+            noConfigGiven = true;
+        } else if (bare == L"help") {
+            helpSeen = true;
+        } else if (bare == L"version") {
+            versionSeen = true;
+        }
+    });
+
+    ConfigSnapshot snap = EmptyConfigSnapshot();
+    ConfigOutputFacts cfgFacts;
+    // 这一份配置是**怎么**定下来的，--show-config 要与文件位置并排报出来（"读到了"与
+    // "为什么读这一份"是两件事，只看路径猜不出本次到底有没有真的读）。
+    const wchar_t* configSelection = L"default";
+    const bool wantHelpOrVersion = helpSeen || versionSeen;
+    if (configGiven && noConfigGiven) {
+        // 两条一起给出是说不通：一边点名要读哪一份，一边说本次完全不看配置。不替用户挑一条执行。
+        Err(codes::kConflictingOptions, Msg(L"cli.conflicting_options"), L"",
+            L"--config, --no-config", Msg(L"cli.conflicting_hint"));
+        configSelection = L"none";
+    } else if (configGiven && configValueMissing) {
+        Err(codes::kMissingValue, Msg(L"cli.missing_value"), L"--config", L"");
+        configSelection = L"none";
+    } else if (!wantHelpOrVersion && !noConfigGiven) {
+        // 走到这里就是要读一份配置：--config 点名的那一条，或程序同目录那份默认的。
+        std::wstring path;
+        bool explicitSelection = false;
+        bool loadIt = true;
+        if (configGiven) {
+            // CLI 给的相对路径相对**调用方 CWD**定绝对路径（与配置里的相对路径基准不同，那条
+            // 相对被选中的 INI 所在目录）。两条各说一件事，都在合并那一步按各自的原点展开。
+            path = AbsoluteFromCwd(Trim(configRaw));
+            explicitSelection = true;
+            configSelection = L"explicit";
+            if (path.empty()) {
+                // 空白取值（`--config=`、`--config " "`）是一次**写法**错，不是"那一份文件读不出来"：
+                // 这里根本没有一条可以去读的路径，所以报 cli.missing_value（用法错 1），
+                // 不去占 config.read_failed 那条 I/O 失败（8）的归属。
+                Err(codes::kMissingValue, Msg(L"cli.missing_value"), L"--config", configRaw);
+                loadIt = false;
+            }
+        } else {
+            path = DefaultConfigPath();
+            if (path.empty()) {
+                // 问不出实际运行的程序在哪个目录：默认位置本身就说不通，不猜 CWD 也不猜安装位置。
+                Err(codes::kConfigReadFailed, Msg(L"config.read_failed"), L"", L"",
+                    Msg(L"config.read_failed_hint"));
+                loadIt = false;
+            }
+        }
+        if (loadIt) {
+            snap = LoadConfigFile(path, explicitSelection);
+            for (const Diagnostic& d : snap.errors) result.errors.push_back(d);
+        }
+    } else {
+        // --help / --version 一条都不读：它们的既有退出语义与文案不该被一份坏掉的用户配置改掉
+        //（文件损坏时照样要拿得到帮助与版本）。--no-config 同理不读，且它**不删也不改**任何配置。
+        configSelection = L"none";
+    }
+    opt.configPath = snap.path;
+    opt.configState = ConfigStateName(snap.state);
+    opt.configSelection = configSelection;
+
+    // 配置里的语言只在整份文件读得通时才参与，而且**排在 CLI 之后**：解析期的报错文案要先定下来，
+    // 而"这次到底用哪种语言说"本来就是 CLI > INI > 内置那一条优先级的一部分。
+    // 这里直接扫 items（cliGiven 要等重放到 Apply 时才登记，那时语言已经定完了）：--lang 是取值型
+    // 选项，写出过就一定会落到语言上，所以"有没有出现过这个名字"就是这里的判据。
+    const auto cliLangWritten = [&]() {
+        for (const ScannedItem& it : items)
+            if (it.kind == ScannedItem::Kind::kOption && it.option.spec->name == L"lang" &&
+                !it.option.missingValue)
+                return true;
+        return false;
+    };
+    if (result.errors.empty() && snap.state == ConfigLoadState::kLoaded &&
+        snap.Has(L"general.language") && !cliLangWritten()) {
+        Language resolved = Language::kEn;
+        const LangToken token =
+            ResolveLangToken(snap.ValueOf(L"general.language"), DetectSystemLanguage(), &resolved);
+        if (token != LangToken::kInvalid) SetLanguage(resolved);
+    }
+
+    // 读不出 / 语法不合 / 版本不合：到这里就停下来。不继续"按默认值拍另一种图"，
+    // 也不把这一份文件当成不存在。
+    if (snap.state == ConfigLoadState::kFailed) {
+        result.ok = false;
+        return result;
+    }
 
     std::vector<std::wstring> positional;
     bool helpFlag = false;
@@ -898,6 +1533,10 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // 用户写过的选择策略名字：窗口查询那一条要在扫完之后按实际入口分别处置，所以先记下来。
     std::vector<std::wstring> pickFlags;
     const auto AllowedWithEnvQuery = [](const std::wstring& name) {
+        // --config / --no-config 与"问的是环境"这件事 orthogonal：它只决定这次看哪一份偏好，
+        // 不改这份查询问的是什么，也不取任何像素。自检里那一条"契约检查显式带 --no-config"
+        // 靠的就是这一行 —— 否则用户偏好会把既有判据改得飘忽，而那正是排障入口要排除的东西。
+        if (name == L"config" || name == L"no-config") return true;
         return name == L"lang" || name == L"verbose" || name == L"quiet" ||
                name == L"capabilities" || name == L"diagnostics" || name == L"screens";
     };
@@ -923,8 +1562,36 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // --yes 是截图授权那一级的事（只免掉窗口内容路径的确认框），对一次不取像素的查询
         // 没有任何作用，所以写了它不算用法错 —— 但结果必须一模一样，包括"哪些字段读得到"。
         // 判这条的地方是 authorization.yesAffectsResult: false 与 tests\windows.ps1 第 1 节。
+        if (name == L"config" || name == L"no-config") return true;
         return name == L"yes";
     };
+    // 只读的配置视图（--show-config）。它与环境查询同族而允许清单更宽：**它的用途正是观察偏好**，
+    // 所以带着要观察的覆盖参数一起跑是合法的（--history off / --capture bitblt / --quiet 那些）。
+    // 仍然拒绝的只有三类：这一路不产图，所以"截哪一扇"（窗口条件与 --monitor）、
+    // "多个里挑哪个"（选择策略）、"要不要人批准"（--yes / --dry-run）与别的查询命令都不成立。
+    // 与截图混跑同样是冲突：一次只交一份文档，不替用户猜这次到底要看配置还是要出图。
+    const auto AllowedWithConfigView = [](const std::wstring& name) {
+        if (name == L"config" || name == L"no-config" || name == L"show-config") return true;
+        // 文案与详略
+        if (name == L"lang" || name == L"verbose" || name == L"quiet") return true;
+        // 输出那一组（路径 / 格式 / 质量 / 覆盖）—— 它们都是可观察的偏好
+        if (name == L"out" || name == L"format" || name == L"quality" || name == L"no-overwrite")
+            return true;
+        // 取图与处理那一组
+        if (name == L"capture" || name == L"cursor" || name == L"hdr") return true;
+        // 裁剪与缩放那一组（含两条"本次取消"）
+        if (name == L"roi" || name == L"client-area" || name == L"scale" || name == L"no-crop" ||
+            name == L"no-scale")
+            return true;
+        // 期限与新偏好
+        if (name == L"timeout-ms" || name == L"consent-timeout-ms" || name == L"history" ||
+            name == L"integrity-hints")
+            return true;
+        // 分页默认也归偏好（query.window_list_limit），观察它要能带 --limit
+        if (name == L"limit") return true;
+        return false;
+    };
+    std::vector<std::wstring> configViewConflicts;
     const auto NoteConflict = [&](std::vector<std::wstring>* into, const std::wstring& flag) {
         if (std::find(into->begin(), into->end(), flag) == into->end()) into->push_back(flag);
     };
@@ -1207,6 +1874,13 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             opt.scale.written = value;
             return;
         }
+        // ---- 取消配置里的裁剪 / 缩放 ----
+        // 这两条在这里只登记"CLI 写过"（cliGiven 已经在扫描那一步收好），Actual 的效果与
+        // 与本次其他裁剪参数的冲突都在合并与扫完 argv 之后那两段判：
+        //   --no-crop  = 本次不做任何裁剪（连同配置里那一组一起取消）
+        //   --no-scale = 本次不缩放（配置里那三条天花板一条都不参与）
+        // 它们都不"改成放大"，也不"只取消其中一条天花板"。
+        if (name == L"no-crop" || name == L"no-scale") return;
 
         // ---- 期限 ----
         // 只认十进制毫秒数：0x 前缀、下划线这种"句柄写法"放到时长上只会让人算错。
@@ -1292,12 +1966,36 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (name == L"help") { helpFlag = true; return; }
         if (name == L"version") { versionFlag = true; return; }
 
+        // ---- 配置文件的选择 ----
+        // 读哪一份、读不读，都在解析函数开头那一段判完（那一段排在任何诊断之前）。
+        // 这里只把这两条认下来，让它们不落到"这个选项没处理"那一条兜底里去。
+        if (name == L"config" || name == L"no-config") return;
+        // 两条新偏好的本次覆盖入口：off 覆盖配置里的 true，on 覆盖配置里的 false。
+        // 认不了就整条不认，不退化成"那就算开启" —— 那会把一次写错的开关变成一个没人要的决定。
+        if (name == L"history" || name == L"integrity-hints") {
+            bool on = false;
+            if (!ParseOnOff(value, &on)) {
+                std::wstring list;
+                for (const wchar_t* const* p = kOnOffValues; *p; ++p) {
+                    if (p != kOnOffValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kInvalidValue, Msg(L"cli.onoff_value"), L"--" + name, value, list);
+                return;
+            }
+            if (name == L"history") opt.historyEnabled = on;
+            else opt.integrityHints = on;
+            return;
+        }
+
         // ---- 只读查询 ----
         // 落到 Options 上的只是"这一次要出哪份文档"，环境本身那一堆事实由 EnvReport 现问，
         // 所以这里不预判任何能力（也不该预判：那正是查询的用途）。
         if (name == L"capabilities") { opt.capabilities = true; return; }
         if (name == L"diagnostics") { opt.diagnostics = true; return; }
         if (name == L"screens") { opt.screens = true; return; }
+        // 配置视图：读的是本次这份配置，一个像素都不取、不弹框、不建目录（渲染在 Report 层）。
+        if (name == L"show-config") { opt.showConfig = true; return; }
         // 窗口查询的两个入口。同时给出算冲突（一份是列表、一份是单窗口快照，两份文档说的
         // 不是同一件事），这里只落最后一个写法，冲突判定在扫完整条 argv 之后做。
         // 这两条查询的取舍写在取值里：--list=all 把最小化窗口也列进来，
@@ -1344,30 +2042,36 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         Err(codes::kInvalidValue, Msg(L"cli.unhandled_option"), L"--" + name, value);
     };
 
-    // token 怎么消费由 ScanArgv 一处决定（与开头的语言预扫描同一个扫描器）；这里只管
-    // "扫出来的条目落到数据结构里是什么"。
-    ScanArgv(argc, argv, [&](const ScannedItem& it) {
+    // token 怎么消费由 ScanArgv 一处决定（与开头的语言预扫描、配置选择器同一个扫描器）；这里只管
+    // "扫出来的条目落到数据结构里是什么"。条目在开头那一段已经收进 items（为了先把配置读出来），
+    // 这里重放同一份结果 —— 不存在"第二份解析规则"，也不存在"读配置之前 / 之后各扫一遍"的漂移。
+    // 原来那个回调里的 `return` 在这里一律写成 `continue`：回调的 return 是"这一条办完了"，
+    // 循环体的 return 会变成"整次解析提前结束"，那是完全不同的下场。
+    for (const ScannedItem& it : items) {
         switch (it.kind) {
             case ScannedItem::Kind::kPositional:
                 positional.push_back(it.token);
-                return;
+                continue;
             case ScannedItem::Kind::kUnknownOption: {
                 std::wstring hint;
                 if (const auto candidate = ClosestOption(it.name)) hint = *candidate;
                 Err(codes::kUnknownOption, Msg(L"cli.unknown_option"), it.token, L"", hint);
-                return;
+                continue;
             }
             case ScannedItem::Kind::kOption: break;
         }
 
         const ScannedOption& scanned = it.option;
         const std::wstring flagName = L"--" + std::wstring(scanned.spec->name);
-        // 两份允许清单比的是**规范名**（不带 -- 前缀），报错时交出去的才是用户写的那个样子。
+        // 三份允许清单比的是**规范名**（不带 -- 前缀），报错时交出去的才是用户写的那个样子。
         const std::wstring bareName = scanned.spec->name;
         // 只登记「与哪一类查询冲突」这件事，不改变 Apply 的行为：这一次到底算哪一路，
         // 要等整条 argv 扫完、看见 --capabilities / --diagnostics / --list / --inspect 出没出没才知道。
         if (!AllowedWithEnvQuery(bareName)) NoteConflict(&envConflicts, flagName);
         if (!AllowedWithWindowQuery(bareName)) NoteConflict(&windowConflicts, flagName);
+        // 配置视图收第三份清单：它的允许清单比环境查询宽（要观察的偏好都带着跑），
+        // 而"哪些算冲突"依旧一次列全，不修一个报一个。
+        if (!AllowedWithConfigView(bareName)) NoteConflict(&configViewConflicts, flagName);
         // 选择策略那一组要按窗口查询的实际入口再判一次，所以把用户写过的名字留一份
         //（--all 也在里面：它与 --inspect 说不通，但与 --list 语义同源，两边各按不同方向判）。
         if (std::find(pickFlags.begin(), pickFlags.end(), flagName) == pickFlags.end() &&
@@ -1379,10 +2083,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (scanned.spec->takesValue) {
             if (scanned.missingValue) {
                 Err(codes::kMissingValue, Msg(L"cli.missing_value"), flagName, L"");
-                return;
+                continue;
             }
+            cliGiven.push_back(bareName);
             Apply(*scanned.spec, scanned.value);
-            return;
+            continue;
         }
 
         // 开关一般不吃取值；只有 =true / =false 这种写法把规范化结果（"1" / "0"）交给 Apply。
@@ -1393,15 +2098,18 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             if (!ParseBool(scanned.value, &b)) {
                 Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flag, scanned.value,
                     Msgf(L"cli.switch_no_value_hint", flag));
-                return;
+                continue;
             }
             // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令。
             // --yes 这类带 valueAlways 的正向开关也要认 =false（=false 就是"不许跳过确认"）。
-            if (!b && !scanned.spec->inverted && !scanned.spec->valueAlways) return;
+            if (!b && !scanned.spec->inverted && !scanned.spec->valueAlways) continue;
             boolArg = b ? L"1" : L"0";
         }
+        // 只有真正会落到 Options 上的写法才算"CLI 写过"（与上面那条 =false 等于没写的规则同源，
+        // 两处必须是同一条判据）：否则 `--no-crop=false` 会被记成写过而造出一条假冲突。
+        cliGiven.push_back(bareName);
         Apply(*scanned.spec, boolArg);
-    });
+    }
 
     // ---- 位置参数：第一个是输出路径，多出来的视为误写 ----
     if (!positional.empty() && !outExplicit) opt.output = positional[0];
@@ -1447,6 +2155,22 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             L"--client-area, --roi", Msg(L"cli.crop_conflict_hint"));
     }
 
+    // ---- 本次取消与本次要求互相矛盾 ----
+    // --no-crop 与 --roi / --client-area、--no-scale 与 --scale 同时给出：一边要这一次做一处裁剪 /
+    // 缩放，一边要整个取消。这两条"取消"是给**配置文件里那一组**用的，不是本次参数之间的调解，
+    // 所以照实报冲突而不替用户挑一个执行（退出码 1，一个像素都不取）。
+    const auto CliGave = [&](const wchar_t* bare) {
+        return std::find(cliGiven.begin(), cliGiven.end(), std::wstring(bare)) != cliGiven.end();
+    };
+    if (CliGave(L"no-crop") && (CliGave(L"roi") || CliGave(L"client-area"))) {
+        Err(codes::kConflictingOptions, Msg(L"cli.conflicting_options"), L"",
+            L"--client-area, --no-crop, --roi", Msg(L"cli.crop_cancel_conflict_hint"));
+    }
+    if (CliGave(L"no-scale") && CliGave(L"scale")) {
+        Err(codes::kConflictingOptions, Msg(L"cli.conflicting_options"), L"",
+            L"--no-scale, --scale", Msg(L"cli.scale_cancel_conflict_hint"));
+    }
+
     // ---- 查询命令的互斥判定 ----
     // 判据是「这一次是哪一类查询」，不是「有没有某个选项本身写坏了」：写在查询后面的 --title 就算
     // 值法不对，这里也先报冲突（一次只报说不通的那一处，免得调用方修完一个又一个）。
@@ -1459,7 +2183,24 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
         return joined;
     };
-    if (opt.EnvQueryMode()) {
+    if (opt.ConfigViewMode()) {
+        // --show-config 与别的查询、与截图意图同时给出：三份文档各说一件事，同时出只会让调用方
+        // 不知道读哪一份。判据与上面两条同源（一次列全所有冲突项，不修一个报一个）。
+        std::vector<std::wstring> given;
+        if (opt.capabilities) given.push_back(L"--capabilities");
+        if (opt.diagnostics) given.push_back(L"--diagnostics");
+        if (opt.screens) given.push_back(L"--screens");
+        if (opt.windowAction != WindowAction::kNone)
+            given.push_back(opt.windowAction == WindowAction::kList ? L"--list" : L"--inspect");
+        // 窗口条件与 --monitor 已经在扫描那一路按各自的规范名进了冲突清单，这里不重复登记。
+        for (const std::wstring& f : given) NoteConflict(&configViewConflicts, f);
+        // 位置参数在这里**不**算冲突：它就是 --out 的简写，而输出路径是一项可观察的偏好。
+        // 查询那两条把它算成冲突，是因为那两路根本没有输出这件事；这一路有。
+        if (!configViewConflicts.empty()) {
+            Err(codes::kConfigViewConflict, Msg(L"cli.config_view_conflict"), L"--show-config",
+                JoinFlags(configViewConflicts), Msg(L"cli.config_view_conflict_hint"));
+        }
+    } else if (opt.EnvQueryMode()) {
         // 三条环境查询（--capabilities / --diagnostics / --screens）同时给出：每一份都是
         // 一次独立的问答，同时出两份只会让调用方不知道读哪一份，所以这里是一条冲突，
         // 而不是把两份拼起来。报错把用户写过的**每一条**都列上（不只是前两条）。
@@ -1507,6 +2248,22 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
 
     opt.showVersion = versionFlag;
     if (helpFlag) opt.showHelp = true;
+
+    // ---- 把配置里那一份合并进来（CLI 显式值 > INI 显式值 > 内置默认）----
+    // 排在查询冲突**之后**：那一段判的是"用户这一次写了哪些互相说不通的写法"，只看命令行；
+    // 排在"零条件 => 帮助"那一条**之前**：合并自己也可能报出 config.* 的组合错，而一条已经
+    // 说不通的请求不该被折叠成"你没给条件"那份帮助文本。
+    // applyEffects=false 的那一路（任意只读查询）仍然把每一项的来源算完，只是不把它们写进
+    // 截图那一级的字段 —— 见 src/Config.h 上面那第 3 条结构性规矩。
+    {
+        const ConfigErrFn cfgErr = [&](const wchar_t* c, std::wstring m, std::wstring o,
+                                       std::wstring v, std::wstring h) {
+            Err(c, std::move(m), std::move(o), std::move(v), std::move(h));
+        };
+        MergeConfigIntoOptions(opt, snap, cliGiven, !positional.empty(), !opt.QueryMode(),
+                               &cfgFacts, cfgErr);
+    }
+
     // 只有在没有参数错误、且没显式 --help/--version 时，才因为"零条件"返回帮助。
     // 给了 --monitor 就不算零条件：那是明确的屏幕目标。
     // 查询命令同理：它本身就是明确的意图，没有窗口条件正是它的正常用法（一次截图都不做）。
@@ -1623,37 +2380,40 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (opt.output.empty()) {
             opt.output = L"-";
             opt.outputImplicitStdout = true;
-            if (!formatExplicit) opt.format = ImageFormat::kPng;
             Note(codes::kOutputDefaultedStdout, Msg(L"note.output_defaulted_stdout"), L"--out",
                  L"-", Msg(L"note.output_defaulted_stdout_hint"));
         }
 
-        if (opt.output == L"-" && !opt.outputImplicitStdout) {
-            if (!formatExplicit) {
-                opt.format = ImageFormat::kPng;
+        // 那一条优先级链只在 DecideFormat 里写一次（--show-config 那一路算的是同一个函数）。
+        // 这里负责**落地与发提示**：note 的触发条件也从同一次判定出，不在调用点重判一次优先级。
+        {
+            const FormatChoice fc =
+                DecideFormat(formatExplicit, opt.format, opt.output, cfgFacts.outputFromConfig,
+                             cfgFacts.formatFromConfig, cfgFacts.configFormat);
+            opt.format = fc.format;
+            opt.formatBasis = fc.basis;
+            // 显式 --format 与不一致的扩展名：保持这条既有的不一致提示，
+            // 不擅自改名、也不重新编码成"看起来更合"的那一种。
+            if (fc.cliExtensionMismatch) {
+                const std::wstring ext = ExtensionOf(opt.output);
+                Note(codes::kFormatExtensionMismatch, Msg(L"note.format_extension_mismatch"),
+                     L"--format", std::wstring(FormatName(opt.format)) + L" vs ." + ext);
+            }
+            if (fc.defaultedToPngWithUnknownExt) {
+                Note(codes::kFormatDefaultedPng, Msg(L"note.format_defaulted_png"), L"--out",
+                     opt.output, Msg(L"note.format_defaulted_png_hint"));
+            }
+            // 那条"标准输出默认按 png"的提示只在**真的**落到 png、而且是用户明确写了 --out -
+            // 时才发：配置里已经要了别的格式还发这一句，就是把一条实际决定说成一次默认。
+            if (fc.stdoutDefault && !opt.outputImplicitStdout &&
+                fc.basis == std::wstring(L"stdout-default-png"))
                 Note(codes::kPipeDefaultFormat, Msg(L"note.pipe_default_format"), L"--out", L"-");
-            }
-        } else if (opt.output != L"-") {
-            const std::wstring ext = ExtensionOf(opt.output);
-            const auto fromExt = FormatFromExtension(ext);
-            if (formatExplicit) {
-                if (fromExt && *fromExt != opt.format) {
-                    Note(codes::kFormatExtensionMismatch, Msg(L"note.format_extension_mismatch"),
-                         L"--format", std::wstring(FormatName(opt.format)) + L" vs ." + ext);
-                }
-            } else if (fromExt) {
-                opt.format = *fromExt;
-            } else {
-                opt.format = ImageFormat::kPng;
-                if (!ext.empty()) {
-                    Note(codes::kFormatDefaultedPng, Msg(L"note.format_defaulted_png"), L"--out",
-                         opt.output, Msg(L"note.format_defaulted_png_hint"));
-                }
-                // 扩展名为空时不在此处提示：真正补 .png 的动作在 Capture.cpp 里，
-                // 那里会发 note.output_extension_appended
-            }
         }
 
+        // 这条 note 说的是"这一次显式要过的 --quality 在当前格式下不起作用"，判据仍然只看
+        // 命令行。配置文件里那条 jpeg_quality 是一项长期偏好，不是本次的一次误配：拿它去发这条
+        // 提示会让每个非 jpeg 的调用都多出一条 note（既有契约里 note 集合的判据也会被它打乱），
+        // 而它想说的"这一次写错了"根本不存在。配置里那条的生效与来路在 --show-config 看得见。
         if (qualityExplicit && opt.format != ImageFormat::kJpeg)
             Note(codes::kQualityIgnored, Msg(L"note.quality_ignored"), L"--quality",
                  std::wstring(FormatName(opt.format)));

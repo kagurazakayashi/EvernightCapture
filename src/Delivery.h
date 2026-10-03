@@ -57,12 +57,17 @@ public:
 // 用哪把时钟量 elapsedMs，以及（可选）历史归档那一位与本次实际编码所用的格式。
 // history 为空 = 这一次没有归档这一步（离线判据里那些只判交付本体的用例就这么摆），
 // 那时 images 条目里连 history 这个键都不出现；生产那一路一定给一个。
+// historyDisabled 是**用户主动关闭**那一档（--history off 或配置里 history.enabled=false）：
+// 生产这时不给 archiver（连归档根都不去解析，于是一个目录都不建、也不读旧历史），
+// 而每张已交付的图仍要留下一格 history.status=disabled —— 关闭是决定，不是失败，
+// 也不是"存好了"，更不许和"目录不可写所以没存上"混成同一条。
 struct DeliveryRun {
     const Deadline* dl = nullptr;
     OutputSink* sink = nullptr;
     DeliveryClock clock;
     HistoryArchiver* history = nullptr;
     ImageFormat format = ImageFormat::kPng;
+    bool historyDisabled = false;
 };
 
 // 交付的对象是谁、写到哪个名字。file 与实际写入的那个名字是同一个字符串。

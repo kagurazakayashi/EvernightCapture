@@ -7,11 +7,14 @@
       * 默认开启的截图历史归档住在"实际运行的那个 exe 所在目录\history\日期\"里。开发版的 exe 就
         躺在 build\ 里，所以它的历史也在 build\history\。历史是**持续保留的截图数据**，不是可以
         随手重建的缓存，也不是构建产物：一次"清理构建目录"不该顺手把用户截过的图删掉。
+      * 同一目录里的那份 ECAPTURE.ini 是**用户配置**（见 src/Config.h：默认就读 exe 旁边那一份）。
+        它同样是持续保留的用户数据，而且判据只看名字 —— 一份损坏的配置仍然是用户写下的那份配置，
+        "解析失败所以它不算配置"不是删掉它的理由。
       * clean.ps1 与 .\build.ps1 -Clean 是同一条约定的两个入口，必须共用同一份判据。只修一处
         而让另一处仍然整目录删除，等于没修。
-      * 搬移不算保留：把 build\history 挪出去再挪回来，中途断电或被杀就留下一个没人认领的目录。
-        这里的做法是**原地不动**——先删 build\ 里除 history 之外的每一项，然后 build\ 因为里面
-        还剩历史而保留下来（里面只剩历史）。CMake 的缓存被删干净了，下一次配置仍是全新配置。
+      * 搬移不算保留：把 build\history 或那份 ini 挪出去再挪回来，中途断电或被杀就留下一个没人
+        认领的东西。这里的做法是**原地不动**——先删 build\ 里除那两样之外的每一项，然后 build\
+        因为里面还剩东西而保留下来。CMake 的缓存被删干净了，下一次配置仍是全新配置。
 
     安全边界（三条都判，不"看着像目录就删"）：
       1. build\ 本身是重解析点（junction / 符号链接）时**拒绝**：跟着它删会删到别处去。
@@ -23,9 +26,10 @@
       Removed      build\ 里的产物删掉了没有（false = 一条都没动）
       NothingToDo  "本来就没有 build\ 目录"这一种**正常空操作**：既不 Removed 也不算被拒绝。
                    少了这一格，"在全新检出上跑 .\build.ps1 -Clean"会被调用方当成失败而中断构建。
-      Kept         被保留下来的东西：'history' / 'nothing'
-      BuildDirKept build\ 目录本身是否还在（历史在里面时必然为真）
+      Kept         被保留下来的东西：'history' / 'config' / 'history+config' / 'nothing'
+      BuildDirKept build\ 目录本身是否还在（历史或配置在里面时必然为真）
       HistoryPath  历史目录的路径（不存在时为空）
+      ConfigPath   那份 ECAPTURE.ini 的路径（不存在时为空；内容与合法性都不参与这个判断）
       Reason       为什么没删 / 为什么留下了什么（给人看的一句话）
 .EXAMPLE
     Import-Module .\scripts\build-clean.psm1
@@ -59,7 +63,12 @@ function Remove-EcTreeSafe {
 
 function Remove-EcBuildArtifacts {
     <#
-        清掉 BuildDir 里的构建产物，保留 BuildDir\history。判据见文件头那三条安全边界。
+        清掉 BuildDir 里的构建产物，保留 BuildDir\history 与 BuildDir\ECAPTURE.ini。
+        判据见文件头那三条安全边界，另加一条同源的规矩：
+          * ECAPTURE.ini 是**用户配置**，不是构建产物。判据只看名字，不看内容能不能解析 ——
+            一份损坏的配置仍然是那份用户写的配置，"解析失败所以它不算配置"不是删除的理由。
+            它也不靠"先挪走再挪回"保命：挪出去那一段断电或被杀，就留下一个没人认领的文件。
+          * 因此"整棵目录删掉"这一条只在**两样要保留的东西都不存在**时才走。
         一切都不确定时宁可不删：返回 Removed=false 与那句为什么。
     #>
     [CmdletBinding()]
@@ -71,6 +80,7 @@ function Remove-EcBuildArtifacts {
         Kept         = 'nothing'
         BuildDirKept = $false
         HistoryPath  = ''
+        ConfigPath   = ''
         Reason       = ''
     }
 
@@ -118,27 +128,44 @@ function Remove-EcBuildArtifacts {
         $result.HistoryPath = $hItem.FullName
     }
 
+    $config = Join-Path $BuildDir 'ECAPTURE.ini'
+    $configKept = $false
+    if (Test-Path -LiteralPath $config) {
+        # 只看名字，不看内容：一份读不出来的配置同样是用户写下的那份配置，不因此就不是配置。
+        $cItem = Get-Item -LiteralPath $config -Force
+        $configKept = $true
+        $result.ConfigPath = $cItem.FullName
+    }
+
     try {
-        if (-not $historyKept) {
-            # 没有历史要保留：整棵目录删掉，与旧行为一致（仍然走同一份不跟链接的递归）。
+        if (-not $historyKept -and -not $configKept) {
+            # 没有历史也没有配置要保留：整棵目录删掉，与旧行为一致（仍然走同一份不跟链接的递归）。
             Remove-EcTreeSafe -Path $BuildDir
             $result.Removed = $true
             $result.Kept = 'nothing'
             $result.BuildDirKept = Test-Path -LiteralPath $BuildDir
-            $result.Reason = '已删除 build 目录（本次没有截图历史需要保留）。'
+            $result.Reason = '已删除 build 目录（本次没有截图历史与用户配置需要保留）。'
             return $result
         }
 
         foreach ($child in @(Get-ChildItem -LiteralPath $BuildDir -Force)) {
             if ($child.Name -eq 'history') { continue }
+            # 配置文件按名字保留（大小写不敏感，与 Windows 文件系统同一判据）：不读它、不解析它、
+            # 也不管它此刻是不是合法的 UTF-8。
+            if ($child.Name -ieq 'ECAPTURE.ini') { continue }
             Remove-EcTreeSafe -Path $child.FullName
         }
-        # build\ 本身留着：里面只剩那棵历史目录。缓存与产物已经清干净，下一次 cmake 配置
-        # 是全新的一次；历史一个字节都没被搬动过。
+        # build\ 本身留着：里面只剩那棵历史目录与那份配置。缓存与产物已经清干净，下一次 cmake 配置
+        # 是全新的一次；历史与配置一个字节都没被搬动过。
         $result.Removed = $true
-        $result.Kept = 'history'
+        $keep = @()
+        if ($historyKept) { $keep += 'history' }
+        if ($configKept) { $keep += 'config' }
+        $result.Kept = ($keep -join '+')
         $result.BuildDirKept = $true
-        $result.Reason = '已清掉 build 里的构建产物，保留截图历史：' + $result.HistoryPath
+        $result.Reason = '已清掉 build 里的构建产物，保留：' + ($keep -join '、')
+        if ($historyKept) { $result.Reason += '（历史在 ' + $result.HistoryPath + '）' }
+        if ($configKept) { $result.Reason += '（配置在 ' + $result.ConfigPath + '）' }
         return $result
     } catch {
         $result.Reason = "清理中途失败：$($_.Exception.Message)。" +

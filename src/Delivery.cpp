@@ -119,6 +119,10 @@ void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingI
         preparedHistory.code.reserve(32);   // 四条 history.* 码最长的那一条也在这个数之内
         preparedHistory.code = codes::kHistoryWriteFailed;
         StampHistoryFailure(&lateHistory, target);
+    } else if (run.historyDisabled) {
+        // 主动关闭：结论是"这一步没开始，因为是用户关的"，不是 failed，也不是 saved。
+        // 这里不解析归档根、不建目录、不读也不删任何已有历史（那一条判据在 Capture.cpp）。
+        preparedHistory.state = HistoryRecord::State::kDisabled;
     }
 
     // ---- 3) 开工：这一段没有可安全中断的等待点，只能让它跑完 ----
@@ -170,7 +174,10 @@ void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingI
     // ---- 4b) 交付事实先入列：质量提示这时才有意义（说的是你手上这张图） ----
     // 到这里为止不会再分配：容量在第 2 段备足，入列只做不抛的搬移（见上面那条编译期断言）。
     image.bytes = encoded.size();
-    if (run.history) image.history = std::move(preparedHistory);   // 搬移不抛；下面 4c 只往这一格里改
+    // 归档那一位给了就带着它那一份结论；用户主动关闭时带的是 disabled 那一格
+    //（两个位置都只说副本，上面那个 file 说的还是主交付）。
+    if (run.history || run.historyDisabled)
+        image.history = std::move(preparedHistory);   // 搬移不抛；下面 4c 只往这一格里改
     for (Diagnostic& n : pending.notes) outcome->notes.push_back(std::move(n));
     outcome->images.push_back(std::move(image));
     step->recorded = true;

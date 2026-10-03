@@ -365,6 +365,8 @@ const wchar_t* HistoryStateName(HistoryRecord::State state) {
         case HistoryRecord::State::kSaved: return L"saved";
         case HistoryRecord::State::kFailed: return L"failed";
         case HistoryRecord::State::kSkipped: return L"skipped";
+        // 主动关闭那一档：这一步没开始，也不是失败，更不是"存好了"。已有的一张都不动。
+        case HistoryRecord::State::kDisabled: return L"disabled";
         case HistoryRecord::State::kNone: break;
     }
     return L"";   // kNone 由渲染层整个键不写（见 Report.cpp）

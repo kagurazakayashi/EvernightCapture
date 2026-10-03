@@ -38,6 +38,11 @@ Language CurrentLanguage();
 
 std::wstring Msg(const wchar_t* key);
 
+// 这一份表里**有没有**这个 key。它存在的理由是给"可选的那一句"用的：例如诊断的补充说明
+// 按约定有 <code>_hint 就带上、没有就整个字段省略，而 Msg() 对不存在的 key 返回 "?key"
+// （那是给写错的 key 留的痕迹，不该被当成一句真的文案送出去）。
+bool HasMsg(const wchar_t* key);
+
 namespace detail {
 inline std::wstring ToArg(const std::wstring& v) { return v; }
 inline std::wstring ToArg(const wchar_t* v) { return v ? std::wstring(v) : std::wstring(); }

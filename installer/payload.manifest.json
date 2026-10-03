@@ -10,6 +10,13 @@
     "entryFile": "SKILL.md",
     "defaultInstallDirToken": "%UserProfile%\\.agents\\skills\\yashi-evernight-capture"
   },
+  "configPayload": {
+    "templateFile": "ECAPTURE.example.ini",
+    "userConfigFile": "ECAPTURE.ini",
+    "templateSource": "resources/ECAPTURE.example.ini",
+    "createUserConfig": "only-if-absent",
+    "note": "两份不同的东西，只在这张表里定义一次：ECAPTURE.example.ini 是受管载荷（来源是仓库文件本身，所以 freshness=repo；build\\ 里那份是 CMake 的 POST_BUILD 复制品，拿它当来源就等于允许陈旧文件出包），随包升级正常覆盖，安装后它就在 ECAPTURE.EXE 旁边。ECAPTURE.ini 是**用户数据**：不进载荷、不进 install-manifest.json 与 payload.sha256.txt、不进归属标记的受管记录，安装器只在它确实不存在时独占创建一份（从模板复制），已有那份无论有效还是损坏都不覆盖、不备份、不删除，卸载也不动它。"
+  },
   "entries": [
     { "from": "build/ecapture.exe",                        "to": "ECAPTURE.EXE",                  "role": "program",        "required": true,  "glob": false, "freshness": "current-build" },
 
@@ -23,6 +30,8 @@
 
     { "from": "LICENSE",          "to": "LICENSE",          "role": "license",      "required": true,  "glob": false, "freshness": "repo" },
     { "from": "resources/icon.ico", "to": "resources/icon.ico", "role": "readme-asset", "required": true, "glob": false, "freshness": "repo" },
+
+    { "from": "resources/ECAPTURE.example.ini", "to": "ECAPTURE.example.ini", "role": "config-template", "required": true, "glob": false, "freshness": "repo" },
 
     { "from": "installer/verify-install.ps1", "to": "verify-install.ps1", "role": "selfcheck", "required": true, "glob": false, "freshness": "repo" },
     { "from": "test-all.ps1",                 "to": "test-all.ps1",       "role": "test-runner", "required": true, "glob": false, "freshness": "repo" },
@@ -70,6 +79,7 @@
     "offlineTestsNote": "offlineSuiteDeps 是这套离线计划的依赖闭包，打包与安装自检都读同一份表：少一个文件就在打包阶段失败，不会等安装后去补编译。ECAPTURE.EXE 与全部测试程序都是 CRT 静态链接（CMakeLists.txt 里 MSVC_RUNTIME_LIBRARY=MultiThreaded），所以安装版不需要 VC++ 运行库、Visual Studio、源码树或网络。build\\ 下其余状态测试二进制不在闭包里，不随包发出。",
     "excludedFromInstall": [
       { "suite": "cursor", "reason": "离线层之后还有一节源码级守卫（要读 src\\*.cpp / src\\CaptureWgc.cpp），安装目录里没有源码，且该节没有开关可跳" },
+      { "suite": "config", "reason": "用户偏好配置（ECAPTURE.ini）的套件：离线层需要 build\\ecapture-config-tests.exe（不在安装后的离线闭包里，因为它的真机层才是这条功能的主要判据），真机层要自建 fixture 窗口并按**源码树布局**读 resources\\ECAPTURE.example.ini —— 安装目录里模板在根上、也不该由安装版去开真截图窗口。安装版的配置交付与共存行为改由随包 verify-install.ps1（模板完整性 + --config 临时 INI + 只读视图来源）与开发期的 tests\\installer-package.ps1、tests\\install-lifecycle.ps1 各自判，配置解析本体留在源码树跑 .\\test-all.ps1 -Only config" },
       { "suite": "save, image, streams, isolation, timeout, channels, consent, screen, smoke", "reason": "没有可单独跑的离线入口（真实层无法排除），-Offline 会在计划阶段整套主动排除并给原因" },
       { "suite": "build-path", "reason": "把源码仓库反复复制进怪路径再构建，需要完整源码树与 MSVC/Ninja 工具链，只适用于源码开发" },
       { "suite": "installer-package, install-lifecycle", "reason": "判的是打包与安装器本身：需要仓库根的 installer\\packaging.psm1、build-installer.ps1 与 Inno Setup 编译器，属于开发期检查，安装目录里没有这些输入" }

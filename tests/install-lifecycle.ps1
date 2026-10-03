@@ -31,6 +31,14 @@
       7. 卸载：只删安装器自己记录的文件与那个归属标记；用户新增文件、备份目录里的原件、
          相邻的别的产品目录都必须在卸载后还在。截图历史 <安装目录>\history\ 也必须在：它不在
          受管清单里，升级与卸载都只许"不碰"，内容逐字节不变。
+      7b. 配置的两份文件共存：模板 ECAPTURE.example.ini 是受管载荷（安装后就在 exe 旁边，字节等于
+         发行清单，升级会更新）；实际用户配置 ECAPTURE.ini 不是载荷 —— 第一例装的时候因为它不存在
+         才由模板独占创建一份，所以它逐字节等于模板，且不在 install-manifest.json、
+         payload.sha256.txt 与归属标记的受管记录里。用户改过这份配置后重装：内容必须一字不变、
+         也不该被当成"用户改动的产品文件"备份走；把它写成不合法的再跑随包只读自检：自检必须
+         照常通过（退出码 0），并把它报成配置的使用问题，而不是"安装文件损坏"；重装也不修复它。
+         卸载后这份配置必须还在（内容仍是用户那一份），模板则作为产品文件被删掉。
+         另外：一个只有用户配置、没有归属标记的非空目录，静默安装必须拒绝并且不动那份配置。
       8. verify-install.ps1 的预算参数非法时在起任何进程之前就拒绝（退出码 2）。
       9. 声明的安装后可跑离线计划真的能在这个隔离目录里跑完（不依赖源码树、Visual Studio 或网络）；
          这条最重，用 -SkipOffline 跳过时要如实记 SKIP。
@@ -151,12 +159,44 @@ try {
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'build.ps1'))) '开发用的 build.ps1 不该随包发出'
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'AGENTS.md'))) '开发用的 AGENTS.md 不该随包发出'
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'src'))) '安装目录里不该有源码目录'
+
+    # 配置的两份文件：模板是受管载荷（装在 exe 旁边、字节等于发行清单）；实际用户配置不是载荷，
+    # 第一例里它之所以存在，是因为"确实不存在"才被从模板独占创建出来的。
+    $mf1 = Get-Content -LiteralPath (Join-Path $d1 'install-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $tplName = [string]$mf1.configPayload.templateFile
+    $userCfgName = [string]$mf1.configPayload.userConfigFile
+    Assert-Ec ($tplName -and $userCfgName) '随包清单必须声明配置模板名与用户配置名（安装自检与判据都读这一份）'
+    $tplPath1 = Join-Path $d1 $tplName
+    $userCfg1 = Join-Path $d1 $userCfgName
+    Assert-Ec (Test-Path -LiteralPath $tplPath1) "配置模板 $tplName 没装在 ECAPTURE.EXE 旁边（它是受管载荷）"
+    $tplEntry1 = @($mf1.files | Where-Object { [string]$_.path -eq $tplName })
+    Assert-Ec ($tplEntry1.Count -eq 1) "发行清单里应恰好有一条 $tplName 记录（模板不是可选文件）"
+    if ($tplEntry1.Count) {
+        Assert-Ec ((Get-FileHash -LiteralPath $tplPath1 -Algorithm SHA256).Hash.ToLowerInvariant() -eq ([string]$tplEntry1[0].sha256).ToLowerInvariant()) `
+            "装出来的 $tplName 与打包时记录的模板哈希不一致（模板内容变了就必须跟上）"
+    }
+    Assert-Ec (Test-Path -LiteralPath $userCfg1) "安装时 $userCfgName 确实不存在，就该由模板独占创建一份"
+    Assert-Ec ((Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $tplPath1 -Algorithm SHA256).Hash) `
+        "首次创建的 $userCfgName 不是模板那份内容（独占创建应当逐字节复制模板，不加工、不裁剪）"
+    # 反过来：用户配置不许出现在任何一份"产品文件"的名册里 —— 出现在受管清单里就意味着升级会被
+    # 覆盖保护盯上、卸载会把它当自己装的文件删掉。
+    $userCfgInManifest = @($mf1.files | Where-Object { (($_.path -replace '/', '\').Split('\') | Select-Object -Last 1) -ieq $userCfgName })
+    Assert-Ec ($userCfgInManifest.Count -eq 0) "发行清单把 $userCfgName 当成了产品文件"
+    $userCfgInHash = @(Get-Content -LiteralPath (Join-Path $d1 'payload.sha256.txt') -Encoding UTF8 | ForEach-Object {
+        $leaf = (($_ -split '\s+', 2)[-1] -replace '/', '\').Split('\') | Select-Object -Last 1
+        if ($leaf -ieq $userCfgName) { $_ }
+    })
+    Assert-Ec ($userCfgInHash.Count -eq 0) "payload.sha256.txt 把 $userCfgName 列进了发行哈希清单"
     $marker = Read-OwnerMarker -Dir $d1
+    $userCfgMarked = @(@($marker -split "`r?`n") | Where-Object {
+        $_ -match '^[^|]+\|' -and (((($_ -split '\|')[0]) -replace '/', '\').Split('\') | Select-Object -Last 1) -ieq $userCfgName
+    })
+    Assert-Ec ($userCfgMarked.Count -eq 0) "归属标记把 $userCfgName 记成了受管文件（升级就会拿覆盖前保护盯上用户的配置）"
+
     # 按字段值比（判据本体在随包 tests\harness.psm1 的 Test-EcOwnershipMarker，与 verify-install 同一份）：
     # 旧写法 @($mLines -contains 'product=...').Count -gt 0 里 -contains 交回布尔、@($false) 的 .Count 也
     # 是 1，标记被写成什么样都绿，属于恒真断言，这里不再用那种形状。
     Assert-Ec ([bool]$marker) '安装器没写下归属标记'
-    $mf1 = Get-Content -LiteralPath (Join-Path $d1 'install-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $wantAppId1 = (([string]$mf1.appId) -replace '^\{\{', '{') -replace '\}\}$', '}'
     $owner1 = Test-EcOwnershipMarker `
         -Lines @(@($marker -split "`r?`n") | ForEach-Object { $_.Trim() }) `
@@ -175,6 +215,10 @@ try {
         '-InstallDir', $d1) -TimeoutSec 600
     Assert-Ec ($self.Exit -eq 0) "安装目录里的只读自检没通过（退出码 $($self.Exit)）：$((($self.Stdout + $self.Stderr) -split "`r?`n" | Where-Object { $_ -match 'FAIL' } | Select-Object -First 6) -join ' / ')"
     Assert-Ec (($self.Stdout + $self.Stderr) -notmatch '  FAIL  ') '只读自检里有 FAIL'
+    # 配置那两件事必须各报各的：模板走安装完整性，实际用户配置走"读到了/没读到"。
+    $selfText = $self.Stdout + $self.Stderr
+    Assert-Ec ($selfText -match '配置模板') "只读自检没单独报出配置模板那一节：$(($selfText -split "`r?`n" | Select-Object -Last 6) -join ' / ')" -Quiet
+    Assert-Ec ($selfText -match '实际用户配置') '只读自检没单独报出实际用户配置的加载状态' -Quiet
     # 非法预算要在起任何进程之前就被拒绝（这一条不跑真实套件）
     $badBudget = Invoke-Installer -Exe (Get-Process -Id $PID).Path -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $d1 'verify-install.ps1'),
@@ -350,13 +394,61 @@ try {
     Assert-Ec ((Count-Backups -Dir $d1) -eq $bAfter3c) '本代内容基线一致时又重复备份了'
 
     # =========================================================================
+    Write-Host "`n=== 3d) 用户配置与模板共存：改动不覆盖、损坏不算安装坏了、缺了才独占创建 ==="
+    # =========================================================================
+    # 用户自己编辑过 ECAPTURE.ini（这是完全正常的用法）：重装必须原样留着它，而且不该因为
+    # "有个文件与记录不符"就把它当产品文件备份走 —— 它根本不在受管清单里。
+    Add-Content -LiteralPath $userCfg1 -Value ('; 我自己加的说明 ' + [Guid]::NewGuid().ToString('N')) -Encoding UTF8
+    $userCfgEditedHash = (Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash
+    $bBefore3d = Count-Backups -Dir $d1
+    $r3d = Install-To -Dir $d1
+    Assert-Ec ($r3d.Exit -eq 0) "带用户改过的配置重装退出码 $($r3d.Exit)"
+    Assert-Ec ((Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash -eq $userCfgEditedHash) `
+        '重装覆盖了用户改过的 ECAPTURE.ini（onlyifdoesntexist 那一半没有生效）'
+    Assert-Ec ((Count-Backups -Dir $d1) -eq $bBefore3d) '用户配置被当成"改动的产品文件"备份走了（它不该在受管清单里）'
+    # 模板那份仍是受管载荷：字节还得等于发行清单，否则"模板内容变了就必须跟上"这句话就是空的。
+    Assert-Ec ((Get-FileHash -LiteralPath $tplPath1 -Algorithm SHA256).Hash.ToLowerInvariant() -eq ([string]$tplEntry1[0].sha256).ToLowerInvariant()) `
+        '重装后配置模板与发行清单不一致（模板要么该更新、要么该保持打包时那份，不该漂）'
+
+    # 把用户配置写成不合法的：随包只读自检必须照常通过（安装文件本身没问题），并把这件事报成
+    # 配置的使用问题；程序与自检都不许"顺手修好"它。
+    Set-Content -LiteralPath $userCfg1 -Value "[config]`r`nversion = 99`r`n" -Encoding UTF8
+    $userCfgBrokenHash = (Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash
+    $self3d = Invoke-Installer -Exe (Get-Process -Id $PID).Path -Arguments @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $d1 'verify-install.ps1'),
+        '-InstallDir', $d1) -TimeoutSec 600
+    $self3dText = $self3d.Stdout + $self3d.Stderr
+    Assert-Ec ($self3d.Exit -eq 0) "用户把配置写坏了，随包自检却把安装判成失败（退出码 $($self3d.Exit)）：$(($self3dText -split "`r?`n" | Where-Object { $_ -match 'FAIL' } | Select-Object -First 6) -join ' / ')"
+    Assert-Ec ($self3dText -match '使用问题') ("坏的用户配置没有被明确报成「配置的使用问题」：" +
+                (($self3dText -split "`r?`n" | Where-Object { $_ -match '用户配置' } | Select-Object -First 4) -join ' / '))
+    $bBefore3dB = Count-Backups -Dir $d1
+    $r3dB = Install-To -Dir $d1
+    Assert-Ec ($r3dB.Exit -eq 0) "带损坏配置的重装退出码 $($r3dB.Exit)"
+    Assert-Ec ((Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash -eq $userCfgBrokenHash) `
+        '安装器把损坏的用户配置"修好"或覆盖了（它该原样留着，让程序自己去报错）'
+    Assert-Ec ((Count-Backups -Dir $d1) -eq $bBefore3dB) '损坏的用户配置被当成改动的产品文件备份走了' -Quiet
+
+    # 删掉用户配置再装一次：这时它确实不存在，独占创建那一条必须再走一次，内容等于当前模板。
+    Remove-Item -LiteralPath $userCfg1 -Force
+    $r3dC = Install-To -Dir $d1
+    Assert-Ec ($r3dC.Exit -eq 0) "重建缺失配置的重装退出码 $($r3dC.Exit)"
+    Assert-Ec (Test-Path -LiteralPath $userCfg1) '配置确实不存在时安装器没有独占创建一份'
+    Assert-Ec ((Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $tplPath1 -Algorithm SHA256).Hash) `
+        '独占创建的那份不是当前模板的内容'
+    # 这一份留给第 6 步：卸载后必须还在，而且内容仍是用户这一份
+    $userCfgFinalHash = (Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash
+
+    # =========================================================================
     Write-Host "`n=== 4) 陌生目录与坏标记：静默安装必须不写任何东西 ==="
     # =========================================================================
     $cases = @(
         @{ Name = '假清单（别的产品的 JSON）'; Manifest = '{"product":"SomeoneElsesTool","files":[]}'; Extra = 'keep.txt' },
         @{ Name = '空清单文件';                Manifest = '';                                          Extra = 'keep2.txt' },
         @{ Name = '坏 JSON 清单';              Manifest = '{ not json at all';                         Extra = 'keep3.txt' },
-        @{ Name = '没有清单的非空目录';        Manifest = $null;                                       Extra = 'keep4.txt' }
+        @{ Name = '没有清单的非空目录';        Manifest = $null;                                       Extra = 'keep4.txt' },
+        # 目录里只有用户自己的配置（没有归属标记）：这不是本产品装过的目录，静默安装必须拒绝，
+        # 而且那份配置一个字节都不许动 —— "只在缺失时创建"不允许变成"看不见标记就重写一份"。
+        @{ Name = '只有用户配置的非空目录';    Manifest = $null;                                       Extra = 'ECAPTURE.ini' }
     )
     $ci = 0
     foreach ($c in $cases) {
@@ -434,6 +526,10 @@ try {
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'tests\hdr.ps1'))) '卸载后随包测试脚本还在'
     Assert-Ec (-not (Test-Path -LiteralPath (Join-Path $d1 'evernightcapture.owner.ini'))) '卸载没清掉自己写的归属标记'
     Assert-Ec (Test-Path -LiteralPath $userFile) '卸载删掉了用户新增的文件'
+    # 用户配置与截图历史同一档：都是"本产品不拥有"的东西。模板才是产品文件，随卸载删掉。
+    Assert-Ec (Test-Path -LiteralPath $userCfg1) '卸载删掉了用户的配置（ECAPTURE.ini 是用户数据，不该被卸载带走）'
+    Assert-Ec ((Get-FileHash -LiteralPath $userCfg1 -Algorithm SHA256).Hash -eq $userCfgFinalHash) '卸载改写了用户配置的内容'
+    Assert-Ec (-not (Test-Path -LiteralPath $tplPath1)) '卸载后配置模板还在（模板是产品文件，没被记录就意味着受管边界说不清）'
     Assert-Ec (Test-Path -LiteralPath $histFile) '卸载删掉了截图历史（历史是持续保留的截图数据，不是缓存也不是产物）'
     Assert-Ec ((Get-Content -LiteralPath $histFile -Raw -Encoding ASCII).Trim() -eq $histBody.Trim()) `
         '卸载改写了截图历史里的内容'

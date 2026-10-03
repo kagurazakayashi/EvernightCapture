@@ -54,6 +54,9 @@ namespace ecapture {
 struct WindowQuerySpec {
     uint64_t offset = 0;              // --offset
     uint64_t limit = 0;               // --limit，0 = 用默认值
+    // 本次生效的**默认**每页条数（配置里 query.window_list_limit 那一条）。0 = 用
+    // cli_limits::kDefaultWindowListLimit。写成 0 而不是在这里抄一遍那个数：两份数字不许各写一套。
+    uint64_t defaultLimit = 0;
     bool includeIconic = false;       // --list=all
     bool exePath = false;             // --inspect=path（写不写完整路径）
     WindowAction action = WindowAction::kNone;
@@ -148,6 +151,13 @@ struct WindowQueryResult {
 // 由规范化后的选项做出这次查询的取舍（含 -v 的 input 段要回显的那几组条件）。
 // 只搬值、不判断据：区间在解析期已经判完，这里不许再判一次（两处各判迟早不一致）。
 WindowQuerySpec MakeWindowQuerySpec(const Options& opt);
+
+// 生效的每页条数：--limit 写过就用它，否则用本次的默认条数（配置那一条），
+// 那条也没给时才落到内置的 50。分页那一步与两处回显读的都是**这一份**答案，
+// 不在任何一处再判一次"要不要用默认"—— 那样会变成三套答案。
+uint64_t EffectiveListLimit(const WindowQuerySpec& spec);
+// 上面那个数的来路（机器名，进 pagination.limitSource）："cli" / "config" / "builtin"。
+const wchar_t* ListLimitSource(const WindowQuerySpec& spec);
 
 // 由一条候选做出结果条目 + 身份快照。纯函数：不碰 Win32，所以不可读的现场能注入判。
 WindowRecord MakeWindowRecord(const WindowInfo& w, const WindowQuerySpec& spec);

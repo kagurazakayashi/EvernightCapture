@@ -40,6 +40,7 @@ grp.consent	截图授权（真实截图默认都要先弹框问一次；--yes �
 grp.timeout	执行期限（自动处理那一段的总预算；人工确认另算，到点按拒绝处理）
 grp.output	输出
 grp.behavior	其它
+grp.config	用户偏好配置（默认读程序同目录的 ECAPTURE.ini；不搜当前目录与别处）
 grp.query	查询（只读：不截图、不弹框、不写文件）
 
 # ---------------------------------------------------------------------------
@@ -470,3 +471,50 @@ note.hdr_source_unverified_hint	图照常交付，但这不能当成"HDR 已经�
 env.hdr_unsupported	这台机器给不出 %1 这个 HDR 处理：本来要试的是 %2，原因 %3
 env.hdr_unsupported_hint	这一条说的是本机给得出的通道，与目标窗口无关：版本与光标两道闸门筛过之后，链里没有一条真兑现得了这次的 HDR 要求，所以一个像素都不取、确认框也不弹。换 --capture 变不出一条兑现得了的通道，同一个目标重试也是同一个下场。想知道这台机器现在判到什么，跑 --capabilities 读 color 那一段（每条路径的 honorsExplicitPolicy）
 note.hdr_channel_skipped	auto 链里的 %1 兑现不了 %2 这个 HDR 处理，已摘掉（%3），剩下的照顺序试
+
+# ---------------------------------------------------------------------------
+# 用户偏好配置（ECAPTURE.ini）：读哪一份、逐键校验与配置视图
+# 判据本体在 src/Config.h 与 src/CliOptions.cpp 的合并那一段。
+# 这一族的 code 与 key 同名（config.*），诊断里的 message 就是这里这一句。
+# ---------------------------------------------------------------------------
+opt.config	本次改用指定的那份 INI（相对路径按当前目录定绝对路径）；文件不在或读不出就报错，不回退到默认那份
+opt.no-config	本次完全忽略配置文件，只用内置默认与本次命令行；排障与自检的隔离入口，不删除也不改写配置
+opt.show-config	只读地交出本次这份配置：读的是哪个文件、有没有读到、每一项生效偏好各来自哪个来源（不选窗口、不取像素、不弹框、不建目录）
+opt.history	本次要不要给每张完成交付的图另存一份历史副本（on / off），覆盖配置里那条
+opt.integrity-hints	本次要不要附完整性方面的解释文字（on / off）；错误码、原值与交付事实从来不受它影响，关掉它也修不好权限
+opt.no-crop	取消配置文件里那一组裁剪（本次一个裁剪都不做）；与本次的 --roi / --client-area 同时给出算冲突
+opt.no-scale	取消配置文件里那一组缩放（本次不缩放）；与本次的 --scale 同时给出算冲突
+config.not_found	要读的配置文件不存在
+config.not_found_hint	--config 指的那一条没有回退到默认那份：这是显式点名，猜一份别处的配置等于替这次调用换了一份谁都没改过的设置。核对一下路径（相对写法按当前目录算），或去掉 --config 用程序同目录那份
+config.read_failed	配置文件读不出来
+config.read_failed_hint	文件在而读不到：可能被别的进程独占、权限不够，或那个名字其实是个目录。默认位置那份问不出程序自己在哪里时也是这一条；这里不猜当前目录，也不写一份新的
+config.too_large	配置文件超过 256 KiB 的上限，没有读
+config.too_large_hint	上限在分配之前判：一份超限的文件不该先被整个搬进内存再报错。ECAPTURE.ini 装的是偏好，不是数据；把截图说明、脚本或别程序的配置并进来是放错了地方
+config.line_too_long	配置文件有一行超过 4096 个字符的上限
+config.encoding	配置文件不是合法的 UTF-8
+config.encoding_hint	这份文件按 UTF-8 读（允许开头的 BOM）。非法字节序列不当系统代码页再猜一遍：同一份文件按代码页与按 UTF-8 会读出两个不同的值，而那两种都"看着像有个答案"
+config.syntax	配置文件这一行说不通
+config.duplicate_section	同一个节在这份文件里出现了两次
+config.duplicate_section_hint	每个节只写一次：分两处写同一组设置，改的时候只会改到其中一处，而两处都能通过逐键校验
+config.duplicate_key	同一个键出现了两次
+config.duplicate_key_hint	不取"最后一个"也不取"第一个"：一份文件里两处不同的写法到底要听哪一条，只有你自己说得清。删掉多余那一条
+config.unknown_section	配置文件里有一个不认识的节
+config.unknown_key	配置文件里有一个不认识的键
+config.unknown_key_hint	拼错的键不会退回默认值：那会把"settings 里那一行其实没生效"这件事一直藏下去。--show-config 能列出当前认识的每一项；对照 ECAPTURE.example.ini 改
+config.unsupported_version	这份配置用的是本构建不认识的格式版本
+config.unsupported_version_hint	不"当成兼容格式猜读"：猜错那一格就会按一份谁都没写过的设置拍一张图。请照 ECAPTURE.example.ini 改成认识的版本，改之前先备份那份文件——本工具不会替你改写配置
+config.invalid_number	配置文件里这个数不合写法
+config.invalid_boolean	配置文件里这个布尔值只认 true 或 false
+config.invalid_boolean_hint	1 / yes / on 在配置里不算真。一份配置文件会被反复编辑，"看着像真"的写法迟早被读成另一个意思
+config.invalid_value	配置文件里这个取值不在允许的清单里
+config.out_of_range	配置文件里这个数超出允许的区间
+config.invalid_combination	配置文件里这几项合起来说不通
+config.crop_roi_invalid	crop.roi 那四个数不合写法
+config.crop_roi_invalid_hint	只认 x,y,width,height 四个十进制数（逗号分隔，不许空白与正负号）；x / y 可以是 0，width / height 至少 1。写法与 --roi 完全相同，上限也共用同一条
+config.crop_roi_missing	crop.mode=roi 而没有可用的 crop.roi
+config.crop_roi_missing_hint	roi 模式必须有有效的 x,y,width,height。不"那就整窗交出"：那等于把一次写歪的裁剪静默改成另一种裁剪。补上 crop.roi，或把 crop.mode 改回 none
+cli.config_view_conflict	--show-config 只读地问这份配置，不能与截图意图或别的查询命令同时给出
+cli.config_view_conflict_hint	配置视图接受 --config / --no-config 与要观察的偏好覆盖参数（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / 裁剪缩放 / 两条期限 / --history / --integrity-hints / --limit）；窗口条件、--monitor、选择策略、--yes / --dry-run 与别的查询命令请另起一次
+cli.onoff_value	这个取值只认 on 或 off
+cli.crop_cancel_conflict_hint	--no-crop 是用来取消**配置文件里那一组**裁剪的，它与本次亲手写的 --roi / --client-area 说的正好相反。去掉 --no-crop，或去掉那一条裁剪
+cli.scale_cancel_conflict_hint	--no-scale 是用来取消**配置文件里那一组**缩放的，与本次写的 --scale 不能同时成立。去掉 --no-scale，或去掉那一条 --scale

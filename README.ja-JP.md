@@ -29,6 +29,7 @@ Windows 11 の `magnification.dll` はもはや `MagGetImage` をエクスポー
 | 画像バイトはどのストリーム、JSON はどのストリーム、手元のシェルはどこまで無損に保てるか | [出力の形](#出力の形)、[標準出力の画像バイトと shell の違い](#標準出力の画像バイトと-shell-の違い) |
 | 実行期限の予算がどう共有され、どこで割り込めないか                                      | 《実行期限とブロックする呼び出し》                                                                 |
 | 安定な code、stage、終了コード、部分成功                                                | [終了コード](#終了コード)                                                                          |
+| 既定の好み（言語・経路・出力・期限・履歴）を `ECAPTURE.ini` に置けるか、何を置けないか  | [設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini)                                           |
 | コンパイル済みか、この機でいま使えて、実際にどこまでテストしたか                        | [動作環境のサポート](#動作環境のサポート)、《読み取り専用の能力照会》                              |
 | skill ディレクトリから走らせると `0x80070005` / エラー `5` になる理由と次の一手         | 《プロセスの完全性レベル》                                                                         |
 | このリポジトリが実機で確定できていない残件                                              | [境界と未検証の項目](#境界と未検証の項目)                                                          |
@@ -62,6 +63,13 @@ Windows 11 の `magnification.dll` はもはや `MagGetImage` をエクスポー
   でコピーだけが着地しなかった場合は部分成功（終了コード `7`。どの型かは `images[].history` が書く）。自動の
   ローテーションも自動削除もないので、整理はユーザー自身が明示的に行う。完全な規則は下文
   [スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) を参照
+- **好みを `ECAPTURE.ini` に置ける**：実際に走っている `ECAPTURE.EXE` と同じディレクトリの 1 ファイルだけを読む
+  ユーザー設定（言語・詳細度・`--capture`・cursor/HDR・出力・切り抜き・縮小・2 つの期限・履歴・完全性の説明文・
+  `--list` の既定件数）。優先順位は常に「今回のコマンドライン > この 1 ファイル > 組み込み既定」で、そこには撮影の意図も
+  対象の選択も承諾も入らない —— このファイルがあっても `ECAPTURE` 単体では 1 枚も撮らない。無いのは正常、
+  有るのに読めないのは明確な失敗で、ウィンドウを選ぶ前・確認ダイアログを出す前・1 ピクセルも取る前に止まる。
+  `--config` / `--no-config` / `--show-config` で指定・無視・読み取り確認ができ、完全な規則は下文
+  [設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) を参照
 - **画面取得なしでウィンドウを一覧・検査できる**：`--list` は該当ウィンドウを構造化 JSON で返す（ハンドル、PID、クラス名、タイトル、イメージ名、物理矩形、表示/最小化、Z 順、後続の画面取得が再確認する身元欄）。複数一致は `--offset` / `--limit` でページ送りし、画面取得の歧義にしない。`--inspect` は 1 窓を項目ごとに検査し、複数一致なら代わりを選ばずに歧義として返す。この 2 つはピクセルも取らず確認も出さずファイルも書かずウィンドウに触れず、`--yes` は効果を持たず、返すものは明示されたスナップショットである
 - **能力を読み取りで照会できる**：`--capabilities` / `--diagnostics` は、ピクセルも取らず確認も出さずファイルも書かず通信もしないで、この機がいま通せる経路、`--yes` が実際に及ぶ範囲、検証可能なビルド識別子を返す。「このビルドにその経路がある」「いまこの機で通せる」「本プロジェクトがこういうシステムで実測した」は別々の欄として書き分け、答えが出なければ `unknown` をそのまま返す。実際の撮影や符号化で能力を探ることはしない
 
@@ -151,6 +159,8 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
 ウィンドウ内の切り抜きと等比縮小（納品されたウィンドウ全体画像を、その画像自身のピクセル座標でもう一度切り抜きます。デスクトップ絶対座標ではありません。順序は切り抜き→縮小で、--roi と --client-area の 2 つは排他）
   --roi <x,y,w,h>                             納品されたウィンドウ全体画像から、x,y を開始点とする w×h を切り抜きます。原点 (0,0) はこの画像自身の左上ピクセルです（画像はユーザーが見えている見えているウィンドウ枠に対応し、DWM の透明なリサイズ枠は含まれません）。単位は物理ピクセルで、DPI スケーリングは行いません（本プロセスは per-monitor v2 です。論理ピクセルで指定する呼び出し側が拡大率を掛けてください）。したがってこの 4 つの値がデスクトップ絶対座標として扱われることはありません。4 つは 10 進数・カンマ区切り。x と y は 0 可、w と h は 1 以上、いずれも 16384 まで。収まらないときは画像を書き出しません：フレーム取得前に分かるときは match.roi_out_of_range（ダイアログもファイルもなし）、取得後に初めて分かるときは capture.roi_invalid。内側にずらす、縁で打ち切る、ウィンドウ全体を返すことはしません。切り抜きはフレーム取得の後ろにあるので、認可の判断は変わりません：画面からサンプルする経路は必ず人に聞き、--yes は「最後に小さな一部だけ残す」から有効にはなりません。結果の cropRect は画像ピクセル座標、cropScreenRect は同じ矩形の画面座標（画像の原点を確認できたときだけ書きます）、切り抜き前のサイズが fullWidth/fullHeight、後が width/height です。--client-area と排他、画面全体の対象では成り立ちません（capture.unsupported）
   --client-area                               ウィンドウのクライアント領域だけを返します：納品されたウィンドウ全体画像からタイトルバーと三辺の枠も除きます。この矩形は対象そのものの幾何から測定されます（GetClientRect と ClientToScreen）ので、座標系と単位は --roi とまったく同じです。クライアント領域が測定できないときは capture.roi_unmeasurable、一部が納品画像の外に出るとき（画面外にかかっている、または途中でサイズが変わった）は capture.roi_invalid。いずれもウィンドウ全体を返すことはしません。--roi と排他
+  --no-crop                                   設定ファイル内のクロップ群を取り消します（今回はクロップを一切しません）。今回の --roi / --client-area と同時に指定すると衝突です
+  --no-scale                                  設定ファイル内のスケール群を取り消します（今回は縮小しません）。今回の --scale と同時に指定すると衝突です
   --scale <key=N>                             納品する画像を指定した上限まで等比で縮小します：max-width=N は幅、max-height=N は高さ、max-pixels=N は総ピクセル数の上限です（いずれも 10 進数。辺は 1..16384、ピクセル数は 1..268435456）。3 つは互いに独立で、1 つだけでも、カンマ区切りで 1 つの値にまとめてもかまいません（例：max-width=1920,max-pixels=2073600）。このオプションを複数回書いた場合は上限ごとに別々に記録し、同じ上限を重ねて書いたときは最後の値が有効です。3 つは 1 つの比率（最も厳しいもの）で適用し、幅と高さはそれぞれ切り捨てます。拡大は行わないので、もともと上限内の画像はそのまま納品されます（結果の scaleApplied=false）。補間は 1 つだけで、予測可能な整数マッピング（最近傍）です。順序は切り抜き（--roi / --client-area）→縮小→エンコードなので、縮小されるのは切り抜き後の部分です。結果の scaleFromWidth/scaleFromHeight は縮小前、width/height は縮小後のサイズ、scaleMethod は補間方式で、マッピングはこの順序で閉じます。このオプションは認可とフレーム上限を変えません：画面からサンプルする経路は必ず人に聞き（--yes は「最後に小さな画像を渡す」から有効にはなりません）、フレーム形状チェックを通らないフレームは縮小で戻せず、--roi の判定も元の画像に対して行われます
 
 撮影の承諾（実際の撮影では既定で確認します。--yes はウィンドウ内容の経路だけ省略）
@@ -166,9 +176,14 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   --quality <1-100>                           JPEG の品質。10 進で 1..100、既定 100
   --no-overwrite                              ターゲットが既に存在するなら上書きせずエラー終了（値を省略すれば禁止が有効）。--no-overwrite=false（0 / no / n / off）で禁止を取り消します。=true / 1 / yes / y / on は値を省略した時と同じ。複数指定した場合は最後のものが有効
 
+ユーザー設定（既定は実行中のプログラムと同じ場所の ECAPTURE.ini。他のディレクトリは探しません）
+  --config <path>                             今回だけ指定した INI を読みます（相対パスは現在のディレクトリから絶対パスに解決）。ファイルが無い・読み出せない場合はエラーになり、既定のファイルには戻りません
+  --no-config                                 今回は設定ファイルを完全に無視し、組み込み既定と今回のコマンドラインだけを使います。調査と自己点検用の隔離入口で、設定を削除も書き換えもしません
+
 照会（読取専用）
   --capabilities                              この機の能力を JSON で返す（版数、OS とセッション条件、各経路の available / unavailable / unverified、--yes の適用範囲）。読み取り専用で撮影も確認も書き込みもしない。available は保証ではない。--lang / -v / -q のみ可、撮影オプションや出力先と併用すると cli.query_conflict
   --diagnostics                               ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
+  --show-config                               今回の設定を読み取り専用で出力します：どのファイルを読んだか、読めたか、各項目の実効値がどの由来か（ウィンドウ選択も画素取得も確認ボックスもディレクトリ作成もしません）
   --screens                                   全モニタを読み取り専用で列挙する：ツール内の番号、デバイス名、メインかどうか、物理矩形、読み取れた場合の DPI と回転、帰属アダプタ。そしてこれらの識別子がそれぞれどこまで安定かも記す。ピクセルを読まず、確認ダイアログも出さず、ファイルも書かず、表示設定も変更しない。返す device:<名前> と id:<パス> はそのまま --monitor に書ける。スクリーンショット系のオプションとは排他（cli.query_conflict + 終了コード 1）；実際に画面全体を撮るときは必ず確認ダイアログを出し、--yes では省略できない
   --list [<all>]                              条件を満たす最上位ウィンドウを JSON で一覧化。撮影も確認も書き込みもせず、出力パスも不要。ページ送りは --offset / --limit、all で最小化ウィンドウも含める。結果はこの瞬間のスナップショットなので撮影前に身元を再確認する
   --inspect [<path>]                          選択戦略が定める 1 件のウィンドウを読取専用で検査。複数一致は match.ambiguous_window + 5 を返し、代わりに選ばない。path で完全パスも書く（既定はファイル名のみ）
@@ -181,6 +196,8 @@ EvernightCapture (ECAPTURE.EXE) —— 条件でウィンドウを選び Windows
   --verbose, -v                               JSON に input 節（正規化された全入力）を追加し、notes も残す
   --quiet, -q                                 notes を省略。errors は常に返る。--verbose と同時指定なら --verbose に従う
   --lang, -l <language>                       メッセージの言語。auto（既定、システム表示言語に従う）/ zh-CN / zh-TW / en / ja。未対応のシステム言語は en
+  --history <on|off>                          今回、納品済みの各画像歴史コピーを別途残すかどうか（on / off）。設定ファイルの該当項目を上書きします
+  --integrity-hints <on|off>                  今回、完全性に関する説明文を付けるかどうか（on / off）。エラーコード・原値・納品事実は影響を受けず、off にしても権限は直りません
   --help, -h                                  テキストのヘルプ（この部分）を出力
   --version                                   バージョンと段階を出力
 
@@ -651,6 +668,21 @@ JSON は丸ごと stderr へ移り、各診断は実際にそのステップが�
 **`6` と `8` は絶対に出ない**：確認も出さずファイルも書かないのであり、その 2 つのコードはまさに那段の話である。
 `--list` は 0 件のときも終了コード `0` である — 空の一覧が今回の回答だからだ。
 
+設定ファイル（`ECAPTURE.ini`）の失敗は 2 系統に分かれ、両方ともウィンドウを選ぶ前・確認ダイアログを出す前・
+1 ピクセルも取る前に決まる（詳細は [設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) 参照）：
+
+- **読み出せない**ほう（`config.not_found` / `config.read_failed`）は I/O の失敗なので `8`。
+- **書かれている内容が筋をなさない**ほう（`config.syntax`、`config.encoding`、`config.too_large`、
+  `config.line_too_long`、`config.duplicate_section`、`config.duplicate_key`、`config.unknown_section`、
+  `config.unknown_key`、`config.unsupported_version`、`config.invalid_number`、`config.invalid_boolean`、
+  `config.invalid_value`、`config.out_of_range`、`config.invalid_combination`）は使い方の誤りなので `1`。
+  判定（`src/Config.h` の `IsConfigReadFailure`）は 1 箇所にしかなく、code の一覧を別の場所で写しはしない。
+- 設定が読めなかったり解析できなかったりして**最終的な `--out` を安全に決められない**とき、構造化されたエラーは
+  保守的に **stderr** へ出る。画像バイトがすでに stdout を占めているかどうかを推測するためにコマンドラインを
+  もう一度解析することはなく、エラーを出すために stdout を触ることも絶対にない。
+- `--show-config` 自体の失敗（`--config` のファイルが無い、そして撮影意図やほかの照会と同時に指定された
+  `cli.config_view_conflict`）は上の 2 系統にそのまま従う：読み出せないなら `8`、使い方の衝突なら `1`。
+
 ## 動作環境のサポート
 
 三つの違う数字を「Windows X 以上に対応」という一文に混ぜてはいけない。
@@ -714,7 +746,9 @@ whoami /groups | findstr /i "Mandatory Label"   # いまこの shell 自身の�
 ECAPTURE.EXE --capabilities | findstr integrityLevel   # 本ツールのプロセス自身の証拠：medium 未満ならここに low と書かれる
 ```
 
-本ツールはこの層を報告する。`--capabilities` / `--diagnostics` の `session` に `integrityLevel` が加わり（ASCII token：`unknown` / `untrusted` / `low` / `medium` / `high` / `system` / `protected_process`。答えが出なければ `unknown` で、「十分」にも「降格済み」にも報告しない）、`medium` 未満では `caveats` に `process_integrity_below_medium` が 1 件増え、`--diagnostics -v` の probes には `tokenIntegrityLevel` の 1 問が増える。実際の撮影で自プロセスが `medium` 未満かつ、その 1 ラウンドに「システムの拒否」型の失敗（HRESULT `0x80070005` か Win32 `5`、フレーム取得・ファイル書き込み・標準出力書き込みの 3 段階のいずれか）があれば、各失敗の `hint` に実行可能な説明が 1 文足され、ラウンド全体として `notes` の `note.low_integrity` が 1 件（`target` / `backend` / `stage` 付き）加わる。`code`、`stage`、`hresult` / `win32`、終了コード、すでに納品した画像は一切そのままなので、`code` で分岐してきた呼び出し側は影響を受けない。`--yes` と承諾の階層も変わらない。`note.low_integrity` は notes なので `--quiet` で隠れるが、`errors` に足された `hint` は `--quiet` の影響を受けない。
+本ツールはこの層を報告する。`--capabilities` / `--diagnostics` の `session` に `integrityLevel` が加わり（ASCII token：`unknown` / `untrusted` / `low` / `medium` / `high` / `system` / `protected_process`。答えが出なければ `unknown` で、「十分」にも「降格済み」にも報告しない）、`medium` 未満では `caveats` に `process_integrity_below_medium` が 1 件増え、`--diagnostics -v` の probes には `tokenIntegrityLevel` の 1 問が増える。実際の撮影で自プロセスが `medium` 未満かつ、その 1 ラウンドに「システムの拒否」型の失敗（HRESULT `0x80070005` か Win32 `5`、フレーム取得・ファイル書き込み・標準出力書き込み・**履歴コピーの確定**の 4 段階のいずれか）があれば、各失敗の `hint` に実行可能な説明が 1 文足され、ラウンド全体として `notes` の `note.low_integrity` が 1 件（`target` / `backend` / `stage` 付き）加わる。**主画像は納品済みで履歴コピーだけが拒まれた回もこの 4 段階に入っている** —— あのコピーの win32 `5` / `0x80070005` も同じ説明を受け、そのラウンド全体に `note.low_integrity` が 1 条足されるが、主画像はそのまま残る（説明文のために撮り直すことはない）。`code`、`stage`、`hresult` / `win32`、終了コード、すでに納品した画像は一切そのままなので、`code` で分岐してきた呼び出し側は影響を受けない。`--yes` と承諾の階層も変わらない。`note.low_integrity` は notes なので `--quiet` で隠れるが、`errors` に足された `hint` は `--quiet` の影響を受けない。`--capabilities` / `--diagnostics` はこの層を**読み取りで報告するだけで、書き込みを試さない**（能力を探るためにファイルを 1 つも作らない）。
+
+**この説明文の層だけを外せる**：設定ファイルの `diagnostics.integrity_hints = false`、または今回限りの `--integrity-hints off`。外れるのは付加の説明の文章と対応する note だけで、エラーコード、`win32` / `HRESULT` の生の値、納品の事実、`--capabilities` が元から持つ能力の欄は 1 つも影響を受けない。そして**外しても権限は直らない** —— これは説明の省略であって修理ではない（[設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) 参照）。
 
 対処は 3 つ、安い順：
 
@@ -760,10 +794,10 @@ ECAPTURE.EXE --capabilities -v           # probes 段を追加：各質問の生
 | `cursor`                              | `--cursor` の話：`default`（このオプションを付けないときの扱い）、3 つの値、ただ 1 つのスイッチを `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine` で書き、続いて登録済みの内部経路 1 行ごとに `capability`（`settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`）、`reason`、`include` / `exclude`（後者 2 つはそれぞれ `yes` / `no` / `unknown`）、加えて `pointerShapeCompositing: "never"` と `pixelRetouching: "never"`。duplication の 2 経路は `capability: pointer_state_unverified` で `include` / `exclude` とも `no` —— デスクトップ フレームにはポインターがすでに描かれている可能性があり、本ツールはポインター形状を合成しないが、それは画素にポインターが無い証明にはならない。撮って能力を探ることはしないので、登録表に無い経路は推測の答えではなく `unknown` を読む                                                                                                                                                                                                                                                                                                                                                                        |
 | `color`                               | `--hdr` の話：`default`（このオプションを付けないときの扱い）、3 つの値（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` は「このビルドが広色域フレームを運べるか + どう変換するか」を言い、その画面が今 HDR モードかどうかは聞かない（reason は `hdr_display_mode_not_probed`）。`verifiedOnThisMachine` は常に `no`（本プロジェクトに HDR ディスプレイが無いので色彩の受け入れ合格を主張しない）。登録済みの内部経路 1 行ごとに `capability` —— `wide_gamut_capable`（`wgc` / `screen.wgc` のみ）、`wide_gamut_unverified`（`duplication.frame` / `screen.duplication`。デスクトップ面は FP16 や 10 ビットで届く可能性がありますが、本ビルドは `DuplicateOutput` の前にディスプレイの色空間を尋ねないので、何を得たかの証明も保証もできない）、`sdr_source_only`（8 ビット DC を読む経路）、`unregistered` —— および `honorsExplicitPolicy`（`true` は `wgc` の 2 行だけ。「本ビルドで `tonemap` / `refuse` を実現できるのは wgc の 2 経路のみ」の機械可読版）。加えて `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR は常に 8 ビット SDR へ変換して納品し、HDR ネイティブ画像は出さない）              |
 | `autoChainWindow` / `autoChainScreen` | いま試せる `auto` の列。実際の撮影時に `-v` が返す `input.captureChain` とは**同一の** `GateChannels` の出力で、`tests\capabilities.ps1` が両者を突き合わせる                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `history`                             | スクリーンショット履歴アーカイブの**規則**の自己申告（既定で有効）：`enabledByDefault: true`、`relativeTo: "executable-directory"`（実際に走っているあの exe に付いて回る。作業ディレクトリでも `--out` のディレクトリでもない）、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`（コピーは主納品で符号化済みのバイト列を使う：再取得・再符号化・主出力ファイルの読み直し・ハードリンクはいずれも無し）、`commit: "exclusive-create"`（排他的作成で、既存の履歴ファイルを絶対に上書きしない）、`created: "after-first-delivered-image"`（読み取り専用の照会と失敗した回はディレクトリを 1 つも作らない）、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`、加えてコピーだけが失敗したときの部分成功の終了コード `partialSuccessExit: 7`。この段のどのフィールドも「今回そこに書き込めた」という主張ではない —— あの話は撮影結果の `images[].history` にあり、ここでは「その場所へ書き込めるか」すら試していない（`caveats` に `history_root_writability_not_probed` が常に付く）。しかも段全体がプログラムディレクトリからの相対表記で、絶対パスは含まない |
+| `history`                             | スクリーンショット履歴アーカイブの**規則**の自己申告（既定で有効）：`supported: true`（この手順が実装されていることそのもの）、`enabledByDefault: true`（出荷時の既定で付いている）、`configKey: "history.enabled"`（設定ファイルのどの項目がこれを決めるか）、`configOverride: "--history on\|off"`（今回のコマンドラインでどう上書きするか）、`relativeTo: "executable-directory"`（実際に走っているあの exe に付いて回る。作業ディレクトリでも `--out` のディレクトリでもない）、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`（コピーは主納品で符号化済みのバイト列を使う：再取得・再符号化・主出力ファイルの読み直し・ハードリンクはいずれも無し）、`commit: "exclusive-create"`（排他的作成で、既存の履歴ファイルを絶対に上書きしない）、`created: "after-first-delivered-image"`（読み取り専用の照会と失敗した回はディレクトリを 1 つも作らない）、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`、加えてコピーだけが失敗したときの部分成功の終了コード `partialSuccessExit: 7`。この段のどのフィールドも「今回そこに書き込めた」という主張ではない —— あの話は撮影結果の `images[].history` にあり、ここでは「その場所へ書き込めるか」すら試していない（`caveats` に `history_root_writability_not_probed` が常に付く）。`enabledByDefault` も**出荷時の既定**であって今回の実効値ではない —— 設定ファイルでも `--history` でも変えられるので、今回が on か off かはこの文書には書かず、`--show-config` の `history.enabled` と撮影結果の `images[].history.status`（`disabled` を含む）が答える（`caveats` に `history_run_state_not_reported` が常に付く）。しかも段全体がプログラムディレクトリからの相対表記で、絶対パスは含まない |
 | `limits`                              | 1 辺の画素上限、フレーム全体のバイト上限、`--timeout-ms` の上限、隔離呼び出しの内蔵上限、WGC のフレームプール再構築回数、番号と PID の上限、`stdoutTargetsMax: 1`、JPEG 品質の範囲                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `privacy`                             | この照会がやらなかったと自己申告する項目：画面取得なし、確認表示なし、送信なし、ユーザーファイル列挙なし、環境変数読みなし、ユーザー名なし、パスなし                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `caveats`                             | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品し、明示的な `tonemap` / `refuse` の要求を満たせるのは `wgc` の 2 経路だけ）、そして常に `history_root_writability_not_probed`（`history` 段が語るのはアーカイブの規則であって、この照会はその場所へ書き込みを試しておらず、ある回の着地が必ず成功するとも予測しない） |
+| `caveats`                             | 安定した ASCII token。「この報告が断言していないこと」を並べる：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`、そして本機の状況で追加分の `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`、そして常に含まれるのが `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（ポインターの欄は設定と出所までしか言わず、「この画像にポインターが見える／見えない」は言わない）、そして常に `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR の変換数学はオフラインで検証済みだが HDR ディスプレイでの実測は無く、HDR は常に 8 ビット SDR へ変換して納品し、明示的な `tonemap` / `refuse` の要求を満たせるのは `wgc` の 2 経路だけ）、そして常に `history_root_writability_not_probed`（`history` 段が語るのはアーカイブの規則であって、この照会はその場所へ書き込みを試しておらず、ある回の着地が必ず成功するとも予測しない）、そして常に `history_run_state_not_reported`（**今回**の履歴が実際に付いているか外れているかは、この文書には書かれない —— `enabledByDefault` は出荷時の既定にすぎず、設定ファイルの `history.enabled` と `--history on|off` が実効値を決める。確かめるのは `--show-config` と、撮影結果の `images[].history.status` である） |
 
 両方の文書は**同一の**判定関数（`src/EnvReport.cpp` の `BuildEnvReport`）から出る。違いは段落の取捨だけで、
 `--diagnostics` は `build` 段（PE のリンク時刻・機械種別・イメージサイズ・subsystem）を常に載せ、
@@ -809,8 +843,8 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 撮影と同じ�
   同じ約束です：復元も前面化も Z 順の変更もしません。「開いているものを見たい」が画面の様子を変えてはいけないため、
   `caveats` は `no_capture_performed` と `no_window_touched` を載せます。
 - **複数該当は画面取得の歧義ではない。** `--list` はページ送りして返します（`--offset` / `--limit`、既定は 1 回
-  50 件）ので、実際の総数は `pagination.matched` に書かれ、「このページが短い」が「このしかない」に読めることを
-  防ぎます。0 件は正常な回答です：`windows: []` と終了コード `0` であって、`match.no_window` + `4` ではありません。
+  50 件で、その数字は設定ファイルの `query.window_list_limit` だけ変えられる）ので、実際の総数は `pagination.matched`
+  に書かれ、「このページが短い」が「このしかない」に読めることを防ぎます。0 件は正常な回答です：`windows: []` と終了コード `0` であって、`match.no_window` + `4` ではありません。
   `--inspect` は 1 つの対象を必要とするため、画面取得が使うのと**同じ**選択戦略を適用します。その後も複数残れば
   `match.ambiguous_window` + 終了コード `5` — 代わりの 1 つを選んだり、よく似た窓を先に取ったりはしません。
 - **一覧はスナップショットで、古くなります。** ハンドルは再利用され、タイトルは変わり、プロセスは終わるので、ここにある
@@ -860,6 +894,7 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 撮影と同じ�
     "limit": 50,
     "limitDefaulted": true,
     "defaultLimit": 50,
+    "limitSource": "builtin",
     "maxLimit": 8192,
     "matched": 52,
     "returned": 50,
@@ -908,6 +943,12 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 撮影と同じ�
 }
 ```
 
+`pagination.limitSource` は `cli` / `config` / `builtin` の ASCII token で、「このページの件数が最後にどの段階で
+決まったか」を書く。併せて読む 2 つは別の質問に答える：`defaultLimit` は**今回効いている既定の件数**（設定ファイルの
+`query.window_list_limit` を書けばその値がここで、組み込みの 50 恒定ではない）、`limitDefaulted`（`--verbose` の
+`input.limitGiven` も同じ問い）は「今回のコマンドラインが `--limit` を書いたかどうか」だけを表す。「既定がいくつ
+だったか」と「今回で明示したか」を混ぜると、設定を変えた機械と変えていない機械の区別が立たない。
+
 `title` / `class` / `image` は一言一句そのまま渡します — 切り詰めも、文章への埋め込み、大文字小文字の折込みもしません。
 呼び出し側はフィールドを読むのであって、文をパーズするのではありません。帰属イメージの**完全パス**は既定で書きません
 （インストール先にはユーザ名が含まれがちだから）で、必要なら `--inspect=path` を明示します。`--exe` の照合はいつも
@@ -917,7 +958,9 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 撮影と同じ�
 問えなければ `unknown` と書きます — それは**実施できなかった**判定であって、0 という値ではありません。
 
 `--list` / `--inspect` は、ウィンドウ条件・`--monitor`・`--offset` / `--limit`・`--timeout-ms`・`--yes`
-（効果なし）・`--lang` / `-v` / `-q` を受けします。画面取得向けの選択肢と同時に指定すると
+（効果なし）・`--lang` / `-v` / `-q` を受けします。設定ファイルは読む —— ただしこの 2 つに渡る好みは
+`query.window_list_limit`（`--limit` を書かなかったときの既定）とそのほかの言語・詳細度の項目だけで、`--config` /
+`--no-config` で読み方も今回限りの指定と無視ができる（[設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) 参照）。画面取得向けの選択肢と同時に指定すると
 `cli.window_query_conflict` + 終了コード `1` です（`--out`、位置引数、`--format`、`--quality`、`--no-overwrite`、
 `--capture`、`--dry-run`、`--consent-timeout-ms`、`--capabilities`、`--diagnostics`、および 2 つのウィンドウ照会の
 同時指定）。選択戦略の組は入口ごとに判定します：対象を 1 つに絞るためのものなので `--inspect` では有効で、
@@ -1409,15 +1452,16 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 | 確定 | 本番の「置き換えを許さない」原子的リネームをそのまま使う：排他的作成で、既存の名前に当たったら次の連番をもう一度試し、それでも尽きたらはっきり `history.file_exists` と報告する。**既存の履歴ファイルを絶対に上書きしない**ので、複数プロセスが同時に撮ってもシステムの時計が巻き戻っても、すでに残っている 1 枚は消えない。 |
 | 主な成果物との関係 | 2 回の納品で 2 つの場所（別のボリュームに乗り得る）であり、結論もそれぞれ別である。この 2 か所をまたいでまとめて成功・まとめて失敗するトランザクションは約束しない。主出力が済んでいない間はコピーを公開しない（標準出力の半分出も済んだ扱いにはしない）。主画像が着地したあとでコピーだけが失敗したなら、主画像は消えず、発出済みの標準出力はロールバックされず、再取得もしない。`images` と `captured` はいつものとおりで、終了コードは部分成功の `7` を返す。 |
 | 保持 | 自動のローテーションなし、日数や容量による削除なし、バックグラウンドのスキャンなし、送信なし。履歴は永続の画面取得データであって、いつでも作り直せるキャッシュではない：`.\clean.ps1` と `.\build.ps1 -Clean` は成果物を消すが **`build\history` は残す**（安全に残せない場合は理由を述べて明示的に拒否し、黙って削除も移設もしない）、インストールパッケージには入らずリリース台帳にも書かれず、アップグレードもアンインストールも触らない。整理はユーザー自身が明示的に行う。 |
+| 今回だけ付ける／外す | 既定は付いている。外す口は 2 つだけ：設定ファイルの `history.enabled = false`（恒久的な好み）と、今回限りの `--history off`（コマンドラインのほうが常に勝つ）。外した回は**履歴ディレクトリを作らず、アーカイブの手順そもそも開始せず、古い履歴を読みもしなければ消しもしない** —— 「今回は付けない」と「失敗した」は別の結論で、前者は後始末の対象ですらない。規則と優先順位は [設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) 参照。 |
 | インストール先を変えたとき | アーカイブはそのときに走っていた exe に付いて回る。ディレクトリを替えても**古い履歴は移行しない**。古い一括は古いディレクトリに残ったままなので、そちらを探しに行くなら `--capabilities` の `history.location` を古い位置に対して見てください。 |
 
 結果のその段は `images[].history`（納品の事実なので `--quiet` でも隠れない）：
 
 | キー     | 意味                                                                                                                                     |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `status` | `saved` = コピーを排他的に確定した。`failed` = 書き始めたが確定しなかった。`skipped` = そもそもコピーの書き込みを開始しなかった |
+| `status` | `saved` = コピーを排他的に確定した。`failed` = 書き始めたが確定しなかった。`skipped` = そもそもコピーの書き込みを開始しなかった。`disabled` = **今回この手順が付いていなかった**（`history.enabled = false` または `--history off`）—— 失敗ではなく、4 つは並列で互いに代わりにならない |
 | `file`   | `saved` のときだけ現れ、そのときにはディスクに実在する。失敗時に「これから使うはずだった名前」をコピーの実在のふりで渡すことはしない |
-| `code`   | `failed` / `skipped` のときの安定コード：`history.unavailable` / `history.write_failed` / `history.file_exists` / `history.budget_spent` / `history.same_file` |
+| `code`   | `failed` / `skipped` のときの安定コード：`history.unavailable` / `history.write_failed` / `history.file_exists` / `history.budget_spent` / `history.same_file`。`disabled` には `code` が**付かない**（外れたのは決定であって障害ではないので、`errors` に同じコードの 1 件も増えない。終了コードも `0` のまま） |
 
 失敗の詳細（Win32 の生の値や、どの経路で通らなかったかを含む）は `errors` の同じコードの 1 件で、`stage` は `history` と書かれる。`skipped` の 2 とおいは「どの段階が失敗したか」を報告する素材がない（あの回はその段階にすら入っていない）ので、この欄にしか現れない。
 
@@ -1425,7 +1469,137 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 - `history.same_file`：`--out` が `history\` の下に直接向けられていて、計算された名前がちょうど今回のアーカイブ名になるならコピーは書かない —— 書いたらたった今納品した 1 枚を自分で上書きするからである。両方欲しいなら主出力を他所へ書くこと。
 - 主出力が `history\` ツリーの下で名前が違う場合は、コピーは別名で普通にもう 1 枚残る。自分で自分を覆すことも、コピーがコピーを又取りに行く循環も起きない：コピーのバイト列はメモリ内の符号化バッファから来て、主出力ファイルを読むことは絶対にない。
 
-確認ダイアログは、人が「はい」と答える前に「このプログラム自身のディレクトリにもう 1 枚の永続コピーが更に加わる」ことを箱の上に出す（その経路のアーカイブ自身が説明できない回はその一文を書かない —— 存在するはずのないコピーを約束しない）。`--capabilities` の `history` 段が語るのはこの規則そのものであって、ある回の結末ではない —— ディレクトリも作らなければ書き込みも試みないので、`caveats` に `history_root_writability_not_probed` が常に付く。アーカイブの失敗は承諾の階層を決して変えず、「アーカイブを通すために」昇格したり ACL やディレクトリのラベルを変えたりすることもしない。
+確認ダイアログは、人が「はい」と答える前に「このプログラム自身のディレクトリにもう 1 枚の永続コピーが更に加わる」ことを箱の上に出す（その経路のアーカイブ自身が説明できない回はその一文を書かない —— 存在するはずのないコピーを約束しない）。**今回その手順が付いていない回**（`history.enabled = false`、または今回限りの `--history off`）も同じで、箱は「もう 1 枚別に保存する」とは書かない：外したことを約束に紛れ込ませない。`--capabilities` の `history` 段が語るのはこの規則そのものであって、ある回の結末ではない —— ディレクトリも作らなければ書き込みも試みないので、`caveats` に `history_root_writability_not_probed` が常に付く。アーカイブの失敗は承諾の階層を決して変えず、「アーカイブを通すために」昇格したり ACL やディレクトリのラベルを変えたりすることもしない。
+
+## 設定ファイル（`ECAPTURE.ini`）
+
+`ECAPTURE.ini` は**恒久的な好みの置き場所**であって、撮影の意図でも、対象の選び方でも、授権でも、内部の安全上限の調整口でもない。ここに何を書いても「今回なにを撮るか」は決まらず、このファイルが並んでいる状態で `ECAPTURE` を素で起動しても **1 枚も撮らない**（条件を一切与えない起動はこれまでどおりテキストのヘルプ + 終了コード 2）。
+
+### どこを読むか —— 「無い」と「読めない」はまったく別の結末
+
+既定で読むのは、**実際に走っている `ECAPTURE.EXE` と同じディレクトリの `ECAPTURE.ini`** の 1 ファイルだけ。インストール版・ポータブル版・`build\` の開発版はみな同じ判定で、その位置はモジュール自身から求める（作業ディレクトリでも、`--out` のディレクトリでも、固定のインストール位置でもない）。ほかは探さない：現在のディレクトリ、`PATH`、レジストリ、ソースツリー、ユーザーディレクトリの他の場所。
+
+- **無いのは正常**：組み込み既定がそのまま使われ、エラーにも警告にもならず、こちらからファイルを作ることもない。
+- **有るのに読み出せない / UTF-8 が不正 / 構文が通らない**のは明確な失敗である。しかもそれはウィンドウを選ぶ前、確認ダイアログを出す前、1 ピクセルも取る前に決まる。「読めなかったから既定値で別の種類の絵を撮っておく」という退路は**存在しない**。
+- 自分の場所がまったく問えない場合も `config.read_failed` を出すだけ。現在のディレクトリ・ソースツリー・インストール位置を推測して埋めることはしない。
+
+入口は 3 つあり、いずれも今回限りの話で、ファイルの削除も書き換えもしない。
+
+| 入口 | 何をするか | どう失敗を言うか |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `--config <path>` | 今回は名指しした 1 ファイルだけを読む。相対パスは**呼び出し側の現在のディレクトリ**を基準に絶対パスへ直す | 無い・読み出せないなら `config.not_found` / `config.read_failed`。既定のファイルへ**戻さない** —— 名指しした以上、よその推測を差し替えるのは誰も決めていない設定を押しつけることになる |
+| `--no-config` | 今回は設定ファイルを完全に無視し、組み込み既定と今回のコマンドラインだけで走る。障害調査と自己チェックのための隔離入口 | 失敗のしようがない（読まないだけ）。`--config` との同時指定は `cli.conflicting_options` + 終了コード `1` |
+| `--show-config` | 今回の設定を読み取り専用で JSON に出す。ウィンドウも選ばず、画素も取らず、確認も出さず、出力先も履歴ディレクトリも作らず、無関係なファイルの中身も出さない | 読み出せないなら同じ `8`、使い方の衝突なら `1`（下の表を参照） |
+
+`--show-config` の文書は契約 `configview` を持つ。並ぶのは次の項目だけである。
+
+| フィールド | 内容 |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.selection` | `default` / `explicit` / `none` —— このファイルが**どう**決まったか（既定位置か、`--config` か、`--no-config` か） |
+| `config.file` | 実際に読んだ（または読もうとした）絶対パス。今回まったく読んでいなければキー自体が出ない |
+| `config.state` | `not_read` / `absent` / `loaded` / `failed` —— 「読めた」と「読んだ中身が筋をなす」は同義語ではない |
+| `config.loaded` | `state` が `loaded` のときだけ `true` |
+| `settings[]` | 各項目の実効値と出所（`key` / `value` / `source` で、`source` は `cli` / `config` / `builtin` の 3 つの ASCII token）。順序は schema の順序そのまま |
+| `formatBasis` | 出力形式が最後にどの根拠で決まったか（取れる値は下の 6 とおりの token） |
+| `caveats` | `no_pixels_no_files`（何も撮らず何も書かず）、`not_repaired`（この照会は設定を直しも作成もしない）、`preferences_listed_not_executed`（並べているのは好みであって、今回それを実行した証拠ではない） |
+
+受け付けるのは `--config` / `--no-config`、見たい好みのオプション、そして `--lang` / `-v` / `-q` だけ。撮影意図、ウィンドウ条件、`--monitor`、選択戦略（`--index` / `--topmost-match` / `--all`）、`--yes`、`--dry-run`、あるいはほかの照会コマンドと同時に指定すれば `cli.config_view_conflict` + 終了コード `1` である。
+
+`--help` と `--version` の終了の意味は変わっていない。しかもあの 2 本は設定を**読まない** —— 既定のファイルが壊れていてもヘルプと版数は普通に出る（壊れた設定がこれらの入口まで塞ぐことはない）。
+
+内部の worker プロセスはユーザーの設定を再び読まない：親が 1 回だけ読んで正規化した確定済みのパラメータ群を子へ渡すので、父と子が別の経路や別の授権範囲を選ぶことは起きない。1 回の呼び出し = 1 回のスナップショットで、ホットリロードも、バックグラウンドの監視も、自動的な書き戻しもしない。**このツールが設定を「ついでに直す」ことは絶対にない。**
+
+### 設定できる項目
+
+セクション名もキー名も ASCII で大文字小文字を区別せず、構文外側の前後の空白は無視される。出荷時の既定値と区間は `resources\ECAPTURE.example.ini` と**同一の schema**（`src/Config.h` の 1 か所）から出ており、コマンドライン側の上限をここに写した第二の表は存在しない。
+
+| セクション / キー | 出荷時の既定 | 許容される値と区間 | 対応するコマンドライン |
+| -------------- | ---------- | -------------------------------------------------------------------- | -------------------------------------- |
+| `config.version` | `1` | `1` のみ。未知の版数は「念のため互換として読む」ことをせず明確に拒否 | — |
+| `general.language` | `auto` | `auto` / `zh-CN` / `zh-TW` / `en` / `ja` | `--lang` |
+| `general.verbosity` | `normal` | `normal` / `quiet` / `verbose` | `-q` / `--quiet`、`-v` / `--verbose` |
+| `capture.method` | `wgc` | `wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto` | `--capture` |
+| `capture.cursor` | `unset` | `unset` / `default` / `include` / `exclude` | `--cursor` |
+| `capture.hdr` | `unset` | `unset` / `auto` / `tonemap` / `refuse` | `--hdr` |
+| `output.path` | `-` | 出力のテンプレート。`-` は標準出力。相対は**その INI のあるディレクトリ**基準 | `--out` / `-o` |
+| `output.format` | `auto` | `auto` / `png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif` | `--format` |
+| `output.jpeg_quality` | `100` | `1`〜`100` | `--quality` |
+| `output.overwrite` | `true` | `true` / `false` のみ（`1` / `yes` / `on` はブールではない）。`false` は `--no-overwrite` がするのと同じ意味 | `--no-overwrite` |
+| `crop.mode` | `none` | `none` / `client-area` / `roi` | `--client-area`、`--roi`（グループの扱いは下に書く） |
+| `crop.roi` | 空 | `x,y,w,h` の 4 つの 10 進数。`x` / `y` は 0 でも可、`w` / `h` は 1 以上、いずれも 16384 まで | `--roi` |
+| `scale.max_width` | `0` | `0`〜`16384`（`0` = その上限は未設定） | `--scale max-width=N` |
+| `scale.max_height` | `0` | `0`〜`16384`（`0` = 未設定） | `--scale max-height=N` |
+| `scale.max_pixels` | `0` | `0`〜`268435456`（`0` = 未設定） | `--scale max-pixels=N` |
+| `timeouts.processing_ms` | `0` | `0`〜`86400000`（`0` = 総予算を設けない。隔離実行の組み込み上限は消えない） | `--timeout-ms` |
+| `timeouts.consent_ms` | `0` | `0`〜`86400000`（`0` = 応答があるまで待ち続ける） | `--consent-timeout-ms` |
+| `history.enabled` | `true` | `true` / `false` | `--history on\|off` |
+| `diagnostics.integrity_hints` | `true` | `true` / `false` | `--integrity-hints on\|off` |
+| `query.window_list_limit` | `50` | `1`〜`8192`。`--list` が今回 `--limit` を書かなかったときのページ送りの既定になるだけで、照会を勝手に走らせはしない | `--limit` |
+
+`crop.mode = roi` なのに有効な `crop.roi` が無い、という組み合わせはエラーである（「ではウィンドウ全体を渡す」へ降格しない）。逆に `crop.roi` に何か書くなら、`mode` が `roi` でなくても構文は通っていなければならない。
+
+### 設定に入らないもの（省略ではなく境界）
+
+次は意図的に入れていない。抜け落ちではなく、境界である。
+
+- **毎回変わる対象の選び方**：`--hwnd` / `--pid` / `--process` / `--exe` / `--title*` / `--class` といった条件、`--monitor` の対象、`all` / `index` / `topmost` のような選択戦略。毎回変わるものを恒久の設定に落とすと、次回の依頼が前回の対象を撮り続けることになる。
+- **授権の境界**：`--yes`、デスクトップのピクセルに対する既定の同意、確認ダイアログを自動で押すこと、依頼元の偽装。INI に書けるのは好みだけで、人が答えるべき 1 回を代行する口にはならない。`--yes` はこれからも今回のコマンドラインからしか読まない（設定に置く口は無い）。
+- **今回の動作**：`--help` / `--version` / 各種の照会 / `--dry-run` のような「このコマンドがいま何をすべきか」の話。
+- **実装の安全上限**：worker のプロトコル、メモリと 1 フレームの上限、取り消しのあとのドレインの allowance など。これらは呼び出し側が設定ファイルを介して引き上げられるものではない。
+- **システムの設定変更**：昇格、ACL の変更、プライバシー保護を切ること、`PATH` や AI ツールの設定の自動的な変更。
+- **データの外部移動と自動削除**：送信、履歴の自動削除。インストール先とビルド用の道具のパラメータもここに入らない。
+
+### 優先順位と、出所の確かめ方
+
+常に **今回のコマンドラインの明示値 > INI の明示値 > 組み込み既定** である。判定は「値が 0 でも空でもないか」ではなく、**そのキーが書かれていたか**（present）を見る。だから「書いていない」と「明示的に `false` / `0` / `none` / `unset` と書いた」は 2 つの違う指示になる：後者は次の段階へは継承せず、明示的にそう決めたという結論として残る。INI に書いた値が不正なら**欠落へ降格はしない**（エラーとして今回を止める）。
+
+出所は確かめられる：`--show-config`、そして撮影側の `-v` 出力の `input.config`（`selection` / `file` / `state` / `loaded` / `formatBasis` / `sources[]`）。「ファイルが読めたか」と「この項目を最後に誰が決めたか」は 2 つの別事実である。
+
+**出力形式の決定は 1 本の鎖しかない**（`DecideFormat`。ここに第二の規則は無い）：
+
+```text
+明示の --format  >  明示の --out の既知の拡張子  >  INI の auto でない format
+                 >  INI の output.path の既知の拡張子  >  png
+```
+
+INI の `format = auto` は拡張子からの推論を**オフにしない**。コマンドラインで `--format` と矛盾する拡張子を同時に書いたら、その矛盾の通知はこれまでどおり残る（名前も書き直さなければ、もう一度符号化もしない）。`--show-config` / `input.config` の `formatBasis` はその結論の根拠を ASCII で書く：`cli-format` / `cli-output-extension` / `config-format` / `config-output-extension` / `stdout-default-png` / `default-png`。
+
+**相対パスの原点は 2 つあり、混ぜない**：今回の `--out` の相対パスは引き続き**呼び出し側の現在のディレクトリ**基準、INI の `output.path` は**その INI が置いてあるディレクトリ**基準。`-` は常に標準出力で、パスの連結には使わない。`%i` / `%h` / `%p` / `%n` / `%d` / `%t` は従来どおりの時点で展開され、テンプレートの中の `%` を環境変数として展開することはない。主出力のディレクトリは引き続き**存在していること**（ツールはディレクトリを作らない）、履歴の作成の規則も変わらない。
+
+**切り抜きと縮小は「グループ」で差し替える**：コマンドラインで `--roi` または `--client-area` を書いたら、INI の crop グループは**まるごと置き換え**られる（INI 側ともう一方のモードを継ぎ接ぎにして、「設定はクライアント領域、コマンドラインは roi」のような同時には成り立たない組み合わせを生まない）。`--no-crop` は設定の切り抜きを今回取り消す（どんな切り抜きもしない）で、今回の他の切り抜きパラメータと同時に指定すれば衝突である。コマンドラインで最初に `--scale` を書いた時点で INI の scale グループは**まるごと破棄**、`--no-scale` はそのグループを今回取り消す（`--scale` との同時指定は衝突）。どちらも「拡大に切り替える」ことはしない。
+
+`--history on|off` と `--integrity-hints on|off` は INI の `true` / `false` を上書きする。
+
+**詳細度は 1 つのグループ**：設定が `verbose` でも今回の `--quiet` を打ち消さない。同じコマンドラインの中の quiet / verbose の衝突は従来の規則どおり（`--verbose` が勝って、理由の `note.flag_overrides_quiet` が 1 条残る）。
+
+**INI に書いた cursor / hdr は本物の要求である**：コマンドラインで書いた場合とまったく同じ扱いで、経路の選別、フォールバック、結果の `cursorRequested` / `cursorEffective` / `cursorBasis` と色の各欄まで通る。不支持の経路を名指した回は、コマンドラインで書いたときと**同じ解析期の門**で `capture.cursor_unsupported` / `capture.hdr_unsupported` を受け、デスクトップの画素を読む経路へ回し直したりはしない。「コマンドラインで書かれたか」だけを見る判定は使わない。`unset` は未指定のままで、結果のあの 3 グループのキーは出ない（このオプション群を一切書かなかった回とバイト単位で同じ形）。
+
+### 構文、上限、そして `config.*` の診断
+
+- **エンコーディング**：UTF-8（先頭の BOM は許す）。改行は CRLF でも LF でもよい。不正な UTF-8 は「ではシステムのコードページで読み直す」という救済をしない。
+- **コメント**：`;` と `#` は**行を独占**する。行内のコメントはサポートしない（Windows のパスには `;` と `#` が入りうるため、切り落とすのはエラーより悪い）。
+- **値**：前後を対のダブルクォートで囲める（先頭の空白と末尾の空白を保つため）。バックスラッシュはエスケープ文字ではない：`C:\dir` のバックスラッシュはリテラル 1 本である。環境変数の展開、コマンド置換、include、ネットワーク読み取り、入れ子の探索はいずれもしない。
+- **上限**：ファイル全体で 256 KiB、1 行で 4096 文字。256 KiB のほうは**メモリへ読む前に**判定する（超大きいものをまず丸ごと確保してから失敗を報告するのが、まさにこの上限が防ぐもの）。
+  **重複のセクション・重複のキー・未知のセクション・未知のキー・等号の欠落・閉じないクォート・不正な UTF-8・NUL・不正な数値／ブール／列挙・区間外・成り立たない組み合わせ**はすべて明確な失敗で、（有限長に抑えた）設定パス、行番号、`section.key`、安定な診断コードを添える。
+
+診断コードは `config.*` の一族として増えた（追加のみ・改名なし）：`config.not_found`、`config.read_failed`、`config.too_large`、`config.line_too_long`、`config.encoding`、`config.syntax`、`config.duplicate_section`、`config.duplicate_key`、`config.unknown_section`、`config.unknown_key`、`config.unsupported_version`、`config.invalid_number`、`config.invalid_boolean`、`config.invalid_value`、`config.out_of_range`、`config.invalid_combination`。
+
+診断オブジェクトには省略可能な欄が 2 つ増えた：`line`（その設定ファイルの行番号、1 始まり）と、`detail`（`--lang` に追随しない ASCII の原因 token。例えば `path:not-found win32=3`、`limit:262144`）。`message` と `hint` は言語に追随するので、機械が分岐するのは `code` / `line` / `detail` の側である。
+
+### 障害調査の手順
+
+1. `ECAPTURE.EXE --show-config` —— どのファイルを読み、読めたか、各項目の実効値がどの由来かを読み取る（撮らず、出さず、作らない）。
+2. `ECAPTURE.EXE --no-config …` —— 同じコマンドで設定を完全に無視して走り、今回の挙動が設定と無関係だと確かめる。
+3. 診断の `line` と `section.key` を見て、**そのファイルのあの行**を自分で直す。バックアップしてから直すのが早い。
+
+設定が読み出せないのは I/O の失敗なので **`8`**、書かれた内容が筋をなさない（構文・型・区間・版数・組み合わせ）のは使い方の誤りなので **`1`**（`config.too_large` は後者に入る）。設定が読めない・解析できないために最終の `--out` を安全に決められない場合、構造化されたエラーは保守的に **stderr** に出る —— エラーを報告するために stdout を触ることは絶対にない。
+
+読み取り専用の 2 例（撮らず、出さず、何も作らない）：
+
+```powershell
+& "$env:USERPROFILE\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE" --show-config
+& "$env:USERPROFILE\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE" --show-config --no-config
+```
 
 ## メッセージの言語
 
@@ -1527,6 +1701,8 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
    | `cli.invalid_number`、`cli.invalid_value`、`cli.invalid_format`、`cli.unknown_option`、`cli.unknown_language`、`cli.crop_conflict`、`cli.query_conflict`、`cli.window_query_conflict`、`cli.monitor_conflict`、`cli.monitor_selector_empty`、`cli.monitor_selector_kind`、`cli.stdout_multiple_targets`                                                                                                                                                             | 1          | コマンドラインを直す —— 1 枚も取得せず、確認も出さず、ファイルも書いていない                                                                                                                                                                                                                                                                                         |
    | `match.index_out_of_range`、`match.monitor_out_of_range`、`match.roi_out_of_range`                                                                                                                                                                                                                                                                                                                                                                                  | 1          | `hint` に全候補を並べてある。要求した切り抜きは選択時点の対象に収まらない                                                                                                                                                                                                                                                                                            |
+   | `config.syntax`、`config.encoding`、`config.too_large`、`config.line_too_long`、`config.duplicate_section`、`config.duplicate_key`、`config.unknown_section`、`config.unknown_key`、`config.unsupported_version`、`config.invalid_number`、`config.invalid_boolean`、`config.invalid_value`、`config.out_of_range`、`config.invalid_combination` | 1 | `ECAPTURE.ini` の**あの行**を直す（`line` / `section.key` / `detail` が付く）。ウィンドウも選ばず、確認も出さず、1 ピクセルも取っていない。`--show-config` で該当行を見て、確かめたいなら `--no-config`。**設定を直して今回を通すために撮り直す必要はない**（まだ何も撮っていない） |
+   | `config.not_found`、`config.read_failed` | 8 | 読み出せない設定の失敗。`--config` の名指しが打点違いならそのパスを直すか外す。既定のファイルが有るのに読めないなら、権限・リパースポイント・開かれている-exclusive の有無を見る（既定のファイルが**無い**のは正常で、このコードは出ない） |
    | `match.no_window`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 4          | 条件を広げるか、対象が最小化中かどうかを見る（最小化ウィンドウは取得できない）                                                                                                                                                                                                                                                                                       |
    | `match.ambiguous_window`、`match.monitor_ambiguous_id`                                                                                                                                                                                                                                                                                                                                                                                                              | 5          | 複数当たっていてツールは 1 つを選ばない —— `--index` / `--topmost-match` / `--all`、または `--screens` の識別子で絞り込む                                                                                                                                                                                                                                            |
    | `match.monitor_unknown_id`                                                                                                                                                                                                                                                                                                                                                                                                                                          | 4          | その識別子はもうデスクトップに無い。`--screens` を再び実行する                                                                                                                                                                                                                                                                                                       |
@@ -1585,6 +1761,19 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
    `capture.timeout` / `io.timeout` が返る。`--consent-timeout-ms` 以内に誰も答えなかった確認ダイアログは拒否
    （`capture.consent_timeout`、終了コード 6）。`capture.timeout` に `backend=printwindow` / `dwm` が付いていたら、
    対象の UI スレッドが詰まっている可能性が高いので、`--capture wgc` を選ぶか予算を緩める。
+9. **設定は最初に読み取りで見る**：この機の `ECAPTURE.ini` が今回の挙動をどこまで決めているかは
+   `ECAPTURE.EXE --show-config`（読み取り専用。ウィンドウも選ばず、画素も取らず、確認も出さず、何も作らない）
+   が答える。「読めたか」と「各項目を誰が決めたか」が別欄で書かれるので、`capture.method` が設定由来なのか
+   呼び出し側の `--capture` 由来なのかを推測で分岐しなくて済む。
+10. **再現性と安定条件が要る呼び出しは `--no-config`**：CI・自己チェック・他人の機械で同じ結果を出したい自動化は、
+    ユーザーの好みで挙動が動かないよう今回だけ設定を完全に無視して走る（ファイルの削除も書き換えもしない）。
+    逆に「この機の既定どおり」が欲しいなら何も付けないこと。`--config <path>` は今回 1 ファイルを名指すだけで、
+    既定のファイルへは**戻らない**（無い・読み出せないなら失敗として報告される）。
+11. **設定の失敗とアーカイブの失敗で撮り直さない**：`config.*` はウィンドウを選ぶ前・確認を出す前・1 ピクセルも
+    取る前の失敗で、**何も撮れていない**ので再実行していい種類の話である（`8` = 読み出せない、`1` = 筋が通らない）。
+    一方 `images[].history.status` が `failed` / `skipped` の回は**主画像は納品済み**で、着地しなかったのはあの
+    履歴コピーだけ —— ここで撮り直してもコピーは埋まらず、人が承認すべき 1 枚が余計に増える。`disabled` は
+    どちらでもなく「今回その手順が付いていなかった」という決定の報告である（コードもエラーも出ない）。
 
 ## インストール（Windows、一般ユーザーに開発ツールは不要）
 
@@ -1605,6 +1794,8 @@ junction とシンボリックリンク、UNC とドライブ文字の二通り�
 
 既定のディレクトリは `%UserProfile%\.agents\skills\yashi-evernight-capture` で、ウィザードで任意のフォルダを選べる。**選んだフォルダがそのまま Skill のルートになる**：`SKILL.md` はその直下に置かれ、`ECAPTURE.EXE` が隣に並ぶ。同じ名前のフォルダを余分に作ることはない。アップグレード時は前回選んだフォルダを覚えている。
 
+`ECAPTURE.EXE` の隣には設定の**テンプレート** `ECAPTURE.example.ini` も並ぶ。これは管理対象のファイル（アップグレードで更新される製品側のもので、固定ハッシュの台帳に載る）で、**実際のユーザー設定（`ECAPTURE.ini`）はそこに載らない**。インストーラーは `ECAPTURE.ini` を**本当に存在しないときだけ**テンプレートから排他的に 1 枚作り、すでにあるファイルは**有効でも壊れていても**上書きも、空に切り詰めることも、書き直しも、バックアップも削除もしない。設定ファイルが無くてもプログラムは動く（既定のファイルが**無い**のは正常で、組み込み既定が使える）。規則は [設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) 参照。 テンプレート内の各設定行はコメント（`;key = value`）として書かれているため、インストール時に新規作成されるファイルは「設定ファイルが無い」状態と完全に等価です。先頭の `;` を取り除いた行だけがユーザーの明示的な要求になります。
+
 ```bat
 :: インストール後の読み取り専用セルフチェック（cmd.exe）。パスは引用符で囲む（既定パスに空白は無いが、カスタムパスにはあり得る）。
 powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
@@ -1619,7 +1810,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 
 ### 4. 読み取り専用のインストール自己検査
 
-`verify-install.ps1`（選択したフォルダのルートに入る）は **Visual Studio もソースツリーもネットワークも必要としない**。順に次を確かめる：`install-manifest.json` に載る全ファイルの存在・サイズ・SHA-256；四つの README と `SKILL.md` の相対リンクがインストール先の中の実在ファイルを指しているか；`--version` が終了コード 0 で版が一致するか；`--capabilities` / `--diagnostics` が終了コード 0 で解釈可能な JSON であり、`program.version` / `arch` / `buildId` がマニフェストと一致するか；`--help` が終了コード 3 か（これは契約であって失敗ではない）。`-RunOfflineTests` を付けると、同梱の `test-all.ps1` でマニフェストが宣言するオフラインテスト群を、**このフォルダの** `ECAPTURE.EXE`（`PATH` 上の古い版は使わない）に対して実行し、ログはシステムの一時ディレクトリに置く。終了コード：`0` 全通過、`1` 失敗あり、`2` 前提が成立しない（フォルダ違い、マニフェスト無し）。実際のウィンドウ / HDR / マルチモニター / 確認ダイアログのテストは**ここでは走らせない**——それは人が適切な環境で行うものだ。
+`verify-install.ps1`（選択したフォルダのルートに入る）は **Visual Studio もソースツリーもネットワークも必要としない**。順に次を確かめる：`install-manifest.json` に載る全ファイルの存在・サイズ・SHA-256；四つの README と `SKILL.md` の相対リンクがインストール先の中の実在ファイルを指しているか；`--version` が終了コード 0 で版が一致するか；`--capabilities` / `--diagnostics` が終了コード 0 で解釈可能な JSON であり、`program.version` / `arch` / `buildId` がマニフェストと一致するか；`--help` が終了コード 3 か（これは契約であって失敗ではない）。**設定这一组は別々の 2 つの問として報じる**：テンプレート `ECAPTURE.example.ini` は管理対象のファイルなのでマニフェストどおりの完全性（名前とハッシュの出所も、第 2 の表を持たず同梱の `install-manifest.json` の `configPayload` から読む）で確かめ、**実際のユーザー設定 `ECAPTURE.ini` はインストールの完全性ではなく読み込み／解析の状態だけ**を報じる（無い = 正常、壊れている = 明確な使用上のエラー——ユーザーが好みを編集したことが「インストールファイルの破損」とは報告しない）。既存の契約・能力・身元の検査は**すべて `--no-config` を明示**して走り、ユーザーの好みで自己検査がぶれないようにする。設定専用の確認は今回自前の一時目录に作った一時 INI と `--config` で回す（インストール先に触れない）。`-RunOfflineTests` を付けると、同梱の `test-all.ps1` でマニフェストが宣言するオフラインテスト群を、**このフォルダの** `ECAPTURE.EXE`（`PATH` 上の古い版は使わない）に対して実行し、ログはシステムの一時ディレクトリに置く。終了コード：`0` 全通過、`1` 失敗あり、`2` 前提が成立しない（フォルダ違い、マニフェスト無し）。実際のウィンドウ / HDR / マルチモニター / 確認ダイアログのテストは**ここでは走らせない**——それは人が適切な環境で行うものだ。
 
 ### 5. AI ツールにこの Skill を見つけさせる
 
@@ -1641,13 +1832,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 
 ### 6. アップグレード・アンインストール・困ったとき
 
-- **アップグレード**：新しいセットアップを同じフォルダに実行すればインプレースで更新し、選択を覚えている。失敗や中断時はロールバックし、書きかけのフォルダを残さない。
+- **アップグレード**：新しいセットアップを同じフォルダに実行すればインプレースで更新し、選択を覚えている。失敗や中断時はロールバックし、書きかけのフォルダを残さない。上書き前の保護の判据は**内容の証拠**を使う：本世代の所有権マーカー（`markerversion=2`）は管理対象 1 ファイルごとに「相対パス\|大きさ\|書き込み時刻\|内容の SHA-256」を記録し、まず大きさ／時刻で速やかに判別して、値が揃った内容は SHA-256 で突き合わせる（時刻だけ戻した差し替えもここで分かる）。ハッシュが読めない・計算できないファイルは第 4 欄を空にし、**「変わっていない」とは数えない** ——次回、そのファイルは証明できないものとして先にバックアップしてから上書きする。前世代のマーカー（`markerversion=1`、大きさ／時刻のみ）もディレクトリの所有は認める（インストール済みのユーザーを「未知のディレクトリ」の確認で止めない）が、内容のベースラインを持たないので、上書きされる側の元のファイルは先にバックアップする。製品名・`AppId`・マーカー版数の唯一の出所は `installer\payload.manifest.json` で、インストール後の `verify-install.ps1` が読むのは同梱の `install-manifest.json` の**同源の欄**である（別の場所に第 2 の表を持たせない）。
+- **ユーザー設定（`ECAPTURE.ini`）**：アップグレードは**テンプレート `ECAPTURE.example.ini` だけ**を更新し、実際に読む `ECAPTURE.ini` には触らない（すでに有るなら、有効でも壊れていても、上書き・空に切り詰め・書き直し・バックアップ・削除をしない。無いならテンプレートから排他的に 1 枚作る）。この 1 ファイルは固定ハッシュの台帳（`install-manifest.json` / `payload.sha256.txt`）にも所有権マーカーの管理記録にも**載らない**ので、ユーザーが好みを編集しても「インストールファイルが壊れている」とは報告されない —— `verify-install.ps1` は**テンプレートの完全性**と**実際の INI の読み込み／解析の状態**を別の 2 つの問として報じる。アンインストールもこれを消さない（[設定ファイル（ECAPTURE.ini）](#設定ファイルecaptureini) 参照）。
 - **フォルダを変える**と二つ目の独立したコピーになる。古いフォルダはそのまま残る（勝手に移行・削除しない）。両方ある場合、アンインストール項目は別々に並ぶので、不要な方を消すか、ツールを一方だけに向ける。
 - **同名で本製品のものでないフォルダ**：`install-manifest.json` が無いと報告し、何かをする前に確認する。既存の中身を黙って上書きすることはない。`/VERYSILENT` による無人インストールでは尋ねる相手がいないため、**ファイルを一つも書かず**に非 0 の終了コードで中止し、理由は `/LOG` の日誌に残す。
-- **アンインストール**はインストーラーが記録したファイルだけを消す。あとから足したファイル、ログ、隣の Skill は残る；`.agents` や `skills` といった親フォルダを再帰的に削除しない。
+- **アンインストール**はインストーラーが記録したファイルだけを消す。あとから足したファイル、ログ、ユーザー設定の `ECAPTURE.ini`、隣の Skill は残る；`.agents` や `skills` といった親フォルダを再帰的に削除しない。
 - **スクリーンショット履歴**（`<インストール先>\history\日付\`、[スクリーンショット履歴アーカイブ](#スクリーンショット履歴アーカイブ既定で有効) 参照）はインストーラーの目に「あとから足したファイル」と同じ種類に映る：管理対象のリストにも、`install-manifest.json` / `payload.sha256.txt` のこのリリース台帳にも入っていない。**アップグレードも再インストールもアンインストールも、それを消さず、変更せず、ユーザーの変更としてバックアップすることもしない**。フォルダにこの木が 1 本増えても、インストーラーがこの場所を「本製品のものでないディレクトリ」と誤判定することはない（所有の判定はあの ownership マーカーの 1 つだけを見る）。アンインストールのあとも履歴はそのディレクトリに残り、位置は完了ページと README に書いてある。整理するならその木を自分で明示的に削除してください。
 - **インストール先を替えたときに履歴は移行しない**：撮った画像は古いディレクトリのあの `history\` の隣に残ったままになる（アーカイブはそのときに走っていた exe に付いて回る）。古い一括を引き続き使うなら、自分で持っていくか、ツールに 2 か所を同時に知らせる。
-- **ファイルが使用中**：インストーラーはロックされたファイルを報告してロールバックする。インストールを通すために実行中のプログラムを終了させることはなく、成功したふりもしない。
+- **ファイルが使用中**（`ECAPTURE.EXE` を開いたまま再インストールする現場）：内容のベースラインを入れてからは、この占用は **`PrepareToInstall` のバックアップ読み取りの段階で中止**する（本機実測の終了コード `7`）。**ファイルのコピー段階はそもそも始まっておらず**、ディレクトリ内の一式は失敗前のまま、ユーザーが後から置いたファイルも影響を受けない。以前（大きさ／時刻だけで判別し、バックアップ読み取りが不要だった頃）の本機実測は「コピー段階で失敗、終了コード `5`、Inno が置いたファイルを撤回」で、どちらの進め方でも**半分だけ新しいという状態は残らない**。インストールを通すために実行中のプログラムを終了させることはなく、成功したふりもしない。
 - **インストール先がセキュリティポリシーで制限されている**：選んだフォルダが「その中のプログラムは一時ディレクトリを作成してはいけない」という方針（企業向けエンドポイント保護でよくある）の下にあると、その場でのアンインストールは `Setup was unable to create the directory "…-uninstall.tmp". Error 5` で失敗し、同梱セルフテストの `delivery` 層が「一時ディレクトリが作れるか」で失敗する。これは環境が拒否しているだけで製品の不具合ではない：別のフォルダに入れて直すか、管理者にこのフォルダを許可してもらう。`verify-install.ps1` の読み取り専用部分（ファイルハッシュ、ドキュメント参照、バイナリの同一性）は影響を受けず、これまで通り照合できる。
 - **「入れたのに AI が無視する」**：まずそのフォルダがツールの走査対象かを確かめ（上記）、次に版の文字列ではなくバイナリの同一性を照合する——`install-manifest.json` の `version`・`arch`・`buildId` を `ECAPTURE.EXE --capabilities` と突き合わせる。ソースチェックアウト隣の古い `ECAPTURE.EXE` は遅れていることがあるが、**新しく入れたものはそうならない**（そのインストーラー自身のビルドから来るため）。
 
@@ -1674,8 +1866,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 | `.\tests\cursor.ps1`        | `--cursor`：経路ごとの登録表、19041 の下限の両側で列が狭まる判定、`cursorRequested` / `cursorEffective` / `cursorBasis` の合成、ポインター形状の取得・ポインター描画・マウス移動の呼び出しが `src/` のどこかに現れたら失敗する見張り                                                                                                       |
 | `.\tests\hdr.ps1`           | `--hdr`：DXGI 形式と表示色空間の分類（認識できないものは `unknown` のまま）、トーン曲線の性質、`ConvertWideFrameToSdrBgra8` の逐点検証、結果のキー群、そして正直な SDR の実機ケース（既定ではキーが現れず、SDR フレームに処理を要求したときだけ `note.hdr_source_sdr`）                                                                    |
 | `.\tests\save.ps1`          | ファイル納入：実ファイルに対する `--no-overwrite` の各真偽表記、一括分の出力名プランと衝突検出、ロックされたターゲット / ディレクトリ / ディレクトリ無し / 強制終了に対するアトミックな確定、並発の上書き禁止                                                                                                                              |
-| `.\tests\history.ps1`       | スクリーンショット履歴アーカイブ：オフラインの層は本番の `HistoryArchive` + `Delivery` + `FileSave` に対して、命名とローカル日付が同じ 1 回の時刻から出る、同じ瞬間の 2 枚 / 時計の巻き戻し / 日付をまたぐ、同じ名の排他的確定と名前を変えてのリトライ、その経路が通らないときの失敗の分類、主出力の名前が history ツリーの中に入っても自分で自分を覆さない、そして「主画像は成功したがコピーが失敗」「主画像の失敗と標準出力の半分出ではコピーを公開しない」「主画像が着地したあとに予算が尽きたらコピーは開始しない」「アーカイブが何かを投げても納品の事実を消さない」を判定する（`build\ecapture-history-tests.exe`）。実機の層は exe を今回のフォルダへコピーし、自前のウィンドウで次のとおり確かめる —— 着地点がプログラム自身に付いて回る、主出力とコピーがバイト単位 / SHA-256 で同じ、一括と `--out -` の 2 経路、読み取り専用と引数失敗は履歴を 1 つも作らない、リパースポイントと「その名前がファイル」のときの部分成功 `7` |
-| `.\clean.ps1`               | `.\build.ps1 -Clean` と `scripts\build-clean.psm1` の 1 つの判定を共有する：`build\` の成果物は消すが、開発版 exe の隣の `build\history` は残す（あれは本物の画面取得データで、ビルド成果物ではない）。`build\` か `build\history` がリパースポイント、あるいはその名前がファイルにふさがれているときは理由を述べて明示的に拒否し、黙って削除も移設もしない（`tests\history.ps1` 第 10 節がこの本体に対して判定する） |
+| `.\tests\config.ps1`         | `ECAPTURE.ini` の統合層（`tests\config_state.cpp` の 148 項目のオフライン判定と対をなす 86 項目）：既定位置の読み方、`--config` / `--no-config` / `--show-config` の 3 入口と衝突、CLI > INI > 組み込みの合并と来源记账、出力形式の鎖と `formatBasis`、裁剪／縮小のグループまるごとの差し替えと `--no-crop` / `--no-scale`、`config.*` の診断コードと行番号、`--history` / `--integrity-hints` の上書き、`--list` の `pagination.limitSource`、壊れた設定でも動く `--help` / `--version`。画面取得も確認ダイアログも実ユーザー設定も触らない（今回の一時フォルダの一時 INI だけで回る） |
+| `.\tests\history.ps1`       | スクリーンショット履歴アーカイブ：オフラインの層は本番の `HistoryArchive` + `Delivery` + `FileSave` に対して、命名とローカル日付が同じ 1 回の時刻から出る、同じ瞬間の 2 枚 / 時計の巻き戻し / 日付をまたぐ、同じ名の排他的確定と名前を変えてのリトライ、その経路が通らないときの失敗の分類、主出力の名前が history ツリーの中に入っても自分で自分を覆さない、そして「主画像は成功したがコピーが失敗」「主画像の失敗と標準出力の半分出ではコピーを公開しない」「主画像が着地したあとに予算が尽きたらコピーは開始しない」「アーカイブが何かを投げても納品の事実を消さない」「今回外れている回は `status=disabled` で `code` も `errors` も増えない」を判定する（`build\ecapture-history-tests.exe`。コミットの瞬間はテスト専用の接缝 `HistoryCommitFn` で差し替えられる——既定は空で、その場合は本番の `SaveFileAtomic` をそのまま通す。包装の中身まで本番のコードである）。実機の層は exe を今回のフォルダへコピーし、自前のウィンドウで次のとおり確かめる —— 着地点がプログラム自身に付いて回る、主出力とコピーがバイト単位 / SHA-256 で同じ、一括と `--out -` の 2 経路、読み取り専用と引数失敗は履歴を 1 つも作らない、リパースポイントと「その名前がファイル」のときの部分成功 `7` |
+| `.\clean.ps1`               | `.\build.ps1 -Clean` と `scripts\build-clean.psm1` の 1 つの判定を共有する：`build\` の成果物は消すが、開発版 exe の隣の **`build\history` と `build\ECAPTURE.ini` をその場で残す**（あれは本物の画面取得データとユーザー設定で、ビルド成果物ではない。設定のほうは判定が名前だけを見る ——此刻読み通せない設定でも同じように残す。先に退避して後で戻す、という手のひら返しはしない）。`build\` か `build\history` がリパースポイント、あるいはその名前がファイルにふさがれているときは理由を述べて明示的に拒否し、黙って削除も移設もしない（`tests\history.ps1` 第 10 節がこの本体に対して判定する）。ビルドは `resources\ECAPTURE.example.ini` を `copy_if_different` で exe の隣へ置くだけで、**`ECAPTURE.ini` には決して触らない**（`CMakeLists.txt` の POST_BUILD 1 本） |
 | `.\tests\screen.ps1`        | 3 本のデスクトップ経路でのモニタ全体取得を、赤い塊の配置と陰性対照で検証。答えるのは `-SimulateConsent` を付けたときだけで、テスト専用のデスクトップに限る                                                                                                                                                                                 |
 | `.\tests\smoke.ps1`         | エンドツーエンド：自分のテストウィンドウを撮影し、PNG のサイズとピクセル内容を検証                                                                                                                                                                                                                                                         |
 | `.\tests\invoker.ps1`       | 共有のテスト起動ラッパー自身：argv のクォーティング、2 ストリームの同時消費、バイナリ出力、ハングした子プロセス、実行ごとの一時ディレクトリ                                                                                                                                                                                                |
@@ -1738,9 +1931,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 ```
 
 - **まずビルドし、失敗すれば止まる**（終了コード 11）：`build.ps1` を `-Config`（既定 `Release`）で呼び、本体**と**テストプログラムを出す。`-SkipBuild` は `build\` の再利用を明示する指定だが、それでも真の出所（`src\Version.h` の版、PE アーキテクチャ、`program.buildId`）を照合する——ビルド失敗が古い成果物に逃げることはなく、「ファイルが有る」は「今のビルドが成功した」にはならない。
-- **ペイロードの収集**は `installer\payload.manifest.json` に従い、`build\` 下の独立した staging に入れる：`ECAPTURE.EXE`、`SKILL.md` + `references\`、README 四つ、`LICENSE`、`resources\icon.ico`、`verify-install.ps1`、`test-all.ps1`、`tests\`（スクリプト、`harness.psm1`、補助ウィンドウのソース、手動ウィザードのバッチ）、そして `build\` 下のテストバイナリ。内容ガードがソースファイル、開発用 `AGENTS.md` / `MEMORY.md`、ログ、スクリーンショットを拒否し、ペイロード内の `ECAPTURE.EXE` が今ビルドしたものと違えばこれも拒否する。
+- **ペイロードの収集**は `installer\payload.manifest.json` に従い、`build\` 下の独立した staging に入れる：`ECAPTURE.EXE`、`SKILL.md` + `references\`、README 四つ、`LICENSE`、`resources\icon.ico`、**設定のテンプレート `ECAPTURE.example.ini`（管理対象のペイロード。出所はリポジトリの 1 ファイルそのもので、`build\` の CMake 複製品ではない）**、`verify-install.ps1`、`test-all.ps1`、`tests\`（スクリプト、`harness.psm1`、補助ウィンドウのソース、手動ウィザードのバッチ）、そして `build\` 下のテストバイナリ。内容ガードがソースファイル、開発用 `AGENTS.md` / `MEMORY.md`、ログ、スクリーンショット、**履歴の `history\` の木**、そして**実際のユーザー設定 `ECAPTURE.ini`** を拒否する（後者 2 つがペイロードの条目に現れたら、表を読むこの段階で失敗——他人の個人路径と好みを出荷する口にならない）。ペイロード内の `ECAPTURE.EXE` が今ビルドしたものと違えばこれも拒否する。
 - **staging のマニフェスト** `install-manifest.json`（と `payload.sha256.txt`）が版、アーキテクチャ、構成、`buildId`、全ファイルの SHA-256 を記録し、インストール後の `verify-install.ps1` はこれと照合する。
-- **コンパイラ**は Inno Setup 6.3 以降（.iss が `ArchitecturesAllowed=x64compatible` を使う）。`PATH` か一般的なインストール先から見つけ、`-IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"` でも指定できる。ツールの自動ダウンロードや自動インストールはしない：無ければ何が足りないかを印字して終了コード `32` で終わる（`-StageOnly` はコンパイラ不要でそのまま動く）。`build.ps1` 自身の依存は C++ デスクトップワークロード付きの Visual Studio で、`vswhere` が探す。
+- **コンパイラ**は Inno Setup **6.4 以降**（.iss が 6.3 引入の `ArchitecturesAllowed=x64compatible` に加え、6.4 引入の `GetSHA256OfFile` を使う——上書き前の内容ベースラインの判定がこれに依存する）。`PATH` か一般的なインストール先から見つけ、`-IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"` でも指定できる。ツールの自動ダウンロードや自動インストールはしない：無ければ何が足りないかを印字して終了コード `32` で終わる（`-StageOnly` はコンパイラ不要でそのまま動く）。`build.ps1` 自身の依存は C++ デスクトップワークロード付きの Visual Studio で、`vswhere` が探す。
 - **成果物**：`build\installer\EvernightCapture-<版>-<アーキテクチャ>-setup.exe` と隣の `<...>.exe.sha256`。版は `src\Version.h` から取り（手書きの版は二つと持たない）、名前には版とアーキテクチャを含め、最後の要約にパス、版、`buildId`、SHA-256 を再掲する。`build\`（staging、インストーラー、ログ）は `.gitignore` 済みで、追跡されるリリース成果物は含まない。タイムスタンプを含む成果物はバイト単位の再現性を約束しない。
 - どちらのスクリプトも管理者権限を要求せず、システムの実行ポリシーも変えない。上の例の `-ExecutionPolicy Bypass` はその 1 プロセス限りで、グローバル設定ではない。
 

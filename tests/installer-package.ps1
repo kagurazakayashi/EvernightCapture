@@ -20,13 +20,26 @@
       2. 载荷清单与离线依赖闭包：清单声明的每套离线套件都要有依赖条目，闭包里的脚本 / 二进制 /
          辅助文件在真实源码树里必须存在（少一个就是打包该拦住的东西）；声明了套件却没写依赖条目，
          读表这一步就该失败。
+         配置这一对也在这里判，而且判的是**两种身份**：模板（ECAPTURE.example.ini）是受管载荷，
+         条目必须 required、装在载荷根、freshness=repo（来源是仓库文件本身，不是 build\ 里那份
+         POST_BUILD 复制品）；实际用户配置（ECAPTURE.ini）不是载荷 —— 清单里出现把它的叶子名当
+         from/to 的条目，或 configPayload 缺字段 / 创建语义不是 only-if-absent / 模板条目被写成可选，
+         读表这一步就必须失败。
+      2b. 安装器静态一致性（配置那一半）：ecapture.iss 必须把用户配置作为「从模板独占创建
+         （onlyifdoesntexist）+ 卸载不删（uninsneveruninstall）」的条目，且 [UninstallDelete] 里
+         不许点名 ECAPTURE.ini 或 history\；模板名与用户配置名的默认值都要与载荷清单一致。
       3. 产物身份：正向拿真实 build\ecapture.exe 核对（版本 / 架构 / buildId / PE 时间戳互相自洽）；
          负向用错误的版本、错误的架构，以及一个根本不是 ECAPTURE 的程序与残缺 PE。
       4. 端到端负向：把打包需要的那几份文件复制进本次自建的临时树，抽掉 ecapture-hdr-tests.exe 与
          ecapture-identity-tests.exe，跑真实的 build-installer.ps1（-SkipBuild），判退出码非 0、
          报的就是这两个依赖、临时树里没多出安装包，并且本仓库现有安装包一个字节都没被改动。
+         另跑一轮"抽掉配置模板"的负向：模板是受管载荷，缺了就必须拦住，不许静默用旧文件或干脆不发。
       5. 端到端正向：同一棵（路径含空格与中文的）树补齐依赖再跑一次，判退出码 0、真的出了安装包、
          provenance 落了盘；再重用同一 staging 跑一次 -StageOnly，判"重用"这条路也通。
+         正向这一轮还要判：载荷里的模板逐字节等于仓库那份、进了 install-manifest.json 与
+         payload.sha256.txt 与编译期受管清单；而临时树里那一份**实际用户配置**（build\ECAPTURE.ini，
+         内容带哨兵）哪儿都不许出现 —— 载荷、发行清单、哈希清单、受管路径清单里都没有它，
+         而它自己在原地一个字节都没被动过（打包工具不采集、也不清理别人的个人设置）。
       6. 安装器静态一致性：ecapture.iss 的 [Setup] AppId / AppIdGuid / 载荷清单 appId 三处必须是
          同一个 GUID，并且带 -Arch 守卫与"没有编译期受管清单就编不过"的守卫。
 
@@ -383,6 +396,59 @@ try {
     Assert-Ec $threw '清单声明了离线套件却没有它的依赖条目时，读表必须失败（不能默默少跑一套）'
 
     # =========================================================================
+    Write-Host "`n=== 2c) 配置的两份身份：模板是受管载荷，ECAPTURE.ini 不是载荷 ==="
+    # =========================================================================
+    $cfgRules = Get-EcConfigPayloadRules -Manifest $manifest
+    Assert-Ec (([string]$cfgRules.TemplateFile) -eq 'ECAPTURE.example.ini') "模板文件名应为 ECAPTURE.example.ini（实际 $([string]$cfgRules.TemplateFile)）" -Quiet
+    Assert-Ec (([string]$cfgRules.UserConfigFile) -eq 'ECAPTURE.ini') "实际用户配置文件名应为 ECAPTURE.ini（实际 $([string]$cfgRules.UserConfigFile)）" -Quiet
+    Assert-Ec (([string]$cfgRules.CreateUserConfig) -eq 'only-if-absent') '用户配置只能"缺失时独占创建"，任何覆盖式写法都不接受' -Quiet
+    $tplEntries = @($manifest.entries | Where-Object {
+        (($_.from -replace '/', '\').TrimEnd('\').Split('\') | Select-Object -Last 1) -ieq $cfgRules.TemplateFile
+    })
+    Assert-Ec ($tplEntries.Count -eq 1) "清单里应恰好有一条模板条目（实际 $($tplEntries.Count) 条）" -Quiet
+    Assert-Ec ($tplEntries.Count -eq 1 -and [bool]$tplEntries[0].required) '模板条目必须是 required：受管载荷缺失必须让打包失败'
+    Assert-Ec ($tplEntries.Count -eq 1 -and ([string]$tplEntries[0].to) -eq 'ECAPTURE.example.ini') '模板要装在载荷根（安装后与 ECAPTURE.EXE 同目录）'
+    Assert-Ec ($tplEntries.Count -eq 1 -and ([string]$tplEntries[0].freshness) -eq 'repo') `
+        '模板的 freshness 必须是 repo：它住在仓库里。写 current-build 等于把 build\ 那份 POST_BUILD 复制品当证据，陈旧文件也能出包'
+    $tplSrcPath = Join-Path $repo (([string]$cfgRules.TemplateSource) -replace '/', '\')
+    Assert-Ec (Test-Path -LiteralPath $tplSrcPath) "清单声明的模板来源在仓库里找不到：$tplSrcPath"
+    if (Test-Path -LiteralPath $tplSrcPath) {
+        $tplSrcText = Get-Content -LiteralPath $tplSrcPath -Raw -Encoding UTF8
+        Assert-Ec ($tplSrcText.Length -gt 0) '模板不能是空文件' -Quiet
+        Assert-Ec ($tplSrcText -match '(?m)^\s*\[config\]\s*$') '模板要有 [config] 段（否则它不是一份配置模板）'
+        Assert-Ec ($tplSrcText -match '(?m)^\s*\[history\]\s*$') '模板要覆盖 history.enabled（新增的受支持键必须在模板里可见）'
+        $tplSrcHash = (Get-FileHash -LiteralPath $tplSrcPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Write-Host ("    模板来源：{0}（SHA-256 {1}…）" -f $cfgRules.TemplateSource, $tplSrcHash.Substring(0, 12)) -ForegroundColor DarkGray
+    }
+    # 清单里出现把用户配置当条目的写法（大小写不同的叶子名也算）= 要把某个人的路径与偏好打进包里
+    foreach ($poison in @('ECAPTURE.ini', 'ecapture.ini', 'resources/ECAPTURE.INI')) {
+        $pm = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $pm.entries += [pscustomobject]@{ from = $poison; to = $poison; role = 'config-template'; required = $true; glob = $false; freshness = 'repo' }
+        $pp = Join-Path $run.Path ('manifest-usercfg-{0}.json' -f $poison.Replace('/', '_').Replace('\', '_'))
+        $pm | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $pp -Encoding UTF8
+        $t = $false
+        try { [void](Get-EcPayloadManifest -Path $pp) } catch { $t = $true }
+        Assert-Ec $t "清单把实际用户配置（$poison）当成载荷条目时，读表必须失败"
+    }
+    # 半份定义比少一份定义更糟：configPayload 缺失、创建语义写错、模板名与用户配置名撞车、
+    # 模板条目被降级成可选 —— 全都在读表这一步失败，不留到安装器里各自猜一个名字。
+    foreach ($mut in @('noConfigPayload', 'badCreateMode', 'sameName', 'templateOptional', 'templateFromBuild')) {
+        $mm = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        switch ($mut) {
+            'noConfigPayload'  { $mm.PSObject.Properties.Remove('configPayload') }
+            'badCreateMode'    { $mm.configPayload.createUserConfig = 'always-overwrite' }
+            'sameName'         { $mm.configPayload.templateFile = 'ECAPTURE.ini' }
+            'templateOptional' { @($mm.entries) | Where-Object { $_.to -eq 'ECAPTURE.example.ini' } | ForEach-Object { $_.required = $false } }
+            'templateFromBuild' { @($mm.entries) | Where-Object { $_.to -eq 'ECAPTURE.example.ini' } | ForEach-Object { $_.from = 'build/ECAPTURE.example.ini'; $_.freshness = 'current-build' } }
+        }
+        $mp = Join-Path $run.Path ("manifest-cfg-$mut.json")
+        $mm | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $mp -Encoding UTF8
+        $t = $false
+        try { [void](Get-EcPayloadManifest -Path $mp) } catch { $t = $true }
+        Assert-Ec $t "清单的 configPayload 被改成 $mut 后读表仍然放过（配置身份的守卫失效）"
+    }
+
+    # =========================================================================
     Write-Host "`n=== 3) 产物身份核对：正向自洽，负向逐条说清 ==="
     # =========================================================================
     $notPe = Join-Path $run.Path 'not-a-pe.exe'
@@ -439,6 +505,25 @@ try {
     Assert-Ec ($issText -match 'SuppressibleMsgBox') '未知目录确认必须用受 /SUPPRESSMSGBOXES 管辖的弹框'
     Assert-Ec ($issText -match 'IDNO') '静默模式下未知目录确认的默认值要是不装'
 
+    # 配置那一半的静态判据：名字与清单同源，用户配置那条必须是"独占创建 + 卸载不删"。
+    Assert-Ec ($issText -match ('#define ConfigTemplate "' + [regex]::Escape([string]$cfgRules.TemplateFile) + '"')) `
+        'ecapture.iss 的 ConfigTemplate 默认值与载荷清单的 configPayload.templateFile 不一致（模板名漂成两份定义）'
+    Assert-Ec ($issText -match ('#define UserConfig "' + [regex]::Escape([string]$cfgRules.UserConfigFile) + '"')) `
+        'ecapture.iss 的 UserConfig 默认值与载荷清单的 configPayload.userConfigFile 不一致（用户配置名漂成两份定义）'
+    Assert-Ec ($issText -match 'Source:\s*"\{#SourceDir\}\\\{#ConfigTemplate\}"[^\r\n]*DestName:\s*"\{#UserConfig\}"[^\r\n]*onlyifdoesntexist[^\r\n]*uninsneveruninstall') `
+        'ecapture.iss 没有把用户配置写成「从模板独占创建（onlyifdoesntexist）+ 卸载不删（uninsneveruninstall）」的条目'
+    # 已有的损坏用户配置也必须活着：除了 onlyifdoesntexist，还要保证没有任何一条会覆盖它的写法，
+    # 以及卸载段里不许点名它（或截图历史）—— 那两个都是"把用户数据当产品文件"的形状。
+    $overwriteShape = @($issText -split "`r?`n" | Where-Object {
+        $_ -match 'DestName:\s*"\{#UserConfig\}"' -and $_ -notmatch 'onlyifdoesntexist'
+    })
+    Assert-Ec ($overwriteShape.Count -eq 0) '有把用户配置写成会覆盖形式的 [Files] 条目'
+    $uninstSection = [regex]::Match($issText, '(?ms)^\[UninstallDelete\](.*?)(?=^\[|\z)').Groups[1].Value
+    $touchUserData = @($uninstSection -split "`r?`n" | Where-Object {
+        $_ -and $_ -notmatch '^\s*;' -and ($_ -imatch [regex]::Escape([string]$cfgRules.UserConfigFile) -or $_ -match '\\history(\||\\"|\s*$|;)')
+    })
+    Assert-Ec ($touchUserData.Count -eq 0) "[UninstallDelete] 里点名了用户数据（用户配置或截图历史）：$(($touchUserData -join ' | '))"
+
     # =========================================================================
     Write-Host "`n=== 5) 端到端：独立临时树里少依赖必须出不了包 ==="
     # =========================================================================
@@ -459,7 +544,8 @@ try {
         foreach ($f in @('installer\payload.manifest.json', 'installer\ecapture.iss', 'installer\packaging.psm1',
                          'installer\verify-install.ps1', 'build-installer.ps1', 'test-all.ps1',
                          'README.md', 'README.zh-CN.md', 'README.zh-TW.md', 'README.ja-JP.md', 'LICENSE',
-                         'resources\icon.ico', '.agents\skills\yashi-evernight-capture\SKILL.md')) {
+                         'resources\icon.ico', 'resources\ECAPTURE.example.ini',
+                         '.agents\skills\yashi-evernight-capture\SKILL.md')) {
             Copy-Item -LiteralPath (Join-Path $repo $f) -Destination (Join-Path $fake $f) -Force
         }
         Copy-Item -LiteralPath (Join-Path $repo 'tests\harness.psm1') -Destination (Join-Path $fake 'tests\harness.psm1') -Force
@@ -482,6 +568,34 @@ try {
         $realSetup = Join-Path $buildDir ('installer\EvernightCapture-{0}-x64-setup.exe' -f $version)
         $realSetupHashBefore = $null
         if (Test-Path -LiteralPath $realSetup) { $realSetupHashBefore = (Get-FileHash -LiteralPath $realSetup -Algorithm SHA256).Hash }
+
+        # 夹具时间归一：Get-EcNewestSourceWrite 把 resources\ 整目录算进构建输入，而仓库里这份模板的
+        # 写入时间比 build\ 里几个测试程序的链接时间戳新（真实 build\ 由 ninja 判定是干净的，
+        # 时间戳口径只是问不出构建图时的保守退回）。这一轮判的是"模板进包 / 用户配置不进包"，
+        # 不是复制品的时间戳，所以把模板的夹具时间与同目录的 icon.ico 摆成同一档，
+        # 免得 -SkipBuild 的退回口径把整轮误判成陈旧产物、连带让正反面都跑不到载荷校验。
+        $fakeTemplate = Join-Path $fake 'resources\ECAPTURE.example.ini'
+        $fixtureTime = (Get-Item -LiteralPath (Join-Path $fake 'resources\icon.ico')).LastWriteTimeUtc
+        (Get-Item -LiteralPath $fakeTemplate).LastWriteTimeUtc = $fixtureTime
+
+        # ---- 实际用户配置的哨兵：临时树的 build\ 里放一份"某个人的 ECAPTURE.ini" ----
+        # 它住在开发版 exe 旁边，正是程序默认会读的那一份。打包工具既不采集它，也不清理它：
+        # 这一轮的判据是"载荷 / 发行清单 / 哈希清单 / 受管路径清单里都没有它"，同时"它自己在原地、
+        # 一个字节没动"。（哨兵里写的是个人路径与偏好那一类内容，绝不该出现在任何发行物里。）
+        $fakeUserCfg = Join-Path $fakeBuild 'ECAPTURE.ini'
+        $userCfgSentinel = "[config]`r`nversion = 1`r`n`r`n[output]`r`npath = C:\Users\someone\My Photos\%d-%n.png`r`n"
+        Set-Content -LiteralPath $fakeUserCfg -Value $userCfgSentinel -Encoding UTF8
+        $userCfgHashBefore = (Get-FileHash -LiteralPath $fakeUserCfg -Algorithm SHA256).Hash
+
+        # ---- 负向：抽掉配置模板，打包必须失败（受管载荷不许静默用旧文件或干脆不发） ----
+        $templateBackup = Join-Path $run.Path 'template-backup.ini'
+        Move-Item -LiteralPath $fakeTemplate -Destination $templateBackup -Force
+        $negTpl = Invoke-EcProcess -FilePath $eng -TimeoutMs 900000 -WorkingDirectory $fake `
+                     -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installer, '-SkipBuild')
+        Assert-Ec ($negTpl.Exit -ne 0) "抽掉配置模板后打包居然成功了（退出码 $($negTpl.Exit)）：受管载荷缺失必须在打包阶段拦住"
+        Assert-Ec ($negTpl.Stdout -match 'ECAPTURE\.example\.ini') "缺模板的失败原因里没点到模板文件名：$(($negTpl.Stdout -split "`r?`n" | Select-Object -Last 8) -join ' / ')"
+        Move-Item -LiteralPath $templateBackup -Destination $fakeTemplate -Force
+        (Get-Item -LiteralPath $fakeTemplate).LastWriteTimeUtc = $fixtureTime   # 归一后再继续，避免夹具时间影响后续轮次
 
         # ---- 负向：抽掉两个依赖，打包必须失败且临时树里不出安装包 ----
         foreach ($drop in @('ecapture-hdr-tests.exe', 'ecapture-identity-tests.exe')) {
@@ -518,6 +632,43 @@ try {
         $prov = Get-Content -LiteralPath $provFiles[0].FullName -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-Ec ([string]$prov.source -eq 'reused') "provenance 的 source 应为 reused（实际 $([string]$prov.source)）"
         Assert-Ec ([bool]$prov.configVerified) 'provenance 应记录配置核对结果'
+
+        # ---- 正向这一轮的载荷里：模板在、逐字节等于仓库那一份；实际用户配置哪儿都不在 ----
+        $fakeStage = Join-Path $fakeBuild ('installer-stage\{0}-x64' -f $version)
+        $fakePayload = Join-Path $fakeStage 'payload'
+        Assert-Ec (Test-Path -LiteralPath $fakePayload) "正向这一轮找不到 staging 载荷目录：$fakePayload" -Quiet
+        if (Test-Path -LiteralPath $fakePayload) {
+            $fpTemplate = Join-Path $fakePayload 'ECAPTURE.example.ini'
+            Assert-Ec (Test-Path -LiteralPath $fpTemplate) '载荷根里没有 ECAPTURE.example.ini（模板要装在 exe 旁边）'
+            if (Test-Path -LiteralPath $fpTemplate) {
+                $fpHash = (Get-FileHash -LiteralPath $fpTemplate -Algorithm SHA256).Hash.ToLowerInvariant()
+                $repoTplHashNow = (Get-FileHash -LiteralPath $tplSrcPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                Assert-Ec ($fpHash -eq $repoTplHashNow) '载荷里的模板与仓库来源不是同一份内容（不许静默用旧文件）'
+            }
+            $fpUserCfg = @(Get-ChildItem -LiteralPath $fakePayload -Recurse -Force -File | Where-Object { $_.Name -ieq 'ECAPTURE.ini' })
+            Assert-Ec ($fpUserCfg.Count -eq 0) "实际用户配置被打进了载荷：$(($fpUserCfg | ForEach-Object { $_.FullName }) -join ', ')"
+            $fmf = Get-Content -LiteralPath (Join-Path $fakePayload 'install-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $fmfTpl = @($fmf.files | Where-Object { [string]$_.path -eq 'ECAPTURE.example.ini' })
+            Assert-Ec ($fmfTpl.Count -eq 1) 'install-manifest.json 里应恰好有一条模板记录（它不是可选项）'
+            Assert-Ec ($fmfTpl.Count -eq 1 -and [string]$fmfTpl[0].sha256 -and @($fmf.files | Where-Object { (($_.path -replace '/', '\').Split('\') | Select-Object -Last 1) -ieq 'ECAPTURE.ini' }).Count -eq 0) `
+                'install-manifest.json 里出现了实际用户配置（个人路径与偏好不能当发行物核对）'
+            Assert-Ec (([string]$fmf.configPayload.userConfigFile) -eq 'ECAPTURE.ini') '随包清单要带上用户配置文件名（安装自检读这一份，不硬写第二份）'
+            Write-Host ("    模板进包：SHA-256 {0}…" -f $(if ($fmfTpl.Count) { ([string]$fmfTpl[0].sha256).Substring(0, 12) } else { '（缺）' })) -ForegroundColor DarkGray
+            $fhash = @(Get-Content -LiteralPath (Join-Path $fakePayload 'payload.sha256.txt') -Encoding UTF8)
+            Assert-Ec (@($fhash | Where-Object { $_ -match 'ECAPTURE\.example\.ini$' }).Count -eq 1) 'payload.sha256.txt 少了模板那一条'
+            Assert-Ec (@($fhash | Where-Object { $_ -match '(^|\s|\\)ECAPTURE\.ini$' }).Count -eq 0) 'payload.sha256.txt 把实际用户配置列进了发行哈希清单'
+            $mlPath = Join-Path $fakeStage 'managed-list.pinc'
+            Assert-Ec (Test-Path -LiteralPath $mlPath) '编译期受管路径清单没生成（安装器就没有覆盖前保护的依据）' -Quiet
+            if (Test-Path -LiteralPath $mlPath) {
+                $ml = Get-Content -LiteralPath $mlPath -Raw -Encoding ASCII
+                Assert-Ec ($ml -match "ManagedPaths\[\d+\] := 'ECAPTURE\.example\.ini'") '受管路径清单里没有模板（升级就不会把它当自己的文件更新）'
+                Assert-Ec ($ml -notmatch "'ECAPTURE\.ini'") '受管路径清单里有实际用户配置（那等于让用户数据被覆盖保护与卸载记录盯上）'
+            }
+        }
+        # 哨兵那份用户配置必须原样留在临时树的 build\ 里：打包不采集它，也不"顺手清理"它。
+        Assert-Ec (Test-Path -LiteralPath $fakeUserCfg) '打包过程删掉了临时树里的实际用户配置（那是用户数据，不是构建产物）'
+        Assert-Ec ((Get-FileHash -LiteralPath $fakeUserCfg -Algorithm SHA256).Hash -eq $userCfgHashBefore) '打包过程改动了临时树里的实际用户配置'
+
         Assert-Ec (@($manifest.entries | Where-Object { $_.freshness -eq 'current-build' }).Count -ge 12) '载荷清单里 current-build 的条目数量不对劲'
 
         # 主口径：问构建系统自己（ninja -n 只读依赖图、不编译）。真实 build\ 现在应该是干净的。

@@ -39,6 +39,7 @@ grp.consent	撮影の承諾（実際の撮影では既定で確認します。--
 grp.timeout	実行期限（自動処理区間の総予算。承諾を待つ時間は別計算で、期限切れは拒否として扱います）
 grp.output	出力
 grp.behavior	その他
+grp.config	ユーザー設定（既定は実行中のプログラムと同じ場所の ECAPTURE.ini。他のディレクトリは探しません）
 grp.query	照会（読取専用）
 opt.monitor	対象モニタの番号。1 始まりの 10 進（今回の列挙順で、「表示設定」の識別子とは限らない。モニタを特定するには結果の device を見る）；primary = メイン、all = 全モニタを 1 枚ずつ。ウィンドウ条件なし = 画面全体の撮影、ウィンドウ条件あり = そのモニタに重なるウィンドウのみ。値は省略可（= メイン）で、省略時は次の引数を取り込まないので --monitor out.png も従来どおり。画面全体はデスクトップのピクセルなので必ず確認ダイアログを出し、--yes でも省略できない；モニタでウィンドウを絞った場合は従来どおりウィンドウ画像；特定のモニタを名指しするには --screens が返す識別子を使う：device:<名前>（このデスクトップ接続）または id:<モニタのデバイスパス>（セッションをまたぐほう）。番号は抜き差しや解像度変更後に別のモニタを指す可能性がある
 opt.hwnd	ウィンドウハンドル。数字のみは 10 進、0x 接頭辞または a-f を含む場合は 16 進。0x 推奨。符号と空白は不可、下線は 16 進数字の間に限り有効
@@ -452,3 +453,49 @@ note.hdr_source_unverified_hint	画像はそのまま納品されますが、こ
 env.hdr_unsupported	このマシンでは %1 という HDR 要求を実行できません：試すはずだったのは %2、理由は %3
 env.hdr_unsupported_hint	これは対象の窓ではなく、このマシンが出せる系統についての話です：バージョンとカーソルの関門のあと、列の中に今回の HDR 要求を本当に実現できる系統が残っていません。そのため 1 画素も取得せず、確認ダイアログも出しません。--capture を変えても実現できる系統は現れず、同じ対象を再試行しても同じ結末です。このマシンで何が確定しているかは --capabilities の color 節（各経路の honorsExplicitPolicy）を参照してください
 note.hdr_channel_skipped	auto 列の %1 は %2 という HDR 要求を実現できないため外されました（%3）。残りはそのまま順番に試します
+# ---------------------------------------------------------------------------
+# ユーザー設定（ECAPTURE.ini）：どれを読むか、項目ごとの検証、設定ビュー
+# 判定の本体は src/Config.h と src/CliOptions.cpp の結合（マージ）部にあります。
+# この一族は code とメッセージ key が同名（config.*）です。
+# ---------------------------------------------------------------------------
+opt.config	今回だけ指定した INI を読みます（相対パスは現在のディレクトリから絶対パスに解決）。ファイルが無い・読み出せない場合はエラーになり、既定のファイルには戻りません
+opt.no-config	今回は設定ファイルを完全に無視し、組み込み既定と今回のコマンドラインだけを使います。調査と自己点検用の隔離入口で、設定を削除も書き換えもしません
+opt.show-config	今回の設定を読み取り専用で出力します：どのファイルを読んだか、読めたか、各項目の実効値がどの由来か（ウィンドウ選択も画素取得も確認ボックスもディレクトリ作成もしません）
+opt.history	今回、納品済みの各画像歴史コピーを別途残すかどうか（on / off）。設定ファイルの該当項目を上書きします
+opt.integrity-hints	今回、完全性に関する説明文を付けるかどうか（on / off）。エラーコード・原値・納品事実は影響を受けず、off にしても権限は直りません
+opt.no-crop	設定ファイル内のクロップ群を取り消します（今回はクロップを一切しません）。今回の --roi / --client-area と同時に指定すると衝突です
+opt.no-scale	設定ファイル内のスケール群を取り消します（今回は縮小しません）。今回の --scale と同時に指定すると衝突です
+config.not_found	読もうとした設定ファイルが存在しません
+config.not_found_hint	--config で指定したファイルは既定のファイルに戻りません：名指しした以上、よそを推測するのは誰も決めていない設定を差し替えることになります。パスを確認するか（相対は現在のディレクトリ基準）、--config を外してプログラムと同じディレクトリのファイルをお使いください
+config.read_failed	設定ファイルを読み出せませんでした
+config.read_failed_hint	ファイルはあるのに読めません：他のプロセスが排他中、権限がたりない、またはその名前が実際にはディレクトリ。既定の位置でプログラム自身の場所を特定できなかった場合もこの1件です。推測も、新しいファイルの書き込みもしません
+config.too_large	設定ファイルが 256 KiB の上限を超えているため、読みませんでした
+config.too_large_hint	上限はメモリ確保の前で判定します：超過のファイルをまずメモリに載せてから断るのは、この条が防ぐべき場面そのものです。ECAPTURE.ini は設定を入れる所でデータではありません。撮影の説明・スクリプト・他のプログラムの設定をここに混ぜるのは置き場所違いです
+config.line_too_long	設定ファイルに 4096 文字の上限を超える行があります
+config.encoding	設定ファイルは有効な UTF-8 ではありません
+config.encoding_hint	このファイルは UTF-8 で読みます（先頭の BOM は可）。不正なバイト列をシステムコードページで読み直すことはしません：同じファイルがコードページと UTF-8 で別の値になり、どちらも「答えがある」ように見えてしまうためです
+config.syntax	設定ファイルのこの行は通せません
+config.duplicate_section	同じセクションがこのファイルに 2 度出てきます
+config.duplicate_section_hint	セクションは 1 度だけ書いてください：同じ群を 2 箇所に分けると、直すときに片方だけ直し、しかも両方が項目検査を通ります
+config.duplicate_key	同じキーが 2 度出てきます
+config.duplicate_key_hint	「後勝ち」にも「先勝ち」にもしません：1 つのファイルの中で 2 通りの書き方のどちらを意図したかは、ご自身にしか決められません。余った 1 行を消してください
+config.unknown_section	設定ファイルに未知のセクションがあります
+config.unknown_key	設定ファイルに未知のキーがあります
+config.unknown_key_hint	打ち間違いのキーは既定値に戻りません：「その行は効いていなかった」がそのまま隠れるためです。--show-config は現在知っている項目をすべて出します。ECAPTURE.example.ini と照らして直してください
+config.unsupported_version	この設定ファイルは本ビルドが未知の形式バージョンです
+config.unsupported_version_hint	「互換形式として推測して読む」ことはしません：一格でも読み違えると、誰も書いていない設定で 1 枚撮ることになります。ECAPTURE.example.ini に従って既知のバージョンへ直してください。直す前にそのファイルをお守りください — このツールは設定を書き換えません
+config.invalid_number	設定ファイルのこの数値の書き方が合いません
+config.invalid_boolean	設定ファイルのこの真偽値は true か false のみです
+config.invalid_boolean_hint	1 / yes / on は真になりません。設定ファイルは何度も編集されるので、「真らしい」書き方はいつか別の意味に読まれます
+config.invalid_value	設定ファイルのこの値は許可された一覧にありません
+config.out_of_range	設定ファイルのこの数値は許可された範囲を外れています
+config.invalid_combination	設定ファイルの複数項目を合わせても通りません
+config.crop_roi_invalid	crop.roi の 4 つの数値の書き方が合いません
+config.crop_roi_invalid_hint	x,y,width,height の 4 つの 10 進数のみ（カンマ区切り、空白と符号は不可）。x / y は 0 可、width / height は 1 以上。書き方も上限も --roi とまったく同じです
+config.crop_roi_missing	crop.mode=roi に対して使える crop.roi がありません
+config.crop_roi_missing_hint	roi モードには有効な x,y,width,height が必要です。「ではウィンドウ全体を渡す」にはしません：書き間違えた 1 回のクロップを、別のクロップへ黙って読み替えることになります。crop.roi を足すか、crop.mode を none に戻してください
+cli.config_view_conflict	--show-config は設定を読み取り専用で問うため、撮影の意図や他の照会コマンドと同時に指定できません
+cli.config_view_conflict_hint	設定ビューは --config / --no-config と、観察したい設定の上書き引数（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / クロップ・スケール / 2 つの期限 / --history / --integrity-hints / --limit）を受けます。ウィンドウ条件、--monitor、選択戦略、--yes / --dry-run と他の照会コマンドは別の実行で
+cli.onoff_value	この値は on か off のみ
+cli.crop_cancel_conflict_hint	--no-crop は設定ファイル内のクロップ群を取り消すためのもので、今回ご指定の --roi / --client-area とは正反代です。--no-crop を外すか、そのクロップを外してください
+cli.scale_cancel_conflict_hint	--no-scale は設定ファイル内のスケール群を取り消すためのもので、今回の --scale とは同時に成立しません。--no-scale を外すか、その --scale を外してください

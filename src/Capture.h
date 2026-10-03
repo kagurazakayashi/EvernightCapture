@@ -26,7 +26,10 @@ namespace ecapture {
 //   skipped 这一次根本没开始写副本（code 说为什么没开始：预算已尽、或主输出名字就是这一份归档名）
 // file 只在真提交之后出现；没提交时不写一个"本来要写的名字"冒充已有副本。
 struct HistoryRecord {
-    enum class State { kNone, kSaved, kFailed, kSkipped };
+    // kDisabled 是**主动关闭**那一档（配置或 --history off）：副本这一步根本没开始，
+    // 与 kSkipped（开始了那一步而预算已尽/不自覆盖）、kFailed（试过而没落地）都不是一回事，
+    // 更不能被读成 kSaved。关闭不删除任何已有历史，也不读、不建那棵目录。
+    enum class State { kNone, kSaved, kFailed, kSkipped, kDisabled };
     State state = State::kNone;   // kNone = 这一次没有归档这一步（渲染时整个键不出现）
     std::wstring file;            // 仅 kSaved：已提交的那份副本的绝对路径
     std::wstring code;            // kFailed / kSkipped：稳定的 history.* 码

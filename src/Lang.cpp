@@ -138,6 +138,18 @@ std::wstring Msg(const wchar_t* key) {
     return std::wstring(L"?") + key;  // 让写错的 key 在输出里显眼，而不是静默空白
 }
 
+// 与 Msg 同一份表、同一次惰性加载，只是**不**把"没有这个 key"做成一句可见的文字。
+// 给可选的那一句用（例如诊断的 hint：有 <code>_hint 就带，没有就整个字段省略）。
+bool HasMsg(const wchar_t* key) {
+    if (!key || !*key) return false;
+    Cache& cache = Active();
+    if (!cache.loaded) {
+        cache.table = LoadTable(cache.lang);
+        cache.loaded = true;
+    }
+    return cache.table.find(key) != cache.table.end();
+}
+
 const wchar_t* LanguageTag(Language lang) {
     switch (lang) {
         case Language::kZhCn: return L"zh-CN";

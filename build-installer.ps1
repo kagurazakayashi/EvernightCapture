@@ -11,10 +11,13 @@
       3. 在任何创建 / 复制 / 清理之前先判定 staging 目录的归属：只接受仓库 build\installer-stage 下的
          直接子目录，且已存在的目录必须带着本工具写下的 ownership 标记；判不出归属就保留原文件并报可操作错误；
       4. 按 installer\payload.manifest.json 逐条收集载荷，并做内容守卫：不带源码、不带开发用 AGENTS/MEMORY、
-         不带日志与截图；
-      5. 校验：必需项齐全、四语 README/SKILL.md/LICENSE/ECAPTURE.EXE 到位、SKILL.md 的 frontmatter 名与
-         Skill 目录名一致、**清单声明的安装后离线套件的依赖闭包全都在载荷里**（少一个就失败，不当可选）、
-         载荷里的每个 EXE 架构一致、ECAPTURE.EXE 与本次构建产物哈希一致；
+         不带日志与截图、不带截图历史，也**绝不带实际用户配置 ECAPTURE.ini**（那是个人路径与偏好，
+         不是发行物）；配置模板 ECAPTURE.example.ini 是受管载荷，逐字节比对仓库里那一份，
+         对不上就失败，不静默用旧的复制品；
+      5. 校验：必需项齐全、四语 README/SKILL.md/LICENSE/ECAPTURE.EXE/ECAPTURE.example.ini 到位、
+         SKILL.md 的 frontmatter 名与 Skill 目录名一致、**清单声明的安装后离线套件的依赖闭包全都在
+         载荷里**（少一个就失败，不当可选）、载荷里的每个 EXE 架构一致、
+         ECAPTURE.EXE 与本次构建产物哈希一致、模板与仓库来源哈希一致；
       6. 产物身份核对不再看文本子串：--version / --capabilities / --diagnostics 三条查询都走测试共享调用器
          （并发消费两条流、有期限等待、超时只结束本次启动的进程树），要求版本 / 架构 / buildId 三个身份字段
          齐全、互相自洽，并与磁盘上这份 EXE 的 PE 头（Machine、链接时间戳）逐字节对得上；
@@ -29,6 +32,10 @@
          归属标记的格式版本（markerVersion / markerAcceptedVersions）同样以载荷清单为唯一来源，
          .iss 的 MarkerVersion 默认值与 MARKER_VERSION 常量写法都要与它一致，编译时再用 /DMarkerVersion
          递下去 —— 安装器、随包自检与判据不许各抄一份会漂开的产品名或标记版本。
+         配置这一对文件名（模板名与实际用户配置名）同样以载荷清单的 configPayload 为唯一来源：
+         .iss 的 ConfigTemplate / UserConfig 默认值必须与它一致，编译时也用 /D 递下去。装出来的语义是
+         "模板随包覆盖、ECAPTURE.ini 只在缺失时独占创建"，这份保证由 .iss 的 onlyifdoesntexist 与
+         uninsneveruninstall 承担，并由 tests\install-lifecycle.ps1 在本次自建的临时目录里真装真卸验证。
 
     预算：-IdentityTimeoutSec（每条只读查询，默认 120s）与 -IsccTimeoutSec（编译器，默认 900s）都在
     合法区间之外直接被拒绝；毫秒换算走 [long] 再夹到 [int]，不会溢出成负数而一上来就"超时"。
@@ -130,6 +137,9 @@ $payload = Join-Path $StageDir 'payload'
 
 # 载荷清单在读到之后就只有一份来源：离线依赖闭包与"哪些产物属于本次构建图"都由它决定。
 $manifest = Get-EcPayloadManifest -Path $manifestPath
+# 配置这一对（模板 = 受管载荷；ECAPTURE.ini = 用户数据，不进包）的定义只读这一份，
+# 后面载荷收集、校验、受管清单与递给 ISCC 的 /D 都用它，不再在任何一处硬写文件名。
+$cfg = Get-EcConfigPayloadRules -Manifest $manifest
 # 声明为 current-build 的条目 = 本次构建图应当交出来的产物；复用模式下逐个核新鲜度。
 $buildGraphNames = @($manifest.entries | Where-Object { $_.freshness -eq 'current-build' } |
                     ForEach-Object { Split-Path -Leaf (([string]$_.from) -replace '/', '\') })
@@ -299,7 +309,7 @@ foreach ($e in $manifest.entries) {
 # 8) 校验
 # ---------------------------------------------------------------------------
 Write-Step '校验载荷'
-foreach ($f in @('ECAPTURE.EXE', 'SKILL.md', 'README.md', 'README.zh-CN.md', 'README.zh-TW.md', 'README.ja-JP.md', 'LICENSE', 'verify-install.ps1')) {
+foreach ($f in @('ECAPTURE.EXE', 'SKILL.md', 'README.md', 'README.zh-CN.md', 'README.zh-TW.md', 'README.ja-JP.md', 'LICENSE', 'verify-install.ps1', $cfg.TemplateFile)) {
     if (-not (Test-Path -LiteralPath (Join-Path $payload $f))) { $problems += "载荷缺少必需文件：$f" }
 }
 foreach ($f in @('resources\icon.ico', 'tests\harness.psm1', 'tests\helper\ec_window.cs', 'test-all.ps1')) {
@@ -365,6 +375,38 @@ $stagedHash = (Get-FileHash -LiteralPath $stagedExe -Algorithm SHA256).Hash.ToLo
 $buildHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($stagedHash -ne $buildHash) { $problems += '载荷里的 ECAPTURE.EXE 与本次构建产物哈希不一致' }
 
+# 配置模板：受管载荷，来源是仓库里那一份（清单里 freshness=repo 说的就是这件事）。
+# build\ECAPTURE.example.ini 只是 CMake 的 POST_BUILD 复制品，拿它当来源就等于把陈旧文件当证据，
+# 所以这里比的是「载荷里的模板 == 仓库 resources 里那一份」逐字节，并且要能看出它确实是配置模板：
+# 空文件、被换成 ECAPTURE.ini 的内容、或没有 [config] 段，都当场失败。
+$stagedTemplate = Join-Path $payload ($cfg.TemplateFile -replace '/', '\')
+$repoTemplate = Join-Path $repo (($cfg.TemplateSource) -replace '/', '\')
+if (Test-Path -LiteralPath $stagedTemplate) {
+    if (-not (Test-Path -LiteralPath $repoTemplate)) {
+        $problems += "载荷里有模板，但仓库来源找不到：$repoTemplate（没有来源就没有'当前'可证）"
+    } else {
+        $stagedTplHash = (Get-FileHash -LiteralPath $stagedTemplate -Algorithm SHA256).Hash.ToLowerInvariant()
+        $repoTplHash = (Get-FileHash -LiteralPath $repoTemplate -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($stagedTplHash -ne $repoTplHash) { $problems += "载荷里的 $($cfg.TemplateFile) 与仓库来源 $($cfg.TemplateSource) 哈希不一致（不许静默用旧模板）" }
+        $tplText = Get-Content -LiteralPath $stagedTemplate -Raw -Encoding UTF8
+        if (-not $tplText) { $problems += "模板 $($cfg.TemplateFile) 读不出内容或为空" }
+        elseif ($tplText -notmatch '(?m)^\s*\[config\]\s*$') { $problems += "模板 $($cfg.TemplateFile) 里没有 [config] 段：它不是一份配置模板" }
+    }
+}
+$cfgTemplateHash = if (Test-Path -LiteralPath $stagedTemplate) { (Get-FileHash -LiteralPath $stagedTemplate -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+
+# 实际用户配置绝不进包：它住在 exe 旁边，里面是用户自己的输出路径模板、裁剪区域与偏好，
+# 属于个人路径内容 —— 不进载荷、不进受管清单、不进发行哈希。这里按**叶子名**判（大小写不敏感，
+# Windows 上 ECAPTURE.INI 与 ECAPTURE.ini 是同一个文件），不按目录判：把 exe 复制到别处跑时
+# 旁边长出的那份同样不该被 glob 顺手带走。
+$shippedUserConfig = @(Get-ChildItem -LiteralPath $payload -Recurse -Force -File | Where-Object {
+    $_.Name -ieq $cfg.UserConfigFile
+})
+if ($shippedUserConfig.Count) {
+    $problems += ('载荷里混进了实际用户配置（个人路径与偏好，不随包分发）：' +
+                  (($shippedUserConfig | ForEach-Object { $_.FullName.Substring($payload.Length).TrimStart('\') }) -join ', '))
+}
+
 if ($problems.Count) {
     Write-Host '载荷校验失败：' -ForegroundColor Red
     foreach ($p in $problems) { Write-Host "  - $p" -ForegroundColor Red }
@@ -372,6 +414,8 @@ if ($problems.Count) {
     exit 12
 }
 Write-Host '  载荷校验通过。' -ForegroundColor Green
+Write-Host ("  配置模板：{0}（来源 {1}，受管载荷，升级正常覆盖）" -f $cfg.TemplateFile, $cfg.TemplateSource) -ForegroundColor DarkGray
+Write-Host ("  实际用户配置 {0}：不是载荷；安装器只在它不存在时从模板独占创建，升级与卸载都不覆盖、不删除" -f $cfg.UserConfigFile) -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------------------
 # 9) 生成安装包内的清单、provenance 与哈希
@@ -393,11 +437,17 @@ $provenance = [ordered]@{
     buildId           = $buildId
     linkTimestampHex  = $(if ($identity.Pe) { ('{0:X8}' -f $identity.Pe.TimeDateStamp) } else { 'unknown' })
     exeSha256         = $buildHash
+    configTemplate    = $cfg.TemplateFile
+    configTemplateSource = $cfg.TemplateSource
+    configTemplateSha256 = $cfgTemplateHash
+    userConfigFile    = $cfg.UserConfigFile
+    userConfigInPayload = $false
     gitCommit         = $(if ($gitInfo) { $gitInfo.Commit } else { 'unknown' })
     gitDirty          = $(if ($gitInfo) { $gitInfo.Dirty; } else { $null })
     builtAtUtc        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     builtOn           = $env:COMPUTERNAME
     runtime           = 'CRT 静态链接（CMakeLists.txt MSVC_RUNTIME_LIBRARY=MultiThreaded），不需要 VC++ 运行库'
+    configSemantics   = ('模板 {0} 是受管载荷（升级正常覆盖）；实际用户配置 {1} 不是载荷，安装器只在它不存在时独占创建，升级与卸载都不覆盖、不删除、不修复' -f $cfg.TemplateFile, $cfg.UserConfigFile)
     hashesAre         = '本工具自算的 SHA-256，用于追溯与安装自检，不是发布者签名或认证'
 }
 
@@ -423,6 +473,14 @@ $installManifest = [ordered]@{
     buildId         = $buildId
     provenance      = $provenance
     skill           = $manifest.skill
+    configPayload   = [ordered]@{
+        templateFile     = $cfg.TemplateFile
+        templateSource   = $cfg.TemplateSource
+        templateSha256   = $cfgTemplateHash
+        userConfigFile   = $cfg.UserConfigFile
+        createUserConfig = $cfg.CreateUserConfig
+        note             = $cfg.Note
+    }
     installPlan     = $manifest.installPlan
     files           = $fileEntries
 }
@@ -448,6 +506,16 @@ Write-Host ("  provenance：{0}" -f $provenancePath)
 $managedRelPaths = @($fileEntries | ForEach-Object { [string]$_.path })
 $managedRelPaths += @('install-manifest.json', 'payload.sha256.txt')
 $managedRelPaths = @($managedRelPaths | Sort-Object -Unique | Where-Object { $_ })
+# 受管清单就是安装器"覆盖前保护 + 卸载会记录"的那一份：实际用户配置的叶子名出现在这里，
+# 等于把它当成产品文件对待（升级可能被备份、卸载会被记录），所以这里再挡一次 —— 载荷里本来
+# 就不该有它（上面已按叶子名判过），这一挡是防止别处（例如新增 glob）把它带进来。
+$managedUserConfig = @($managedRelPaths | Where-Object {
+    (($_ -replace '/', '\').TrimEnd('\').Split('\') | Select-Object -Last 1) -ieq $cfg.UserConfigFile
+})
+if ($managedUserConfig.Count) {
+    Write-Host "受管路径清单里出现了实际用户配置，拒绝打包（它不是产品文件）：$($managedUserConfig -join ', ')" -ForegroundColor Red
+    exit 12
+}
 # 只允许能安全写进 Pascal 字符串字面量与归属标记记录行的路径：
 # 引号、反斜杠、竖线（标记的分隔符）与非可打印 ASCII 一律拒绝，不猜转义写法。
 $badPaths = @($managedRelPaths | Where-Object { $_ -match "[`"'\\|]" -or (($_ -replace '[\x20-\x7E]', '') -ne '') })
@@ -493,6 +561,24 @@ if ($issText -notmatch "MARKER_VERSION\s*=\s*'\{#MarkerVersion\}'") {
 $issProduct = [regex]::Match($issText, "PRODUCT_NAME\s*=\s*'([^']+)'").Groups[1].Value
 if ($issProduct -ne [string]$manifest.product) {
     Write-Host "installer\ecapture.iss 的 PRODUCT_NAME（$issProduct）与载荷清单的 product（$([string]$manifest.product)）不一致，拒绝打包。" -ForegroundColor Red
+    exit 12
+}
+# 配置这一对文件名的唯一来源是载荷清单的 configPayload：.iss 的默认值必须与它一致（编译时还会用
+# /DConfigTemplate 与 /DUserConfig 把清单的值递下去）。两条都必须来自清单那一份 —— 安装器硬写一个
+# 名字、清单用另一个名字，实际用户配置就可能被当成产品文件覆盖或删掉。
+foreach ($cfgPair in @(
+        @{ Name = 'ConfigTemplate'; Want = $cfg.TemplateFile },
+        @{ Name = 'UserConfig';     Want = $cfg.UserConfigFile })) {
+    if ($issText -notmatch ('#define ' + $cfgPair.Name + ' "' + [regex]::Escape($cfgPair.Want) + '"')) {
+        Write-Host ("installer\ecapture.iss 的 #define {0} 默认值与载荷清单的 configPayload 不一致（清单 {1}），拒绝打包。" -f `
+                    $cfgPair.Name, $cfgPair.Want) -ForegroundColor Red
+        exit 12
+    }
+}
+# 实际用户配置那一条 [Files] 记录必须是"只在缺失时创建 + 卸载永不删"：写成任何会覆盖的形式
+# （confirmoverwrite / 只 ignoreversion）都会在升级时把用户自己的设置盖掉，这里不当警告处理。
+if ($issText -notmatch 'Source:\s*"\{#SourceDir\}\\\{#ConfigTemplate\}"[^\r\n]*DestName:\s*"\{#UserConfig\}"[^\r\n]*onlyifdoesntexist[^\r\n]*uninsneveruninstall') {
+    Write-Host 'installer\ecapture.iss 没有把用户配置作为「从模板独占创建（onlyifdoesntexist）且卸载不删（uninsneveruninstall）」的条目，拒绝打包。' -ForegroundColor Red
     exit 12
 }
 $managedLines = @('  SetArrayLength(ManagedPaths, {0});' -f $managedRelPaths.Count)
@@ -556,6 +642,8 @@ $isccArgs = @(
     "/DOutputBase=$outBase",
     ("/DAppIdGuid={0}" -f $appIdPlain),
     ("/DMarkerVersion={0}" -f $markerVersion),
+    ("/DConfigTemplate={0}" -f $cfg.TemplateFile),
+    ("/DUserConfig={0}" -f $cfg.UserConfigFile),
     "/DManagedList=$managedListPath",
     "/DIconFile=$(Join-Path $repo 'resources\icon.ico')",
     $issPath

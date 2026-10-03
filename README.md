@@ -36,6 +36,7 @@ confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
 | Stable codes, stages, exit codes, partial success, "what do I do when it errors"                  | [Exit codes](#exit-codes), [Guide for AI and scripts](#guide-for-ai-and-scripts)                                                                                                                                                                                                                                         |
 | What is compiled, what is available here, what has actually been tested                           | [System support](#system-support), [Read-only capability queries](#read-only-capability-queries---capabilities----diagnostics)                                                                                                                                                                                           |
 | Why capture from the skill directory fails with `0x80070005` / error `5`, and what actually helps | [Process integrity level](#process-integrity-level)                                                                                                                                                                                                                                                                      |
+| Make a preference persist, or find out which level decided each effective value                   | [Configuration file (`ECAPTURE.ini`)](#configuration-file-ecaptureini)                                                                                                                                                                                                                                                  |
 | Open questions this repository has not settled on real hardware                                   | [Boundaries and unverified items](#boundaries-and-unverified-items)                                                                                                                                                                                                                                                      |
 | Which test proves which rule                                                                      | [Build and test](#build-and-test)                                                                                                                                                                                                                                                                                        |
 
@@ -77,6 +78,13 @@ confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
   `7`, `images[].history` says which kind), nothing is rotated or deleted automatically, and pruning is the user's own
   explicit job. Full rule set:
   [Screenshot history archive](#screenshot-history-archive-on-by-default)
+- **User preferences in `ECAPTURE.ini`**: language and verbosity, the channel and the cursor / HDR policy, the
+  output plan, crop / scale, both timeouts, the history copy and the `--list` page size can all be persisted in one
+  INI **beside the exe that actually runs**. Precedence is always explicit command line > INI > built-in default;
+  `--show-config` answers read-only which level decided each effective value, and `--no-config` isolates one run
+  from the file without touching it. The file stores preferences only — never a target selection, never consent,
+  never an authorization — so a bare run still takes no screenshot. Full rule set:
+  [Configuration file (`ECAPTURE.ini`)](#configuration-file-ecaptureini)
 - **Windows you can list and inspect without capturing**: `--list` returns the matched windows as structured JSON
   (handle, PID, class, title, image name, physical rectangle, visibility / minimized, z-order, and the identity
   fields a later capture re-checks) with paging instead of an ambiguity error; `--inspect` describes one window and
@@ -174,6 +182,8 @@ Capture channel (default wgc; may fail because of the OS version or the window i
 Cropping inside the window and proportional shrinking (another crop of the delivered whole-window image, in that image's own pixel coordinates - not desktop coordinates; the order is crop first and then scale, and the two crop options are mutually exclusive)
   --roi <x,y,w,h>                             Cut a w x h block starting at x,y out of the delivered whole-window image. The origin (0,0) is this image's own top-left pixel (the image is the visible window frame you actually see; the transparent DWM resize border is not in it), in physical pixels and not scaled by DPI (the process is per-monitor v2, so multiply the scale yourself for logical pixels) - which is why these four numbers are never read as desktop-absolute coordinates. Four decimal integers separated by commas; x and y may be 0, w and h are at least 1, none above 16384. If it does not fit, nothing is written: match.roi_out_of_range when that is already clear before the frame is taken (no dialog, no file) and capture.roi_invalid when it only turns out afterwards - the rectangle is never slid inside, never cropped to the edge, and the uncropped window is never handed over instead. The crop runs after the capture, so it changes nothing about authorization: channels that sample the screen still always ask, and --yes does not start applying because only a small piece is kept. In the result cropRect is in image pixels, cropScreenRect is the same rectangle in screen coordinates (written only when the image's screen origin can be established), fullWidth/fullHeight are the size before cropping and width/height after. Mutually exclusive with --client-area, and meaningless for a whole-screen target (capture.unsupported)
   --client-area                               Keep only the window's client area: also drop the title bar and the three borders from the delivered whole-window image. That rectangle is measured from the target's geometry right now (GetClientRect plus ClientToScreen), so the coordinate system and units are exactly the --roi ones. A client area that cannot be measured reports capture.roi_unmeasurable, one that hangs outside the delivered image (off screen, or the window resized in between) reports capture.roi_invalid; neither falls back to the whole window. Mutually exclusive with --roi
+  --no-crop                                   cancel the crop group coming from the configuration file (no cropping at all this run); conflicting with this run's --roi / --client-area
+  --no-scale                                  cancel the scale group coming from the configuration file (no scaling this run); conflicting with this run's --scale
   --scale <key=N>                             Shrink the delivered image proportionally into the given ceilings: max-width=N limits the width, max-height=N the height, max-pixels=N the total pixel count (all decimal; sides 1..16384, pixel count 1..268435456). The three are independent - give one, or several in one comma-separated token (for example max-width=1920,max-pixels=2073600); repeating this option keeps each ceiling separately and the last value written for the same ceiling wins. All three are applied through one single ratio (the tightest one), and width and height are each rounded down; it never upscales, so an image already inside the ceilings is delivered untouched (scaleApplied=false in the result). There is exactly one interpolation strategy, a predictable integer mapping: nearest neighbour. The order is crop (--roi / --client-area) first, then scale, then encode, so the scaling applies to the cropped block; in the result scaleFromWidth/scaleFromHeight are the size before scaling and width/height after, scaleMethod is the strategy, and the mapping closes in that same order. This option changes nothing about authorization or the frame limits: channels that sample the screen still always ask (--yes does not start applying because a small image is delivered in the end), a frame too large for the frame shape check cannot be scaled back down, and --roi is still judged against the unscaled image
 
 Capture authorization (a real capture asks first; --yes skips window-content paths)
@@ -189,9 +199,14 @@ Output
   --quality <1-100>                           JPEG quality, decimal 1-100, default 100
   --no-overwrite                              Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
+User preference configuration (reads ECAPTURE.ini next to the running program; nothing else is searched)
+  --config <path>                             read this INI instead (a relative path is made absolute against the current directory); a missing or unreadable file is an error, it does not fall back to the default one
+  --no-config                                 ignore the configuration file completely for this run and use built-in defaults plus this command line; the isolation entry for debugging and self-checks, it neither deletes nor rewrites the configuration
+
 Capability queries (read-only: no capture, no dialog, no file)
   --capabilities                              Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
   --diagnostics                               Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
+  --show-config                               read-only view of this run's configuration: which file was read, whether it was read, and which source each effective setting came from (no window selection, no pixels, no dialog, no directories created)
   --screens                                   Read-only list of every screen: tool number, device name, primary flag, physical rect, DPI and rotation where they can be read, and which adapter drives it - plus how far each of those identities stays true. It reads no pixel, shows no dialog, writes no file and changes no display setting. The device:<name> and id:<path> it returns go straight into --monitor. Mutually exclusive with capture options (cli.query_conflict + exit code 1); a real full-screen capture still always asks and --yes cannot skip it
   --list [<all>]                              List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
   --inspect [<path>]                          Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
@@ -204,6 +219,8 @@ Miscellaneous
   --verbose, -v                               Add the input section to the JSON (all input, normalized) and keep notes
   --quiet, -q                                 Drop notes; errors are always returned whatever this says. --verbose wins when both are given
   --lang, -l <language>                       Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
+  --history <on|off>                          whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
+  --integrity-hints <on|off>                  whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission
   --help, -h                                  Print this text help
   --version                                   Print version and stage
 
@@ -396,7 +413,7 @@ Rules:
    of the screen that route was authorized to sample; omitted only when it cannot be measured). The screen-reading
    channels also keep `requestedRect` / `capturedRect` / `clipped` / `rotation` (see above) — those are location
    judgements too, so `--quiet` does not hide them either.
-3. `code` values are stable: `cli.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
+3. `code` values are stable: `cli.*` / `config.*` / `note.*` / `match.*` / `capture.*` / `io.*`, append-only, never renamed.
    Among frame failures, "the frame never arrived" (`capture.frame_timeout`) and "the target window is gone"
    (`capture.window_gone`) each have their own code instead of being lumped in with the generic `capture.failed` —
    the next step differs between them (wait and retry versus enumerate the windows again). A frame whose own memory
@@ -448,7 +465,9 @@ Rules:
    / `stdout` / `report` — append-only like the codes; `match` for `match.*`, `plan` for the batch-name judgements
    `io.output_collision` and `cli.stdout_multiple_targets`, `encode` for anything that happened while the frame was
    being encoded; command-line parse errors carry no `stage` at all), `hresult` (a raw value shaped like
-   `0x80070005`), `win32` (the raw `GetLastError()` number).
+   `0x80070005`), `win32` (the raw `GetLastError()` number). A `config.*` entry may additionally carry two fields,
+   present only when that judgement had them: `line` (the 1-based line inside the configuration file) and `detail`
+   (an ASCII reason token that does not follow `--lang`).
    `message` follows `--lang` while these never do. Consent failures are their own branch:
    `capture.access_denied` means the answer was not Yes (on this `MB_YESNO` box the only refusal a person can give is
    "No", and the tool treats any non-Yes result as a refusal), `capture.consent_unavailable` means
@@ -718,6 +737,17 @@ nothing - there is no channel to switch on this path. **`6` and `8` never appear
 was written, and those two codes are exactly about those two things. For `--list` the exit code is `0` even when
 nothing matched - an empty list is the answer.
 
+Configuration failures are decided before anything else runs — never after a window was picked, a dialog was shown
+or a pixel was taken — and they split by cause like everything else here. The file **could not be read**
+(`config.not_found` for an `--config` path that does not exist, `config.read_failed`) is an I/O failure: exit
+`8`. The file was read but **refused** — syntax, type, range, version or combination (`config.too_large` belongs to
+this usage-error class) — is a usage error: exit `1`. `--config` together with `--no-config` is
+`cli.conflicting_options`, and `--show-config` combined with capture intent, window conditions, `--monitor`, a pick
+option, `--yes` / `--dry-run` or another query command is `cli.config_view_conflict`; both exit `1`. When the
+configuration cannot be read or parsed and the final `--out` cannot be safely determined, the structured error is
+written conservatively to **stderr** — the tool never touches stdout in order to deliver an error report. Full rule
+set: [Configuration file (`ECAPTURE.ini`)](#configuration-file-ecaptureini).
+
 ## System support
 
 Three different numbers must not be blended into one slogan:
@@ -814,7 +844,8 @@ The tool now names that layer. `--capabilities` / `--diagnostics` report `sessio
 (`unknown` / `untrusted` / `low` / `medium` / `high` / `system` / `protected_process`), `caveats` gains
 `process_integrity_below_medium` when it is under `medium`, and `--diagnostics -v` adds a `tokenIntegrityLevel`
 probe. In a real run below `medium`, every "the system refused" failure of that round (HRESULT `0x80070005` or
-Win32 `5` at the frame step, the file write or the stdout write) gets its `hint` extended with an actionable
+Win32 `5` at the frame step, the file write, the stdout write or the history copy — the refused archive copy gets
+the same extended hint on its `history.*` entry) gets its `hint` extended with an actionable
 sentence, and the round gains one `note.low_integrity` in `notes` carrying `target` / `backend` / `stage`. `code`,
 `stage`, `hresult` / `win32`, the exit code and every image already delivered stay exactly as they were, so a caller
 that branches on `code` sees the same contract, and `--yes` and the authorization tiers are unaffected. A question
@@ -878,10 +909,10 @@ Three rules:
 | `cursor`                              | the `--cursor` story: `default` (what happens when the option is absent), the three values, that one switch as `compiled` / `status` / `reason` / `minBuild` (19041) / `verifiedOnThisMachine`, then one row per registered internal path with `capability` (`settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`), `reason` and `include` / `exclude` each as `yes` / `no` / `unknown`, plus `pointerShapeCompositing: "never"` and `pixelRetouching: "never"`. The two duplication paths read `capability: pointer_state_unverified` with `include` and `exclude` both `no` — a desktop frame may already have the pointer drawn into it, and the tool never composites the pointer shape, which is not proof the pixels hold no pointer. Nothing is probed by capturing, so a path that is not in the registry reads `unknown` rather than a guessed answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `color`                               | the `--hdr` story: `default` (what happens when the option is absent), the three values (`auto` / `tonemap` / `refuse`), `compiled` / `status` / `reason` / `verifiedOnThisMachine`. `status` is about "can this build bring back a wide-gamut frame and how does it map", it does **not** ask whether this screen is currently in HDR mode (reason `hdr_display_mode_not_probed`); `verifiedOnThisMachine` is always `no` (this project has no HDR display, so it never claims color acceptance). One row per registered internal path, with `capability` = `wide_gamut_capable` (only `wgc` / `screen.wgc`) / `wide_gamut_unverified` (`duplication.frame` / `screen.duplication`: the desktop surface _can_ arrive FP16 or 10-bit, but this build never asks the display's color space before `DuplicateOutput`, so it cannot prove what it got) / `sdr_source_only` (everything that reads an 8-bit DC) / `unregistered`, plus `honorsExplicitPolicy` - `true` only for the two `wgc` rows, which is the machine-readable form of "only wgc can fulfil `tonemap` / `refuse` in this build". `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"` (HDR is always mapped to 8-bit SDR for delivery; no native-HDR output)                                                                                              |
 | `autoChainWindow` / `autoChainScreen` | the `auto` chain this machine can take now. Computed by the **same** `GateChannels` call that fills `input.captureChain` for a real run, and `tests\capabilities.ps1` compares the two                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `history`                             | the **rules** of the screenshot history archive, self-described (on by default): `enabledByDefault: true`, `relativeTo: "executable-directory"` (beside the exe that actually ran — not the working directory, not the directory of `--out`), `location: "history/YYYY-MM-DD/"`, `naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`, `source: "same-encoded-bytes"` (the copy uses the bytes the primary delivery already encoded: no re-capture, no re-encode, no reading the primary output file, no hard link), `commit: "exclusive-create"` (exclusive creation, never overwriting an existing history file), `created: "after-first-delivered-image"` (read-only queries and runs that delivered nothing create not one directory), `retention: "never-pruned-automatically"`, `uploads: false`, `backgroundPruning: false`, `writabilityProbed: false`, plus the partial-success exit code for a failed copy: `partialSuccessExit: 7`. Not one field here asserts "this run wrote successfully" — that answer is in the capture result's `images[].history`, and this section does not even try whether that location can be written (so `caveats` always carries `history_root_writability_not_probed`); every value is written relative to the program directory and no absolute path appears |
+| `history`                             | the **rules** of the screenshot history archive, self-described: `supported: true` (this build really has the archiving step), `enabledByDefault: true` (the factory default is on; the run's actual state follows the resolved configuration), `configKey: "history.enabled"`, `configOverride: "--history on\|off"`, `relativeTo: "executable-directory"` (beside the exe that actually ran — not the working directory, not the directory of `--out`), `location: "history/YYYY-MM-DD/"`, `naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`, `source: "same-encoded-bytes"` (the copy uses the bytes the primary delivery already encoded: no re-capture, no re-encode, no reading the primary output file, no hard link), `commit: "exclusive-create"` (exclusive creation, never overwriting an existing history file), `created: "after-first-delivered-image"` (read-only queries and runs that delivered nothing create not one directory), `retention: "never-pruned-automatically"`, `uploads: false`, `backgroundPruning: false`, `writabilityProbed: false`, plus the partial-success exit code for a failed copy: `partialSuccessExit: 7`. Not one field here asserts "this run wrote successfully" — that answer is in the capture result's `images[].history`. The report also does not state what **this run's** history setting resolved to (`--history off` or `history.enabled=false` change the run, not this document; caveat `history_run_state_not_reported` — read `--show-config` and the capture result), and this section does not even try whether that location can be written (so `caveats` always carries `history_root_writability_not_probed`); every value is written relative to the program directory and no absolute path appears |
 | `limits`                              | maximum frame side and bytes, `--timeout-ms` ceiling, built-in isolated-call ceiling, WGC frame-pool rebuild count, ordinal and PID ceilings, `stdoutTargetsMax: 1`, JPEG quality range                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `privacy`                             | what this query declares it did not do: no screen captured, no dialog shown, nothing uploaded, no user files enumerated, no environment variables read, no usernames, no paths                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `caveats`                             | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` + `duplication_desktop_frame_pointer_not_guaranteed` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer", and a duplication desktop frame is not guaranteed pointer-free), and always `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc` (the HDR mapping math is verified offline but there is no HDR display to test end-to-end, HDR is always mapped down to 8-bit SDR, and an explicit `tonemap` / `refuse` request is only ever fulfilled by the two `wgc` paths), and always `history_root_writability_not_probed` (the `history` section states the archiving rules; this query never tried writing that location and does not predict that any one write will succeed) |
+| `caveats`                             | stable ASCII tokens listing what this report does **not** assert: `available_is_not_a_guarantee`, `no_capture_performed`, `no_consent_dialog_shown`, `encoder_state_not_probed`, `device_capability_not_predicted`, `consent_dialog_state_inferred_not_probed`, `subsystem_version_is_linker_default`, plus per machine `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`, and always `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased` + `duplication_desktop_frame_pointer_not_guaranteed` (the cursor fields stop at the setting and the source, never at "this picture visibly has or has no pointer", and a duplication desktop frame is not guaranteed pointer-free), and always `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc` (the HDR mapping math is verified offline but there is no HDR display to test end-to-end, HDR is always mapped down to 8-bit SDR, and an explicit `tonemap` / `refuse` request is only ever fulfilled by the two `wgc` paths), and always `history_root_writability_not_probed` + `history_run_state_not_reported` (the `history` section states the archiving rules, the factory default and the configuration keys; this query never tried writing that location, does not predict that any one write will succeed, and does not report which history setting the current invocation resolved to) |
 
 Both documents come out of **one** judgement function (`BuildEnvReport` in `src/EnvReport.cpp`) and differ only
 in which sections they print: `--diagnostics` always includes the `build` section (PE link timestamp, machine
@@ -928,8 +959,9 @@ Five rules, and each one exists because the alternative was worse:
   `authorization` (`pixelsRead: 0`, `consentDialogShown: false`, `filesWritten: false`). The query also **never
   touches a target window**: no restore, no activation, no z-order change, because "let me look at what is open"
   must not change what is on the screen. `caveats` carries `no_capture_performed` and `no_window_touched` for this.
-- **Several matches are not a capture ambiguity.** `--list` pages them (`--offset` / `--limit`, default 50 per
-  batch) and reports the real total in `pagination.matched`, so a short list never reads as "there are only these".
+- **Several matches are not a capture ambiguity.** `--list` pages them (`--offset` / `--limit`; the page size is
+  `--limit` when the command line gives one, otherwise `query.window_list_limit` from the configuration, otherwise
+  the built-in 50) and reports the real total in `pagination.matched`, so a short list never reads as "there are only these".
   Zero matches is a normal answer: `windows: []` and exit code `0`, not `match.no_window` + `4`. `--inspect` needs
   one target, so it applies **the same** selection policy a capture uses: if that policy still leaves several, it is
   `match.ambiguous_window` + exit code `5` - it never picks one for you, and it never grabs a look-alike instead.
@@ -980,6 +1012,7 @@ Fields per row (window inspect returns the same object as `window` instead of th
     "limit": 50,
     "limitDefaulted": true,
     "defaultLimit": 50,
+    "limitSource": "builtin",
     "maxLimit": 8192,
     "matched": 52,
     "returned": 50,
@@ -1027,6 +1060,12 @@ Fields per row (window inspect returns the same object as `window` instead of th
   ]
 }
 ```
+
+`pagination.limitSource` (`cli` / `config` / `builtin`) names the level that decided the page size, and
+`pagination.defaultLimit` reports the default **effective for this run** — it follows
+`query.window_list_limit` when the configuration sets one, instead of always echoing the built-in 50. `limitGiven`
+in the `--verbose` `input` section still answers only the narrower question whether *this command line* wrote
+`--limit`.
 
 `title`, `class` and `image` are delivered verbatim - not truncated, not escaped into a prose line, not case-folded -
 so a caller reads fields instead of parsing a sentence. The full process path is **not** written unless
@@ -1526,6 +1565,13 @@ actually running**. The development build lives in `build\`, so history taken wh
 `build\history\`; install it into a custom folder and the history is in that folder — it follows the program itself,
 not the working directory, not the directory of `--out`, and not any fixed default install location.
 
+The copy is on by default; `--history off` on the command line or `history.enabled=false` in the configuration turns
+it off **for a run**. A disabled run creates no folder, never starts a copy, and reads and deletes no existing
+history either — every delivered image simply reports `images[].history.status = disabled` (see
+[Configuration file (`ECAPTURE.ini`)](#configuration-file-ecaptureini)). Everything else on this page is unchanged
+when the copy is on: the per-image failure accounting, the partial-success semantics, and the "independent copy of
+the same already-encoded bytes".
+
 | Item | Behaviour |
 | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Source | the **already encoded bytes** of the primary delivery: no re-capture, no re-encode, and no reading the primary output file back (another program may be changing it), and no hard link. Deleting or overwriting the primary image afterwards leaves the history copy alone. |
@@ -1541,7 +1587,7 @@ The member in the result is `images[].history` (a delivery fact, so `--quiet` ca
 
 | Key | Meaning |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `status` | `saved` = the copy was committed exclusively; `failed` = it was started and never committed; `skipped` = writing a copy never started for this one |
+| `status` | `saved` = the copy was committed exclusively; `failed` = it was started and never committed; `skipped` = writing a copy never started for this one; `disabled` = this run's archiving was turned off (`--history off`, or `history.enabled=false` in the configuration) — a decision, not a failure: no folder created, no copy started, no existing history read or deleted, and this state carries **no `code`** |
 | `file`   | appears only with `saved`, and then that file really is on disk; on failure no "name we would have used" is passed off as an existing copy |
 | `code`   | the stable code when `failed` / `skipped`: `history.unavailable` / `history.write_failed` / `history.file_exists` / `history.budget_spent` / `history.same_file` |
 
@@ -1562,10 +1608,161 @@ never started), so they are stated in this field only.
 
 The confirmation dialog states, before a person answers, that the program will also save a further persistent copy in
 its own directory (a route for which that archive cannot be stated coherently leaves the sentence out, instead of
-promising a copy that would never exist). The `history` section of `--capabilities` describes these rules themselves, not the
+promising a copy that would never exist; and when this run's archiving is disabled, no copy is promised either — the
+sentence follows the history state this run resolved to). The `history` section of `--capabilities` describes these rules themselves, not the
 outcome of any one run — it creates no directory and attempts no write, which is why `caveats` always carries
 `history_root_writability_not_probed`. An archive failure never changes the authorization tiers, and nothing is
 elevated, ACL-changed or re-labelled to make archiving succeed.
+
+## Configuration file (`ECAPTURE.ini`)
+
+`ECAPTURE.ini` supplies persistent **user preferences** — the settings a person wants every run to start with. It is
+not a capture intent and not an authorization: with the file present, a bare `ECAPTURE` invocation still takes no
+screenshot, and nothing in it can widen what `--yes` covers. The repository ships a fully commented template
+(`resources\ECAPTURE.example.ini`); the build and the installer place it next to the exe as the managed example
+file, while the actual `ECAPTURE.ini` is user data (see [Install](#install-windows-no-developer-tools-needed) and
+[Build and test](#build-and-test-maintainers)).
+
+### Where it is read, and the two very different outcomes of "not there"
+
+- Default lookup: `ECAPTURE.ini` **in the directory of the `ECAPTURE.EXE` that actually runs** — installed, portable
+  and the `build\` development binary all use that one rule. Nothing else is searched: not the current directory,
+  not `PATH`, not a source tree, not the registry, not another folder of the user profile.
+- **Absent is normal.** Built-in defaults apply, nothing is reported as an error, and no file is created for you.
+- **Present but unusable is a clear failure.** A file that cannot be read, that is not valid UTF-8 or that does not
+  match the syntax below fails the request **before** any window is selected, before any consent dialog, before a
+  single pixel is taken. The tool never "falls back to defaults and takes a different kind of picture" — that would
+  swap settings and possibly a route nobody chose.
+- `--config <path>` reads **exactly that file** for this run. A relative path is made absolute against the caller's
+  current directory. A missing or unreadable `--config` file is an error (`config.not_found` /
+  `config.read_failed`); it never falls back to the default-location file.
+- `--no-config` ignores configuration completely for this run — built-in defaults plus this command line. It is the
+  isolation entry for debugging and self-checks; it deletes and rewrites nothing. Giving it together with `--config`
+  is `cli.conflicting_options` (exit code 1).
+- `--show-config` prints a read-only JSON view of the resolved configuration (contract `configview`):
+  `config.selection` (`default` / `explicit` / `none`), `config.file`, `config.state` (`not_read` / `absent` /
+  `loaded` / `failed`), `config.loaded`, and `settings[]` with `key` / `value` / `source` per entry
+  (`source` is `cli` / `config` / `builtin`, listed in schema order), plus `formatBasis` and `caveats`
+  (`no_pixels_no_files`, `not_repaired`, `preferences_listed_not_executed`). It selects no window, reads no pixel,
+  shows no dialog, creates no output or history directory and does not expose the content of unrelated files. It
+  accepts `--config` / `--no-config` and the preference overrides being observed; combined with a capture intent,
+  window conditions, `--monitor`, a pick strategy, `--yes` / `--dry-run` or another query command it is
+  `cli.config_view_conflict` (exit code 1).
+- `--help` and `--version` keep their exit semantics and **do not read configuration at all on that path**: a
+  damaged default file still leaves help and version fully usable.
+- One snapshot is resolved per invocation. There is no hot reload, no background watcher and no automatic write-back
+  — the tool never "repairs" the file as a side effect. Internal workers do not re-read user configuration: the
+  parent resolves once and hands the normalized options down, so parent and child can never disagree on a backend
+  or an authorization scope.
+
+### What can be set
+
+Section and key names are ASCII and case-insensitive. The complete schema (identical to the shipped example file):
+
+| Section       | Key                        | Factory default | Allowed values / range                                                                                                                              | CLI counterpart                          |
+| ------------- | -------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `config`      | `version`                  | `1`             | only `1` is understood; any other version is refused explicitly                                                                                       | —                                        |
+| `general`     | `language`                 | `auto`          | `auto` / `zh-CN` / `zh-TW` / `en` / `ja`                                                                                                              | `--lang`                                 |
+| `general`     | `verbosity`                | `normal`        | `normal` / `quiet` / `verbose`                                                                                                                        | `-q` / `--quiet`, `-v` / `--verbose`     |
+| `capture`     | `method`                   | `wgc`           | `wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`                                                                                     | `--capture`                              |
+| `capture`     | `cursor`                   | `unset`         | `unset` / `default` / `include` / `exclude`                                                                                                           | `--cursor`                               |
+| `capture`     | `hdr`                      | `unset`         | `unset` / `auto` / `tonemap` / `refuse`                                                                                                               | `--hdr`                                  |
+| `output`      | `path`                     | `-` (stdout)    | file-name template or `-`; a relative path resolves against **the directory of that INI**; `%i` `%h` `%p` `%n` `%d` `%t` expand at the usual times; the main output directory must still exist beforehand | `--out` / `-o`                           |
+| `output`      | `format`                   | `auto`          | `auto` / `png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif`; `auto` keeps extension inference on                                                          | `--format`                               |
+| `output`      | `jpeg_quality`             | `100`           | decimal `1..100`                                                                                                                                      | `--quality`                              |
+| `output`      | `overwrite`                | `true`          | only literal `true` / `false` (`1` / `yes` / `on` are not booleans here); `false` = never replace an existing target                                   | `--no-overwrite` (inverted)              |
+| `crop`        | `mode`                     | `none`          | `none` / `client-area` / `roi`                                                                                                                        | `--roi` / `--client-area`; `--no-crop`   |
+| `crop`        | `roi`                      | (empty)         | `x,y,w,h` four decimal numbers; `x` / `y` may be 0, `w` / `h` at least 1, none above 16384; a non-empty value must be valid even when `mode` is not `roi` | `--roi`                                  |
+| `scale`       | `max_width` / `max_height` | `0`             | `0..16384` each (`0` = that ceiling not set)                                                                                                          | `--scale`, `--no-scale`                  |
+| `scale`       | `max_pixels`               | `0`             | `0..268435456`                                                                                                                                          | `--scale`, `--no-scale`                  |
+| `timeouts`    | `processing_ms`            | `0`             | `0..86400000` (`0` = no overall budget; isolated calls keep their built-in ceiling)                                                                     | `--timeout-ms`                           |
+| `timeouts`    | `consent_ms`               | `0`             | `0..86400000` (`0` = wait for the person indefinitely)                                                                                                  | `--consent-timeout-ms`                   |
+| `history`     | `enabled`                  | `true`          | only `true` / `false`; `false` archives nothing new and deletes or reads nothing old (`images[].history.status = disabled`)                              | `--history on\|off`                      |
+| `diagnostics` | `integrity_hints`          | `true`          | only `true` / `false`; `false` removes only the extra integrity explanation text — codes, raw values, delivery facts and capability fields are unaffected | `--integrity-hints on\|off`              |
+| `query`       | `window_list_limit`        | `50`            | `1..8192`; the `--list` page size used when the command line gave no `--limit`                                                                          | `--limit`                                |
+
+What is deliberately **not** configurable is not an oversight:
+
+- **Per-run target selection** — `HWND` / PID / process / title / class filters, the `--monitor` target and the
+  `all` / `index` / `topmost` pick strategies. Those say *what to capture now*; they belong to the request that the
+  consent dialog shows and the identity re-check verifies, never to a mutable file.
+- **Authorization** — `--yes`, any default approval of desktop capture, any automatic answering of the dialog, any
+  spoofed request origin. A file that survives between runs must not be able to lower a per-request gate.
+- **This-run actions** — help, version, the query commands, `--dry-run`.
+- **Machine changes** — elevation, ACL or label modification, turning privacy protection off.
+- **Implementation safety limits** — the worker protocol, memory and frame ceilings, the cancellation drain
+  allowance. These bound the tool's own worst case; a preference file may not raise them.
+- **Data handling beyond preferences** — uploading, automatic history deletion, install paths, build-tool
+  arguments.
+
+### Precedence and provenance
+
+- The order is always **explicit command line > explicit INI value > built-in default**, and the parser keeps the
+  difference between "not written" and "explicitly written as `false` / `0` / `none` / `unset`". An override is
+  never detected by "is it non-zero or non-empty", so a deliberate `false` from the command line still wins, and an
+  INI value that is *written but invalid* is an error — it never degrades into "absent, use the next level".
+  Only a key that is not written at all inherits.
+- Provenance is checkable, not assumed: `--show-config`, or with `-v` the `input.config` section
+  (`selection` / `file` / `state` / `loaded` / `formatBasis` / `sources[]`). "A configuration file was read" and
+  "this particular value was decided by it" are two separate facts.
+- The output-format decision has exactly **one implementation** (`DecideFormat`) and one precedence chain:
+  explicit `--format` → known extension of an explicit `--out` → non-auto `output.format` in the INI → known
+  extension of the INI `output.path` → `png`. A written `format = auto` in the INI keeps extension inference on.
+  When the command line gives `--format` and an inconsistent extension at once, the existing mismatch note is
+  preserved — no renaming, no re-encoding. The basis of the outcome is visible as `formatBasis`: `cli-format` /
+  `cli-output-extension` / `config-format` / `config-output-extension` / `stdout-default-png` / `default-png`.
+- **Two different relative-path origins** coexist by design: a relative `--out` stays relative to the caller's
+  current directory (unchanged behaviour), while a relative INI `output.path` resolves against the directory of
+  **that INI**. `-` is always stdout — never path-joined. Placeholders expand at their documented times; a `%` in a
+  template is never expanded as an environment variable.
+- **Crop and scale are replaced as whole groups.** The first command-line `--roi` or `--client-area` replaces the
+  entire INI crop group (it never fabricates a conflict with the INI's other mode); `--no-crop` cancels the
+  configured crop for the run, and combining it with other crop options of the same command line is a conflict.
+  The first written `--scale` drops the entire INI scale group; `--no-scale` cancels the configured scale, and
+  combining it with `--scale` is a conflict. Neither cancel switch turns anything into an upscale.
+- `--history on|off` and `--integrity-hints on|off` override the INI's `true` / `false`. `--yes` is still read only
+  from the current command line and is still inert on every desktop-pixel route.
+- **Verbosity is one group.** A configured `verbose` does not cancel this run's `--quiet`, and quiet/verbose given
+  on the same command line keep the existing rule (`--verbose` wins, plus its note).
+- A `cursor` or `hdr` value written in the INI is a **real requirement**, not a hint: it flows into backend
+  filtering, the fallback chain and the result fields through exactly the same parse-time gates as a command-line
+  one, and "given / explicit" now means "written at any explicit level", not "written on the command line". An INI
+  `unset` keeps the option omitted — the corresponding key groups stay absent from the result.
+
+### Syntax and resource limits
+
+- UTF-8 (a leading BOM is allowed); CRLF or LF line endings. Section and key names are ASCII, case-insensitive,
+  and surrounding whitespace outside the syntax is ignored.
+- `;` and `#` start a comment **only when the whole line is a comment**; inline comments are not supported — a
+  Windows path may contain `;` or `#`, and silently truncating it would be worse than refusing the file.
+- A value may be wrapped in matching double quotes to keep leading or trailing spaces. Backslash is **not** an
+  escape character: `C:\dir` is two literal backslashes. There is no environment-variable expansion, no command
+  substitution, no includes, no network reads, no nested file search.
+- Duplicate sections, duplicate keys, unknown sections or keys, a missing `=`, an unterminated quote, invalid
+  UTF-8, `NUL`, invalid numbers / booleans / enums, out-of-range values and invalid combinations are each a
+  reported error, carrying the (length-bounded) configuration path, the line number, `section.key` and a stable
+  diagnostic code.
+- Parser resource use is bounded **before** allocation: at most 256 KiB for the whole file and 4096 characters per
+  line.
+
+### Diagnostics (`config.*`) and what they mean for the exit code
+
+The stable code family: `config.not_found`, `config.read_failed`, `config.too_large`, `config.line_too_long`,
+`config.encoding`, `config.syntax`, `config.duplicate_section`, `config.duplicate_key`, `config.unknown_section`,
+`config.unknown_key`, `config.unsupported_version`, `config.invalid_number`, `config.invalid_boolean`,
+`config.invalid_value`, `config.out_of_range`, `config.invalid_combination`. Diagnostics of this family may carry
+two additional optional fields: `line` (the 1-based line in the source file) and `detail` (an ASCII reason token
+that never changes with `--lang`).
+
+The split follows the cause, not the file: **could not be read** (`config.not_found`, `config.read_failed`) is an
+I/O failure and exits `8`; **read but refused** — syntax, type, range, version, combination — is a usage error and
+exits `1` (`config.too_large` belongs to the usage-error class). When the configuration cannot be read or parsed
+and the final `--out` cannot be safely determined, the structured error is written to **stderr**; the tool never
+touches stdout in order to report an error.
+
+The troubleshooting order is fixed: run `--show-config` to see which file is actually read and which level decided
+each value → isolate with `--no-config` to confirm the behaviour no longer depends on the file → edit **that**
+file at the reported `line`. The tool never rewrites the configuration for you.
 
 ## Message language
 
@@ -1613,8 +1810,9 @@ this list is what an automated caller should treat as a residual risk instead of
   deliveries, possibly on different volumes, so each side reports its own result. A failed copy never deletes the
   primary image, never rolls back stdout that was already emitted, and never re-captures to "complete" the copy; in
   reverse, an unfinished primary delivery publishes no copy. Archiving draws no separate budget and runs no unbounded
-  background writer. History is not rotated or deleted automatically, and this version offers no switch to turn it
-  off — what it gives is exactly "one extra copy by default" plus dependable failure semantics.
+  background writer. History is not rotated or deleted automatically; it can be turned off for one run
+  (`--history off`, or `history.enabled=false` in the configuration), which means no new copy for that run — never a
+  deletion of what already exists — and reports `images[].history.status = disabled` instead of any failure.
 
 **Recorded as unverified rather than inferred** (each row is what the named test reports as SKIP / "not verified" on
 this development machine; none of them is claimed as a pass):
@@ -1648,6 +1846,9 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    report run `--diagnostics` (same judgements, plus a checkable build id; `-v` expands each raw answer). Neither
    document changes with `--lang` (all ASCII), so comparisons stay stable. `available` is **not** "this window will
    capture": drivers, protected content and HDR are outside that layer, and the `caveats` array says so.
+   Look at the user preferences the same read-only way before ordering anything: `--show-config` reports which
+   `ECAPTURE.ini` was picked up (or that none exists), whether it could be read, and which level — `cli`, `config`
+   or `builtin` — decided each effective setting, with no pixel, no dialog and no directory created.
    Then `--dry-run` as usual: it takes no frame, writes no file and shows no dialog; candidates are in
    `notes[0].value`, shaped like `hwnd=0x001B0C48 pid=31468 1261x614+681+22 class=CabinetWClass title=…`.
    `--dry-run` does not need an output path either (with none it just means "nothing to deliver", so the JSON goes
@@ -1675,6 +1876,8 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    | `io.write_failed`, `io.file_exists`, `io.output_collision`, `io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8    | create the directory, or pick a name that cannot collide; `io.file_exists` is `--no-overwrite` doing its job; the `io.timeout` here is the write that never got to start — when a file _did_ land and only the post-write deadline re-check crossed, that image stays in `images` and the run reports exit `7` (delivered + error) instead, see [Deadlines](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms) |
    | `history.unavailable`, `history.write_failed`, `history.file_exists`, `history.budget_spent`, `history.same_file` | 7 | **the image WAS delivered, only that copy did not land** (the last two mean this run never started writing a copy at all). `images[].history.status` plus the `errors` entry with the same code (`stage=history`) say which route; **do not re-capture for it** — re-capturing neither supplies the copy nor avoids asking a person for one more picture. What to change is that location (writable, a directory, not a reparse point), not the command line |
    | `capture.hdr_unsupported`, `capture.cursor_unsupported`, `capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1    | that option pair was refused while parsing, before any dialog                                                                                                                                                                                                                                                                                                                                                                   |
+   | `config.syntax`, `config.line_too_long`, `config.encoding`, `config.duplicate_section`, `config.duplicate_key`, `config.unknown_section`, `config.unknown_key`, `config.unsupported_version`, `config.invalid_number`, `config.invalid_boolean`, `config.invalid_value`, `config.out_of_range`, `config.invalid_combination`, `config.too_large`, `cli.conflicting_options`, `cli.config_view_conflict` | 1 | the command line or the configuration file was refused before any window was picked, any dialog, any pixel; when the entry carries `line` / `detail`, fix that line of that file yourself — the tool never repairs the configuration for you |
+   | `config.not_found`, `config.read_failed` | 8 | the named file could not be reached — `--config` never falls back to the default-location file; check the path, or pass `--no-config` deliberately to isolate the run |
 
    The four `env.*` codes are about this machine, not about the target, so retrying the same window is pointless:
    `env.os_too_old` means the Windows build is under the one encoder every format uses (changing `--capture` changes
@@ -1719,6 +1922,15 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    only need one window, do not escalate to the whole screen.
 7. To reliably target "some application", prefer `--process`/`--exe` plus `--class`; title matching is
    case-sensitive and unreliable across locales.
+8. **Treat the configuration as part of the environment, and never as permission**: look at it read-only first
+   (`--show-config` says which `ECAPTURE.ini` is in effect and which level decided each value); when you need
+   conditions stable across runs (a self-check, a reproducible bug report, an automated suite), pass `--no-config`
+   explicitly and say so — mutable user preferences must not silently shift what a run claims. A documented
+   real-user call loads the configuration normally, and `--show-config` / `--no-config` are the first
+   troubleshooting steps. And **never re-take a screenshot that already succeeded** because of a configuration
+   error or an archive failure: configuration failures are decided before any pixel is read, an archive failure
+   never erases the delivered primary image, and re-taking supplies neither while asking a person for one more
+   picture.
 
 ## Install (Windows, no developer tools needed)
 
@@ -1768,7 +1980,10 @@ network**. It checks, in order: every file listed in `install-manifest.json` for
 relative links in the four READMEs and `SKILL.md` resolve inside the install folder; that `ECAPTURE.EXE --version`
 exits 0 with the declared version, that `--capabilities` / `--diagnostics` exit 0 as parseable JSON whose
 `program.version` / `arch` / `buildId` match the manifest, and that `--help` exits 3 (that is its contract, not a
-failure). With `-RunOfflineTests` it then runs the declared offline test set through the bundled `test-all.ps1`,
+failure). `ECAPTURE.example.ini` is verified as one of the managed files; the user's real `ECAPTURE.ini` is
+deliberately **not** part of any fixed-hash payload assertion — the self-check reports the template's integrity and
+the actual INI's load / parse state separately, so ordinary user edits of the configuration are never reported as
+install corruption. With `-RunOfflineTests` it then runs the declared offline test set through the bundled `test-all.ps1`,
 pointed at **this** folder's `ECAPTURE.EXE` - never at an older copy on `PATH` - with logs in the system temp
 directory. Exit codes: `0` all passed, `1` something failed, `2` a precondition was missing (wrong folder, no
 manifest). The real window / HDR / multi-monitor / consent-dialog tests are **not** run here; those stay a job for a
@@ -1811,6 +2026,22 @@ to prove the install works by taking a screenshot.
   so it writes **no file at all** and stops with a non-zero exit code, recording the reason in its `/LOG` file.
 - **Uninstall** removes only the files the installer recorded. Files you added, logs, and neighbouring skills stay;
   nothing recursively deletes the parent folders (`.agents`, `skills`) or your chosen folder's other contents.
+- **Configuration**: the installer ships `ECAPTURE.example.ini` as a managed file beside `ECAPTURE.EXE` (it is
+  refreshed on every upgrade). The real `ECAPTURE.ini` beside it is user data: setup creates it from the template
+  **only when it genuinely does not exist**, and exclusively; an existing one — valid or damaged — is never
+  overwritten, cleared or rewritten by install or upgrade, and **uninstall keeps it** together with `history\` and
+  sibling skills. It is not in the release manifest and never a fixed-hash assertion, so user edits cannot make
+  the install "fail integrity" (see the self-check above). If you want to start over, delete that file yourself. Every assignment in the template is written as a comment, so the file created at install is equivalent to having no configuration at all: nothing becomes an explicit request until you remove that line's leading `;`.
+- **Ownership marker**: what upgrade and uninstall may manage is decided by the installer's own marker, now
+  `markerversion 2`, recording per managed file `relative-path|size|last-write-time|content SHA-256`. Before
+  overwriting a file on upgrade, setup compares size and time first and, when those match, compares the content
+  hash — so a timestamp-preserving replacement is still detected; a file whose hash could not be read is recorded
+  with an empty fourth field and the next upgrade treats it as "unchanged cannot be proven" and backs the original
+  up before overwriting. Installs carrying the older `markerversion 1` marker still get their ownership recognised,
+  but that generation has no content baseline, so its managed files are backed up before being overwritten.
+  Product name, AppId and marker version have exactly one source, `installer\payload.manifest.json`; the installed
+  `verify-install.ps1` and the installer itself read the same fields from the packaged `install-manifest.json` —
+  there is no second hand-written copy that could drift.
 - **Screenshot history** (`<install folder>\history\<date>\`, see
   [Screenshot history archive](#screenshot-history-archive-on-by-default)) counts as the same class as "files you
   added later" in the installer's eyes: it is not in the managed file list and not in the release manifest
@@ -1822,8 +2053,11 @@ to prove the install works by taking a screenshot.
 - **History does not migrate when you change the install folder**: the old pictures stay beside the old folder's own
   `history\` (the archive follows the exe that ran at the time). To keep using the old batch, move it over yourself
   or let the tool know about both locations.
-- **A file is in use**: setup reports the locked file and rolls back. It does not kill a running program to force the
-  install through, and it does not claim success.
+- **A file is in use**: setup detects the occupation **before anything is copied** — it stops in `PrepareToInstall`
+  while reading the pre-overwrite backup (measured on this machine: exit code `7`, the copy phase never started).
+  The older wording "the copy failed with error 5 and Inno undid it" describes an observation from before the
+  content baseline existed. Setup does not kill a running program to force the install through, and it does not
+  claim success.
 - **The install folder is blocked by a security policy**: when the chosen folder sits under a policy that forbids
   programs living in it from creating a temporary directory (common with endpoint protection), an in-place uninstall
   fails with `Setup was unable to create the directory "…-uninstall.tmp". Error 5`, and the bundled `delivery` layer of
@@ -1839,7 +2073,7 @@ to prove the install works by taking a screenshot.
 
 | Command                     | What it proves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.\build.ps1`               | Release build, output `build\ecapture.exe`; `-Config Debug` and `-Clean` available                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `.\build.ps1`               | Release build, output `build\ecapture.exe`; also copies `resources\ECAPTURE.example.ini` beside the exe when it changed (`copy_if_different`) and **never touches the real `ECAPTURE.ini`** (user data, gitignored, never packaged); `-Config Debug` and `-Clean` available                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `.\tests\cli.ps1`           | The output contract: parse errors and exit codes, every `--yes` / `--no-overwrite` boolean form, the query-versus-capture conflict groups, stream separation, "no `--out`" equivalence with `--out -`, and the four message languages. Runs `--dry-run` only — no capture, no file                                                                                                                                                                                                            |
 | `.\tests\windows.ps1`       | `--list` / `--inspect`: paging, the visibility policy, field-level readability, document shape, privacy, ambiguity, and that the query really touches nothing (offline `build\ecapture-windows-tests.exe` plus self-made windows)                                                                                                                                                                                                                                                              |
 | `.\tests\screens.ps1`       | `--screens` and `--monitor=device:` / `id:`: which identity is stable how far, that a reported selector selects that panel, and that an unknown identifier never degrades to the primary monitor                                                                                                                                                                                                                                                                                               |
@@ -1858,8 +2092,9 @@ to prove the install works by taking a screenshot.
 | `.\tests\cursor.ps1`        | `--cursor`: the per-path registry, how the chain narrows on both sides of the 19041 line, how `cursorRequested` / `cursorEffective` / `cursorBasis` are composed, and a source scan that fails if any pointer-shape fetching, cursor drawing or pointer-moving call ever appears                                                                                                                                                                                                               |
 | `.\tests\hdr.ps1`           | `--hdr`: DXGI format and display color-space classification (unrecognized stays `unknown`), the tone-curve properties, `ConvertWideFrameToSdrBgra8` point by point, the result-key group, and the honest SDR on-device case (keys absent by default, `note.hdr_source_sdr` when processing was asked of an SDR frame)                                                                                                                                                                          |
 | `.\tests\save.ps1`          | File delivery: every `--no-overwrite` boolean form against a real file, batch name planning and collision detection, atomic commit against a locked target / a directory / a missing directory / a killed run, and the concurrent `--no-overwrite` race                                                                                                                                                                                                                                        |
-| `.\tests\history.ps1`       | Screenshot history archive: the offline layer against the production `HistoryArchive` + `Delivery` + `FileSave` — naming and the local date from one clock reading, two images in the same instant / a clock rolled back / crossing midnight, exclusive commit on a taken name and the retry under the next one, failure classification per route, no self-overwrite when the planned primary name sits inside the history tree, plus "primary succeeded and the copy failed", "a failed primary and a half-emitted stdout publish no copy", "the copy never starts when the budget is spent after the primary landed" and "an exception from the archive does not erase the delivery facts" (`build\ecapture-history-tests.exe`); the on-device layer copies the exe into a per-run folder and checks with self-made windows that the landing point follows the program itself, that primary and copy match byte for byte / by SHA-256, the batch and the `--out -` route, that read-only and argument failures create no history at all, and the partial-success `7` at a reparse point and when "that name is a file" |
-| `.\clean.ps1`               | Shares the one judgement in `scripts\build-clean.psm1` with `.\build.ps1 -Clean`: clears the outputs under `build\` but **preserves `build\history`** beside the development exe (real screenshot data, not a build artifact); refuses, with the reason stated, when `build\` or `build\history` is a reparse point or when that name is held by a file, never silently deleting or moving it (`tests\history.ps1` section 10 checks that same body) |
+| `.\tests\history.ps1`       | Screenshot history archive: the offline layer against the production `HistoryArchive` + `Delivery` + `FileSave` — naming and the local date from one clock reading, two images in the same instant / a clock rolled back / crossing midnight, exclusive commit on a taken name and the retry under the next one, failure classification per route (archive commits may also be intercepted through the test-only `HistoryCommitFn` seam — left empty it runs the production `SaveFileAtomic` path unchanged), no self-overwrite when the planned primary name sits inside the history tree, plus "primary succeeded and the copy failed", "a failed primary and a half-emitted stdout publish no copy", "the copy never starts when the budget is spent after the primary landed" and "an exception from the archive does not erase the delivery facts" (`build\ecapture-history-tests.exe`); the on-device layer copies the exe into a per-run folder and checks with self-made windows that the landing point follows the program itself, that primary and copy match byte for byte / by SHA-256, the batch and the `--out -` route, that read-only and argument failures create no history at all, and the partial-success `7` at a reparse point and when "that name is a file" |
+| `.\tests\config.ps1`        | `ECAPTURE.ini` user preferences: the offline layer (`build\ecapture-config-tests.exe`, source `tests\config_state.cpp`) judges strict parsing (UTF-8 / BOM / CRLF, whole-line comments only, quoted values without escape handling, duplicate and unknown sections / keys, `NUL`, the 256 KiB and 4096-character limits) and per-key validation, and runs the CLI > INI > built-in merge through the real `ParseCommandLine` — explicit `false` / `0` / `unset` stays distinct from unwritten, one format chain, crop / scale whole-group replacement and cancellation, and `--help` / `--version` / `--no-config` still work with a damaged file; the bounded on-device layer copies the exe into a per-run temporary directory (the configuration follows the exe that really runs), checks `--show-config` creates nothing, the absent / loaded / failed outcomes of the default location, history off / on against the result field, an INI `overwrite = false` really blocking and an INI scale ceiling really reaching the delivered image, and that build and clean retention never touch the user file. Existing contract checks in development and installed verification pass `--no-config` explicitly; the user's real installation is never used as a fixture |
+| `.\clean.ps1`               | Shares the one judgement in `scripts\build-clean.psm1` with `.\build.ps1 -Clean`: clears the outputs under `build\` but **preserves `build\history`** beside the development exe (real screenshot data, not a build artifact) **and preserves `build\ECAPTURE.ini`** (real user configuration — kept by file name alone, so a damaged or unreadable INI is preserved too, never moved aside and back); refuses, with the reason stated, when `build\` or `build\history` is a reparse point or when that name is held by a file, never silently deleting or moving it (`tests\history.ps1` section 10 checks that same body) |
 | `.\tests\screen.ps1`        | Whole-screen capture over the three desktop routes with a red-block placement and a negative control. Only `-SimulateConsent` answers, and only on a desktop dedicated to testing                                                                                                                                                                                                                                                                                                              |
 | `.\tests\smoke.ps1`         | End to end: capture its own test window, validate PNG size and pixel content                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `.\tests\invoker.ps1`       | The shared test invoker itself: argv quoting, both streams drained at once, binary output, a hung child, per-run scratch dirs                                                                                                                                                                                                                                                                                                                                                                  |
@@ -1956,13 +2191,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
   source of truth (version from `src\Version.h`, PE architecture, `program.buildId`) - a failed build never falls back
   to an old artifact, and "the file exists" is never treated as "the current build succeeded".
 - **Payload collection** follows `installer\payload.manifest.json` into a private staging directory under `build\`:
-  `ECAPTURE.EXE`, `SKILL.md` + `references\`, all four READMEs, `LICENSE`, `resources\icon.ico`,
+  `ECAPTURE.EXE`, `ECAPTURE.example.ini` beside it (the managed configuration template — the real `ECAPTURE.ini` is
+  user data, never staged or packaged), `SKILL.md` + `references\`, all four READMEs, `LICENSE`,
+  `resources\icon.ico`,
   `verify-install.ps1`, `test-all.ps1`, `tests\` (scripts, `harness.psm1`, helper source, batch walkthrough) and the
   test binaries under `build\`. A content guard rejects source files, developer-only `AGENTS.md` / `MEMORY.md`,
   logs and screenshots, and the check refuses to stage a different `ECAPTURE.EXE` than the one just built.
 - **The staged manifest** `install-manifest.json` (plus `payload.sha256.txt`) records version, architecture, config,
   `buildId` and the SHA-256 of every file, which is what the installed `verify-install.ps1` checks against.
-- **The compiler** is Inno Setup 6.3 or newer (the script needs `ArchitecturesAllowed=x64compatible`). It is found on
+- **The compiler** is Inno Setup 6.4 or newer (the script needs `ArchitecturesAllowed=x64compatible`, and the
+  upgrade content baseline calls `GetSHA256OfFile`, introduced in 6.4). It is found on
   `PATH` or in the usual installation folders, or given explicitly with `-IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"`.
   The script never downloads or installs a tool: without a compiler it prints what is missing and exits `32`
   (`-StageOnly` still works and needs no compiler at all). `build.ps1`'s own dependency is Visual Studio with the C++

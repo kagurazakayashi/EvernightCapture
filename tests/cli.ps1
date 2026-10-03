@@ -33,6 +33,19 @@ function Invoke-Ec {
     if ($Lang -and -not $NoLang -and ($names -notcontains 'lang') -and ($Arguments -notcontains '-l')) {
         $Arguments = @('--lang', $Lang) + @($Arguments)
     }
+    # 既有契约检查一律显式带 --no-config：这套判据问的是"这份产物自己怎么实现这条命令行"，
+    # 不该被 exe 旁边那份 ECAPTURE.ini 改得飘忽（开发机上有那份文件、安装目录首次部署后也会有，
+    # 同一个套件在两处必须给同一个答案）。
+    # 唯一的例外是**真正的裸调用**（一条参数都没有）：那条判的是"零条件 => 帮助而不是截图"这条
+    # 授权侧契约，注入任何参数就把它测没了。带配置时的裸运行由 tests\config.ps1 与
+    # tests\config_state.cpp 各自判（那边才是配不配着跑的对照现场）。
+    # 需要观察配置本身的判据一律在 tests\config.ps1，不在这里。
+    if (@($Arguments).Count -gt 0 -and ($names -notcontains 'config') -and
+        ($Arguments -notcontains '--no-config')) {
+        # 加在**最前面**：有的用例用 -- 结束选项解析，尾随一条开关会被当成位置参数（输出路径），
+        # 那会改掉的不是"读不读配置"而是那条用例真正在判的 argv 语义。
+        $Arguments = @('--no-config') + @($Arguments)
+    }
     return (Invoke-Ecapture -Arguments $Arguments)
 }
 
@@ -57,9 +70,15 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 # 路径没有可读回的开关），同一行还要写明 --cursor default 照旧交图但 cursorEffective 写 unverified。
 # 这是**说明语义变多**而不是文案膨胀：四行各自加长（zh-CN 331→423 / zh-TW 333→428 / en 606→795 /
 # ja 409→516），没有新增选项也没有新增分组标题。
-# 实测 zh-CN 9249 / zh-TW 9290 / en 17382 / ja 10418，下面四个数按各自实际长度抬起，
+# 这一次上调：用户偏好配置（ECAPTURE.ini）那一批入口。新增的是**七行目录 + 一个分组标题**，
+# 每一条都对应一个真存在的选项，没有一条是重复说明：
+#   --config / --no-config（新增 grp.config 那一节：这次读哪一份、还是完全不读）
+#   --show-config（只读的配置视图，接在查询那一节里）
+#   --history / --integrity-hints（两条新偏好的本次覆盖入口）
+#   --no-crop / --no-scale（取消配置文件里那两组的入口，接在裁剪与缩放那一节后面）
+# 实测 zh-CN 10012 / zh-TW 10052 / en 19028 / ja 11359，下面四个数按各自实际长度抬起，
 # 并把余量留在"再加一条短选项"还能装下的位置上。
-$HELP_LIMITS = @{ 'zh-CN' = 9400; 'zh-TW' = 9450; 'en' = 17600; 'ja' = 10600 }
+$HELP_LIMITS = @{ 'zh-CN' = 10250; 'zh-TW' = 10300; 'en' = 19300; 'ja' = 11600 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']

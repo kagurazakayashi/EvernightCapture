@@ -11,6 +11,15 @@
 # tests\ 的临时夹具一律建在 %TEMP%（判据只清理本次自己拥有的目录），不在这里出现。
 /.agents/skills/*/history/
 
+# 用户配置 ECAPTURE.ini：程序默认就读"实际运行的那个 exe 同目录"的那一份（判据见 src/Config.h）。
+# 那是用户数据，不是构建产物，也不是可以提交的个人设置：不入 git、不打进安装包、也不上传成
+# CI 工件。仓库里入库的是模板 resources\ECAPTURE.example.ini（文件名不同，不会被这条盖住），
+# 安装器把模板作为受管文件交付，实际那份只在**不存在时**创建、之后一直保留。
+# 这条刻意写成根级 + 全树两种：build\ECAPTURE.ini 已由 /build 盖住，而把 exe 复制到别处跑时
+# 旁边长出的那份也必须被忽略 —— 但它不能写成 *.ini，那会把示例配置与测试夹具一并屏蔽掉。
+/ECAPTURE.ini
+**/ECAPTURE.ini
+
 # Created by https://www.toptal.com/developers/gitignore/api/c++,cmake,linux,macos,windows,visualstudio,visualstudiocode,ninja
 # Edit at https://www.toptal.com/developers/gitignore?templates=c++,cmake,linux,macos,windows,visualstudio,visualstudiocode,ninja
 

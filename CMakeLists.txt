@@ -26,6 +26,7 @@ endif()
 add_executable(ecapture
   src/Main.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   src/Json.cpp
   src/Report.cpp
@@ -97,6 +98,31 @@ target_compile_definitions(ecapture PRIVATE UNICODE _UNICODE NOMINMAX WINRT_LEAN
 # 交付名固定为 ECAPTURE.EXE（Windows 文件系统不区分大小写）
 set_target_properties(ecapture PROPERTIES OUTPUT_NAME "ecapture" SUFFIX ".exe")
 
+# 配置模板跟着程序一起落到它旁边：默认位置读的就是这一目录里的 ECAPTURE.ini，
+# 所以"程序旁边要有一份可对照的模板"是同一件事的另一半（安装版靠安装器交付同一份）。
+#   * copy_if_different —— 模板本身是受管产物，内容变了就跟上。
+#   * 只复制这一份 example，**永不碰 ECAPTURE.ini**：那是用户配置，构建与清理都不许覆盖它，
+#     也不做"首次构建顺手生成一份配置"这种事（判据见 src/Config.h 与 README《配置文件》）。
+#   * 这里用一条**增量**规则而不是 ecapture 的 POST_BUILD：POST_BUILD 只在**重新链接**那一次跑，
+#     而模板是可以单独被改的仓库文件——只改模板时那一版复制根本不会执行，build 旁边就留下一份
+#     陈旧副本（实测踩过：源码 9580 字节、build 里还是旧的 9137 字节）。
+#   * 也不能用"每次都算过期"的裸 add_custom_target：tests\installer-package.ps1 有一条前提判的是
+#     "没有东西变了就得是干净的空操作"，一条恒跑的步骤会让那次构建图不干净（实测报
+#     "[1/1] Refreshing ECAPTURE.example.ini ..."）。所以这里给出 OUTPUT + DEPENDS 做时间戳判定，
+#     并在复制之后 touch 那一份产物：copy_if_different 遇到同内容不写文件、时间戳不动，
+#     不 touch 就会被判成"还没生成"而每次重跑。touch 的对象是本规则自己生成的那一份副本，
+#     不碰仓库里那份模板，也不碰 ECAPTURE.ini。
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/ECAPTURE.example.ini"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/resources/ECAPTURE.example.ini"
+          "${CMAKE_BINARY_DIR}/ECAPTURE.example.ini"
+  COMMAND ${CMAKE_COMMAND} -E touch "${CMAKE_BINARY_DIR}/ECAPTURE.example.ini"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/resources/ECAPTURE.example.ini"
+  COMMENT "Refreshing ECAPTURE.example.ini next to the built executable (never touches ECAPTURE.ini)")
+add_custom_target(ecapture-example-ini ALL
+  DEPENDS "${CMAKE_BINARY_DIR}/ECAPTURE.example.ini")
+add_dependencies(ecapture ecapture-example-ini)
+
 # ---------------------------------------------------------------------------
 # Windows.Graphics.Capture 阶段（C++/WinRT）所需组件。已实测：
 #   * winrt/Windows.Graphics.Capture.h 等头文件由 Windows SDK 自动进入 MSVC 包含路径
@@ -137,6 +163,7 @@ add_executable(ecapture-consent-tests
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
@@ -188,6 +215,7 @@ add_executable(ecapture-worker-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -220,6 +248,7 @@ add_executable(ecapture-image-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
@@ -283,6 +312,7 @@ add_executable(ecapture-identity-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -320,6 +350,7 @@ add_executable(ecapture-dup-tests
   src/ScreenIdentity.cpp
   src/WindowMatch.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -346,6 +377,7 @@ add_executable(ecapture-compat-tests
   src/SystemCompat.cpp
   src/ProcessIntegrity.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -377,6 +409,7 @@ add_executable(ecapture-capabilities-tests
   src/ProcessIntegrity.cpp
   src/CaptureScope.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   src/Json.cpp
   resources/ecapture.rc)
@@ -418,6 +451,7 @@ add_executable(ecapture-windows-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   src/Json.cpp
   resources/ecapture.rc)
@@ -461,6 +495,7 @@ add_executable(ecapture-screens-tests
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   src/Json.cpp
   resources/ecapture.rc)
@@ -527,6 +562,7 @@ add_executable(ecapture-cursor-tests
   src/CaptureScope.cpp
   src/SystemCompat.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -573,6 +609,7 @@ add_executable(ecapture-hdr-tests
   src/ScreenIdentity.cpp
   src/WindowMatch.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -615,6 +652,7 @@ add_executable(ecapture-delivery-tests
   src/ScreenIdentity.cpp
   src/WindowMatch.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -647,6 +685,7 @@ add_executable(ecapture-history-tests
   src/OutputPlan.cpp
   src/Deadline.cpp
   src/CliOptions.cpp
+  src/Config.cpp
   src/Lang.cpp
   resources/ecapture.rc)
 
@@ -659,4 +698,45 @@ target_link_libraries(ecapture-history-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-history-tests PROPERTIES OUTPUT_NAME "ecapture-history-tests")
 set_property(TARGET ecapture-history-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 用户偏好配置（ECAPTURE.ini）的离线判据：tests/config_state.cpp。
+#
+# 判的是生产本体，不是测试里另抄的一份规则：
+#   * src/Config.cpp 的语法层（UTF-8/BOM/CRLF、整行注释、成对引号、重复节与键、未知节与键、
+#     缺等号、不闭合引号、NUL、行与文件的上限）与逐键判定（版本/布尔/枚举/严格十进制/区间）；
+#   * src/CliOptions.cpp 的合并那一步 —— 一律通过真实入口 ParseCommandLine 跑，因为它才拿得到
+#     "本次命令行写过哪些项"，而那正是整条优先级（CLI > INI > 内置）与分组覆盖的判据所在；
+#   * 输出格式那条链（显式 --format / 命令行输出名扩展名 / 配置的非 auto format / 配置路径
+#     扩展名 / png）与 --show-config 那份来源表；
+#   * 只读查询不被配置里截图那一级的默认污染、坏配置时 --help/--version/--no-config 仍可用。
+# 链接项与 consent 那一份同构（CliOptions + Lang + .rc：解析期的报错文案要读资源），
+# 不链取帧通道、不弹框、不建目录 —— 临时 INI 全部写在本次自建的 %TEMP% 目录里，结束整棵删掉。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-config-tests
+  tests/config_state.cpp
+  src/Config.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CliOptions.cpp
+  src/Lang.cpp
+  src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
+  src/WindowMatch.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-config-tests PRIVATE resources src)
+target_compile_features(ecapture-config-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-config-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-config-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-config-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-config-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-config-tests PROPERTIES OUTPUT_NAME "ecapture-config-tests")
+set_property(TARGET ecapture-config-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")

@@ -37,6 +37,13 @@
 ;   * 升级/重装尽量沿用上次选过的目录（UsePreviousAppDir）；换目录时旧目录原样保留，不隐式删除或迁移。
 ;   * 卸载只删安装器自己记录过的文件，外加那个 ownership 标记（[UninstallDelete] 里点名这一个）；
 ;     用户添加的文件、备份目录与相邻 Skill 一律保留，绝不递归通配删除父目录。
+;   * 配置的两份文件是两种身份，不能混：模板 ECAPTURE.example.ini 是**受管载荷**（跟着 [Files] 的整目录
+;     复制铺进 {app}，升级正常覆盖，也在编译期受管清单与归属标记记录里）；实际用户配置 ECAPTURE.ini
+;     是**用户数据**（不在载荷里，所以不在受管清单与归属标记记录里）：安装时只在它确实不存在时从模板
+;     独占创建（onlyifdoesntexist），已有那份无论有效还是损坏都不覆盖、不备份、不修复、不删除；
+;     uninsneveruninstall 让卸载也不碰它。程序读的是 ECAPTURE.ini，缺失是正常状态（内置默认值），
+;     损坏则是明确的配置错误 —— 那属于使用问题，不是"安装文件损坏"，随包自检据此分开报（见
+;     verify-install.ps1 与 tests\install-lifecycle.ps1）。
 ;   * 截图历史 <安装目录>\history\日期\ 是本产品**不拥有也不管理**的那一类：它不在编译期受管清单
 ;     managed-list 里（打包阶段就把那棵树挡在载荷之外，见 build-installer.ps1 的内容守卫），所以
 ;     升级/重装既不会覆盖它也不会把它备份走，卸载不删它，归属判断也不会因为目录里多出这一棵就把
@@ -84,6 +91,15 @@
 #ifndef MarkerVersion
   #define MarkerVersion "2"
 #endif
+; 配置这一对文件名的唯一来源是载荷清单的 configPayload：build-installer.ps1 用 /DConfigTemplate 与
+; /DUserConfig 把清单里的值递下来，下面的默认值必须与那份清单一致（打包阶段有静态核对，不一致就
+; 拒绝出包）。模板是受管载荷；ECAPTURE.ini 是用户数据，永远不是载荷。
+#ifndef ConfigTemplate
+  #define ConfigTemplate "ECAPTURE.example.ini"
+#endif
+#ifndef UserConfig
+  #define UserConfig "ECAPTURE.ini"
+#endif
 #ifndef AppIdGuid
   #define AppIdGuid "{B7A2E1C4-5D3F-4E6A-9C21-8F0B3D5E7A10}"
 #endif
@@ -126,12 +142,19 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; 载荷目录整份铺进 {app} 根：ECAPTURE.EXE / SKILL.md / references / README×4 / LICENSE /
-; resources / tests / build / verify-install.ps1 与 build-installer 生成的 install-manifest.json、
-; payload.sha256.txt。不递归删除、不按通配删除用户内容；卸载走 Inno 自己的安装记录。
+; ECAPTURE.example.ini / resources / tests / build / verify-install.ps1 与 build-installer 生成的
+; install-manifest.json、payload.sha256.txt。不递归删除、不按通配删除用户内容；卸载走 Inno 自己的安装记录。
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; 实际用户配置：只在**确实不存在**时由模板独占创建一份（onlyifdoesntexist —— 已存在的文件，无论
+; 有效还是损坏，都不覆盖、不"顺手修好"），并且 uninsneveruninstall：卸载不删它。
+; 它因此也不在编译期受管清单 managed-list 里（载荷里根本没有这个文件），升级时覆盖前保护不遍历它、
+; 归属标记也不记录它 —— 用户自己写的输出路径模板与偏好不会被打进发行清单或被当成产品文件。
+; 模板本身（上面那条整目录复制）才是受管载荷：升级会把它更新成当前版本，用户的这份 ECAPTURE.ini 不会。
+Source: "{#SourceDir}\{#ConfigTemplate}"; DestDir: "{app}"; DestName: "{#UserConfig}"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
 
 [UninstallDelete]
-; 只清这一个安装器自己写的归属标记；备份目录、用户新增文件与相邻 Skill 都不在这里，故一律保留。
+; 只清这一个安装器自己写的归属标记；备份目录、用户新增文件、用户配置 {#UserConfig}、
+; 截图历史 history\ 与相邻 Skill 都不在这里，故一律保留。
 Type: files; Name: "{app}\{#OwnershipMarker}"
 
 [Code]
@@ -668,6 +691,9 @@ begin
       '让 AI 工具用起来：把上面这个目录（含 SKILL.md 与 ECAPTURE.EXE）交给你的 AI 工具，' +
       '让它显式读取该 SKILL.md，并按其中说明用绝对路径调用同目录的 ECAPTURE.EXE。' + #13#10 +
       '注意：装到默认目录之外的路径时，多数工具不会自动发现，需要按工具的说明手动指向该目录。' + #13#10 + #13#10 +
+      '偏好配置：' + ExpandConstant('{app}') + '\{#UserConfig}（本次因为该文件不存在，已从模板 {#ConfigTemplate} 复制一份；' +
+      '已有或你改过的这份不会被覆盖，卸载也不会删。想知道当前生效的设置来自哪一层，跑一次只读的 ' +
+      'ECAPTURE.EXE --show-config；这份文件改坏了程序会明确报错，不会静默回退默认值。' + #13#10 + #13#10 +
       '建议先跑一次只读自检：powershell -NoProfile -ExecutionPolicy Bypass -File "' +
       ExpandConstant('{app}') + '\verify-install.ps1"' + Extra;
   end;

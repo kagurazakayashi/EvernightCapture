@@ -16,9 +16,9 @@ stable exit codes and stable diagnostic `code` values, so it is meant to be driv
 
 Three kinds of call, and the difference matters:
 
-- **Read-only queries** - `--capabilities`, `--diagnostics`, `--screens`, `--list`, `--inspect`, `--dry-run`. They take
-  no pixel, show no dialog, write no file, create not even the history folder, change no display setting, and never
-  probe by capturing something. Use them to decide. They need no output path.
+- **Read-only queries** - `--capabilities`, `--diagnostics`, `--screens`, `--list`, `--inspect`, `--show-config`,
+  `--dry-run`. They take no pixel, show no dialog, write no file, create not even the history folder, change no
+  display setting, and never probe by capturing something. Use them to decide. They need no output path.
 - **A real capture of a window's own content** (`wgc` / `printwindow` / `dwm.thumbnail`) - runs unattended once you
   pass `--yes`.
 - **A real capture that samples desktop pixels** (any whole screen, `bitblt`, `duplication`, DWM's `dwm.screen`
@@ -89,6 +89,40 @@ Do not assume the tool is on `PATH`.
 - Git Bash mangles `/help` as a path and **collapses backslashes** in arguments like `--monitor id:...`:
   `export MSYS2_ARG_CONV_EXCL='*'`, quote the value, and pass Windows-style paths.
 
+## User preferences file: `ECAPTURE.ini` beside that executable
+
+- **The first time you work in a directory here, run the read-only view** `& $exe --show-config` (no window picked,
+  no pixel, no dialog, no file, not even an output or history folder created, and it needs no `--out`): it says which
+  file this run reads, whether it was read (`absent` is the normal case - built-in defaults, and the tool never writes
+  that file for you), and which level settled every setting - `cli` / `config` / `builtin`.
+- **The command line always overrides the file** (explicit CLI > explicit INI > built-in default), and "not written"
+  is different from an explicit `false` / `0` / `none` / `unset`. When you need reproducible conditions - a script, a
+  self-check, an A/B comparison - pass `--no-config` explicitly: that run ignores the file entirely and deletes or
+  rewrites nothing. `--config <path>` names one file for this run only and never falls back to the default one.
+- **A file that cannot be read or does not parse fails the request before anything happens** - before the window is
+  picked, before any dialog, before a single pixel - as a `config.*` code on **stderr** (exit 8 `config.not_found` /
+  `config.read_failed`, exit 1 for every syntax / type / range / version / combination case), each naming the file it
+  tried, with a `line` number where one applies and an ASCII `detail` token. It never degrades into "take a different
+  kind of picture with defaults", and the tool never repairs the file. Order of work: `--show-config`, then
+  `--no-config` to see whether the complaint concerns configuration at all, then fix that line yourself.
+  `--help` (3) and `--version` (0) still
+  work with a broken file - that path does not read it.
+- **A preference is not a promise.** `cursor` / `hdr` / `crop` / `scale` written in the file are the same real
+  requirements as when you type them, gated by the identical rules: they narrow the fallback chain or are refused
+  (`capture.cursor_unsupported` / `capture.hdr_unsupported` / `env.*`) when the route cannot deliver them, and
+  `unset` keeps the option genuinely unspecified. Never read "it is in the config" as "it was honoured" - read the
+  result fields.
+- **History on or off is a user decision, and you confirm it from JSON, not from `--capabilities`**:
+  `images[].history.status` has four distinct values `saved` / `skipped` / `failed` / `disabled`, and `disabled`
+  (`history.enabled = false`, or `--history off`) is **not** a failure - no `code`, no `errors` entry, and no existing
+  history read, pruned or deleted. `--capabilities` only states the rule and the factory default (its
+  `history_run_state_not_reported` caveat says this document does not report this run's state), so for the actual
+  setting use `--show-config` (`history.enabled`, with its source) and for the actual artifact use that run's
+  `images[].history`.
+- **Never re-capture an image that already delivered** to "repair" a `config.*` complaint or a missing history copy -
+  the primary file on disk is the delivery, and re-shooting costs the user another authorization and puts a second
+  frame on disk. See *Handling a result*.
+
 ## Call flow
 
 1. **Ask what this machine can do, read-only.** `--capabilities` gives version and session, each backend as
@@ -96,9 +130,14 @@ Do not assume the tool is on `PATH`.
    would walk here, and the value ceilings. See *Evidence layers* below before you read anything into it.
    `--diagnostics` is the same judgement plus a checkable build id, for a bug report. Both take only `--lang`, `-v`,
    `-q`; mixing them with capture intent is `cli.query_conflict` + 1. Do not add `-q` when you need the `caveats`
-   array - `--quiet` drops it.
+   array - `--quiet` drops it. `--config` / `--no-config` are accepted everywhere (choosing which file to read is not
+   capture intent), and these queries do read that file - if a broken `ECAPTURE.ini` is in the way, add `--no-config`
+   to see the half of the answer that has nothing to do with preferences. `--show-config` is the same read-only habit
+   for preferences (see *User preferences file*).
 2. **Discover the target as data.** `--list --process app.exe` (several matches are the normal answer; it pages with
-   `--offset` / `--limit`, total in `pagination.matched`), `--inspect --hwnd 0x…` (one window - it uses the same
+   `--offset` / `--limit`, total in `pagination.matched` - the page size you actually got is `pagination.limit`, whose
+   source is `pagination.limitSource` (`cli` / `config` / `builtin`: a preference can change that default, so do not
+   assume 50), `--inspect --hwnd 0x…` (one window - it uses the same
    selection policy as a capture and answers `match.ambiguous_window` + 5 rather than pick one for you), `--screens`
    (monitor identities; copy `screens[].selectors.device` or `.id` verbatim into `--monitor`).
    **Read `errors` even when the list looks empty**: a query whose evaluation could not finish still prints
@@ -247,11 +286,13 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   changing any fact. At minimum compare `width` / `height` with the target rectangle, and for a screen-reading route
   check `clipped` / `capturedRect`: a window straddling two monitors is captured only on the output it overlaps most,
   so the image may not be the whole window.
-- **Every delivered image also gets a history copy** (on by default, and there is no switch to turn it off in this
-  build): an independent copy of the same already-encoded bytes in `history\<local date>\` **next to the
+- **Every delivered image also gets a history copy** (factory default on; the user can turn it off with the
+  `history.enabled` preference or `--history off` - see *User preferences file* below): an independent copy of the
+  same already-encoded bytes in `history\<local date>\` **next to the
   `ECAPTURE.EXE` that is actually running** - next to the installed one when it is installed, next to
   `build\ECAPTURE.EXE` when you run the development binary. Not the working directory, not the `--out` directory.
-  It is a second delivery, so it has its own verdict: `images[].history.status` is `saved` / `failed` / `skipped`,
+  It is a second delivery, so it has its own verdict: `images[].history.status` is `saved` / `failed` / `skipped` /
+  `disabled` (`disabled` = the user switched archiving off, **not** a failure, and it carries no `code`),
   `history.file` appears only when the copy really was committed, and `history.code` carries the stable
   `history.*` code on `failed` / `skipped` (details on the matching `errors` entry, `stage: history`). `--quiet`
   cannot hide any of it. Say so when you tell a user where their pictures went: the tool keeps a second persistent
@@ -314,7 +355,8 @@ repair a field you then read as an affirmation.
 
 | What happened | Codes and exit | What to do next |
 | --- | --- | --- |
-| Command line does not fit the contract | `cli.*` (1) - `unknown_option`, `missing_value`, `switch_takes_no_value`, `invalid_number`, `invalid_value`, `invalid_format`, `unknown_capture_method`, `unknown_language`, `conflicting_options`, `crop_conflict`, `monitor_conflict`, `monitor_selector_empty`, `monitor_selector_kind`, `query_conflict`, `window_query_conflict`, `stdout_multiple_targets` | fix the invocation; nothing was captured, no dialog, no file. Full list in the reference |
+| Command line does not fit the contract | `cli.*` (1) - `unknown_option`, `missing_value`, `switch_takes_no_value`, `invalid_number`, `invalid_value`, `invalid_format`, `unknown_capture_method`, `unknown_language`, `conflicting_options`, `crop_conflict`, `monitor_conflict`, `monitor_selector_empty`, `monitor_selector_kind`, `query_conflict`, `window_query_conflict`, `config_view_conflict`, `stdout_multiple_targets` | fix the invocation; nothing was captured, no dialog, no file. Full list in the reference |
+| The preferences file cannot be read, or does not parse | `config.*` - **8** for `not_found` / `read_failed`, **1** for every syntax / encoding / size / duplicate / unknown-key / version / number / boolean / enum / range / combination case; `stage=parse`, with `line` (1-based) and an unlocalized `detail` token, on **stderr** | nothing was selected, asked or captured, and the tool never repairs the file. Run `--show-config`, then `--no-config` to see whether the complaint concerns preferences at all, then fix that line - and do not quietly point `--config` at some other file to make it go away |
 | Nothing matched / several matched / a selector is out of range | `match.no_window` 4, `match.ambiguous_window` 5, `match.index_out_of_range` / `match.monitor_out_of_range` / `match.roi_out_of_range` 1 | re-list and widen (a minimized window is never capturable); disambiguate with a handle from a fresh query, or `--index` / `--all`; `--roi` is judged **before** the dialog. The tool will not pick one for you |
 | No selection condition at all | exit 2 with plain **text** help, not JSON | `--yes` is not a condition: giving only it never means "just grab the desktop" |
 | That channel cannot serve that target kind | `capture.unsupported` 1 | e.g. `dwm` / `printwindow` on a whole monitor - choose a route that can, deliberately rather than by fallback |
@@ -376,20 +418,29 @@ Codes not listed here (including every `note.*`) are in `references/cli-contract
   only ever shrinks (nearest neighbour; crop, then scale, then encode) and cannot rescue a frame that failed the shape
   check. `cap.crop_apply_failed` / `cap.scale_apply_failed` are localized message text, **not** codes - branch on
   `capture.frame_invalid`.
+- **The same requirement can arrive from the preferences file.** `capture.cursor` / `capture.hdr` and the `crop` /
+  `scale` groups in `ECAPTURE.ini` pass the identical gates as when you type them (and `unset` in the file keeps the
+  option genuinely unspecified, byte-for-byte the pre-option report). A CLI `--roi` / `--client-area` replaces the
+  whole configured crop group, the first CLI `--scale` drops the whole configured scale group, and `--no-crop` /
+  `--no-scale` cancel the configured group for that run - giving either of those together with its own CLI option is
+  `cli.conflicting_options` + 1, not a silent precedence rule.
 
 ## Recipes
 
 ```powershell
 $exe = Join-Path "$env:USERPROFILE\.agents\skills\yashi-evernight-capture" 'ECAPTURE.EXE'   # substitute your install dir
 
-# Safe to run as-is: all four are read-only (no pixel, no dialog, no file, no output path needed).
+# Safe to run as-is: all five are read-only (no pixel, no dialog, no file, no output path needed, and no folder -
+# not even history - is created). Run --show-config first in a directory you have not worked in.
 & $exe --capabilities                                   # what can this machine do
+& $exe --show-config                                    # which preferences file, and which level set each item
 & $exe --list   --process notepad.exe                   # who matches, as structured JSON (paged)
 & $exe --inspect --hwnd 0x001A0B4C                      # confirm one window + its identity constraints
 & $exe --screens                                        # monitor identities -> copy a selector verbatim
 
 # These are capture templates: adapt the conditions to a target you actually established, and expect a
-# dialog on any desktop-pixel route (the last one below always asks).
+# dialog on any desktop-pixel route (the last one below always asks). For a script or a self-check that needs
+# reproducible conditions, add --no-config - it ignores the preferences file for that run and changes nothing on disk.
 & $exe --hwnd 0x001A0B4C --yes --timeout-ms 5000 --out D:\shots\one.png
 & $exe --class CabinetWClass --index 1 --capture wgc --yes --roi 20,40,120,80 --out D:\shots\part.png
 & $exe --pid 12345 --title-contains Report --all --yes --out "D:\shots\rpt_%i.png"
@@ -412,18 +463,30 @@ quote it; in Git Bash export `MSYS2_ARG_CONV_EXCL='*'` first, or the backslashes
 ## Resources
 
 `references/cli-contract.md` (Chinese) is the single detailed contract; load the section you need instead of
-guessing. Its section headings, usable as grep patterns: **全部选项** (every option, value range and the AND/OR plus
-never-a-match rules closing that section) · **取值写法** (numbers, positional values, repeats) ·
+guessing. Its section headings, usable as grep patterns: **全部选项** (every option - including `--config`,
+`--no-config`, `--show-config`, `--history`, `--integrity-hints`, `--no-crop`, `--no-scale` - value range and the
+AND/OR plus never-a-match rules closing that section) · **取值写法** (numbers, positional values, repeats) ·
 **运行环境与能力检查** (per-route API floors vs the declared floor vs what was actually tested) ·
 **只读的能力查询** · **进程完整性级别** (what a below-Medium process is refused, which routes still deliver, the two
-reporting outlets and the three ways out) · **只读的窗口查询** (`windowquery` / `windowinspect` field tables, pagination, per-field
-`readability`) · **只读的屏幕枚举** · **窗口内部裁剪** · **等比缩小** · **截图授权** (the two tiers, the full
+reporting outlets and the three ways out) · **只读的窗口查询** (`windowquery` / `windowinspect` field tables, pagination
+including `limitSource` and the effective `defaultLimit`, per-field
+`readability`) · **只读的屏幕枚举** · **窗口内部裁剪** · **等比缩小** ·
+**用户偏好配置** (the beside-the-exe location rule, absent-is-normal vs broken-fails-before-any-pixel, the full
+section / key / factory-default / allowed-range / matching-CLI-option table, what is deliberately *not* a preference
+and why, the CLI > INI > built-in chain plus "not written vs an explicit false / 0 / none / unset", the one
+output-format precedence and its `formatBasis` values, the two relative-path origins and the `%` template boundary,
+whole-group crop / scale replacement and the two cancel switches, verbosity as one group, INI-written cursor / HDR as
+real requirements, the syntax rules with the 256 KiB / 4096 bounds, the whole `config.*` table with its exit-code
+attribution and the new `line` / `detail` fields, the complete `configview` contract, and the three-step
+troubleshooting order) · **截图授权** (the two tiers, the full
 `images[].path` / `scope` registry, what the dialog lists and how the consent snapshot is bound) ·
 **期限与阻塞隔离** (the four clocks, the helper's segmented deadlines, the pipe shutdown boundary, the honest limits) ·
-**JSON 结构** (complete key tables for a window image and a screen image, `images[].history` included) · **退出码** · **行为变更** (why an omitted
-`--out` no longer hides the real code) · **诊断码全表** (every code, including the ones above, plus the `history.*` family) ·
+**JSON 结构** (complete key tables for a window image and a screen image, `images[].history` - four statuses - included,
+and which streams carry configuration failures) · **退出码** · **行为变更** (why an omitted
+`--out` no longer hides the real code) · **诊断码全表** (every code, including the ones above, the `config.*` family and
+the `history.*` family) ·
 **截图历史归档** (where the extra copy goes, the naming and exclusive-commit rules, the two-delivery partial success,
-retention and what the read-only queries do *not* probe) · **帧的形状与像素上限** ·
+the `disabled` state when the user switched archiving off, retention and what the read-only queries do *not* probe) · **帧的形状与像素上限** ·
 **输出名占位符** (`%i %h %p %n %d %t`) · **各 shell 的坑** · **常用配方**.
 
 For humans and for the product story, the repository README (`README.md`, plus `README.zh-CN.md`, `README.zh-TW.md`,

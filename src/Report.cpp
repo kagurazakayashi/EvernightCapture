@@ -11,6 +11,7 @@
 
 #include "Json.h"
 #include "Capture.h"
+#include "Config.h"      // IsConfigReadFailure：config.* 那两条退出码的判据只写一处
 #include "EnvReport.h"
 #include "Lang.h"
 #include "ProcessIntegrity.h"
@@ -69,6 +70,10 @@ void DiagnosticArray(Json& j, const std::vector<Diagnostic>& items) {
         OptString(j, L"stage", d.stage);
         OptString(j, L"hresult", d.hresult);
         if (d.win32 != 0) j.Key(L"win32").Value(static_cast<long long>(d.win32));
+        // 配置文件那一族的两条定位（见 src/Config.h）：line 是源文件行号，detail 是不随 --lang 变
+        // 的原因 token。两条都只在真有值时出现，与上面那几个定位字段同一做法。
+        if (d.line != 0) j.Key(L"line").Value(static_cast<long long>(d.line));
+        OptString(j, L"detail", d.detail);
         j.End();
     }
     j.End();
@@ -93,13 +98,17 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
         j.Obj();
         OptString(j, L"file", img.file);
         j.Key(L"bytes").Value(static_cast<long long>(img.bytes));
-        // 历史副本（默认开启）：上面那个 file 之外那一份独立拷贝的下落。三个键各说一件事：
+        // 历史副本（默认开启）：上面那个 file 之外那一份独立拷贝的下落。四个状态各说一件事：
         //   status  saved（副本已独占提交）/ failed（开始过而没提交）/ skipped（这次没开始写副本）
+        //           / disabled（**本次主动关闭**：--history off 或配置里 history.enabled=false）
         //   file    仅 saved 出现，且此时磁盘上确实有这一份；失败时不给一个"本来要写的名字"冒充已有
-        //   code    failed / skipped 时的稳定 history.* 码（细节在同一条 errors 记录里）
+        //   code    failed / skipped 时的稳定 history.* 码（细节在同一条 errors 记录里）；
+        //           disabled 没有 code —— 那不是失败，也没有哪一步出了问题可报
+        // 关闭与失败必须是两格：把"用户关掉了"读成"存上了"会误导，读成"存失败了"更会诱导
+        // 调用方拿一次重拍去"补"一个其实不存在的故障。关闭也不删除任何已有历史。
         // 主交付与副本是两次交付、可能在不同卷上，所以这一格只说副本：它失败时上面那个 file 与
-        // captured 照旧是真的。与 path / scope / rect 同一性质：这是交付事实，--quiet 不许藏
-        //（images 段本来就不被抑制）。取值全是 ASCII 机器名，不随 --lang 变。
+        // captured 照旧是真的。与 path / scope / rect 同样是交付事实，--quiet 不许藏
+        //（images 段从来不被抑制）。取值全是 ASCII 机器名，不随 --lang 变。
         if (img.history.state != HistoryRecord::State::kNone) {
             j.Key(L"history").Obj();
             j.Key(L"status").Value(HistoryStateName(img.history.state));
@@ -319,6 +328,28 @@ void WriteInputEcho(Json& j, const Options& opt) {
     }
     j.End();
     j.Key(L"lang").Value(LanguageTag(CurrentLanguage()));
+    // 配置这一组说的是"这一次读的是哪一份、每一项最后听谁的"。它与上面那些回显同一性质
+    //（排查"程序到底理解了什么"），所以只有 --verbose 才出现，而且恒不写文件、不改配置。
+    //   selection  这一份是**怎么**定下来的：default / explicit / none
+    //   file       实际读取（或尝试读取）的绝对路径；本次没读时整个键省略
+    //   state      not_read / absent / loaded / failed —— "读到了"与"读到的东西有效"不是同义词
+    //   formatBasis 输出格式最后按哪条根据定下来（与 --show-config 同一个判据出处）
+    //   sources    每一项生效偏好的来源（cli / config / builtin），顺序与配置的 schema 一致
+    j.Key(L"config").Obj();
+    j.Key(L"selection").Value(opt.configSelection.empty() ? std::wstring(L"default")
+                                                          : opt.configSelection);
+    OptString(j, L"file", opt.configPath);
+    j.Key(L"state").Value(opt.configState.empty() ? std::wstring(L"not_read")
+                                                  : opt.configState);
+    j.Key(L"loaded").Value(opt.configState == L"loaded");
+    OptString(j, L"formatBasis", opt.formatBasis);
+    j.Key(L"sources").Arr();
+    for (const Options::ResolvedSetting& s : opt.settings) {
+        j.Obj().Key(L"key").Value(s.id).Key(L"value").Value(s.value).Key(L"source")
+            .Value(s.source).End();
+    }
+    j.End();
+    j.End();
     j.Key(L"policy").Value(MultiKey(opt.multi));
     if (opt.multi == MultiMatch::kIndex) j.Key(L"index").Value(opt.index);
     j.End();
@@ -333,6 +364,7 @@ const wchar_t* GroupTitle(const std::wstring& group) {
     if (group == L"consent") return L"grp.consent";
     if (group == L"timeout") return L"grp.timeout";
     if (group == L"output") return L"grp.output";
+    if (group == L"config") return L"grp.config";
     if (group == L"query") return L"grp.query";
     return L"grp.behavior";
 }
@@ -360,8 +392,11 @@ std::wstring HelpText() {
     t += L"\r\n";
 
     const auto& catalog = OptionCatalog();
+    // config 那一组是"这次读哪一份配置"的两条入口（--config / --no-config）。它排在 output 之后、
+    // 两条查询之前：它既不是截图那一级，也不是查询那一级，而查询这一路里 --show-config 恰恰
+    // 要回答"读的是哪一份"，所以这一段紧邻着查询那一节。
     const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"crop", L"consent",
-                               L"timeout", L"output", L"query", L"behavior"};
+                               L"timeout", L"output", L"config", L"query", L"behavior"};
     size_t width = 0;
     for (const auto& o : catalog) {
         std::wstring col = FlagColumn(o);
@@ -411,6 +446,63 @@ std::wstring VersionText() {
 }
 
 // ---------------------------------------------------------------------------
+// --show-config：这一次这份配置的只读视图
+// ---------------------------------------------------------------------------
+//
+// 这份文档回答的是"读的是哪一份文件、有没有读到、每一项生效偏好各来自哪个来源"，
+// 而它本身一条像素都不取：不选窗口、不弹确认框、不建输出目录、也不建历史目录。
+// 取值全部来自解析层已经算好的那一份（Options::settings 与 config* 三个字段），这里**不**
+// 重读文件、也不重判一次优先级 —— 两份实现迟早对同一个键给出两种答案。
+// 它也不写回任何东西：一份坏掉的配置在这里只会被如实报出来，不会被"顺手修好"。
+std::wstring RenderConfigView(const Options& opt) {
+    Json j;
+    j.Obj();
+    j.Key(L"contract").Value(L"configview");
+    j.Key(L"contractVersion").Value(1);
+    j.Key(L"program").Obj().Key(L"version").Value(kVersion).End();
+
+    j.Key(L"config").Obj();
+    // selection：这一份是**怎么**定下来的（default = 程序同目录那份；explicit = --config 点名；
+    // none = --no-config 或 help/version 那一路一条都不读）。
+    j.Key(L"selection").Value(opt.configSelection.empty() ? std::wstring(L"default")
+                                                          : opt.configSelection);
+    OptString(j, L"file", opt.configPath);
+    OptString(j, L"state", opt.configState);
+    // loaded 说的是"读到了一个文件"，而不是"读到的每一项都有效"：后者看 settings 与 errors。
+    // 一份不存在（absent）的文件不是失败，也不该被读成"配置坏了"。
+    j.Key(L"loaded").Value(opt.configState == L"loaded");
+    j.End();
+
+    // 每一项生效偏好：value 是**规范化后**的写法（枚举小写、数字去空白），source 是三档来源。
+    // 顺序恒为 schema 的顺序，调用方可以按 key 分支而不必依赖位置。
+    j.Key(L"settings").Arr();
+    for (const Options::ResolvedSetting& s : opt.settings) {
+        j.Obj().Key(L"key").Value(s.id).Key(L"value").Value(s.value).Key(L"source")
+            .Value(s.source).End();
+    }
+    j.End();
+
+    // 输出格式那条链的根据（显式 --format / 命令行输出名的扩展名 / 配置的 format /
+    // 配置路径的扩展名 / 落到 png）。这一项单独报，是因为"读到了配置"与"这一项由谁定下来"
+    // 是两件事，而 auto 那条设置本身不关掉扩展名推断。
+    OptString(j, L"formatBasis", opt.formatBasis);
+
+    // 这份文档没说过什么（ASCII token，不随 --lang 变，也不被 --quiet 藏掉）：
+    //   no_pixels_no_files             这一路不取像素、不弹框、不创建输出与历史目录
+    //   not_repaired                   本工具不改写也不修复配置：坏了就只报，不"顺手改好"
+    //   preferences_listed_not_executed 带着 --show-config 这一次不出图，所以截图那一级的偏好
+    //          （取法 / 光标 / HDR / 裁剪 / 缩放 / 输出）只是被**读出来**并报了来源，
+    //          没有被写进那一条执行链路；真去截图时同一批判据才会生效
+    j.Key(L"caveats").Arr();
+    j.Value(L"no_pixels_no_files");
+    j.Value(L"not_repaired");
+    j.Value(L"preferences_listed_not_executed");
+    j.End();
+    j.End();
+    return j.Str();
+}
+
+// ---------------------------------------------------------------------------
 // 响应组装
 // ---------------------------------------------------------------------------
 int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Response* out) {
@@ -418,11 +510,26 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     out->body.clear();
     out->toStderr = false;
 
-    // 查询命令（--capabilities / --diagnostics / --screens / --list / --inspect）与
-    // --version / --help 是几个不同的出口，而且互斥（解析层把同时给出判成
-    // cli.query_conflict / cli.window_query_conflict）。
+    // 查询命令（--show-config / --capabilities / --diagnostics / --screens / --list / --inspect）
+    // 与 --version / --help 是几个不同的出口，而且互斥（解析层把同时给出判成
+    // cli.query_conflict / cli.window_query_conflict / cli.config_view_conflict）。
     // 所以这里必须**先**认查询这一路：参数不合查询契约时不能落到帮助那一段去，
     // 否则调用方永远看不到那条冲突。
+    if (opt.ConfigViewMode() && parse.ok) {
+        // 只读的配置视图：一个像素都不取、不弹框、不写文件、不建目录（渲染本体见上面那份，
+        // 判据本体在 src/Config.h 与 CliOptions.cpp 的合并那一段）。这一路没有图片要挤 stdout，
+        // 所以结果恒走 stdout —— 与另外两条查询同一判据，不另写一套流规则。
+        out->body = RenderConfigView(opt);
+        if (!out->body.empty() && out->body.back() != L'\n') out->body += L'\n';
+        out->exitCode = EX_OK;
+        // 这一路恒走 stdout：它不产图，stdout 上没有图片字节会挤进来，而带 --out 只是为了
+        // 观察那一项偏好的最终来源（配置视图允许带着覆盖参数跑）。若照抄 ResultGoesToStderr，
+        // `--show-config --out -` 会把这份文档悄悄改道到 stderr，调用方按 stdout 读就一无所获。
+        // 与另外两条只读查询同一约定（它们的 --out 是冲突，所以恒走 stdout），这条是同一件事的
+        // 另一种到达方式，不是第二套流规则。
+        out->toStderr = false;
+        return EX_OK;
+    }
     if (opt.WindowQueryMode()) {
         if (parse.ok) {
             // 只读的窗口发现与检查：一个像素都不取、不弹框、不写文件、不激活任何窗口
@@ -514,7 +621,13 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         // 提示，并追加一条 note.low_integrity。判据只有这一份（src/ProcessIntegrity.h），
         // 与 --capabilities 报出的 session.integrityLevel 同源。code、stage、已交付的图与
         // 退出码都原样不动：这一层解释成因，不改判据。
-        AnnotateIntegrityDenials(ProbeProcessIntegrity(nullptr), &errors, &notes);
+        //
+        // diagnostics.integrity_hints=false 时**这一整层都不做**，而只不做这一层：它加的东西
+        // 全是解释文字（每条失败的 hint 与那一条 note）。错误码、win32/HRESULT 原值、images 里
+        // 的交付事实与 --capabilities 那些能力事实字段一条都不受这条影响 —— 把解释关掉绝不是
+        // 把失败关掉，更不会把权限问题修好。关掉它也不新增任何 code。
+        if (opt.integrityHints)
+            AnnotateIntegrityDenials(ProbeProcessIntegrity(nullptr), &errors, &notes);
         code = outcome.exitCode;
     }
 
@@ -546,10 +659,25 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     j.End();
     out->body = j.Str();
 
+    // 配置文件失败的两条归属，都写在**这一次真正送出**的地方，不在解析层各猜一次：
+    //   * 退出码：读不出来那一类（文件不在、被独占、那个名字是目录）是 I/O 失败（8）；
+    //     语法 / 类型 / 区间 / 版本 / 组合说不通那一类是用法错（1）。两类下一步不同，
+    //     而判据只有 IsConfigReadFailure 这一份（src/Config.h）。
+    //   * 走哪条流：配置没读成时最终的 --out 还没安全定下来，这时**保守走 stderr**。
+    //     拿一条没有根据的判断去占用 stdout，万一那一路本来要把图片写在那里，
+    //     文字就会混进字节流里收不回来（见 Main.cpp 那条同源的兜底）。
+    const auto isConfigFailure = [](const Diagnostic& d) {
+        return d.code.compare(0, 7, L"config.") == 0;
+    };
+    const bool configFailed = std::any_of(errors.begin(), errors.end(), isConfigFailure);
+    if (configFailed && code == EX_USAGE &&
+        std::any_of(errors.begin(), errors.end(),
+                    [](const Diagnostic& d) { return IsConfigReadFailure(d.code); }))
+        code = EX_IO_FAILED;
     out->exitCode = code;
     // 图片要占用 stdout 时，JSON 改走 stderr，两个通道永不混流。取值与 Main 的兜底路径同源：
     // 半途异常时（见 Main.cpp）也是同一个判断，不会一处说"在 stderr"另一处写到 stdout。
-    out->toStderr = ResultGoesToStderr(opt);
+    out->toStderr = ResultGoesToStderr(opt) || configFailed;
     (void)argc;
     (void)argv;
     return code;

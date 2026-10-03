@@ -175,6 +175,8 @@ WindowQuerySpec MakeWindowQuerySpec(const Options& opt) {
     WindowQuerySpec spec;
     spec.offset = opt.offset;
     spec.limit = opt.limit;
+    // 配置里那条默认条数（没配时是 0，由 EffectiveListLimit 收敛到内置的那个数）。
+    spec.defaultLimit = opt.listLimitDefault;
     spec.includeIconic = opt.listIconic;
     spec.exePath = opt.inspectPath;
     spec.action = opt.windowAction;
@@ -182,6 +184,18 @@ WindowQuerySpec MakeWindowQuerySpec(const Options& opt) {
     spec.inspectIndex = opt.index;
     spec.timeoutMs = opt.timeoutMs;
     return spec;
+}
+
+uint64_t EffectiveListLimit(const WindowQuerySpec& spec) {
+    if (spec.limit != 0) return spec.limit;
+    if (spec.defaultLimit != 0) return spec.defaultLimit;
+    return cli_limits::kDefaultWindowListLimit;
+}
+
+const wchar_t* ListLimitSource(const WindowQuerySpec& spec) {
+    if (spec.limit != 0) return L"cli";
+    if (spec.defaultLimit != 0) return L"config";
+    return L"builtin";
 }
 
 WindowRecord MakeWindowRecord(const WindowInfo& w, const WindowQuerySpec& spec) {
@@ -313,7 +327,9 @@ WindowQueryResult BuildWindowQueryResult(const WindowQuerySnapshot& snapshot,
 
     out.offset = spec.offset;
     out.limitDefaulted = (spec.limit == 0);
-    out.limit = out.limitDefaulted ? cli_limits::kDefaultWindowListLimit : spec.limit;
+    // 生效条数与它的来路都由那一份判据给（--limit / 配置的默认 / 内置默认三档），
+    // 这里不再判一次"要不要用 50"。
+    out.limit = EffectiveListLimit(spec);
 
     const size_t from = std::min<size_t>(static_cast<size_t>(out.offset), out.matched);
     const size_t to = std::min<size_t>(from + static_cast<size_t>(out.limit), out.matched);
@@ -372,7 +388,14 @@ std::wstring RenderWindowQuery(const WindowQueryResult& r, const std::wstring& c
     j.Key(L"offset").Value(static_cast<long long>(r.offset));
     j.Key(L"limit").Value(static_cast<long long>(r.limit));
     j.Key(L"limitDefaulted").Value(r.limitDefaulted);
-    j.Key(L"defaultLimit").Value(static_cast<long long>(cli_limits::kDefaultWindowListLimit));
+    // defaultLimit 是**本次生效的**默认条数：配置文件里那条改动过它，这里就跟着一变，
+    // 不再是恒等于内置的 50（那会把"配置改了默认"这件事从契约里抹掉）。
+    // limitSource 说清这个数是三档里的哪一档来的：cli / config / builtin。
+    j.Key(L"defaultLimit")
+        .Value(static_cast<long long>(r.spec.defaultLimit != 0
+                                          ? r.spec.defaultLimit
+                                          : cli_limits::kDefaultWindowListLimit));
+    j.Key(L"limitSource").Value(ListLimitSource(r.spec));
     j.Key(L"maxLimit").Value(static_cast<long long>(cli_limits::kMaxWindowListItems));
     j.Key(L"matched").Value(static_cast<long long>(r.matched));
     j.Key(L"returned").Value(static_cast<long long>(r.returned));
@@ -420,6 +443,9 @@ std::wstring RenderWindowQuery(const WindowQueryResult& r, const std::wstring& c
         j.Key(L"offset").Value(static_cast<long long>(r.offset));
         j.Key(L"limit").Value(static_cast<long long>(r.limit));
         j.Key(L"limitGiven").Value(spec.limit != 0);
+        // limitGiven 说的仍是"**这一次命令行**写过 --limit 没有"，配置那条改动请读
+        // limitSource / defaultLimit：读到配置与验证有效是两件事，来源也不该被混成一个。
+        j.Key(L"limitSource").Value(ListLimitSource(spec));
         j.Key(L"includeIconic").Value(spec.includeIconic);
         j.Key(L"exePath").Value(spec.exePath);
         j.Key(L"timeoutMs").Value(static_cast<long long>(spec.timeoutMs));

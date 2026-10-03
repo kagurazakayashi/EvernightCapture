@@ -18,6 +18,11 @@
        判不出来、证明不了所有权、有歧义：一律保留原文件并给出可操作的错误，不做"先删掉看看"。
     2. 载荷清单：payload.manifest.json 是唯一的依赖来源；installPlan.offlineSuiteDeps 给出每套离线
        套件必需的脚本 / 二进制 / 辅助文件，打包缺件即失败，不降级成可选 glob 或安装后再编译。
+       配置这一对文件同样只在这一份清单里定义（configPayload）：模板 ECAPTURE.example.ini 是**受管
+       载荷**（仓库文件，内容变了就必须跟着走），实际用户配置 ECAPTURE.ini **不是载荷**：清单里出现
+       任何一条把 ECAPTURE.ini 当 from/to 的条目，读表这一步就失败 —— 那等于把别人的个人路径与
+       偏好打进发行包里。安装时那份只在**不存在时**独占创建，规则本身（模板名 / 用户文件名 /
+       创建语义）也随包 install-manifest.json 递给安装自检，不再抄第二份定义。
     3. 产物身份：核对判据本身住在 tests\harness.psm1（Get-EcPeIdentity / Invoke-EcReadOnlyQuery /
        Test-EcArtifactIdentity），因为安装自检与打包核对要用同一份；本模块只负责把那些判定串起来用，
        不再抄第二份。三条只读查询（--version / --capabilities / --diagnostics）都走共享调用器
@@ -290,6 +295,77 @@ function Remove-EcManagedStaging {
     return [pscustomobject]@{ Removed = $true; Reason = ''; Path = $verdict.Full }
 }
 
+function Get-EcConfigPayloadRules {
+    <#
+        从已经读过的载荷清单里取出「模板 / 实际用户配置」这一对定义，并把它当成唯一来源核一遍：
+          * templateFile   —— 受管载荷的文件名（装在 exe 旁边，随包升级覆盖）；
+          * userConfigFile —— 实际用户配置的文件名（不是载荷，只在缺失时由安装器独占创建）；
+          * templateSource —— 模板在仓库里的来源路径（freshness 必须是 repo：它来自仓库文件本身，
+                              不是构建产物；把 build\ 里那份复制品当证据就等于允许陈旧文件出包）；
+          * createUserConfig —— 安装器的创建语义，只能是 only-if-absent（覆盖式写法一律拒绝）。
+        缺字段、名字撞车（模板名 == 用户配置名）、或清单条目里出现 userConfigFile 作为 from/to 的
+        叶子名 —— 都在这里抛错，不留到打包后半段"发现包里多了别人的设置"。
+        返回 [pscustomobject]：TemplateFile / UserConfigFile / TemplateSource / CreateUserConfig / Note。
+    #>
+    param([Parameter(Mandatory)]$Manifest)
+
+    $cp = $Manifest.configPayload
+    $missing = @()
+    foreach ($key in @('templateFile', 'userConfigFile', 'templateSource', 'createUserConfig')) {
+        if (-not ([string]$cp.$key)) { $missing += "configPayload.$key" }
+    }
+    if ($missing.Count) { throw "载荷清单缺少配置载荷字段：$($missing -join ', ')" }
+
+    $templateFile = [string]$cp.templateFile
+    $userFile     = [string]$cp.userConfigFile
+    $createMode   = [string]$cp.createUserConfig
+    if ($templateFile -ieq $userFile) {
+        throw "configPayload 的模板名与用户配置名相同（都是 $templateFile）：受管文件与用户数据不能是同一个名字"
+    }
+    if ($createMode -ne 'only-if-absent') {
+        throw "configPayload.createUserConfig 只接受 only-if-absent（实际 $createMode）：实际用户配置不许被安装器覆盖"
+    }
+    foreach ($leafName in @($templateFile, $userFile)) {
+        if ($leafName -match '[\\/*?"<>|]') { throw "配置载荷的文件名不是单个叶子名：$leafName" }
+    }
+
+    # 用户配置不是载荷：任何一条 from/to 的叶子名撞上它，就是要把个人设置打进包里。
+    $shipped = @()
+    foreach ($e in @($Manifest.entries)) {
+        foreach ($side in @('from', 'to')) {
+            $rel = ([string]$e.$side) -replace '/', '\'
+            if (-not $rel) { continue }
+            $leaf = ($rel.TrimEnd('\')).Split('\')[-1]
+            if ($leaf -ieq $userFile) { $shipped += "$side=$($e.$side)" }
+        }
+    }
+    if ($shipped.Count) {
+        throw "载荷清单把实际用户配置（$userFile）当成了打包条目，拒绝打包：$($shipped -join ' | ')"
+    }
+
+    $templateEntry = $null
+    foreach ($e in @($Manifest.entries)) {
+        $rel = ([string]$e.from) -replace '/', '\'
+        $leaf = ($rel.TrimEnd('\')).Split('\')[-1]
+        if ($leaf -ieq $templateFile -and [string]$e.to -imatch ([regex]::Escape($templateFile) + '$')) { $templateEntry = $e; break }
+    }
+    if (-not $templateEntry) { throw "载荷清单里没有模板 $templateFile 的条目：模板是受管载荷，不能当可选项" }
+    if (-not $templateEntry.required) { throw "模板 $templateFile 的条目不是 required=true：受管载荷缺失必须让打包失败" }
+    if ([string]$templateEntry.freshness -ne 'repo') {
+        throw ("模板条目的 freshness 应为 repo（实际 $([string]$templateEntry.freshness)）：模板住在仓库里，" +
+               '把 build\ 里那份 POST_BUILD 复制品当来源等于允许陈旧文件出包')
+    }
+
+    return [pscustomobject]@{
+        TemplateFile     = $templateFile
+        UserConfigFile   = $userFile
+        TemplateSource   = [string]$cp.templateSource
+        CreateUserConfig = $createMode
+        EntryFrom        = [string]$templateEntry.from
+        Note             = [string]$cp.note
+    }
+}
+
 function Get-EcPayloadManifest {
     <# 读载荷清单并做结构守卫：字段不齐就当清单不可用，绝不在半份表上继续打包。 #>
     param([Parameter(Mandatory)][string]$Path)
@@ -300,7 +376,8 @@ function Get-EcPayloadManifest {
     $mf = $text | ConvertFrom-Json
     $missing = @()
     foreach ($key in @('manifestVersion', 'product', 'appId', 'ownershipMarkerFile',
-                       'markerVersion', 'markerAcceptedVersions', 'entries', 'skill', 'installPlan')) {
+                       'markerVersion', 'markerAcceptedVersions', 'entries', 'skill', 'installPlan',
+                       'configPayload')) {
         if ($null -eq $mf.$key) { $missing += $key }
     }
     if (@($mf.markerAcceptedVersions).Count -lt 1) { $missing += 'markerAcceptedVersions（空集合）' }
@@ -314,6 +391,9 @@ function Get-EcPayloadManifest {
             throw "载荷清单声明了离线套件 [$suite]，但 offlineSuiteDeps 里没有它的依赖条目（$Path）"
         }
     }
+    # 配置这一对（模板 = 受管载荷 / ECAPTURE.ini = 用户数据）的守卫在同一条路上跑：
+    # 装进清单里的半份定义比少一份定义更糟，因为它会让安装器与自检各自猜一个文件名。
+    [void](Get-EcConfigPayloadRules -Manifest $mf)
     return $mf
 }
 

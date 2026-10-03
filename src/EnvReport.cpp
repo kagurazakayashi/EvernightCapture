@@ -556,6 +556,11 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // 目录，更不能承诺某一次落盘必然成功。字符串里刻意不含反斜杠与盘符 —— 这份文档的隐私规矩是
     // "不输出任何绝对路径"，定位规则用相对程序目录的写法表达。
     r.history.enabledByDefault = true;
+    r.history.supported = true;
+    // 关闭这一条走的是用户偏好那两个入口，不是能力差别：写在这里，脚本不必读源码就能把
+    // "程序支持""默认开启""本次关掉"三种状态各归各位（本次的实际状态看 --show-config）。
+    r.history.configKey = L"history.enabled";
+    r.history.configOverride = L"--history on|off";
     r.history.relativeTo = L"executable-directory";
     r.history.location = L"history/YYYY-MM-DD/";
     r.history.naming = L"YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>";
@@ -594,6 +599,9 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // 为"看看能不能建目录"建过任何东西。某一张图的副本有没有落地，看的是截图结果里
     // images[].history 那一格与同码的那条 errors 记录。
     r.caveats.push_back(caveat::kHistoryWritabilityNotProbed);
+    // enabledByDefault 说的是默认值，不是这一次的下场：用户可以用 --history off 或配置里那一条
+    // 关掉本次副本。这一份查询也不报本次读到了哪份配置 —— 那是 --show-config 的回答。
+    r.caveats.push_back(caveat::kHistoryRunStateNotReported);
     if (!probe.buildIdKnown) r.caveats.push_back(caveat::kBuildIdUnavailable);
     if (r.matchesVerifiedEnv == Tri::kNo) r.caveats.push_back(caveat::kNotTestedHere);
     if (r.matchesVerifiedEnv == Tri::kUnknown) r.caveats.push_back(caveat::kTestedEnvUnknown);
@@ -755,7 +763,14 @@ void WriteFormats(Json& j, const std::vector<FormatReport>& formats) {
 // 字符串里不出现反斜杠与盘符（这份文档的隐私规矩：不输出任何绝对路径）。
 void WriteHistory(Json& j, const EnvHistoryReport& h) {
     j.Obj();
+    // 三件事分开报，免得"这套实现支持""出厂默认开着""这一次被用户关了"被读成同一句：
+    //   supported          有这一步（能力）
+    //   enabledByDefault   没被关时每条都存（默认值）
+    //   本次的实际状态      **不在这里** —— 看 --show-config 与截图结果里的 images[].history
+    j.Key(L"supported").Value(h.supported);
     j.Key(L"enabledByDefault").Value(h.enabledByDefault);
+    j.Key(L"configKey").Value(h.configKey);
+    j.Key(L"configOverride").Value(h.configOverride);
     j.Key(L"relativeTo").Value(h.relativeTo);
     j.Key(L"location").Value(h.location);
     j.Key(L"naming").Value(h.naming);
