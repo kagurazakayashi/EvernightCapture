@@ -513,6 +513,10 @@ config.crop_roi_invalid	crop.roi 那四个数不合写法
 config.crop_roi_invalid_hint	只认 x,y,width,height 四个十进制数（逗号分隔，不许空白与正负号）；x / y 可以是 0，width / height 至少 1。写法与 --roi 完全相同，上限也共用同一条
 config.crop_roi_missing	crop.mode=roi 而没有可用的 crop.roi
 config.crop_roi_missing_hint	roi 模式必须有有效的 x,y,width,height。不"那就整窗交出"：那等于把一次写歪的裁剪静默改成另一种裁剪。补上 crop.roi，或把 crop.mode 改回 none
+config.path_ambiguous	配置文件里 output.path 的那一条写法定不出落点
+config.path_ambiguous_hint	带盘符的写法必须是 C:\dir\x.png 那样（盘符后面紧跟分隔符）；以单个 \ 或 / 起手又没有盘符的那一条说的是"当前盘的根"，而当前盘属于调用方的进程状态，不是这份配置的意思。C:shot.png 同理是 C 盘当前目录下的那一条。改成相对这份 INI 所在目录的一般写法（shot.png、shots\capture.png），或写成完全限定路径；不猜盘符，也不拿当前目录补全
+config.path_unresolvable	配置文件里 output.path 的那一条无法解析成绝对路径
+config.path_unresolvable_hint	定不出这份配置所在的目录，或那条路径归一化失败。本次不会把原文当成"已经成功的绝对路径"交下去，也不会改用别处的落点凑一次成功；请把 output.path 写成完全限定路径，或确认这份配置的位置读得到
 cli.config_view_conflict	--show-config 只读地问这份配置，不能与截图意图或别的查询命令同时给出
 cli.config_view_conflict_hint	配置视图接受 --config / --no-config 与要观察的偏好覆盖参数（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / 裁剪缩放 / 两条期限 / --history / --integrity-hints / --limit）；窗口条件、--monitor、选择策略、--yes / --dry-run 与别的查询命令请另起一次
 cli.onoff_value	这个取值只认 on 或 off

@@ -176,6 +176,9 @@ var
   ManagedPaths: TArrayOfString;      { 编译期由 managed-list 片段填好：这次要铺下去的相对路径 }
   BackupRoot: String;
   BackupCount: Integer;
+  { 用户那份 ECAPTURE.ini 在**本次复制动作之前**在不在。完成页要说"这一次实际发生了什么"，
+    所以这一条必须在 [Files] 那一步动手之前记下来，事后不能再猜。 }
+  ConfigPreexisting: Boolean;
 
 { ---------------------------------------------------------------------------
   小工具：Inno 的 Pascal 脚本没有 Pos / Fetch / Int64，所以按字符扫描拆分，
@@ -675,7 +678,16 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Extra: String;
+  ConfigNote: String;
+  UserCfg: String;
 begin
+  if CurStep = ssInstall then
+  begin
+    { 复制动作还没开始了，先把"这一份在不在"记下来。[Files] 那一条带 onlyifdoesntexist，
+      装前已经在的那一份一个字都不动 —— 完成页要说的是这一次的**实际**下场，不能事后猜。 }
+    ConfigPreexisting := FileExists(ExpandConstant('{app}\{#UserConfig}'));
+    Exit;
+  end;
   if CurStep = ssPostInstall then
   begin
     WriteOwnershipMarker;
@@ -683,6 +695,15 @@ begin
       Extra := #13#10#13#10 + '覆盖前备份了 ' + IntToStr(BackupCount) + ' 个与上次记录不一致（或从没记录过）的文件，原件在：' + #13#10 + BackupRoot + #13#10 + '卸载不会删它；确认不需要原件后可以自己清理。'
     else
       Extra := '';
+    { 偏好配置那一句按实际执行结果说三种情况：装前就有 = 原样保留；装前没有而现在有了 =
+      这一次确实从模板建出来了；装前没有而现在还是没有 = 如实说没建出来，不谎称复制成功。 }
+    UserCfg := ExpandConstant('{app}\{#UserConfig}');
+    if ConfigPreexisting then
+      ConfigNote := '装前这一份已经存在，本次原样保留（没覆盖、没删，你改过的内容还在）。'
+    else if FileExists(UserCfg) then
+      ConfigNote := '装前这一份不存在，本次已从模板 {#ConfigTemplate} 复制出一份来。'
+    else
+      ConfigNote := '本次没能建出这一份（模板复制被跳过或没写成功）。程序照内置默认运行，需要偏好时可以自己从 {#ConfigTemplate} 复制一份再改。';
     { 装完把"装到哪、README 在哪、AI 下一步"直接写在完成页上。 }
     WizardForm.FinishedLabel.Caption :=
       'EvernightCapture 已安装到：' + #13#10 + ExpandConstant('{app}') + #13#10 + #13#10 +
@@ -691,9 +712,9 @@ begin
       '让 AI 工具用起来：把上面这个目录（含 SKILL.md 与 ECAPTURE.EXE）交给你的 AI 工具，' +
       '让它显式读取该 SKILL.md，并按其中说明用绝对路径调用同目录的 ECAPTURE.EXE。' + #13#10 +
       '注意：装到默认目录之外的路径时，多数工具不会自动发现，需要按工具的说明手动指向该目录。' + #13#10 + #13#10 +
-      '偏好配置：' + ExpandConstant('{app}') + '\{#UserConfig}（本次因为该文件不存在，已从模板 {#ConfigTemplate} 复制一份；' +
-      '已有或你改过的这份不会被覆盖，卸载也不会删。想知道当前生效的设置来自哪一层，跑一次只读的 ' +
-      'ECAPTURE.EXE --show-config；这份文件改坏了程序会明确报错，不会静默回退默认值。' + #13#10 + #13#10 +
+      '偏好配置：' + UserCfg + '（' + ConfigNote + ' 这一份不会被升级覆盖，卸载也不会删。' +
+      '想知道当前生效的设置来自哪一层，跑一次只读的 ECAPTURE.EXE --show-config；' +
+      '这份文件改坏了程序会明确报错，不会静默回退默认值。' + #13#10 + #13#10 +
       '建议先跑一次只读自检：powershell -NoProfile -ExecutionPolicy Bypass -File "' +
       ExpandConstant('{app}') + '\verify-install.ps1"' + Extra;
   end;

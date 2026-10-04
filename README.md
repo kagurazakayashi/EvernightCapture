@@ -1638,7 +1638,10 @@ file, while the actual `ECAPTURE.ini` is user data (see [Install](#install-windo
   `config.read_failed`); it never falls back to the default-location file.
 - `--no-config` ignores configuration completely for this run — built-in defaults plus this command line. It is the
   isolation entry for debugging and self-checks; it deletes and rewrites nothing. Giving it together with `--config`
-  is `cli.conflicting_options` (exit code 1).
+  is `cli.conflicting_options` (exit code 1). Only an **enabled** `--no-config` counts: like every ordinary switch,
+  `--no-config=false` (also `=0`, `=no`, `=n`, `=off`) means "not written", so configuration is still read and the
+  pair above is not a conflict. `--config` and `--no-config` are decided from the same normalized switch reading
+  that applies the switches themselves, so the two cannot disagree about one command line.
 - `--show-config` prints a read-only JSON view of the resolved configuration (contract `configview`):
   `config.selection` (`default` / `explicit` / `none`), `config.file`, `config.state` (`not_read` / `absent` /
   `loaded` / `failed`), `config.loaded`, and `settings[]` with `key` / `value` / `source` per entry
@@ -1649,7 +1652,9 @@ file, while the actual `ECAPTURE.ini` is user data (see [Install](#install-windo
   window conditions, `--monitor`, a pick strategy, `--yes` / `--dry-run` or another query command it is
   `cli.config_view_conflict` (exit code 1).
 - `--help` and `--version` keep their exit semantics and **do not read configuration at all on that path**: a
-  damaged default file still leaves help and version fully usable.
+  damaged default file still leaves help and version fully usable. That escape hatch belongs to the **enabled**
+  form only — `--help=false` / `--version=false` neither show help nor skip the configuration, and a mistyped value
+  (`--help=bogus`) is the usage error `cli.switch_takes_no_value`, never a way past a damaged file.
 - One snapshot is resolved per invocation. There is no hot reload, no background watcher and no automatic write-back
   — the tool never "repairs" the file as a side effect. Internal workers do not re-read user configuration: the
   parent resolves once and hands the normalized options down, so parent and child can never disagree on a backend
@@ -1713,7 +1718,16 @@ What is deliberately **not** configurable is not an oversight:
   `cli-output-extension` / `config-format` / `config-output-extension` / `stdout-default-png` / `default-png`.
 - **Two different relative-path origins** coexist by design: a relative `--out` stays relative to the caller's
   current directory (unchanged behaviour), while a relative INI `output.path` resolves against the directory of
-  **that INI**. `-` is always stdout — never path-joined. Placeholders expand at their documented times; a `%` in a
+  **that INI**. Only two shapes are accepted there: a plain relative name (`shot.png`, `shots\capture.png`) and a
+  fully qualified one (`C:\dir\x.png`, `\\server\share\x.png`, `\?\...`). Two ambiguous shapes are **refused**
+  instead of guessed, because their landing point belongs to whoever invoked the program rather than to this file:
+  a drive-relative name (`C:shot.png` — the current directory on that drive) and a single leading separator without
+  a drive (`\shot.png`, `/shot.png` — the root of the current drive). They give `config.path_ambiguous` with the
+  file, `output.path`, its line and a `detail` reason token, before any window is picked; the tool never fills in a
+  drive, never reads a drive's saved working directory and never uses the process CWD to quietly complete such a
+  path. `config.path_unresolvable` is the sibling code for the cases where this side cannot determine the base or the
+  path fails to normalize — the unresolved text is never handed downstream as if it were already absolute.
+  `-` is always stdout — never path-joined. Placeholders expand at their documented times; a `%` in a
   template is never expanded as an environment variable.
 - **Crop and scale are replaced as whole groups.** The first command-line `--roi` or `--client-area` replaces the
   entire INI crop group (it never fabricates a conflict with the INI's other mode); `--no-crop` cancels the
@@ -1750,7 +1764,8 @@ What is deliberately **not** configurable is not an oversight:
 The stable code family: `config.not_found`, `config.read_failed`, `config.too_large`, `config.line_too_long`,
 `config.encoding`, `config.syntax`, `config.duplicate_section`, `config.duplicate_key`, `config.unknown_section`,
 `config.unknown_key`, `config.unsupported_version`, `config.invalid_number`, `config.invalid_boolean`,
-`config.invalid_value`, `config.out_of_range`, `config.invalid_combination`. Diagnostics of this family may carry
+`config.invalid_value`, `config.out_of_range`, `config.invalid_combination`, `config.path_ambiguous`,
+`config.path_unresolvable`. Diagnostics of this family may carry
 two additional optional fields: `line` (the 1-based line in the source file) and `detail` (an ASCII reason token
 that never changes with `--lang`).
 
@@ -1876,7 +1891,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    | `io.write_failed`, `io.file_exists`, `io.output_collision`, `io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8    | create the directory, or pick a name that cannot collide; `io.file_exists` is `--no-overwrite` doing its job; the `io.timeout` here is the write that never got to start — when a file _did_ land and only the post-write deadline re-check crossed, that image stays in `images` and the run reports exit `7` (delivered + error) instead, see [Deadlines](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms) |
    | `history.unavailable`, `history.write_failed`, `history.file_exists`, `history.budget_spent`, `history.same_file` | 7 | **the image WAS delivered, only that copy did not land** (the last two mean this run never started writing a copy at all). `images[].history.status` plus the `errors` entry with the same code (`stage=history`) say which route; **do not re-capture for it** — re-capturing neither supplies the copy nor avoids asking a person for one more picture. What to change is that location (writable, a directory, not a reparse point), not the command line |
    | `capture.hdr_unsupported`, `capture.cursor_unsupported`, `capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1    | that option pair was refused while parsing, before any dialog                                                                                                                                                                                                                                                                                                                                                                   |
-   | `config.syntax`, `config.line_too_long`, `config.encoding`, `config.duplicate_section`, `config.duplicate_key`, `config.unknown_section`, `config.unknown_key`, `config.unsupported_version`, `config.invalid_number`, `config.invalid_boolean`, `config.invalid_value`, `config.out_of_range`, `config.invalid_combination`, `config.too_large`, `cli.conflicting_options`, `cli.config_view_conflict` | 1 | the command line or the configuration file was refused before any window was picked, any dialog, any pixel; when the entry carries `line` / `detail`, fix that line of that file yourself — the tool never repairs the configuration for you |
+   | `config.syntax`, `config.line_too_long`, `config.encoding`, `config.duplicate_section`, `config.duplicate_key`, `config.unknown_section`, `config.unknown_key`, `config.unsupported_version`, `config.invalid_number`, `config.invalid_boolean`, `config.invalid_value`, `config.out_of_range`, `config.invalid_combination`, `config.path_ambiguous`, `config.path_unresolvable`, `config.too_large`, `cli.conflicting_options`, `cli.config_view_conflict`        | 1 | the command line or the configuration file was refused before any window was picked, any dialog, any pixel; when the entry carries `line` / `detail`, fix that line of that file yourself — the tool never repairs the configuration for you |
    | `config.not_found`, `config.read_failed` | 8 | the named file could not be reached — `--config` never falls back to the default-location file; check the path, or pass `--no-config` deliberately to isolate the run |
 
    The four `env.*` codes are about this machine, not about the target, so retrying the same window is pointless:

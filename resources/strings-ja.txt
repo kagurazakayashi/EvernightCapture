@@ -494,6 +494,10 @@ config.crop_roi_invalid	crop.roi の 4 つの数値の書き方が合いませ�
 config.crop_roi_invalid_hint	x,y,width,height の 4 つの 10 進数のみ（カンマ区切り、空白と符号は不可）。x / y は 0 可、width / height は 1 以上。書き方も上限も --roi とまったく同じです
 config.crop_roi_missing	crop.mode=roi に対して使える crop.roi がありません
 config.crop_roi_missing_hint	roi モードには有効な x,y,width,height が必要です。「ではウィンドウ全体を渡す」にはしません：書き間違えた 1 回のクロップを、別のクロップへ黙って読み替えることになります。crop.roi を足すか、crop.mode を none に戻してください
+config.path_ambiguous	設定ファイルの output.path は書き方から保存先を確定できません
+config.path_ambiguous_hint	ドライブ文字を付けるなら C:\dir\x.png の形（ドライブ文字の直後に区切り文字）が必要です。ドライブ文字なしで \ や / 1 文字から始まる指定は「現在ドライブのルート」を意味しますが、現在ドライブは呼び出し側のプロセス状態であり、この設定の意味ではありません。C:shot.png も同様に C ドライブの現在ディレクトリ下のものです。この INI のあるディレクトリからの相対表記（shot.png、shots\capture.png）か、完全修飾パスに書き換えてください。ドライブを推測したり現在のディレクトリで補完したりはしません
+config.path_unresolvable	設定ファイルの output.path を絶対パスに解決できません
+config.path_unresolvable_hint	この設定の置かれているディレクトリを特定できないか、パスの正規化に失敗しました。原文を「すでに絶対パス」として下流に渡すことも、別の保存地に置き換えて成功を装うこともありません。output.path を完全修飾パスにするか、この設定の場所が読めるか確認してください
 cli.config_view_conflict	--show-config は設定を読み取り専用で問うため、撮影の意図や他の照会コマンドと同時に指定できません
 cli.config_view_conflict_hint	設定ビューは --config / --no-config と、観察したい設定の上書き引数（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / クロップ・スケール / 2 つの期限 / --history / --integrity-hints / --limit）を受けます。ウィンドウ条件、--monitor、選択戦略、--yes / --dry-run と他の照会コマンドは別の実行で
 cli.onoff_value	この値は on か off のみ

@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "CliOptions.h"  // Diagnostic / codes::config.* / cli_limits（区间与 CLI 共用同一份数）
@@ -115,6 +116,19 @@ const std::vector<ConfigField>& ConfigSchema();
 // 按 "section.key" 找字段；找不到返回 nullptr。
 const ConfigField* FindConfigField(const std::wstring& section, const std::wstring& key);
 
+// 按 schema 的 id 找字段。**id 是文本，不是指针身份**：查找按内容做，不要求同一条字面量在
+// 两个翻译单元里落到同一个地址（那取决于字符串合并与链接器的相同折叠，换一种构建配置就变成
+// "查不到 => 默认值报成空串"）。找不到返回 nullptr。
+const ConfigField* FindConfigFieldById(std::wstring_view id);
+
+// 取一条 schema id 的出厂默认。找不到字段时返回 false **且不写 \*out** ——
+// 调用方不许把"未命中"当成一次合法的空默认值（合法的空默认，例如 crop.roi，由 schema 自己给）。
+bool ConfigFieldDefault(std::wstring_view id, std::wstring* out);
+
+// 内部调用点报了一条 schema 里没有的 id 时，来源表交出的取值标记。它**不是**任何一项的默认值：
+// 出现在 --show-config 里就说明合并那一步缺了一份依据（判据见 tests\config_state.cpp 的查找用例）。
+inline constexpr const wchar_t* kNoSchemaDefault = L"<no-schema-default>";
+
 // schema 里出现的每个不同 section（保持首次出现顺序），供语法层判"未知 section"。
 const std::vector<std::wstring>& ConfigSections();
 
@@ -154,6 +168,7 @@ struct ConfigSnapshot {
     bool ReadOk() const { return state == ConfigLoadState::kLoaded || state == ConfigLoadState::kAbsent; }
 
     // 按 schema 的 id 取一个键的落地结果；不存在时返回 nullptr。
+    // id 的比较与 FindConfigFieldById 同一条（按内容），下标由 schema 顺序算出。
     const ConfigSetting* Find(const std::wstring& fieldId) const;
     // 该键是否被文件显式写出过（present），未写出的键不参与合并。
     bool Has(const std::wstring& fieldId) const;

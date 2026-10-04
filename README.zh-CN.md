@@ -1357,8 +1357,13 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 - `--config <path>`：本次只用点名的那份。相对路径按**调用方的当前目录**定成绝对路径；文件不存在或读不出都
   报错，**不回退**到默认那份。
 - `--no-config`：本次完全忽略配置文件，只用内置默认与本次命令行。这是排障与自检的隔离入口，不删除也不改写
-  配置。与 `--config` 同时给出是 `cli.conflicting_options`（退出码 1）。
+  配置。与 `--config` 同时给出是 `cli.conflicting_options`（退出码 1）。只有**启用态**的 `--no-config` 算数：
+  与其它普通开关一样，`--no-config=false`（`=0` / `=no` / `=n` / `=off` 同理）等于没写，配置照常被读取，
+  上面那一对也不构成冲突。"这次读不读配置"与"这个开关落不落地"读的是同一份规范化判定，两趟不会把同一条
+  命令读成两件事。
 - `--help` 与 `--version` 的既有退出语义不变，而且那一路**根本不读配置**：默认那份坏了也照样给出帮助与版本。
+  这条逃生用途只属于**启用态**的写法：`--help=false` / `--version=false` 既不出帮助也不跳过配置，而写坏的
+  取值（`--help=bogus`）是 `cli.switch_takes_no_value` 那条用法错，不会变成绕过坏配置的入口。
 - 每次调用只读一次快照：没有热重载、没有文件监视、不会自动写回，工具永不"顺手修好"配置。内部 worker 不
   重新读配置：父进程一次读取、一次归一化，把确定的参数交下去，父子不会用了不同的后端或授权范围。
 
@@ -1415,7 +1420,14 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
   `format` > INI `output.path` 的已知扩展名 > `png`。INI 里写 `format=auto` 不会关掉原有的扩展名推断；
   命令行同时给 `--format` 与不一致的扩展名时，保持那条既有的一致性提示，不改名也不重编。
 - 相对路径的原点各归各：`--out` 的相对路径仍相对**调用方 CWD**；INI 里 `output.path` 的相对路径相对
-  **那份 INI 所在的目录**。`-` 恒为标准输出，不做路径拼接。`%i` / `%h` / `%p` / `%n` / `%d` / `%t` 这些
+  **那份 INI 所在的目录**。那份文件里只承认两种形状：一般相对写法（`shot.png`、`shots\capture.png`）与
+  完全限定写法（`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`）。两种歧义写法**明确拒绝而不是猜**，因为它们
+  的落点属于调用方的进程状态而不是这份文件：带盘符却没有分隔符的 `C:shot.png`（该盘"当前目录"下的那一条），
+  以及没有盘符、单条分隔符起手的 `\shot.png` / `/shot.png`（"当前盘的根"）。这两条报 `config.path_ambiguous`，
+  带文件位置、`output.path`、行号与 `detail` 原因 token，而且发生在选窗口之前；工具不补盘符、不去读某个盘的
+  历史工作目录，也不拿进程 CWD 悄悄补全。问不出基准目录或归一化失败时报姊妹码 `config.path_unresolvable`，
+  两种情况都**不会**把未解析的原文当成"已经成功的绝对路径"交下去。`-` 恒为标准输出，不做路径拼接。
+  `%i` / `%h` / `%p` / `%n` / `%d` / `%t` 这些
   占位符按既有时点展开，模板里的 `%` 不当环境变量展开。
 - 整组覆盖：命令行给了 `--roi` 或 `--client-area`，就替换 INI 的**整个** crop 组（不会与 INI 里的另一种
   模式生出假冲突）；`--no-crop` 取消配置里的裁剪，与本次其他裁剪参数同时给出算冲突。命令行第一次写
@@ -1439,7 +1451,8 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
   `config.not_found`、`config.read_failed`、`config.too_large`、`config.line_too_long`、`config.encoding`、
   `config.syntax`、`config.duplicate_section`、`config.duplicate_key`、`config.unknown_section`、
   `config.unknown_key`、`config.unsupported_version`、`config.invalid_number`、`config.invalid_boolean`、
-  `config.invalid_value`、`config.out_of_range`、`config.invalid_combination`。诊断对象另外有两个可选
+  `config.invalid_value`、`config.out_of_range`、`config.invalid_combination`、`config.path_ambiguous`、
+  `config.path_unresolvable`。诊断对象另外有两个可选
   字段：`line`（源文件行号，1 起）与 `detail`（不随 `--lang` 变的 ASCII 原因 token）。
 - 退出码归属见[退出码](#退出码)：`config.not_found` / `config.read_failed` 是 I/O 失败的 `8`，其余那一族
   是用法错的 `1`（`config.too_large` 属于后者）。配置读不出或解析不了、而最终的 `--out` 又无法安全确定时，
@@ -1559,7 +1572,7 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
    | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8      | 把目录建出来，或换一个撞不了的名字；`io.file_exists` 是 `--no-overwrite` 正在尽职；这里的 `io.timeout` 指的是那一步根本没开始的写——如果一张文件**已经落地**、只是写完之后的期限复核越了线，那张图仍留在 `images` 里、本次按部分成功报告退出码 `7`（已交付 + 出错），见《执行期限与会阻塞的调用》 |
    | `history.unavailable`、`history.write_failed`、`history.file_exists`、`history.budget_spent`、`history.same_file`                                                                                                                                                                                                                                                                                                                                                 | 7      | **主图已经交付，只有那份历史副本没落地**（后两条是"这次根本没开始写副本"）。看 `images[].history.status` 与同码那条 `errors`（`stage=history`）就知道是哪一路；**不要为此重拍一次**——重拍既补不上副本，又多要人批准一张。想换的应该是那个位置本身（可写、是目录、不是重解析点），而不是命令行 |
    | `capture.hdr_unsupported`、`capture.cursor_unsupported`、`capture.unsupported`                                                                                                                                                                                                                                                                                                                                                                                      | 1      | 这一对选项在解析期就被拒了，在任何确认框之前                                                                                                                                                                                                                                                     |
-   | `config.syntax`、`config.encoding`、`config.line_too_long`、`config.too_large`、`config.duplicate_section`、`config.duplicate_key`、`config.unknown_section`、`config.unknown_key`、`config.unsupported_version`、`config.invalid_number`、`config.invalid_boolean`、`config.invalid_value`、`config.out_of_range`、`config.invalid_combination`                                                                                                                       | 1      | 配置文件存在而不合：按诊断的 `line` 与 `detail` 改那份文件，或 `--no-config` 隔离本次——一个都没截、一个框都没弹、一个文件都没写                                                                                                                                                                 |
+   | `config.syntax`、`config.encoding`、`config.line_too_long`、`config.too_large`、`config.duplicate_section`、`config.duplicate_key`、`config.unknown_section`、`config.unknown_key`、`config.unsupported_version`、`config.invalid_number`、`config.invalid_boolean`、`config.invalid_value`、`config.out_of_range`、`config.invalid_combination`、`config.path_ambiguous`、`config.path_unresolvable`                                                               | 1      | 配置文件存在而不合：按诊断的 `line` 与 `detail` 改那份文件，或 `--no-config` 隔离本次——一个都没截、一个框都没弹、一个文件都没写                                                                                                                                                                 |
    | `config.not_found`、`config.read_failed`                                                                                                                                                                                                                                                                                                                                                                                                                            | 8      | `--config` 点名的那份不存在或读不出（默认位置缺文件是正常状态，不报任何东西）。先 `--show-config` 看实际来源；工具不替你改配置，也不回退到别的一份                                                                                                                                               |
 
    那四个 `env.*` 说的是这台机器而不是那个目标，所以重试同一个窗口毫无意义：`env.os_too_old` 是本机 Windows 内部版本

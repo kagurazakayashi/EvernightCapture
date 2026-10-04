@@ -1295,7 +1295,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 & "$env:USERPROFILE\src\EvernightCapture\build\ecapture.exe" --show-config --no-config   # 隔離條件下的同一視圖
 ```
 
-`--help` 與 `--version` 的退出語義不變，而且那一路**根本不讀設定**：預設那份壞了也照舊交出說明與版本。
+`--help` 與 `--version` 的退出語義不變，而且那一路**根本不讀設定**：預設那份壞了也照舊交出說明與版本。這條逃生用途只屬於**啟用態**的寫法：`--help=false` / `--version=false` 既不出說明也不跳過設定，而寫壞的取值（`--help=bogus`）是 `cli.switch_takes_no_value` 那條用法錯，不會變成繞過壞檔案的入口。`--no-config` 同樣只有啟用態算數——與普通開關一樣，`--no-config=false`（`=0` / `=no` / `=n` / `=off` 同理）等於沒寫，設定照常被讀，與 `--config` 同時出現也不構成衝突。「這次讀不讀設定」與「這個開關落不落地」讀的是同一份正規化判定，兩趟不會把同一條命令讀成兩件事。
 
 ### 能設的項
 
@@ -1331,7 +1331,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 輸出格式的優先鏈只有一處實現在跑，一條鏈走完：**命令列顯式 `--format` > 顯式 `--out` 的已知副檔名 > 設定檔非 `auto` 的 `format` > 設定檔 `output.path` 的已知副檔名 > `png`**。設定檔寫 `format = auto` 不會關掉副檔名推斷；命令列 `--format` 與不一致的副檔名同時給出時，保持那條既有的不一致提示，不改名也不重編。`formatBasis` 的取值說出這次判定鏈停在哪一環：`cli-format` / `cli-output-extension` / `config-format` / `config-output-extension` / `stdout-default-png` / `default-png`。
 
-相對路徑有兩個原點，各保留各的：命令列 `--out` 的相對路徑照常**相對於調用方目前目錄**；設定檔 `output.path` 的相對路徑**相對於那份設定檔所在目錄**。`-` 恆是標準輸出，不做路徑拼接。`%i` / `%h` / `%p` / `%n` / `%d` / `%t` 按《檔案名佔位符》的原有時點展開；模板裡的 `%` 不當環境變數展開——整個設定檔不做環境變數展開、命令替換或任何拼接。主輸出目錄照舊必須已存在；歷史的建立規則不變。
+相對路徑有兩個原點，各保留各的：命令列 `--out` 的相對路徑照常**相對於調用方目前目錄**；設定檔 `output.path` 的相對路徑**相對於那份設定檔所在目錄**。那份檔案裡只承認兩種形狀：一般相對寫法（`shot.png`、`shots\capture.png`）與完全限定寫法（`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`）。兩種歧義寫法**明確拒絕而不是猜**，因為它們的落點屬於呼叫端的程序狀態、不是這份檔案的意思：帶盤符卻沒有分隔符的 `C:shot.png`（該盤「目前目錄」下的那一條），以及沒有盤符、單一分隔符起手的 `\shot.png` / `/shot.png`（「目前盤的根」）。這兩條報 `config.path_ambiguous`，帶檔案位置、`output.path`、行號與 `detail` 原因 token，而且發生在選視窗之前；工具不補盤符、不去讀某個盤的歷史工作目錄，也不拿程序目前目錄悄悄補全。問不出基準目錄或正規化失敗時報姊妹碼 `config.path_unresolvable`，兩種情況都**不會**把未解析的原文當成「已經成功的絕對路徑」交下去。`-` 恆是標準輸出，不做路徑拼接。`%i` / `%h` / `%p` / `%n` / `%d` / `%t` 按《檔案名佔位符》的原有時點展開；模板裡的 `%` 不當環境變數展開——整個設定檔不做環境變數展開、命令替換或任何拼接。主輸出目錄照舊必須已存在；歷史的建立規則不變。
 
 裁剪與縮放按**整組替換**：命令列給了 `--roi` 或 `--client-area`，就整個取代設定檔的 `crop` 組（不會與設定檔裡的另一種模式生出假衝突）；命令列第一次寫 `--scale`，就丟掉整個 `scale` 組。`--no-crop` 與 `--no-scale` 取消設定層各自那一組（只限本次），與本次對應參數同時給出算衝突；任何一種取消都不會改成放大。`--history on|off` 與 `--integrity-hints on|off` 覆蓋設定檔的 `true` / `false`。`--yes` 仍只從當前命令列讀——它不進設定檔，對會取桌面像素的那幾條照舊無效。
 
@@ -1343,7 +1343,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 編碼 UTF-8（允許開頭 BOM），CRLF 與 LF 都收。`;` 與 `#` 的註釋**只能獨佔一行**，不支持行內註釋——路徑裡會出現 `;` 與 `#`，靜默截掉比報錯更壞。值可以用成對雙引號包住以保留首尾空白；反斜線不是轉義符（`C:\dir` 就是兩個字面反斜線）。不做環境變數展開、命令替換、include、網路讀取或嵌套搜尋。上限：整檔 256 KiB（在分配之前就判）、單行 4096 字元。
 
-重複節、重複鍵、未知節／鍵、缺等號、不閉合的引號、非法 UTF-8、NUL、非法的數字／布林／枚舉取值、越界、無效組合，全部明確報錯，帶（有限長度的）設定檔路徑、行號、`section.key` 與穩定診斷碼。新的 `config.*` 碼族共十六條：`not_found`、`read_failed`、`too_large`、`line_too_long`、`encoding`、`syntax`、`duplicate_section`、`duplicate_key`、`unknown_section`、`unknown_key`、`unsupported_version`、`invalid_number`、`invalid_boolean`、`invalid_value`、`out_of_range`、`invalid_combination`。診斷項為此新增兩個可選欄位：`line`（設定檔來源行號，1 起）與 `detail`（不隨 `--lang` 變的 ASCII 原因 token）。
+重複節、重複鍵、未知節／鍵、缺等號、不閉合的引號、非法 UTF-8、NUL、非法的數字／布林／枚舉取值、越界、無效組合，全部明確報錯，帶（有限長度的）設定檔路徑、行號、`section.key` 與穩定診斷碼。新的 `config.*` 碼族共十八條：`not_found`、`read_failed`、`too_large`、`line_too_long`、`encoding`、`syntax`、`duplicate_section`、`duplicate_key`、`unknown_section`、`unknown_key`、`unsupported_version`、`invalid_number`、`invalid_boolean`、`invalid_value`、`out_of_range`、`invalid_combination`、`path_ambiguous`、`path_unresolvable`。診斷項為此新增兩個可選欄位：`line`（設定檔來源行號，1 起）與 `detail`（不隨 `--lang` 變的 ASCII 原因 token）。
 
 退出碼歸屬：**讀不出來那一類**（`config.not_found` / `config.read_failed`）是 I/O 失敗 `8`；**說不通那一類**（語法、類型、區間、版本、組合，`config.too_large` 屬這一類）是用法錯 `1`。設定檔讀不出、解析不了、或最終 `--out` 無法安全確定時，結構化錯誤保守地寫 stderr——絕不為了報錯去動 stdout。
 

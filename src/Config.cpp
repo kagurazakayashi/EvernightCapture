@@ -220,6 +220,32 @@ const ConfigField* FindConfigField(const std::wstring& section, const std::wstri
     return nullptr;
 }
 
+// schema id 的下标：id 是**文本**，所以按内容比。这里比较的两侧会来自不同的翻译单元
+// （调用点写的那一条字面量与 ConfigSchema() 里那一条），它们有没有落到同一个地址，
+// 取决于字符串合并与链接器的相同折叠 —— 那不是这一条查找可以借用的前提。
+namespace {
+size_t IndexOfFieldId(std::wstring_view id) {
+    const auto& table = ConfigSchema();
+    for (size_t k = 0; k < table.size(); ++k) {
+        if (id == std::wstring_view(table[k].id)) return k;
+    }
+    return std::wstring_view::npos;
+}
+}  // namespace
+
+const ConfigField* FindConfigFieldById(std::wstring_view id) {
+    const size_t k = IndexOfFieldId(id);
+    if (k == std::wstring_view::npos) return nullptr;
+    return &ConfigSchema()[k];
+}
+
+bool ConfigFieldDefault(std::wstring_view id, std::wstring* out) {
+    const ConfigField* f = FindConfigFieldById(id);
+    if (!f || !out) return false;
+    *out = f->defaultValue ? std::wstring(f->defaultValue) : std::wstring();
+    return true;
+}
+
 const std::vector<std::wstring>& ConfigSections() {
     static const std::vector<std::wstring> kSections = [] {
         std::vector<std::wstring> out;
@@ -527,11 +553,10 @@ ConfigSnapshot EmptyConfigSnapshot() {
 }
 
 const ConfigSetting* ConfigSnapshot::Find(const std::wstring& fieldId) const {
-    const auto& table = ConfigSchema();
-    for (size_t k = 0; k < table.size(); ++k) {
-        if (table[k].id == fieldId) return k < settings.size() ? &settings[k] : nullptr;
-    }
-    return nullptr;
+    // 与 FindConfigFieldById 共用同一条按内容的查找（见 Config.h 那一条规矩）。
+    const size_t k = IndexOfFieldId(std::wstring_view(fieldId));
+    if (k == std::wstring_view::npos) return nullptr;
+    return k < settings.size() ? &settings[k] : nullptr;
 }
 
 bool ConfigSnapshot::Has(const std::wstring& fieldId) const {

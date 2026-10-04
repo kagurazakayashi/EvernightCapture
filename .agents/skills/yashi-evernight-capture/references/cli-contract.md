@@ -43,7 +43,7 @@
 | `--quiet` | `-q` | 开关 | 省略 `notes`；**`errors` 不受抑制**，`images[]` 也一条不会少（`path` / `scope` / `rect` 那三项是隐私判据，尤其不许被藏起来）。它与 `--verbose` 同时给出时**按 `--verbose` 处理**（notes 留着 + 一条 `note.flag_overrides_quiet`） |
 | `--lang` | `-l` | `auto`（默认，跟随系统显示语言）/`zh-CN`/`zh-TW`/`en`/`ja` | 只影响给人看的 `message`/`hint`/`--help`；`code`、JSON 键名、取值枚举、`0x…` 句柄一律不变。取值宽容：忽略大小写、`_` 与 `-` 等价、`zh_TW`/`zh-Hant`/`cht`/`tw`/`chs`/`cn`/`jp` 都认。重复给出以**最后一个有效的**为准，`auto`（或省略取值）是明确回到系统显示语言而不是保留上一条。写错报 `cli.unknown_language`，并按已经定下的那种语言写这条报错。语言在解析一开始就定下来，判据与其余选项共用同一套 token 消费规则：被 `--title` 吃掉的 `--lang`、`--` 之后的 `--lang` 都不算语言开关 |
 | `--config` | | 路径 | **本次只读那一份**配置文件（覆盖默认位置那一份，不额外再读默认那份）。相对路径按**调用方当前目录**定成绝对路径。那条路不存在 = `config.not_found`+8，存在而读不出 = `config.read_failed`+8，**都不回退到默认那一份**（猜一份别处的配置等于替这次调用换了一套谁都没改过的设置）；语法/类型/区间/版本那一类照本文件的 `config.*` 全表给码 + `1`。与 `--no-config` 同时给出 = `cli.conflicting_options`+1。判据见「用户偏好配置」一节 |
-| `--no-config` | | 开关 | **本次完全忽略配置文件**，只用内置默认加本次命令行——排障与自检的隔离入口。不删除、不改写、不创建那份文件。与 `--config` 同时给出 = `cli.conflicting_options`+1。那份配置坏掉时这一条照样跑得起来，所以"跟配置有没有关"就用它判 |
+| `--no-config` | | 开关 | **本次完全忽略配置文件**，只用内置默认加本次命令行——排障与自检的隔离入口。不删除、不改写、不创建那份文件。与 `--config` 同时给出 = `cli.conflicting_options`+1。那份配置坏掉时这一条照样跑得起来，所以"跟配置有没有关"就用它判。**只有启用态算数**：`--no-config=false` / `=0` / `=no` / `=n` / `=off` 等于没写——配置照常读，与 `--config` 同时给也不报冲突；`--help=false` / `--version=false` 同样既不开启那两条也不跳过配置，写坏的取值（`--help=bogus`）是 `cli.switch_takes_no_value`+1，不是绕过坏配置的口子 |
 | `--history` | | `on` / `off` | 本次要不要为每张**完成主交付**的图另存一份历史副本，覆盖 `history.enabled`（出厂默认开着）。只认 `on` / `off` 两个词（忽略大小写与首尾空白），写别的 = `cli.invalid_value`+1（`option`=`--history`），不退化成默认那档也不当没写。`off` 是**用户的一项决定而不是故障**：不建目录、不开始归档、也不读取或删除任何已有历史，已交付那张图报 `images[].history.status = disabled`（没有 `code`，与 `saved` / `skipped` / `failed` 并列互不替代）。见「截图历史归档」一节 |
 | `--integrity-hints` | | `on` / `off` | 本次要不要在"系统说不"那一类失败上**附加那句完整性解释文字**，覆盖 `diagnostics.integrity_hints`。取值判据与上一条相同。关掉它**只去掉附加说明**：错误码、`win32` / HRESULT 原值、交付事实、`--capabilities` 里已存在的能力事实字段一条都不受影响，`note.low_integrity` 那条不再补写；它也修不好任何权限，别把它读成"问题解决了" |
 | `--capabilities` | | 开关 | **只读能力查询**，输出 JSON（见「只读的能力查询」一节）。问的是这台机器现在能走哪几条路线：版本与会话条件、每条通道的 `available` / `unavailable` / `unverified`、每种格式、`--yes` 实际管到哪几条内部路径、以及各种取值上限。一个像素都不取、不弹确认框、不写文件、不联网、不读环境变量，也不需要窗口条件。只接受 `--lang` / `-v` / `-q`，与截图那一套选项或输出路径同时给出 = `cli.query_conflict` + 退出码 1 |
@@ -493,8 +493,8 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 | 那份**不存在** | **正常状态**：整体走内置默认，不报错，也不替你创建一份 | `config.state = absent`、`config.loaded = false`，`errors` 为空，退出码照常 |
 | 那份**存在而读不出 / 不是合法 UTF-8 / 语法不合 / 版本不合 / 取值非法 / 越界 / 组合说不通** | **明确失败**，而且失败排在**选窗口、弹确认框、取任何一个像素之前**：绝不"那就按默认值拍另一种图"，也不先打扰人一次再告知参数写错了 | 一条或多条 `config.*` 诊断（下面的全表），退出码 `8` 或 `1`；结构化错误走 **stderr**，stdout 不写 |
 | `--config <path>` | 本次**只读那一份**（不与默认那份叠加、也不"两份都读"）。相对路径按**调用方当前目录**定成绝对路径。不在 = `config.not_found`+8，在而读不出 = `config.read_failed`+8 —— **都不回退到默认那一份**：猜一份别处的配置等于替这次调用换了一套谁都没改过的设置 | `config.selection = explicit` |
-| `--no-config` | 本次**完全忽略**配置文件，只用内置默认加本次命令行 —— 排障与自检的隔离入口。不删除、不改写、不创建那份文件 | `config.selection = none`、`config.state = not_read`、`config.file` 整个键不出现 |
-| `--config` 与 `--no-config` 同时给 | `cli.conflicting_options`+1（`value`=`--config, --no-config`），一份都不读 | 退出码 1 |
+| `--no-config` | 本次**完全忽略**配置文件，只用内置默认加本次命令行 —— 排障与自检的隔离入口。不删除、不改写、不创建那份文件。**只有启用态算数**：与其它普通开关一样，`--no-config=false`（`=0` / `=no` / `=n` / `=off`）等于没写，配置照常读 | `config.selection = none`、`config.state = not_read`、`config.file` 整个键不出现 |
+| `--config` 与 `--no-config` 同时给 | `cli.conflicting_options`+1（`value`=`--config, --no-config`），一份都不读。`--no-config=false` 与 `--config` 同时给**不算**冲突——那一条根本没启用 | 退出码 1 |
 
 - 「选哪一份配置」这件事**不属于截图意图**：`--capabilities` / `--diagnostics` / `--screens` / `--list` /
   `--inspect` / `--show-config` / `--help` / `--version` 都接受 `--config` / `--no-config`；那几条查询原有的
@@ -520,7 +520,7 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 | `capture` | `method` | `wgc` | `wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto` | `--capture` |
 | `capture` | `cursor` | `unset` | `unset` / `default` / `include` / `exclude` | `--cursor` |
 | `capture` | `hdr` | `unset` | `unset` / `auto` / `tonemap` / `refuse` | `--hdr` |
-| `output` | `path` | `-` | 输出名模板或 `-`；**相对路径按这份 INI 所在目录展开**（不是调用方当前目录）；`-` = 标准输出 | `--out` / `-o` |
+| `output` | `path` | `-` | 输出名模板或 `-`；**相对路径按这份 INI 所在目录展开**（不是调用方当前目录）；只承认一般相对写法与完全限定写法（`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`），`C:shot.png`（盘符相对）与 `\shot.png` / `/shot.png`（没有盘符的根相对）**明确拒绝** = `config.path_ambiguous`+1，不猜盘符也不拿 CWD 补全；`-` = 标准输出 | `--out` / `-o` |
 | `output` | `format` | `auto` | `auto` / `png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif`；`auto` = 继续按扩展名推断，**不关掉**那条推断 | `--format` |
 | `output` | `jpeg_quality` | `100` | `1`–`100`（只对 jpeg 生效） | `--quality` |
 | `output` | `overwrite` | `true` | **只认 `true` / `false`**（这里的 `1` / `yes` / `on` 都不算布尔）；`false` = 不许覆盖，正是 `--no-overwrite` 那条禁令 | `--no-overwrite` 的反面 |
@@ -575,7 +575,13 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 ### 两个相对路径原点，与模板的边界
 
 - `--out` 的相对路径**继续相对调用方当前目录**；INI 的 `output.path` **相对那一份 INI 所在的目录**。
-  绝对写法照原样用。同一个 `out.png` 从两处来落到不同位置是有意为之，不是 bug。
+  那份文件里只承认两种形状：一般相对写法（`shot.png`、`shots\capture.png`）与完全限定写法
+  （`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`）。两种歧义写法**明确拒绝而不是猜**，因为它们的落点
+  属于调用方的进程状态而不是那份文件：`C:shot.png`（该盘"当前目录"下的那一条）报 `config.path_ambiguous`+1
+  带 `detail=drive-relative`，`\shot.png` / `/shot.png`（"当前盘的根"）同样报这一条码带
+  `detail=root-relative`。基准目录问不出来或归一化失败报 `config.path_unresolvable`+1。三条都不交出任何
+  "已解析好的绝对路径"，也**不拿进程 CWD 或某个盘的历史工作目录去补全**；诊断带文件位置、`output.path`
+  与行号，改那份文件是唯一的下一步。绝对写法照原样用。同一个 `out.png` 从两处来落到不同位置是有意为之，不是 bug。
 - `-` **恒是标准输出**：不做路径拼接、不参与整批碰撞检测、一次只交付一张（多于一个目标 =
   `cli.stdout_multiple_targets`+1）。
 - `%i` / `%h` / `%p` / `%n` / `%d` / `%t` 按原有各自时点展开；**模板里的 `%` 不当环境变量展开**，也没有命令
@@ -645,6 +651,8 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 | `config.invalid_value` | 枚举取值不在名单里 | 1 |
 | `config.out_of_range` | 数值类型上合法但超出区间（边长、像素预算、毫秒、分页条数、jpeg 质量） | 1 |
 | `config.invalid_combination` | 每项单看都合法、合起来说不通：`crop.mode = roi` 而 `crop.roi` 空着，或 `crop.roi` 语法不合 | 1 |
+| `config.path_ambiguous` | `output.path` 的写法定不出落点：`C:shot.png`（`detail=drive-relative`）或 `\shot.png` / `/shot.png`（`detail=root-relative`）。不猜盘符、不拿调用方 CWD 补全 | 1 |
+| `config.path_unresolvable` | 形状本身成立但这一边定不出绝对路径：问不出那份 INI 所在目录（`detail=base-unavailable`）或归一化失败（`detail=normalize-failed`）。绝不把原文当成"已经是绝对路径"交下去 | 1 |
 
 - 与 `cli.crop_conflict` 的分别：那一条说"这一次同时写了两种裁剪写法"，这一条说"配置里那两条自己没配上"，
   下一步一个是删一条命令行选项、一个是补一个键。
@@ -1087,6 +1095,8 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 `config.invalid_value`（1，枚举取值不在名单里）`config.out_of_range`（1，类型合法而区间越线：边长、像素预算、
 毫秒、分页条数、jpeg 质量）`config.invalid_combination`（1，每项单看都合法、合起来说不通：`crop.mode = roi`
 而 `crop.roi` 空着，或非空的 `crop.roi` 语法不合；**不**退化成"那就整窗交出"）
+`config.path_ambiguous`（1，`output.path` 是 `C:shot.png` 那种盘符相对，或 `\shot.png` / `/shot.png` 那种没有盘符的
+根相对——落点属于调用方的进程状态，不猜也不补）`config.path_unresolvable`（1，问不出那份 INI 的目录或归一化失败）
 与 `cli.*` 的分工：`cli.conflicting_options`（1）说的是**本次命令行**同时给了 `--config` 与 `--no-config`，
 或给了 `--no-crop` / `--no-scale` 又亲手写了对应的裁剪 / 缩放参数；`config.*` 说的是那份文件**自己**的事。
 

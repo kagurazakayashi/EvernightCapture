@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <string_view>
 #include <cwctype>
 #include <functional>
 #include <iterator>
@@ -587,6 +588,51 @@ struct ScannedOption {
     bool missingValue = false;  // 该选项要吃值，但 argv 已经到头了
 };
 
+// ---------------------------------------------------------------------------
+// 开关写法的规范化判定（唯一一份）
+// ---------------------------------------------------------------------------
+//
+// 「这一次读不读配置」（预扫描）与「这一次这个开关落不落 Options」（重放给 Apply）必须是
+// **同一个函数**给出的结论。旧写法是预扫描只认名字、重放那一趟才认真假 token，于是同一条
+// argv 被两趟读成两件事：`--no-config=false` 关掉了配置读取，而 `--help=false` 让人以为
+// 帮助可用却照样去读那份坏掉的用户配置。这里不另写第二份真/假 token 表，也不给那三个名字
+// 各写一条字符串特判 —— 差别只在 spec 的那两个标记上，本来就该由同一套规则回答。
+enum class SwitchFate {
+    kInvalid,   // = 后面那个词根本不是布尔值：整条作废并报用法错，不"那就当成没写"
+    kNotGiven,  // 普通开关写 =false：等于没写，既不落 Options 也不算"这一项被写过"
+    kGiven,     // 这一条会落到 Options 上（裸写、=真值，以及反向/值恒开关的 =false）
+};
+
+struct SwitchDecision {
+    SwitchFate fate = SwitchFate::kGiven;
+    // 开关的**肯定含义**成不成立：裸写与 =真值为真。反向开关（--no-overwrite）与带 valueAlways
+    // 的那条（--yes）写 =false 时照样落地，但意思正是"取消"，所以这一项为假。
+    // 预扫描要的是"这个开关有没有被真正启用"，看它，不看 fate（两者对普通开关一致）。
+    bool asserted = true;
+    // 交给 Apply 的规范化取值：裸写保持空串（Apply 那边"空与 1 同义"），=真值是 L"1"，
+    // =假值是 L"0"。既有行为，一处都不改。
+    std::wstring applyValue;
+};
+
+SwitchDecision ResolveSwitch(const OptionSpec& spec, const ScannedOption& scanned) {
+    SwitchDecision d;
+    d.asserted = !scanned.hasValue;  // 裸写就是启用
+    if (!scanned.hasValue) return d;
+    bool b = false;
+    // 认得的真假写法沿用 ParseBool 那一份表（0/no/n/off 等等），不在这条线上加分支。
+    if (!ParseBool(scanned.value, &b)) {
+        d.fate = SwitchFate::kInvalid;
+        d.asserted = false;
+        return d;
+    }
+    d.asserted = b;
+    d.applyValue = b ? std::wstring(L"1") : std::wstring(L"0");
+    // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令，
+    // --yes 这类带 valueAlways 的正向开关也要认 =false（=false 就是"不许跳过确认"）。
+    if (!b && !spec.inverted && !spec.valueAlways) d.fate = SwitchFate::kNotGiven;
+    return d;
+}
+
 struct ScannedItem {
     enum class Kind { kOption, kPositional, kUnknownOption };
     Kind kind = Kind::kPositional;
@@ -893,18 +939,98 @@ std::wstring AbsoluteFromCwd(const std::wstring& raw) {
     return std::wstring(buffer, n);
 }
 
-// INI 里的一条路径：已经是绝对写法就原样，否则相对**那个被选中的 INI 自己所在的目录**。
-// 这一步做完之后，下游（OutputPlan / FileSave / 历史归档）看到的仍旧只是一条绝对路径，
-// 它们不需要、也不该知道这条路径来自命令行还是来自配置。
-std::wstring AbsoluteFromConfigDir(const std::wstring& configPath, const std::wstring& raw) {
-    if (raw.empty()) return raw;
-    if (raw.size() >= 2 && raw[1] == L':' &&
-        std::isalpha(static_cast<unsigned char>(raw[0])))
-        return raw;                                       // 带盘符（D:\…）
-    if (raw[0] == L'\\' || raw[0] == L'/') return raw;    // 根 / UNC
+// ---------------------------------------------------------------------------
+// 配置里那一条输出路径的原点
+// ---------------------------------------------------------------------------
+//
+// INI 是持久下来的用户数据，它说出的路径不该跟着"这一次是谁在哪个目录里调用"变。所以这里
+// 只承认两种形状，第三种一律拒绝而不是猜：
+//   * **完全限定**：`C:\x\y.png`、`C:/x/y.png`（盘符 + 分隔符）、以**两条**分隔符起手的
+//     UNC（`\\server\share\x.png`）与扩展路径（`\?\...`）—— 原样交出，含义与调用方的
+//     当前目录、当前盘无关；
+//   * **一般相对写法**：`shot.png`、`shots\capture.png` —— 以**被选中的那份 INI 自己所在的
+//     目录**为基准定绝对路径；
+//   * 剩下的两类是歧义写法：`C:shot.png` 是"C 盘当前目录下的 shot.png"，那个目录属于调用方
+//     的进程状态而不是这份文件的意思；`\shot.png` / `/shot.png` 没有盘符，说的是"当前盘的
+//     根下"。把前者当成 `C:\shot.png` 是静默换成另一种意思，把两者拿进程 CWD 补全是凭猜测
+//     换落点 —— 两条都在解析期明确拒绝（codes::kConfigPathAmbiguous）。
+// 判据只写在这一处，输出校验与 --show-config 读的是同一个结论。
+enum class ConfigPathFate { kQualified, kRelativeToIni, kDriveRelative, kRootRelative };
+
+bool IsAsciiAlpha(wchar_t c) {
+    return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z');
+}
+
+bool IsPathSep(wchar_t c) { return c == L'\\' || c == L'/'; }
+
+ConfigPathFate ClassifyConfigPath(const std::wstring& raw) {
+    if (raw.size() >= 2 && raw[1] == L':' && IsAsciiAlpha(raw[0])) {
+        // 第三个字符是分隔符才是盘符绝对路径；`C:` / `C:shot.png` 是盘符相对。
+        return raw.size() >= 3 && IsPathSep(raw[2]) ? ConfigPathFate::kQualified
+                                                    : ConfigPathFate::kDriveRelative;
+    }
+    if (IsPathSep(raw[0])) {
+        // 两条分隔符起手 = UNC 或扩展路径（完全限定）；单条 = 当前盘的根（歧义）。
+        return (raw.size() >= 2 && IsPathSep(raw[1])) ? ConfigPathFate::kQualified
+                                                      : ConfigPathFate::kRootRelative;
+    }
+    return ConfigPathFate::kRelativeToIni;
+}
+
+// GetFullPathNameW 的动态缓冲区版：要多少给多少，放不下或说不通就**如实失败**。
+// 定不出的那一条不许当"已经成功的绝对路径"交回下游。
+bool NormalizeAbsolutePath(const std::wstring& in, std::wstring* out) {
+    const DWORD need = GetFullPathNameW(in.c_str(), 0, nullptr, nullptr);
+    if (need == 0) return false;
+    std::wstring buf(static_cast<size_t>(need), L'\0');
+    // 成功返回的是写进去的字符数（不含终止符）；返回原需求长度 = 缓冲区不够。
+    const DWORD n = GetFullPathNameW(in.c_str(), static_cast<DWORD>(buf.size()), buf.data(),
+                                     nullptr);
+    if (n == 0 || n >= buf.size()) return false;
+    buf.resize(n);
+    *out = std::move(buf);
+    return true;
+}
+
+// 把 INI 里的一条输出路径定成下游要用的那一条。返回 false 时 \*code / \*detail 是这一条
+// 诊断的稳定码与不随 --lang 变的原因 token，\*out 不留下任何可用结论。
+// 调用方保证 raw 非空且不等于 "-"（那两个形状各自有明确的含义，见合并那一步）。
+bool ResolveConfigOutputPath(const std::wstring& configPath, const std::wstring& raw,
+                             std::wstring* out, const wchar_t** code, std::wstring* detail) {
+    switch (ClassifyConfigPath(raw)) {
+        case ConfigPathFate::kQualified:
+            *out = raw;  // 完全限定：不改写、不"归一化成一条看着更顺眼的另一条路径"
+            return true;
+        case ConfigPathFate::kDriveRelative:
+            *code = codes::kConfigPathAmbiguous;
+            *detail = L"drive-relative";
+            return false;
+        case ConfigPathFate::kRootRelative:
+            *code = codes::kConfigPathAmbiguous;
+            *detail = L"root-relative";
+            return false;
+        case ConfigPathFate::kRelativeToIni:
+            break;
+    }
+    // 基准问不出来（没有配置文件位置、或那一条里没有分隔符）就如实失败，不退回 CWD、
+    // 不退回源码树，也不退回安装位置。
     const size_t slash = configPath.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) return raw;
-    return AbsoluteFromCwd(configPath.substr(0, slash) + L"\\" + raw);
+    if (configPath.empty() || slash == std::wstring::npos || slash + 1 >= configPath.size()) {
+        *code = codes::kConfigPathUnresolvable;
+        *detail = L"base-unavailable";
+        return false;
+    }
+    std::wstring joined = configPath.substr(0, slash);
+    joined += L'\\';
+    joined += raw;
+    std::wstring resolved;
+    if (!NormalizeAbsolutePath(joined, &resolved)) {
+        *code = codes::kConfigPathUnresolvable;
+        *detail = L"normalize-failed";
+        return false;
+    }
+    *out = std::move(resolved);
+    return true;
 }
 
 // 一条 --history / --integrity-hints 的覆盖写法：只认 on / off（忽略大小写与首尾空白）。
@@ -927,8 +1053,11 @@ struct ConfigOutputFacts {
     std::wstring effectiveOutput;
 };
 
+// 合并那一步报一条 config.* 诊断的入口：文件位置、section.key、给人读的文案与补充说明，
+// 再加上**源文件行号**与不随 --lang 变的原因 token（这两条是这一族诊断指到"哪一行、为什么"
+// 的那两个字段，调用点没有就交 0 与空串）。
 using ConfigErrFn = std::function<void(const wchar_t*, std::wstring, std::wstring, std::wstring,
-                                       std::wstring)>;
+                                       std::wstring, uint32_t, std::wstring)>;
 
 // 输出格式那一条优先级链的**唯一**实现：
 //   显式 CLI --format > 显式 CLI --out 的已知扩展名 > 配置里非 auto 的 format >
@@ -1008,12 +1137,22 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
     };
     std::vector<Options::ResolvedSetting> settings;
     settings.reserve(ConfigSchema().size());
+    // 这一项在源文件里的行号，供合并那一步报的 config.* 诊断指到"哪一行"；没写过时 0（与行无关）。
+    const auto LineOf = [&snap](const wchar_t* fieldId) -> uint32_t {
+        const ConfigSetting* s = snap.Find(fieldId);
+        if (!s || !s->present) return 0u;
+        return static_cast<uint32_t>(s->line > std::numeric_limits<uint32_t>::max()
+                                          ? std::numeric_limits<uint32_t>::max()
+                                          : s->line);
+    };
     // schema 里那一条出厂默认（--show-config 报 builtin 那一档时的取值）。
+    // 查找走 TryConfigFieldDefault：**按内容**比 id，不要求同一条字面量在两个翻译单元里
+    // 落到同一个地址（那取决于字符串合并与链接器的相同折叠，换一种构建配置就会变成
+    // "查不到 => 默认值报成空串"）。未命中不是合法的空默认，交回一个读得出问题的标记。
     const auto fieldDefault = [](const wchar_t* id) -> std::wstring {
-        for (const ConfigField& f : ConfigSchema()) {
-            if (f.id == id) return f.defaultValue;
-        }
-        return std::wstring();
+        std::wstring v;
+        if (ConfigFieldDefault(std::wstring_view(id), &v)) return v;
+        return std::wstring(kNoSchemaDefault);
     };
     // 记一项的最终值。**取值必须由获胜的那一档来源给，而不是由"有没有写进 Options"给**：
     // --show-config 那一路不执行截图那一级的偏好（applyEffects=false），那时 Options 里还是
@@ -1111,23 +1250,44 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
         const bool cliOutput = gave(L"out") || positionalOutput;
         // 配置里的相对路径**相对被选中的那份 INI 自己所在的目录**定绝对路径；命令行给的那条
         // 继续相对调用方 CWD。原点先定，后面模板展开与落盘看到的就恒是一条绝对路径。
-        const std::wstring cfgAbsolute = cfgUsable ? AbsoluteFromConfigDir(cfgFile, cfgPath)
-                                                   : cfgPath;
+        // 定不出落点的那两种歧义写法（`C:shot.png`、`\shot.png`）在这里就明确拒绝：不猜盘符、
+        // 不读某个盘的历史工作目录，也不拿进程 CWD 悄悄补全 —— 补出来的那一条会随着调用方站在
+        // 哪个目录变，而这份视图说的是配置目录。失败排在选目标、弹框、取帧之前。
+        std::wstring cfgAbsolute;
+        bool cfgResolved = !cfgUsable;
+        if (cfgUsable) {
+            const wchar_t* pathCode = codes::kConfigPathUnresolvable;
+            std::wstring pathDetail;
+            if (ResolveConfigOutputPath(cfgFile, cfgPath, &cfgAbsolute, &pathCode, &pathDetail)) {
+                cfgResolved = true;
+            } else {
+                cfgAbsolute.clear();
+                // 这一族的 message / hint 资源 key 与 code 同名（config.path_* 与 *_hint），
+                // 与 Config.cpp 的 ConfigDiag 同一条约定；行号指到文件里写下的那一条。
+                const std::wstring hintKey = std::wstring(pathCode) + L"_hint";
+                Err(pathCode, Msg(pathCode), cfgFile, L"output.path", Msg(hintKey.c_str()),
+                    LineOf(L"output.path"), std::move(pathDetail));
+            }
+        }
         // **来源判据与"本次执不执行"分开**：只读那一路不写 Options，但输出格式那条链仍然要
         // 知道"这条路径是谁给的"。否则配置文件里的 shot.png 会被报成"命令行输出名的扩展名"，
         // 而这份视图唯一该说对的恰恰就是这件事。
-        if (!cliOutput && cfgUsable) {
+        if (cfgResolved && !cliOutput && cfgUsable) {
             facts->outputFromConfig = true;
             if (applyEffects) opt.output = cfgAbsolute;
         }
         // 这一项**不能**走 record 那个通用取值：配置文件那一档要报的是"实际会被用的那条路径"
         // （已经按 INI 目录定过绝对路径），而不是文件里那一段原文 —— 后者会让人以为输出会落在
-        // 当前目录下，而那正是这条规则要排除的误解。
+        // 当前目录下，而那正是这条规则要排除的误解。定不出落点的那一次本次就要失败，
+        // 交回文件里那一段原文是唯一诚实的说法：它没有被解析成任何一条绝对路径。
         if (cliOutput) recordValue(L"output.path", opt.output, SettingSource::kCli);
-        else if (cfgHas) recordValue(L"output.path", cfgAbsolute, SettingSource::kConfig);
+        else if (cfgHas)
+            recordValue(L"output.path",
+                        (cfgUsable && cfgResolved) ? cfgAbsolute : cfgPath, SettingSource::kConfig);
         else recordValue(L"output.path", std::wstring(L"-"), SettingSource::kBuiltin);
-        facts->effectiveOutput =
-            !opt.output.empty() ? opt.output : (cfgUsable ? cfgAbsolute : std::wstring(L"-"));
+        facts->effectiveOutput = !opt.output.empty()
+                                     ? opt.output
+                                     : (cfgUsable && cfgResolved ? cfgAbsolute : std::wstring(L"-"));
     }
 
     // ---- output.format ----
@@ -1145,7 +1305,13 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
         }
         // --show-config 报的是**这一项设置的写法**：path 带 .jpg 而 format=auto 时这一项仍是
         // auto，最终编成 jpeg 那件事在 -v 的 input.format 里看得见。
-        record(L"output.format", cfgHas ? std::wstring(cfgValue) : std::wstring(L"auto"),
+        // 但**取值必须由获胜的那一档给**：来源是 cli 时报的就是命令行那一条规范化后的格式
+        // （--format jpg 报 jpeg），不能继续交配置文件那一条原文或 auto —— 那会让"来源"与
+        // "取值"来自两个不同的获胜档，而这张表唯一的用途就是让人看清这一项最后按哪份数办事。
+        const std::wstring settingValue =
+            opt.formatExplicit ? std::wstring(FormatName(opt.format))
+                               : (cfgHas ? cfgValue : std::wstring(L"auto"));
+        record(L"output.format", settingValue,
                opt.formatExplicit   ? SettingSource::kCli
                : cfgHas             ? SettingSource::kConfig
                                     : SettingSource::kBuiltin);
@@ -1186,7 +1352,8 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
             CropRequest probe;
             if (!ParseRoiValue(cfgRoi, &probe)) {
                 Err(codes::kConfigInvalidCombination, Msg(L"config.crop_roi_invalid"), cfgFile,
-                    L"crop.roi", Msg(L"config.crop_roi_invalid_hint"));
+                    L"crop.roi", Msg(L"config.crop_roi_invalid_hint"),
+                    LineOf(L"crop.roi"), std::wstring());
             }
         }
         // roi 模式必须有有效的 x,y,width,height：写了 mode=roi 而 roi 空着是说不通，
@@ -1194,7 +1361,8 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
         if (cfgGroupLive && cfgHasMode && cfgMode == L"roi" &&
             (!cfgHasRoi || cfgRoi.empty())) {
             Err(codes::kConfigInvalidCombination, Msg(L"config.crop_roi_missing"), cfgFile,
-                L"crop.mode", Msg(L"config.crop_roi_missing_hint"));
+                L"crop.mode", Msg(L"config.crop_roi_missing_hint"),
+                LineOf(L"crop.mode"), std::wstring());
         }
         if (applyEffects && cfgGroupLive && cfgHasMode && opt.crop.mode == CropMode::kNone) {
             if (cfgMode == L"client-area") {
@@ -1392,9 +1560,12 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     bool configGiven = false;
     bool configValueMissing = false;
     std::wstring configRaw;
-    bool noConfigGiven = false;
-    bool helpSeen = false;
-    bool versionSeen = false;
+    // 下面三条记的是**真正启用**的写法，判据与重放那一路同一条（ResolveSwitch）：
+    // `--no-config=false` 不关掉配置读取，`--help=false` / `--version=false` 不开启帮助与版本，
+    // 而写坏的布尔值（--help=bogus）既不算启用也不算"这次是排障入口"，它由重放那一路报用法错。
+    bool noConfigEnabled = false;
+    bool helpEnabled = false;
+    bool versionEnabled = false;
     ScanArgv(argc, argv, [&](const ScannedItem& it) {
         items.push_back(it);
         if (it.kind != ScannedItem::Kind::kOption) return;
@@ -1403,12 +1574,14 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             configGiven = true;
             configRaw = it.option.value;
             configValueMissing = it.option.missingValue;
-        } else if (bare == L"no-config") {
-            noConfigGiven = true;
-        } else if (bare == L"help") {
-            helpSeen = true;
-        } else if (bare == L"version") {
-            versionSeen = true;
+        } else if (bare == L"no-config" || bare == L"help" || bare == L"version") {
+            const SwitchDecision sw = ResolveSwitch(*it.option.spec, it.option);
+            // 三条都是普通正向开关：落地与肯定含义成立是同一件事，两条都判是为了
+            // 不再依赖这一点（反向开关若将来出现在这条线上，含义就得分开判）。
+            if (sw.fate != SwitchFate::kGiven || !sw.asserted) return;
+            if (bare == L"no-config") noConfigEnabled = true;
+            else if (bare == L"help") helpEnabled = true;
+            else versionEnabled = true;
         }
     });
 
@@ -1417,16 +1590,18 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // 这一份配置是**怎么**定下来的，--show-config 要与文件位置并排报出来（"读到了"与
     // "为什么读这一份"是两件事，只看路径猜不出本次到底有没有真的读）。
     const wchar_t* configSelection = L"default";
-    const bool wantHelpOrVersion = helpSeen || versionSeen;
-    if (configGiven && noConfigGiven) {
+    const bool wantHelpOrVersion = helpEnabled || versionEnabled;
+    if (configGiven && noConfigEnabled) {
         // 两条一起给出是说不通：一边点名要读哪一份，一边说本次完全不看配置。不替用户挑一条执行。
+        // 只看**启用态**的 --no-config：`--no-config=false` 说的是"这次照常读配置"，
+        // 它与 --config 一起给出没有矛盾，不该报这条冲突。
         Err(codes::kConflictingOptions, Msg(L"cli.conflicting_options"), L"",
             L"--config, --no-config", Msg(L"cli.conflicting_hint"));
         configSelection = L"none";
     } else if (configGiven && configValueMissing) {
         Err(codes::kMissingValue, Msg(L"cli.missing_value"), L"--config", L"");
         configSelection = L"none";
-    } else if (!wantHelpOrVersion && !noConfigGiven) {
+    } else if (!wantHelpOrVersion && !noConfigEnabled) {
         // 走到这里就是要读一份配置：--config 点名的那一条，或程序同目录那份默认的。
         std::wstring path;
         bool explicitSelection = false;
@@ -1460,6 +1635,8 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     } else {
         // --help / --version 一条都不读：它们的既有退出语义与文案不该被一份坏掉的用户配置改掉
         //（文件损坏时照样要拿得到帮助与版本）。--no-config 同理不读，且它**不删也不改**任何配置。
+        // 走到这一支的只有**启用态**的那三条写法：--help=false / --version=false / --no-config=false
+        // 既不开启帮助也不关掉配置读取，配置照常在上面那一路读进来。
         configSelection = L"none";
     }
     opt.configPath = snap.path;
@@ -1472,7 +1649,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // 选项，写出过就一定会落到语言上，所以"有没有出现过这个名字"就是这里的判据。
     const auto cliLangWritten = [&]() {
         for (const ScannedItem& it : items)
-            if (it.kind == ScannedItem::Kind::kOption && it.option.spec->name == L"lang" &&
+            // 选项名是**文本**：这里按内容比（与 spec->name 那条字面量比地址只在字符串合并
+            // 成立的构建里碰巧对，关掉的构建会把"命令行写过 --lang"读成"没写过"，
+            // 于是配置里那条语言偷偷赢过命令行）。
+            if (it.kind == ScannedItem::Kind::kOption &&
+                EqualsInsensitive(it.option.spec->name, L"lang") &&
                 !it.option.missingValue)
                 return true;
         return false;
@@ -2091,24 +2272,20 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         }
 
         // 开关一般不吃取值；只有 =true / =false 这种写法把规范化结果（"1" / "0"）交给 Apply。
-        std::wstring boolArg;
-        if (scanned.hasValue) {
-            bool b = false;
-            const std::wstring flag = flagName;
-            if (!ParseBool(scanned.value, &b)) {
-                Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flag, scanned.value,
-                    Msgf(L"cli.switch_no_value_hint", flag));
-                continue;
-            }
-            // 普通开关写 =false 等于没写；--no-overwrite 这类反向开关的 =false 才是取消禁令。
-            // --yes 这类带 valueAlways 的正向开关也要认 =false（=false 就是"不许跳过确认"）。
-            if (!b && !scanned.spec->inverted && !scanned.spec->valueAlways) continue;
-            boolArg = b ? L"1" : L"0";
+        // 判定本体是 ResolveSwitch，与开头那段预扫描（决定这次读不读配置）共用同一份：
+        // 两趟对同一条 argv 的理解不可能再分叉。
+        const SwitchDecision sw = ResolveSwitch(*scanned.spec, scanned);
+        if (sw.fate == SwitchFate::kInvalid) {
+            Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flagName, scanned.value,
+                Msgf(L"cli.switch_no_value_hint", flagName));
+            continue;
         }
+        // 普通开关写 =false 等于没写；反向开关的 =false 是取消禁令，--yes=false 是"不许跳过确认"。
+        if (sw.fate == SwitchFate::kNotGiven) continue;
         // 只有真正会落到 Options 上的写法才算"CLI 写过"（与上面那条 =false 等于没写的规则同源，
         // 两处必须是同一条判据）：否则 `--no-crop=false` 会被记成写过而造出一条假冲突。
         cliGiven.push_back(bareName);
-        Apply(*scanned.spec, boolArg);
+        Apply(*scanned.spec, sw.applyValue);
     }
 
     // ---- 位置参数：第一个是输出路径，多出来的视为误写 ----
@@ -2257,8 +2434,12 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // 截图那一级的字段 —— 见 src/Config.h 上面那第 3 条结构性规矩。
     {
         const ConfigErrFn cfgErr = [&](const wchar_t* c, std::wstring m, std::wstring o,
-                                       std::wstring v, std::wstring h) {
-            Err(c, std::move(m), std::move(o), std::move(v), std::move(h));
+                                       std::wstring v, std::wstring h, uint32_t lineNo,
+                                       std::wstring det) {
+            Diagnostic d{c, std::move(m), std::move(o), std::move(v), std::move(h)};
+            d.line = lineNo;
+            d.detail = std::move(det);
+            result.errors.push_back(std::move(d));
         };
         MergeConfigIntoOptions(opt, snap, cliGiven, !positional.empty(), !opt.QueryMode(),
                                &cfgFacts, cfgErr);

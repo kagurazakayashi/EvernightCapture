@@ -13,6 +13,7 @@
 
 #include <cstdio>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "../src/CliOptions.h"
@@ -566,6 +567,221 @@ static void MergeLayer() {
         Parsed p = Run({"--config", Narrow(empty), "--class", "Shell_TrayWnd", "--dry-run", "x.png"});
         Check(!p.o().yes, "配置里没有 --yes 这一项，本次就是没跳过确认");
     }
+
+    // ---- schema 默认值的查找按内容：id 是文本，不是指针身份 ----
+    // 合并那一步报 builtin 一档的取值时要在 schema 里找到那一条。按地址比（`f.id == id`）
+    // 判的是"这两条字面量有没有落在同一个地址"，而那是字符串合并 / 链接器相同折叠 / 优化档位的
+    // 产物，不是这份 schema 的性质。下面两条一起判：一条走**公开查找入口**，用的是自己拼出来
+    // 的字符串（永远不可能与 schema 里那条同地址）；一条走**生产解析入口**，核对每一项的取值
+    // 与来源，取值错了当场看得见，而不是只看"数组长度对、字段在、退出码为 0"。
+    {
+        const std::wstring heapId = std::wstring(L"capture.") + std::wstring(L"me") +
+                                    std::wstring(L"thod");  // 独立缓冲拼出来的那一条
+        const ConfigField* byId = FindConfigFieldById(std::wstring_view(heapId));
+        Check(byId && byId->section == std::wstring(L"capture") &&
+                  byId->key == std::wstring(L"method"),
+              "按内容查到 capture.method 那一条（不依赖同一字符串存储地址）");
+        std::wstring looked;
+        Check(ConfigFieldDefault(std::wstring_view(heapId), &looked) && looked == L"wgc",
+              "ConfigFieldDefault 对拼出来的 id 交回 wgc");
+        const std::wstring bogusId = std::wstring(L"capture.") + std::wstring(L"hwnd");
+        Check(FindConfigFieldById(std::wstring_view(bogusId)) == nullptr &&
+                  !ConfigFieldDefault(std::wstring_view(bogusId), &looked),
+              "未命中的内部字段返回「查不到」，不伪装成一次合法的空默认值");
+        // 每一项都能按内容取到，且取到的就是 schema 写的那一条默认（含 crop.roi 那种合法空串）。
+        int defaultMismatch = 0;
+        for (const ConfigField& f : ConfigSchema()) {
+            const std::wstring each(f.id);
+            std::wstring v;
+            if (!ConfigFieldDefault(std::wstring_view(each), &v) ||
+                v != std::wstring(f.defaultValue ? f.defaultValue : L""))
+                ++defaultMismatch;
+        }
+        Check(defaultMismatch == 0, "schema 每一项的默认值都能按内容取到（包括合法的空默认）");
+
+        // 生产入口：--no-config 与"只写了节名、什么都没设"的模板配置都要把每一项报成正确的默认。
+        const std::wstring tmpl = TempIni(
+            "defaults.ini",
+            "[general]\n; language = auto\n; verbosity = normal\n[capture]\n; method = wgc\n"
+            "; cursor = unset\n; hdr = unset\n[output]\n; path = -\n; format = auto\n"
+            "; jpeg_quality = 100\n; overwrite = true\n[crop]\n; mode = none\n; roi = \n"
+            "[timeouts]\n; processing_ms = 0\n; consent_ms = 0\n[history]\n; enabled = true\n"
+            "[query]\n; window_list_limit = 50\n");
+        for (const std::wstring& how : {std::wstring(), tmpl}) {
+            Parsed p = how.empty() ? Run({"--no-config", "--show-config"}) : ShowVia(how);
+            const char* tag = how.empty() ? "--no-config --show-config" : "全注释的模板配置";
+            Check(p.ok(), tag);
+            Check(p.ValueOf(L"capture.method") == L"wgc" &&
+                      p.SourceOf(L"capture.method") == L"builtin",
+                  (std::string(tag) + " : method=wgc/builtin").c_str());
+            Check(p.ValueOf(L"output.format") == L"auto" &&
+                      p.SourceOf(L"output.format") == L"builtin",
+                  (std::string(tag) + " : format=auto/builtin").c_str());
+            Check(p.ValueOf(L"output.jpeg_quality") == L"100" &&
+                      p.SourceOf(L"output.jpeg_quality") == L"builtin",
+                  (std::string(tag) + " : quality=100/builtin").c_str());
+            Check(p.ValueOf(L"history.enabled") == L"true" &&
+                      p.SourceOf(L"history.enabled") == L"builtin",
+                  (std::string(tag) + " : history=true/builtin").c_str());
+            Check(p.ValueOf(L"timeouts.processing_ms") == L"0" &&
+                      p.SourceOf(L"timeouts.processing_ms") == L"builtin",
+                  (std::string(tag) + " : timeout=0/builtin").c_str());
+            Check(p.ValueOf(L"crop.mode") == L"none" &&
+                      p.SourceOf(L"crop.mode") == L"builtin",
+                  (std::string(tag) + " : crop.mode=none/builtin").c_str());
+            // 合法的空默认保留空串，不被换成任何标记
+            Check(p.ValueOf(L"crop.roi").empty() && p.SourceOf(L"crop.roi") == L"builtin",
+                  (std::string(tag) + " : crop.roi 的合法空默认仍是空串").c_str());
+            // 每一项都取到了依据：没有一项报成"缺默认值"的标记
+            int missing = 0;
+            for (const Options::ResolvedSetting& s : p.o().settings)
+                if (s.value == kNoSchemaDefault) ++missing;
+            Check(missing == 0 && p.o().settings.size() == ConfigSchema().size(),
+                  (std::string(tag) + " : 每一项都有依据，没有报成缺默认标记").c_str());
+        }
+    }
+
+    // ---- 格式那一项的取值与来源来自同一个获胜层 ----
+    // 这一项报的是**设置偏好**（不是最终编码器），所以来源是 cli 时取值就必须是命令行那一条
+    // 规范化后的格式；而 INI 的 auto 配上 .jpg 时，这一项仍是 auto，推断结果在 formatBasis 上。
+    {
+        const std::wstring pngCfg = TempIni("fmt-png.ini", "[output]\nformat = png\n");
+        Parsed a = Run({"--config", Narrow(pngCfg), "--format", "jpeg", "--show-config"});
+        Check(a.ok() && a.SourceOf(L"output.format") == L"cli" &&
+                  a.ValueOf(L"output.format") == L"jpeg",
+              "INI format=png 配命令行 --format jpeg：取值与来源都是 cli 那一档");
+        Parsed alias = Run({"--config", Narrow(pngCfg), "--format", "jpg", "--show-config"});
+        Check(alias.ok() && alias.SourceOf(L"output.format") == L"cli" &&
+                  alias.ValueOf(L"output.format") == L"jpeg",
+              "别名按既有规则规范化（jpg 报成 jpeg），来源同样是 cli");
+        Parsed noCfg = Run({"--no-config", "--format", "jpeg", "--show-config"});
+        Check(noCfg.ok() && noCfg.SourceOf(L"output.format") == L"cli" &&
+                  noCfg.ValueOf(L"output.format") == L"jpeg",
+              "没有配置时也一样：来源 cli 的取值是命令行指定的格式");
+        // 真实截图那一路（同一份已解析设置，被 -v 的来源表消费）报同一条结论。
+        Parsed shot = Run({"--config", Narrow(pngCfg), "--format", "jpeg", "--class",
+                           "Shell_TrayWnd", "--dry-run", "shot.png"});
+        Check(shot.ok() && shot.o().format == ImageFormat::kJpeg &&
+                  shot.SourceOf(L"output.format") == L"cli" &&
+                  shot.ValueOf(L"output.format") == L"jpeg",
+              "截图这一路的取值/来源与配置视图同一条结论");
+        // 偏好与最终编码器仍分得开：auto 配 .jpg 不粗暴改成推断值。
+        const std::wstring autoJpg = TempIni("fmt-auto.ini", "[output]\nformat = auto\npath = shot.jpg\n");
+        Parsed b = ShowVia(autoJpg);
+        Check(b.ok() && b.ValueOf(L"output.format") == L"auto" &&
+                  b.SourceOf(L"output.format") == L"config",
+              "INI format=auto 时这一项设置仍报 auto（不是被换成 jpeg）");
+        Check(b.ValueOf(L"output.path").size() >= 4 &&
+                  b.ValueOf(L"output.path").substr(b.ValueOf(L"output.path").size() - 4) == L".jpg",
+              "配置里的输出名按 INI 目录定绝对路径后仍带着那一条扩展名");
+        Parsed c = Run({"--config", Narrow(autoJpg), "--class", "Shell_TrayWnd", "--dry-run"});
+        Check(c.ok() && c.o().format == ImageFormat::kJpeg &&
+                  c.o().formatBasis == L"config-output-extension",
+              "最终编码器仍是扩展名推断出来的 jpeg：偏好与事实两条都看得见");
+    }
+
+    // ---- INI 里的输出路径不跟调用方的目录或当前盘跑 ----
+    {
+        const std::wstring relIni = TempIni("path-rel.ini", "[output]\npath = shots\\capture.png\n");
+        const std::wstring expect = g_tempDir + L"\\shots\\capture.png";
+        // 两个不同的 CWD 下解析同一份 INI：一般相对写法的结论必须相同。
+        wchar_t savedCwd[MAX_PATH] = {};
+        GetCurrentDirectoryW(MAX_PATH, savedCwd);
+        const std::wstring cwdA = g_tempDir + L"\\cwdA";
+        const std::wstring cwdB = g_tempDir + L"\\cwdB";
+        CreateDirectoryW(cwdA.c_str(), nullptr);
+        CreateDirectoryW(cwdB.c_str(), nullptr);
+        std::wstring outA, outB;
+        bool bothOk = true;
+        if (SetCurrentDirectoryW(cwdA.c_str())) {
+            Parsed p = Run({"--config", Narrow(relIni), "--class", "Shell_TrayWnd", "--dry-run"});
+            bothOk = p.ok() && p.o().output == expect;
+            outA = p.o().output;
+        }
+        if (SetCurrentDirectoryW(cwdB.c_str())) {
+            Parsed p = Run({"--config", Narrow(relIni), "--class", "Shell_TrayWnd", "--dry-run"});
+            bothOk = bothOk && p.ok() && p.o().output == expect;
+            outB = p.o().output;
+        }
+        SetCurrentDirectoryW(savedCwd);
+        Check(bothOk && outA == outB,
+              "同一份 INI 在两个不同 CWD 下定出同一条输出路径（一般相对写法以 INI 目录为基准）");
+
+        // 歧义写法：盘符相对（C:shot.png）与无盘符的根相对（\\shot.png、/shot.png）。
+        // 两条都明确拒绝，稳定码 + 文件位置 + section.key + 行号 + 不随 --lang 变的原因 token，
+        // 而且排在选目标、弹框、取帧之前；绝不拿进程 CWD 或某个盘的历史目录补全。
+        struct Ambiguous { const char* raw; const wchar_t* detail; };
+        const Ambiguous cases[] = {
+            {"C:shot.png", L"drive-relative"},
+            {"D:shots\\a.png", L"drive-relative"},
+            {"\\shot.png", L"root-relative"},
+            {"/shot.png", L"root-relative"},
+        };
+        int n = 0;
+        for (const Ambiguous& k : cases) {
+            const std::string body = std::string("[output]\npath = ") + k.raw + "\n";
+            const std::wstring ini = TempIni("path-amb.ini", body);
+            // 两个 CWD 下结论相同（都拒），且都不落到调用方的目录上去。
+            std::wstring codes1, codes2;
+            Parsed p1 = Run({"--config", Narrow(ini), "--class", "Shell_TrayWnd", "--dry-run"});
+            if (SetCurrentDirectoryW(cwdB.c_str())) {
+                Parsed p2 = Run({"--config", Narrow(ini), "--class", "Shell_TrayWnd", "--dry-run"});
+                codes2 = p2.HasCode(codes::kConfigPathAmbiguous) ? L"1" : L"0";
+                SetCurrentDirectoryW(savedCwd);
+            }
+            codes1 = p1.HasCode(codes::kConfigPathAmbiguous) ? L"1" : L"0";
+            const Diagnostic* d = p1.Find(codes::kConfigPathAmbiguous);
+            Check(!p1.ok() && d != nullptr && codes1 == codes2,
+                  (std::string(k.raw) + " : 歧义写法在两个 CWD 下都明确拒绝").c_str());
+            Check(d && d->detail == k.detail && d->value == std::wstring(L"output.path") &&
+                      d->line == 2 && !d->option.empty(),
+                  (std::string(k.raw) + " : 诊断带原因 token、section.key、行号与文件位置").c_str());
+            // 原文不许留在 opt.output 上：那一路本次失败，落点回到"什么都没定"的形状
+            // （省略输出时既有的隐式标准输出那条），而不是某一条补出来的绝对路径。
+            Check(p1.o().output == std::wstring(L"-") && p1.o().outputImplicitStdout,
+                  (std::string(k.raw) + " : 不把原文或补出来的绝对路径交给下游").c_str());
+            // 只读的配置视图给出同一结论，不在渲染层修饰字符串。
+            Parsed v = ShowVia(ini);
+            Check(!v.ok() && v.HasCode(codes::kConfigPathAmbiguous),
+                  (std::string(k.raw) + " : --show-config 同一结论").c_str());
+            ++n;
+        }
+        Check(n == 4, "四类歧义写法都判到");
+
+        // 完全限定写法保持原有含义，不因这次修复被拒；模板占位符与空格也照常留着。
+        const std::wstring absPath = g_tempDir + L"\\out put\\%d-%t.png";
+        const std::string absBody = "[output]\npath = " + Narrow(absPath) + "\n";
+        const std::wstring absIni = TempIni("path-abs.ini", absBody);
+        Parsed q = Run({"--config", Narrow(absIni), "--class", "Shell_TrayWnd", "--dry-run"});
+        Check(q.ok() && q.o().output == absPath, "盘符绝对路径原样保留（含空格与占位符）");
+        Parsed qView = ShowVia(absIni);
+        Check(qView.ok() && qView.ValueOf(L"output.path") == absPath &&
+                  qView.SourceOf(L"output.path") == L"config",
+              "配置视图报的就是那一条完全限定路径");
+        const std::wstring unc = L"\\\\no-such-nas\\share\\shot.png";
+        const std::wstring uncIni = TempIni("path-unc.ini",
+                                            std::string("[output]\npath = ") + Narrow(unc) + "\n");
+        Parsed u = Run({"--config", Narrow(uncIni), "--class", "Shell_TrayWnd", "--dry-run"});
+        Check(u.ok() && u.o().output == unc, "UNC 是完全限定写法：原样保留，不当成当前盘的根");
+        // 单条分隔符起手但带盘符的扩展路径（\\?\... 两条起手）仍算完全限定。
+        const std::wstring extPath = L"\\\\?\\C:\\x\\shot.png";
+        const std::wstring extIni = TempIni("path-ext.ini",
+                                            std::string("[output]\npath = ") + Narrow(extPath) + "\n");
+        Parsed e = Run({"--config", Narrow(extIni), "--class", "Shell_TrayWnd", "--dry-run"});
+        Check(e.ok() && e.o().output == extPath, "扩展路径写法保持支持，不被这次收紧误伤");
+        // "-" 仍然只是标准输出，不参与上面那套路径判定。
+        const std::wstring dashIni = TempIni("path-dash.ini", "[output]\npath = -\n");
+        Parsed dash = Run({"--config", Narrow(dashIni), "--class", "Shell_TrayWnd", "--dry-run"});
+        Check(dash.ok() && dash.o().output == std::wstring(L"-") &&
+                  dash.ValueOf(L"output.path") == std::wstring(L"-") &&
+                  dash.SourceOf(L"output.path") == L"config",
+              "配置里的 - 仍是标准输出：不送进路径判定，来源仍记 config");
+        // 命令行那条相对写法的行为**不变**：仍原样交下去，相对调用方 CWD。
+        Parsed cliRel = Run({"--config", Narrow(relIni), "--class", "Shell_TrayWnd", "--dry-run",
+                             "--out", "cli.png"});
+        Check(cliRel.ok() && cliRel.o().output == L"cli.png",
+              "CLI --out 的相对路径行为保持原样（限制只适用于 INI 的输出值）");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +910,83 @@ static void QueryAndEscapeHatches() {
         Check(c.HasCode(codes::kConfigInvalidValue) && !c.ok(),
               "认不了的语言整条拒，不退化成 auto，更不跳过这一行");
     }
+
+    // ---- 开关写了 =false：预扫描与正式解析必须是同一个判定 ----
+    // 这三条名字（help / version / no-config）参与的是"这次读不读配置"这件事，而配置读不读
+    // 又在任何一条截图诊断之前就定下来了。两趟对同一条 argv 的理解一旦分叉，
+    // `--no-config=false` 会悄悄关掉配置读取，`--help=false` 会让人以为拿到了帮助。
+    // 判据一律走生产入口 ParseCommandLine，只解析与 --dry-run，一个像素都不取。
+    {
+        const std::wstring histOff = TempIni("sw-off.ini", "[history]\nenabled = false\n");
+        const std::vector<std::string> intent{"--config", Narrow(histOff), "--class",
+                                              "Shell_TrayWnd", "--dry-run", "x.png"};
+        // 对照基线：配置里关掉历史归档，正常的捕获意图解析成关闭。
+        Parsed base = Run(intent);
+        Check(base.ok() && !base.o().historyEnabled && base.o().configState == L"loaded",
+              "基线：history.enabled=false 经配置文件读进来并落到本次判定");
+        // 依次加上三个 =false 开关：既不开启那三条入口，也不关掉配置读取。
+        for (const char* sw : {"--help=false", "--version=false", "--no-config=false",
+                               "--help=off", "--no-config=0"}) {
+            std::vector<std::string> with{intent};
+            with.push_back(sw);
+            Parsed p = Run(with);
+            const std::string tag = std::string(sw) + " : ";
+            Check(p.ok() && !p.o().showHelp && !p.o().showVersion,
+                  (tag + "不开启帮助与版本").c_str());
+            Check(p.o().configState == L"loaded" && p.o().configSelection == L"explicit",
+                  (tag + "不关掉配置读取（这一路照常读点名那一份）").c_str());
+            Check(!p.o().historyEnabled && p.SourceOf(L"history.enabled") == L"config",
+                  (tag + "之后历史仍是配置那个关闭的结论").c_str());
+        }
+        // --no-config=false 与 --config 一起给出：没有矛盾，不该凭名字报互斥。
+        Parsed noConflict = Run({"--config", Narrow(histOff), "--no-config=false", "--class",
+                                 "Shell_TrayWnd", "--dry-run", "x.png"});
+        Check(noConflict.ok() && !noConflict.HasCode(codes::kConflictingOptions) &&
+                  noConflict.o().configState == L"loaded",
+              "--no-config=false 与 --config 同时给出不算冲突");
+        // 启用态的 --no-config 与 --config 仍按既有契约报冲突。
+        Parsed conflict = Run({"--config", Narrow(histOff), "--no-config", "--class",
+                               "Shell_TrayWnd", "--dry-run", "x.png"});
+        Check(conflict.HasCode(codes::kConflictingOptions),
+              "启用态的 --no-config 与 --config 同时给出仍算冲突");
+        // 非法布尔值：确定的用法错，不执行截图，也不被当成一次有效的 help / no-config。
+        Parsed bogus = Run({"--help=bogus", "--class", "Shell_TrayWnd", "--dry-run", "x.png"});
+        Check(!bogus.ok() && bogus.HasCode(codes::kSwitchTakesNoValue) &&
+                  !bogus.o().showHelp,
+              "--help=bogus 报那条开关用法错，不当成启用态的 help");
+        const std::wstring broken = TempIni("sw-broken.ini", "[general]\nlanguage = auto\noops\n");
+        Parsed bogusBroken =
+            Run({"--config", Narrow(broken), "--help=bogus", "--class", "Shell_TrayWnd",
+                 "--dry-run", "x.png"});
+        Check(!bogusBroken.ok() && bogusBroken.HasCode(codes::kConfigSyntax),
+              "写坏的 --help 取值不是排障入口：坏配置照样停在读配置那一步，不会被它绕过");
+        Parsed bogusNoConfig = Run({"--config", Narrow(broken), "--no-config=bogus", "--class",
+                                    "Shell_TrayWnd", "--dry-run", "x.png"});
+        Check(!bogusNoConfig.ok() && bogusNoConfig.HasCode(codes::kConfigSyntax),
+              "写坏的 --no-config 取值同样不关掉配置读取");
+        // 真启用的三条保持既有逃生用途（帮助与版本不被坏配置改掉、no-config 完全不读）。
+        Parsed realHelp = Run({"--config", Narrow(broken), "--help"});
+        Check(realHelp.ok() && realHelp.o().showHelp &&
+                  realHelp.o().configState == L"not_read",
+              "启用态的 --help 在坏配置下照常给出且一条都不读");
+        Parsed realNoConfig = Run({"--no-config", "--class", "Shell_TrayWnd", "--dry-run", "x.png"});
+        Check(realNoConfig.ok() && realNoConfig.o().configState == L"not_read" &&
+                  realNoConfig.o().historyEnabled &&
+                  realNoConfig.SourceOf(L"history.enabled") == L"builtin",
+              "启用态的 --no-config 一份配置都不看（也不删也不改），历史回到内置的开启");
+        // 反向开关与 valueAlways 那条不许被"false 一律丢弃"掩盖：写法仍然落地。
+        const std::wstring owFalse = TempIni("sw-ow.ini", "[output]\noverwrite = false\n");
+        Parsed yesFalse = Run({"--config", Narrow(owFalse), "--yes=false", "--no-overwrite=false",
+                               "--class", "Shell_TrayWnd", "--dry-run", "x.png"});
+        Check(yesFalse.ok() && !yesFalse.o().yes && yesFalse.o().overwrite,
+              "--yes=false 与 --no-overwrite=false 仍是会落地的写法（各自取消自己的禁令）");
+        Check(yesFalse.SourceOf(L"output.overwrite") == L"cli",
+              "落地过的开关才算「CLI 写过」：这一项的来源跟着记 cli");
+        Parsed bareYes = Run({"--config", Narrow(owFalse), "--yes", "--class", "Shell_TrayWnd",
+                              "--dry-run", "x.png"});
+        Check(bareYes.ok() && bareYes.o().yes && !bareYes.o().overwrite,
+              "裸写 --yes 与 --no-overwrite 的既有含义不变");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -796,11 +1089,18 @@ int main() {
           "p-cliout.ini", "p-fmt.ini", "rel.ini", "crop.ini", "crop2.ini", "crop-miss.ini",
           "crop-bad.ini", "crop-ok.ini", "scale.ini", "v.ini", "hist-off.ini", "hist-on.ini",
           "ih.ini", "q.ini", "broken.ini", "lang.ini", "lang-bad.ini",
-          "side-effect.ini", "big.ini"}) {
+          "side-effect.ini", "big.ini",
+          // 本次新加的这几份：全部写在自己建的 %TEMP% 目录里，落盘的都是测试夹具。
+          "defaults.ini", "fmt-png.ini", "fmt-auto.ini", "path-rel.ini", "path-amb.ini",
+          "path-abs.ini", "path-unc.ini", "path-ext.ini", "path-dash.ini",
+          "sw-off.ini", "sw-broken.ini", "sw-ow.ini"}) {
         const std::wstring p = g_tempDir + L"\\" + Wide(name);
         DWORD a = GetFileAttributesW(p.c_str());
         if (a != INVALID_FILE_ATTRIBUTES) DeleteFileW(p.c_str());
     }
+    // 那两个 CWD 夹具目录里本来就没有文件（路径判据只解析，不落盘）。
+    RemoveDirectoryW((g_tempDir + L"\\cwdA").c_str());
+    RemoveDirectoryW((g_tempDir + L"\\cwdB").c_str());
     RemoveDirectoryW(g_tempDir.c_str());
     return g_failures == 0 ? 0 : 1;
 }

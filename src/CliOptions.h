@@ -482,6 +482,17 @@ inline constexpr const wchar_t* kConfigOutOfRange = L"config.out_of_range";
 // 与 cli.crop_conflict 分开给码：那一条说的是"这一次同时写了两种裁剪写法"，这一条说的是
 // "配置里那两条自己没配上"，下一步一个是删一条 CLI，一个是补一个键。
 inline constexpr const wchar_t* kConfigInvalidCombination = L"config.invalid_combination";
+// 配置里 output.path 的写法**没法在不看调用方进程状态的前提下定出落点**（用法错 1，取帧之前）。
+// 只承认两种形状：一般相对写法（相对这份 INI 自己所在的目录）与完全限定写法
+// （带盘符且第三字符是分隔符、UNC、或项目本来就支持的 `\?\` 扩展路径）。歧义的那两类：
+//   * `C:shot.png` —— 盘符相对，落点是 C 盘"当前目录"，那是调用方的进程状态，不是这份文件的意思；
+//   * `\shot.png` / `/shot.png` —— 没有盘符的单分隔符开头，落点是"当前盘"的根。
+// 两种都不猜盘符、不拿进程 CWD 悄悄补全（detail 分别是 drive-relative / root-relative）。
+inline constexpr const wchar_t* kConfigPathAmbiguous = L"config.path_ambiguous";
+// 形状本身成立，但**这一边定不出绝对路径**：问不出配置文件所在目录、归一化失败或缓冲区不够
+// （detail 分别是 base-unavailable / normalize-failed）。绝不把未解析的原文当成"已经成功的绝对
+// 路径"交给下游 —— 那样落点会跟着调用方的当前目录跑，而报告里说的是配置目录。
+inline constexpr const wchar_t* kConfigPathUnresolvable = L"config.path_unresolvable";
 // 提示（不影响退出码）
 inline constexpr const wchar_t* kDuplicateValue = L"note.duplicate_value";
 inline constexpr const wchar_t* kExtensionAppended = L"note.extension_appended";
