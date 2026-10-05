@@ -946,7 +946,7 @@ std::wstring AbsoluteFromCwd(const std::wstring& raw) {
 // INI 是持久下来的用户数据，它说出的路径不该跟着"这一次是谁在哪个目录里调用"变。所以这里
 // 只承认两种形状，第三种一律拒绝而不是猜：
 //   * **完全限定**：`C:\x\y.png`、`C:/x/y.png`（盘符 + 分隔符）、以**两条**分隔符起手的
-//     UNC（`\\server\share\x.png`）与扩展路径（`\?\...`）—— 原样交出，含义与调用方的
+//     UNC（`\\server\share\x.png`）与扩展路径（`\\?\C:\shots\a.png`）—— 原样交出，含义与调用方的
 //     当前目录、当前盘无关；
 //   * **一般相对写法**：`shot.png`、`shots\capture.png` —— 以**被选中的那份 INI 自己所在的
 //     目录**为基准定绝对路径；
@@ -2246,6 +2246,22 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         const std::wstring flagName = L"--" + std::wstring(scanned.spec->name);
         // 三份允许清单比的是**规范名**（不带 -- 前缀），报错时交出去的才是用户写的那个样子。
         const std::wstring bareName = scanned.spec->name;
+        // 「这一条参不参与语义判定」必须在任何登记之前定下来。普通开关写 =false 等于没写：它既
+        // 不进下面那三份冲突清单、不进选择策略清单、不算 cliGiven，也不改 Options —— 与压根没打
+        // 这个开关完全等价。判据本体仍是那一份 ResolveSwitch（与开头决定"读不读配置"的预扫描同源），
+        // 这里只是把登记的时刻挪到它之后，不在这里另写一套真/假 token 规则。
+        // 非法布尔值整条作废，只报那一条用法错：同一条写坏的开关再叠一条查询冲突，是把一处说不通
+        // 报两遍。取值型选项不套这条路——它们的取值文本没有开关含义，缺失值与非法取值照常登记。
+        SwitchDecision sw;
+        if (!scanned.spec->takesValue) {
+            sw = ResolveSwitch(*scanned.spec, scanned);
+            if (sw.fate == SwitchFate::kInvalid) {
+                Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flagName, scanned.value,
+                    Msgf(L"cli.switch_no_value_hint", flagName));
+                continue;
+            }
+            if (sw.fate == SwitchFate::kNotGiven) continue;
+        }
         // 只登记「与哪一类查询冲突」这件事，不改变 Apply 的行为：这一次到底算哪一路，
         // 要等整条 argv 扫完、看见 --capabilities / --diagnostics / --list / --inspect 出没出没才知道。
         if (!AllowedWithEnvQuery(bareName)) NoteConflict(&envConflicts, flagName);
@@ -2271,19 +2287,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             continue;
         }
 
-        // 开关一般不吃取值；只有 =true / =false 这种写法把规范化结果（"1" / "0"）交给 Apply。
-        // 判定本体是 ResolveSwitch，与开头那段预扫描（决定这次读不读配置）共用同一份：
-        // 两趟对同一条 argv 的理解不可能再分叉。
-        const SwitchDecision sw = ResolveSwitch(*scanned.spec, scanned);
-        if (sw.fate == SwitchFate::kInvalid) {
-            Err(codes::kSwitchTakesNoValue, Msg(L"cli.switch_no_value"), flagName, scanned.value,
-                Msgf(L"cli.switch_no_value_hint", flagName));
-            continue;
-        }
-        // 普通开关写 =false 等于没写；反向开关的 =false 是取消禁令，--yes=false 是"不许跳过确认"。
-        if (sw.fate == SwitchFate::kNotGiven) continue;
-        // 只有真正会落到 Options 上的写法才算"CLI 写过"（与上面那条 =false 等于没写的规则同源，
-        // 两处必须是同一条判据）：否则 `--no-crop=false` 会被记成写过而造出一条假冲突。
+        // 开关一般不吃取值；上面那一趟 ResolveSwitch 已经把"会不会落到 Options"定完了，
+        // 能走到这里的只有裸写、=真值，以及反向开关 / valueAlways 那条的 =false（各自的既有含义）。
+        // 规范化结果（"1" / "0"，裸写为空串）交给 Apply，与反向/值恒那两条的既有行为一字不改。
+        // 只有真正会落到 Options 上的写法才算"CLI 写过"：否则 `--no-crop=false` 会被记成写过
+        // 而造出一条假冲突。
         cliGiven.push_back(bareName);
         Apply(*scanned.spec, sw.applyValue);
     }

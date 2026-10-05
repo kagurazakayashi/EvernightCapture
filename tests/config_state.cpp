@@ -121,6 +121,16 @@ Parsed Run(const std::vector<std::string>& args) {
 
 std::string WideArg(const std::wstring& w) { return Narrow(w); }
 
+// 用例标题用的参数回显（ASCII 窄串，判据本身不参与判定）。
+std::string ArgsText(const std::vector<std::string>& a) {
+    std::string s;
+    for (const std::string& e : a) {
+        if (!s.empty()) s += " ";
+        s += e;
+    }
+    return s;
+}
+
 // 一条配置文件判据的最小写法：--show-config --config <path> [extra...]
 Parsed ShowVia(const std::wstring& iniPath, const std::vector<std::string>& extra = {}) {
     std::vector<std::string> a{"--show-config", "--config", WideArg(iniPath)};
@@ -987,6 +997,126 @@ static void QueryAndEscapeHatches() {
         Check(bareYes.ok() && bareYes.o().yes && !bareYes.o().overwrite,
               "裸写 --yes 与 --no-overwrite 的既有含义不变");
     }
+
+    // ---- 关闭态开关不参与冲突与选择策略登记 ----
+    // 上面那一段判的是"这次读不读配置"，这一段判的是同一条规范化结论在**语义登记**那一步的
+    // 时刻：普通开关写 =false 等于没写，那么它就不该进那三份允许清单的冲突表、不该进选择策略
+    // 清单、不该算 cliGiven，也不该改 Options —— 与压根没打这个开关完全等价。
+    // 判据是"带这条关闭态开关"与"不带"两次生产解析（ParseCommandLine）逐项相同，测试里
+    // 不另写一份冲突规则当对照。夹具只写在自己建的 %TEMP% 目录；入口一律 --no-config 或点名
+    // 本次自建的那份，本机用户配置不参与，一个像素都不取、不弹框。
+    {
+        struct ClosedRow {
+            const char* what;
+            std::vector<std::string> bare;    // 只读入口本身
+            std::vector<std::string> closed;  // 同一条入口多挂一条关闭态写法
+        };
+        const std::vector<ClosedRow> rows = {
+            {"--show-config --help=false", {"--show-config", "--no-config"},
+             {"--show-config", "--no-config", "--help=false"}},
+            {"--show-config --version=false", {"--show-config", "--no-config"},
+             {"--show-config", "--no-config", "--version=false"}},
+            {"--show-config --dry-run=false", {"--show-config", "--no-config"},
+             {"--show-config", "--no-config", "--dry-run=false"}},
+            {"--capabilities --no-crop=false", {"--capabilities", "--no-config"},
+             {"--capabilities", "--no-config", "--no-crop=false"}},
+            {"--capabilities --no-crop=off", {"--capabilities", "--no-config"},
+             {"--capabilities", "--no-config", "--no-crop=off"}},
+            {"--inspect --all=false", {"--inspect", "--no-config"},
+             {"--inspect", "--no-config", "--all=false"}},
+            {"--list --topmost-match=false", {"--list", "--no-config"},
+             {"--list", "--no-config", "--topmost-match=false"}},
+            {"--list --topmost-match=0", {"--list", "--no-config"},
+             {"--list", "--no-config", "--topmost-match=0"}},
+        };
+        for (const ClosedRow& row : rows) {
+            Parsed base = Run(row.bare);
+            Parsed p = Run(row.closed);
+            const std::string tag = std::string(row.what);
+            Check(base.ok() && p.ok(), (tag + "：带这条开关仍解析成功").c_str());
+            Check(p.r.errors.size() == base.r.errors.size() &&
+                      p.r.warnings.size() == base.r.warnings.size(),
+                  (tag + "：错误与 note 的条数与不带时相同").c_str());
+            Check(p.o().capabilities == base.o().capabilities &&
+                      p.o().showConfig == base.o().showConfig &&
+                      p.o().windowAction == base.o().windowAction &&
+                      p.o().dryRun == base.o().dryRun,
+                  (tag + "：查询意图与截图意图没有被意外改写").c_str());
+            Check(p.o().multi == base.o().multi && p.o().index == base.o().index,
+                  (tag + "：选择策略那一条没被登记进去").c_str());
+            Check(p.o().configState == base.o().configState &&
+                      p.o().configSelection == base.o().configSelection,
+                  (tag + "：配置状态与选择结论不变").c_str());
+        }
+
+        // cliGiven 那条判据的直接下场：关闭态的 --no-crop 不算"CLI 写过"，配置里那一组裁剪
+        // 因此仍归 config，而不是被一条压根没生效的写法整组替换掉。
+        {
+            const std::wstring cropIni = TempIni("sw-crop.ini", "[crop]\nmode = client-area\n");
+            Parsed base = Run({"--config", Narrow(cropIni), "--capabilities"});
+            Parsed p = Run({"--config", Narrow(cropIni), "--capabilities", "--no-crop=false"});
+            Check(base.ok() && p.ok() && p.r.errors.size() == base.r.errors.size(),
+                  "--capabilities --no-crop=false 不与配置里那组裁剪打架");
+            Check(p.SourceOf(L"crop.mode") == base.SourceOf(L"crop.mode") &&
+                      p.ValueOf(L"crop.mode") == L"client-area",
+                  "关闭态不算「CLI 写过」：那一项的来源与取值都与不带这条开关时相同");
+        }
+
+        // 反例：真正启用、又不被该入口允许的开关必须照旧冲突（含 =true 这种明确启用写法）。
+        struct EnabledRow {
+            std::vector<std::string> args;
+            const wchar_t* code;
+        };
+        const std::vector<EnabledRow> enabled = {
+            {{"--capabilities", "--no-config", "--no-crop=true"}, codes::kQueryConflict},
+            {{"--inspect", "--no-config", "--all=true"}, codes::kWindowQueryConflict},
+            {{"--list", "--no-config", "--topmost-match=true"}, codes::kWindowQueryConflict},
+            {{"--show-config", "--no-config", "--dry-run"}, codes::kConfigViewConflict},
+            {{"--show-config", "--no-config", "--yes"}, codes::kConfigViewConflict},
+        };
+        for (const EnabledRow& c : enabled) {
+            Parsed p = Run(c.args);
+            Check(!p.ok() && p.HasCode(c.code),
+                  (ArgsText(c.args) + "：启用态照常与该入口冲突").c_str());
+        }
+
+        // 反例：写坏的布尔值是一条确定的用法错，整条作废。它**不**再叠一条同源的查询冲突 ——
+        // 同一处说不通报两遍会让调用方去改那个查询，而真正要改的是这条开关。
+        {
+            Parsed v = Run({"--show-config", "--no-config", "--help=bogus"});
+            Check(!v.ok() && v.r.errors.size() == 1 &&
+                      v.HasCode(codes::kSwitchTakesNoValue) &&
+                      !v.HasCode(codes::kConfigViewConflict),
+                  "--show-config --help=bogus：只报开关用法错，不重复报配置视图冲突");
+            Parsed e = Run({"--capabilities", "--no-config", "--all=bogus"});
+            Check(!e.ok() && e.r.errors.size() == 1 &&
+                      e.HasCode(codes::kSwitchTakesNoValue) &&
+                      !e.HasCode(codes::kQueryConflict),
+                  "--capabilities --all=bogus：同理，也不被当成启用态丢进冲突表");
+        }
+
+        // 反例：取值型选项不套普通开关那条规则 —— 取值恰好是文本 false 不代表整项不存在；
+        // 缺值仍然缺值。
+        {
+            Parsed t = Run({"--capabilities", "--no-config", "--title", "false"});
+            Check(!t.ok() && t.HasCode(codes::kQueryConflict),
+                  "--title false 的取值是文本：这一项仍然成立，与环境查询照常冲突");
+            Parsed m = Run({"--list", "--no-config", "--index"});
+            Check(!m.ok() && m.HasCode(codes::kMissingValue),
+                  "取值型选项缺值照常报 cli.missing_value");
+        }
+
+        // 反向开关与 valueAlways 那条：=false 是会落地的写法（各自取消自己的禁令），
+        // 所以它们能不能写在某个入口后面，仍由原有那三份允许清单判。
+        {
+            Parsed y = Run({"--list", "--no-config", "--yes=false"});
+            Check(y.ok() && !y.o().yes,
+                  "--list 带 --yes=false：这一条会落地，而 --yes 本就允许写在窗口查询后面");
+            Parsed n = Run({"--list", "--no-config", "--no-overwrite=false"});
+            Check(!n.ok() && n.HasCode(codes::kWindowQueryConflict),
+                  "--list 带 --no-overwrite=false：落地的反向开关与该入口照常冲突");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,7 +1223,7 @@ int main() {
           // 本次新加的这几份：全部写在自己建的 %TEMP% 目录里，落盘的都是测试夹具。
           "defaults.ini", "fmt-png.ini", "fmt-auto.ini", "path-rel.ini", "path-amb.ini",
           "path-abs.ini", "path-unc.ini", "path-ext.ini", "path-dash.ini",
-          "sw-off.ini", "sw-broken.ini", "sw-ow.ini"}) {
+          "sw-off.ini", "sw-broken.ini", "sw-ow.ini", "sw-crop.ini"}) {
         const std::wstring p = g_tempDir + L"\\" + Wide(name);
         DWORD a = GetFileAttributesW(p.c_str());
         if (a != INVALID_FILE_ATTRIBUTES) DeleteFileW(p.c_str());

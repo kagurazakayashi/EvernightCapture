@@ -1100,7 +1100,7 @@ disk. `--screens` turns that question into data:
 ```powershell
 ECAPTURE.EXE --screens                                  # every screen with all of its identities
 ECAPTURE.EXE --monitor device:DISPLAY1 --out shot.png   # by the name of this desktop attach
-ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # by the cross-session monitor path
+ECAPTURE.EXE --monitor "id:\\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # by the cross-session monitor path
 ```
 
 It is read-only like the other queries: no pixel taken, no consent dialog, no file written, no network, and no
@@ -1117,7 +1117,7 @@ Four identities per screen, each stating how far it stays true (fields, not pros
 | `monitorDevicePath` | monitor devnode device interface path | `cross_session_expected` | `id:`                   |
 | `adapterLuid`       | adapter's locally unique id           | `this_session`           | none - association only |
 
-`screens[].selectors` holds the exact strings to write back (`device:DISPLAY1`, `id:\?\DISPLAY#…`), so nothing has
+`screens[].selectors` holds the exact strings to write back (`device:DISPLAY1`, `id:\\?\DISPLAY#…`), so nothing has
 to be guessed, and `identity.*` says which kinds may be used as a selector. The adapter LUID deliberately has none:
 it is unique only inside the current session, so naming a monitor with it would be a bet rather than a reference.
 `adapter.devicePath` (the adapter's own devnode path), `adapter.outputTechnology`, `targetId` and `targetAvailable`
@@ -1719,7 +1719,7 @@ What is deliberately **not** configurable is not an oversight:
 - **Two different relative-path origins** coexist by design: a relative `--out` stays relative to the caller's
   current directory (unchanged behaviour), while a relative INI `output.path` resolves against the directory of
   **that INI**. Only two shapes are accepted there: a plain relative name (`shot.png`, `shots\capture.png`) and a
-  fully qualified one (`C:\dir\x.png`, `\\server\share\x.png`, `\?\...`). Two ambiguous shapes are **refused**
+  fully qualified one (`C:\dir\x.png`, `\\server\share\x.png`, `\\?\C:\shots\a.png`). Two ambiguous shapes are **refused**
   instead of guessed, because their landing point belongs to whoever invoked the program rather than to this file:
   a drive-relative name (`C:shot.png` — the current directory on that drive) and a single leading separator without
   a drive (`\shot.png`, `/shot.png` — the root of the current drive). They give `config.path_ambiguous` with the

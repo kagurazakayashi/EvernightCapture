@@ -520,7 +520,7 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 | `capture` | `method` | `wgc` | `wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto` | `--capture` |
 | `capture` | `cursor` | `unset` | `unset` / `default` / `include` / `exclude` | `--cursor` |
 | `capture` | `hdr` | `unset` | `unset` / `auto` / `tonemap` / `refuse` | `--hdr` |
-| `output` | `path` | `-` | 输出名模板或 `-`；**相对路径按这份 INI 所在目录展开**（不是调用方当前目录）；只承认一般相对写法与完全限定写法（`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`），`C:shot.png`（盘符相对）与 `\shot.png` / `/shot.png`（没有盘符的根相对）**明确拒绝** = `config.path_ambiguous`+1，不猜盘符也不拿 CWD 补全；`-` = 标准输出 | `--out` / `-o` |
+| `output` | `path` | `-` | 输出名模板或 `-`；**相对路径按这份 INI 所在目录展开**（不是调用方当前目录）；只承认一般相对写法与完全限定写法（`C:\dir\x.png`、`\\server\share\x.png`、`\\?\C:\shots\a.png`），`C:shot.png`（盘符相对）与 `\shot.png` / `/shot.png`（没有盘符的根相对）**明确拒绝** = `config.path_ambiguous`+1，不猜盘符也不拿 CWD 补全；`-` = 标准输出 | `--out` / `-o` |
 | `output` | `format` | `auto` | `auto` / `png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif`；`auto` = 继续按扩展名推断，**不关掉**那条推断 | `--format` |
 | `output` | `jpeg_quality` | `100` | `1`–`100`（只对 jpeg 生效） | `--quality` |
 | `output` | `overwrite` | `true` | **只认 `true` / `false`**（这里的 `1` / `yes` / `on` 都不算布尔）；`false` = 不许覆盖，正是 `--no-overwrite` 那条禁令 | `--no-overwrite` 的反面 |
@@ -576,7 +576,7 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 
 - `--out` 的相对路径**继续相对调用方当前目录**；INI 的 `output.path` **相对那一份 INI 所在的目录**。
   那份文件里只承认两种形状：一般相对写法（`shot.png`、`shots\capture.png`）与完全限定写法
-  （`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`）。两种歧义写法**明确拒绝而不是猜**，因为它们的落点
+  （`C:\dir\x.png`、`\\server\share\x.png`、`\\?\C:\shots\a.png`）。两种歧义写法**明确拒绝而不是猜**，因为它们的落点
   属于调用方的进程状态而不是那份文件：`C:shot.png`（该盘"当前目录"下的那一条）报 `config.path_ambiguous`+1
   带 `detail=drive-relative`，`\shot.png` / `/shot.png`（"当前盘的根"）同样报这一条码带
   `detail=root-relative`。基准目录问不出来或归一化失败报 `config.path_unresolvable`+1。三条都不交出任何

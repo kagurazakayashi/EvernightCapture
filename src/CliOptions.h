@@ -484,7 +484,7 @@ inline constexpr const wchar_t* kConfigOutOfRange = L"config.out_of_range";
 inline constexpr const wchar_t* kConfigInvalidCombination = L"config.invalid_combination";
 // 配置里 output.path 的写法**没法在不看调用方进程状态的前提下定出落点**（用法错 1，取帧之前）。
 // 只承认两种形状：一般相对写法（相对这份 INI 自己所在的目录）与完全限定写法
-// （带盘符且第三字符是分隔符、UNC、或项目本来就支持的 `\?\` 扩展路径）。歧义的那两类：
+// （带盘符且第三字符是分隔符、UNC、或项目本来就支持的 `\\?\` 扩展路径）。歧义的那两类：
 //   * `C:shot.png` —— 盘符相对，落点是 C 盘"当前目录"，那是调用方的进程状态，不是这份文件的意思；
 //   * `\shot.png` / `/shot.png` —— 没有盘符的单分隔符开头，落点是"当前盘"的根。
 // 两种都不猜盘符、不拿进程 CWD 悄悄补全（detail 分别是 drive-relative / root-relative）。

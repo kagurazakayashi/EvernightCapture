@@ -900,7 +900,7 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 与截图完全�
 ```powershell
 ECAPTURE.EXE --screens                                  # 每块屏，连同它的几种身份
 ECAPTURE.EXE --monitor device:DISPLAY1 --out shot.png   # 按本次桌面连接的设备名
-ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # 按跨会话的监视器设备路径
+ECAPTURE.EXE --monitor "id:\\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # 按跨会话的监视器设备路径
 ```
 
 它与其他只读查询一样只读：一个像素都不取、不弹确认框、不写文件、不联网，也不改任何显示设置——为了搞清"这块屏
@@ -916,7 +916,7 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 | `monitorDevicePath` | 监视器 devnode 设备接口路径   | `cross_session_expected` | `id:`            |
 | `adapterLuid`       | 适配器的本地唯一标识          | `this_session`           | 无——只作关联信息 |
 
-`screens[].selectors` 直接给出可以原样抄回去的那两条（`device:DISPLAY1`、`id:\?\DISPLAY#…`），`identity.*` 写明
+`screens[].selectors` 直接给出可以原样抄回去的那两条（`device:DISPLAY1`、`id:\\?\DISPLAY#…`），`identity.*` 写明
 哪一种能当选择器用。适配器 LUID 故意没有选择器写法：它只在本次会话内唯一，拿它点名一块屏是下注而不是引用。
 `adapter.devicePath`（适配器自己的设备接口路径）、`adapter.outputTechnology`、`targetId`、`targetAvailable` 来自
 同一次问答，"这块屏挂在哪块卡上"就是这么交回的。
@@ -1421,7 +1421,7 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
   命令行同时给 `--format` 与不一致的扩展名时，保持那条既有的一致性提示，不改名也不重编。
 - 相对路径的原点各归各：`--out` 的相对路径仍相对**调用方 CWD**；INI 里 `output.path` 的相对路径相对
   **那份 INI 所在的目录**。那份文件里只承认两种形状：一般相对写法（`shot.png`、`shots\capture.png`）与
-  完全限定写法（`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`）。两种歧义写法**明确拒绝而不是猜**，因为它们
+  完全限定写法（`C:\dir\x.png`、`\\server\share\x.png`、`\\?\C:\shots\a.png`）。两种歧义写法**明确拒绝而不是猜**，因为它们
   的落点属于调用方的进程状态而不是这份文件：带盘符却没有分隔符的 `C:shot.png`（该盘"当前目录"下的那一条），
   以及没有盘符、单条分隔符起手的 `\shot.png` / `/shot.png`（"当前盘的根"）。这两条报 `config.path_ambiguous`，
   带文件位置、`output.path`、行号与 `detail` 原因 token，而且发生在选窗口之前；工具不补盘符、不去读某个盘的

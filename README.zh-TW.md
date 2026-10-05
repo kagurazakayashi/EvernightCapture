@@ -880,7 +880,7 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 與截圖完全�
 ```powershell
 ECAPTURE.EXE --screens                                  # 每張螢幕，連同它的幾種身分
 ECAPTURE.EXE --monitor device:DISPLAY1 --out shot.png   # 按本次桌面連線的裝置名
-ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # 按跨工作階段的螢幕裝置路徑
+ECAPTURE.EXE --monitor "id:\\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # 按跨工作階段的螢幕裝置路徑
 ```
 
 它與其他唯讀查詢一樣唯讀：不取一個影格、不彈確認框、不寫檔案、不連網，也不改任何顯示設定——為了搞清「這張螢幕
@@ -896,7 +896,7 @@ ECAPTURE.EXE --monitor "id:\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 | `monitorDevicePath` | 螢幕 devnode 的裝置介面路徑   | `cross_session_expected` | `id:`            |
 | `adapterLuid`       | 配接器的本機唯一識別          | `this_session`           | 無——只作關聯資訊 |
 
-`screens[].selectors` 直接給出可以原樣抄回去的那兩條（`device:DISPLAY1`、`id:\?\DISPLAY#…`），`identity.*` 寫明
+`screens[].selectors` 直接給出可以原樣抄回去的那兩條（`device:DISPLAY1`、`id:\\?\DISPLAY#…`），`identity.*` 寫明
 哪一種能當選擇器用。配接器 LUID 故意沒有選擇器寫法：它只在工作階段內唯一，拿它點名一張螢幕是下注而不是引用。
 `adapter.devicePath`（配接器自己的裝置介面路徑）、`adapter.outputTechnology`、`targetId`、`targetAvailable` 來自
 同一次問答，「這張螢幕掛在哪塊顯示卡上」就是這樣交回的。
@@ -1331,7 +1331,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 輸出格式的優先鏈只有一處實現在跑，一條鏈走完：**命令列顯式 `--format` > 顯式 `--out` 的已知副檔名 > 設定檔非 `auto` 的 `format` > 設定檔 `output.path` 的已知副檔名 > `png`**。設定檔寫 `format = auto` 不會關掉副檔名推斷；命令列 `--format` 與不一致的副檔名同時給出時，保持那條既有的不一致提示，不改名也不重編。`formatBasis` 的取值說出這次判定鏈停在哪一環：`cli-format` / `cli-output-extension` / `config-format` / `config-output-extension` / `stdout-default-png` / `default-png`。
 
-相對路徑有兩個原點，各保留各的：命令列 `--out` 的相對路徑照常**相對於調用方目前目錄**；設定檔 `output.path` 的相對路徑**相對於那份設定檔所在目錄**。那份檔案裡只承認兩種形狀：一般相對寫法（`shot.png`、`shots\capture.png`）與完全限定寫法（`C:\dir\x.png`、`\\server\share\x.png`、`\?\...`）。兩種歧義寫法**明確拒絕而不是猜**，因為它們的落點屬於呼叫端的程序狀態、不是這份檔案的意思：帶盤符卻沒有分隔符的 `C:shot.png`（該盤「目前目錄」下的那一條），以及沒有盤符、單一分隔符起手的 `\shot.png` / `/shot.png`（「目前盤的根」）。這兩條報 `config.path_ambiguous`，帶檔案位置、`output.path`、行號與 `detail` 原因 token，而且發生在選視窗之前；工具不補盤符、不去讀某個盤的歷史工作目錄，也不拿程序目前目錄悄悄補全。問不出基準目錄或正規化失敗時報姊妹碼 `config.path_unresolvable`，兩種情況都**不會**把未解析的原文當成「已經成功的絕對路徑」交下去。`-` 恆是標準輸出，不做路徑拼接。`%i` / `%h` / `%p` / `%n` / `%d` / `%t` 按《檔案名佔位符》的原有時點展開；模板裡的 `%` 不當環境變數展開——整個設定檔不做環境變數展開、命令替換或任何拼接。主輸出目錄照舊必須已存在；歷史的建立規則不變。
+相對路徑有兩個原點，各保留各的：命令列 `--out` 的相對路徑照常**相對於調用方目前目錄**；設定檔 `output.path` 的相對路徑**相對於那份設定檔所在目錄**。那份檔案裡只承認兩種形狀：一般相對寫法（`shot.png`、`shots\capture.png`）與完全限定寫法（`C:\dir\x.png`、`\\server\share\x.png`、`\\?\C:\shots\a.png`）。兩種歧義寫法**明確拒絕而不是猜**，因為它們的落點屬於呼叫端的程序狀態、不是這份檔案的意思：帶盤符卻沒有分隔符的 `C:shot.png`（該盤「目前目錄」下的那一條），以及沒有盤符、單一分隔符起手的 `\shot.png` / `/shot.png`（「目前盤的根」）。這兩條報 `config.path_ambiguous`，帶檔案位置、`output.path`、行號與 `detail` 原因 token，而且發生在選視窗之前；工具不補盤符、不去讀某個盤的歷史工作目錄，也不拿程序目前目錄悄悄補全。問不出基準目錄或正規化失敗時報姊妹碼 `config.path_unresolvable`，兩種情況都**不會**把未解析的原文當成「已經成功的絕對路徑」交下去。`-` 恆是標準輸出，不做路徑拼接。`%i` / `%h` / `%p` / `%n` / `%d` / `%t` 按《檔案名佔位符》的原有時點展開；模板裡的 `%` 不當環境變數展開——整個設定檔不做環境變數展開、命令替換或任何拼接。主輸出目錄照舊必須已存在；歷史的建立規則不變。
 
 裁剪與縮放按**整組替換**：命令列給了 `--roi` 或 `--client-area`，就整個取代設定檔的 `crop` 組（不會與設定檔裡的另一種模式生出假衝突）；命令列第一次寫 `--scale`，就丟掉整個 `scale` 組。`--no-crop` 與 `--no-scale` 取消設定層各自那一組（只限本次），與本次對應參數同時給出算衝突；任何一種取消都不會改成放大。`--history on|off` 與 `--integrity-hints on|off` 覆蓋設定檔的 `true` / `false`。`--yes` 仍只從當前命令列讀——它不進設定檔，對會取桌面像素的那幾條照舊無效。
 
