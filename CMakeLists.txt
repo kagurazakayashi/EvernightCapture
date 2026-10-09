@@ -56,6 +56,10 @@ add_executable(ecapture
   src/FileSave.cpp
   src/Delivery.cpp
   src/HistoryArchive.cpp
+  # 截图后的桌面通知。两个源文件分开是责任边界：Notification.cpp 只管"这条通知写什么"（纯函数，
+  # 离线判据链它一份就够），NotificationToast.cpp 才碰 WinRT 与系统的通知平台（链 windowsapp.lib）。
+  src/Notification.cpp
+  src/NotificationToast.cpp
   src/Consent.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
@@ -698,6 +702,45 @@ target_link_libraries(ecapture-history-tests PRIVATE
   kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
 set_target_properties(ecapture-history-tests PROPERTIES OUTPUT_NAME "ecapture-history-tests")
 set_property(TARGET ecapture-history-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 截图后桌面通知（src/Notification.cpp）的离线判据：tests/notification_state.cpp。
+#
+# 判的是生产本体：三档 detail 到底把哪些字段交出去、落点与附图是不是只认"真已提交的那一份副本"、
+# --purpose 占哪一格、合并模式列不下时数量怎么说、RenderToastXml 的 XML 转义（窗口标题是外部数据，
+# 那是注入面），以及 SendCaptureNotifications 对"全成功 / 部分失败 / 全失败有码 / 全失败没码 /
+# 零交付"四种下场的归类，并核对通知失败**不回头改交付事实**。
+#
+# 发送那一次 WinRT 调用不在这里链、也不在这里判（src/NotificationToast.cpp 要真问系统的通知平台，
+# 判到的是"这台机器让不让"而不是"我们写对了没有"）：测试注入 ToastSender，被 judged 的仍是生产
+# 那份编排函数。所以这里一个 windowsapp.lib 都不链。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-notification-tests
+  tests/notification_state.cpp
+  src/Notification.cpp
+  src/HdrColor.cpp
+  src/Deadline.cpp
+  src/CaptureScope.cpp
+  src/Consent.cpp
+  src/ScreenMatch.cpp
+  src/ScreenIdentity.cpp
+  src/CaptureCommon.cpp
+  src/ImageOps.cpp
+  src/CliOptions.cpp
+  src/Config.cpp
+  src/Lang.cpp
+  resources/ecapture.rc)
+
+target_include_directories(ecapture-notification-tests PRIVATE resources src)
+target_compile_features(ecapture-notification-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-notification-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-notification-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-notification-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+target_link_libraries(ecapture-notification-tests PRIVATE
+  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+set_target_properties(ecapture-notification-tests PROPERTIES OUTPUT_NAME "ecapture-notification-tests")
+set_property(TARGET ecapture-notification-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------

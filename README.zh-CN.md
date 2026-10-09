@@ -10,7 +10,7 @@
 目标机器不需要装 VC++ 运行时。输出对程序友好：`--help`、`--version` 与"一个条件都没给"这三种情形是纯文本，
 其余一律 JSON；退出码稳定，诊断带稳定的 `code`，所以既适合人敲，也适合被脚本和 AI 调用。
 
-当前版本 **0.4.0**：`--capture` 的取值全部可用（`wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`），
+当前版本 **1.0.0**：`--capture` 的取值全部可用（`wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`），
 `--monitor` 提供整块屏幕截图与"按屏过滤窗口"。更早的构建里还有一条 `magnification` 通道，已经删除：Windows 11 的
 `magnification.dll` 不再导出 `MagGetImage`，这条路线因此没有离屏读图的入口，只能把放大镜控件窗口摆到屏幕上抢 z 序，
 而拿到的画面与 `bitblt` 已经交回的等价——代价换不到收益。这段依据记在 `src/CliOptions.h` 的注释里。
@@ -185,6 +185,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按条件窗口截图，基于 Windows.Gr
   --lang, -l <language>                       文案语言。auto(默认，跟随系统显示语言) / zh-CN / zh-TW / en / ja；系统语言不受支持时用 en
   --history <on|off>                          本次要不要给每张完成交付的图另存一份历史副本（on / off），覆盖配置里那条
   --integrity-hints <on|off>                  本次要不要附完整性方面的解释文字（on / off）；错误码、原值与交付事实从来不受它影响，关掉它也修不好权限
+  --notify <on|off>                           本次每张交付完成后要不要交一条桌面通知（on / off），覆盖配置里那条；弹不弹都不改交付事实与退出码
+  --notify-merge <on|off>                     本次多个目标是合并成一条通知还是每个目标一条（on / off），覆盖配置里那条
+  --notify-detail <title|basic|minimal>       通知里写多细：title 带窗口标题、basic 只报归属、minimal 只报落点。通知会进系统通知中心，锁屏上也读得到
+  --purpose <text>                            本次截图用途的一句话，写进通知正文第一行；只给人读，不参与任何判据，长度有上限
   --help, -h                                  输出文本帮助（本段）
   --version                                   输出版本与阶段
 
@@ -803,7 +807,7 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 与截图完全�
   "contract": "windowquery",
   "contractVersion": 1,
   "query": "list",
-  "program": { "version": "0.4.0" },
+  "program": { "version": "1.0.0" },
   "authorization": {
     "readOnly": true,
     "pixelsRead": 0,
@@ -1342,6 +1346,60 @@ junction 与符号链接、UNC 与盘符两种写法）交给提交那一次原�
 结果的 `images[].history`）。归档失败绝不改变
 授权分级，也绝不为了"让归档成功"而提权、改 ACL 或改目录标签。
 
+## 截图后的桌面通知（默认开启）
+
+一张图完成交付之后，ECAPTURE 会向 Windows 的通知平台交一条 toast。它只是给正在看屏幕的人一个交代，
+不多也不少：图在这一步开始之前早就落地了。
+
+**`submitted` 不等于「你看见了」。** 这个状态说的是「已经交给通知平台」，之后由那一侧决定结果 ——
+专注助手、通知设置、按应用的静音规则、没登记过的应用身份，任何一个都能让它完全不出现，而本工具照样把
+这次交付报成成功。交付事实在 `images[]` 里，通知说的是展示状态：想知道图在不在，读前者；想知道试过没有，
+读后者。
+
+未打包的 Win32 程序要让 toast 真的显示出来，必须有一个登记在开始菜单快捷方式上的 AppUserModelID。
+安装器会创建那一条快捷方式（见安装那一节）。所以直接从 `build\` 里跑的那一份、用 `/NOICONS` 装出来的
+副本，以及快捷方式后来被删掉的安装，都可能出现「报了 `submitted` 而屏幕上一个东西都没有」——
+那是展示结果，不是截图失败。
+
+### 每种结果说什么
+
+顶层的 `notification` 对象只出现在截图那一路。只读查询既不弹通知，也不会凭空长出这一格：
+
+| `status` | 含义 | 下一步 |
+| -------- | ---- | ------ |
+| `submitted` | 已交给系统的通知平台；`submitted` 数是交出去几条，`withImage` 是其中带图的条数 | 没有下一步 —— 它不证明屏幕上出现过什么 |
+| `failed` | 那一次交付本身被拒；note 里带 `notify.send_failed` 或 `notify.unavailable` 与 HRESULT 原值 | 查通知设置、专注助手、AppUserModelID 有没有登记上 |
+| `disabled` | 你自己关掉了（`--notify off` 或 `enabled = false`） | 什么都没坏 |
+| `no_delivery` | 这一次没有任何图完成交付，因此无可报告 | 读 `errors[]` |
+
+通知失败从不改动 `images[]`、`errors[]` 或退出码，也从不为了补一条通知去重拍一张图。`--quiet` 会把那句
+给人看的说明去掉，但去不掉 `status` —— 这正是它单独占一格的原因。
+
+### 通知里那张图就是历史副本
+
+通知只有在**这一次真有一张已落在磁盘上**的图可指时才带图：它复用 `images[].history.file` 那一份归档副本。
+所以关掉历史之后通知照旧到达，只是**不带图**，而正文那一行改报主输出的名字。没提交成功的副本绝不被引用 ——
+把通知指向一个只写了一半的文件，比什么都不指向更糟。这一步不新建、不复制、也不重新编码任何东西。
+
+### 有多少内容离开了本进程
+
+通知的内容会进入通知中心，而那块地方**在锁屏上也读得到**，所以写多少是一个明确的选择，不是副作用：
+
+- `title`（默认）—— 连窗口标题本身一起写
+- `basic` —— 不写窗口标题：只报归属进程、句柄与文件去向
+- `minimal` —— 只报文件去向
+
+`--purpose <text>` 把调用方自己写的一句话放在正文第一行，于是 agent 能说明这次为什么截图。上限 200 个字符，
+`-v` 会原样回显成 `input.purpose`；它不决定任何事 —— 不选目标，不代替授权，也不改变结果。
+
+### 开关
+
+`--notify on|off`、`--notify-merge on|off`（整批合并成一条，而不是每个目标一条）与
+`--notify-detail title|basic|minimal` 覆盖 `ECAPTURE.ini` 里那三个 `notification` 键。它们从不改变截的是什么：
+会读到桌面像素的那几条照样一定当面问你，`--yes` 与这几条无关。只读查询（`--list`、`--inspect`、`--screens`、
+`--capabilities`、`--diagnostics`、`--show-config`）一条都不发；那个短命的辅助进程也发不了 —— 它既不取像素，
+也不交付任何文件。
+
 ## 配置文件（`ECAPTURE.ini`）
 
 配置层供给的是**持久偏好，不是本次截图意图，更不是授权**：语言与详略、通道、光标/HDR、输出与编码、裁剪缩放、
@@ -1401,6 +1459,9 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
 | `timeouts` | `processing_ms` | 0 | 0..86400000（0 = 不设总预算） | `--timeout-ms` |
 | `timeouts` | `consent_ms` | 0 | 0..86400000（0 = 一直等人） | `--consent-timeout-ms` |
 | `history` | `enabled` | `true` | `true` / `false` | `--history on\|off` |
+| `notification` | `enabled` | `true` | `true` / `false`；`false` 时一条都不交给通知平台。只是展示开关：不是授权，也不改变截什么与退出码 | `--notify on\|off` |
+| `notification` | `merge` | `false` | `true` / `false`；`true` 时整批合并成一条，而不是每个目标一条 | `--notify-merge on\|off` |
+| `notification` | `detail` | `title` | `title`（含窗口标题，锁屏上读得到）/ `basic`（不含标题）/ `minimal`（只报文件去向） | `--notify-detail <level>` |
 | `diagnostics` | `integrity_hints` | `true` | `true` / `false` | `--integrity-hints on\|off` |
 | `query` | `window_list_limit` | 50 | 1..8192，只是 `--list` 未给 `--limit` 时的分页默认 | `--limit` |
 
@@ -1634,6 +1695,10 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
 
 默认目录是 `%UserProfile%\.agents\skills\yashi-evernight-capture`，向导允许你选任意目录。**你选的目录就是 Skill 根目录**：`SKILL.md` 直接位于其中，`ECAPTURE.EXE` 就在它旁边，不会再多套一层同名目录。升级时安装器会记住你上次选的目录。
 
+安装器还会另外创建一条开始菜单快捷方式 `EvernightCapture`。它不是用来双击的——这是个命令行工具——它存在的唯一理由是：Windows 只认**开始菜单快捷方式上登记的 AppUserModelID**，没有那一条，通知功能会把"已经交给通知平台"报成成功，而屏幕上什么都不出现。卸载只回收安装器自己创建的这条快捷方式，那目录里的别的东西一概不碰。这一版**故意没有**「不创建快捷方式」这一项（`AllowNoIcons` 关着，`/NOICONS` 会被忽略）：漏建快捷方式这件事程序自己问不出来，只会留下一个永远报着「已交给通知平台」而屏幕上什么都不出现的功能，所以每次安装都无条件铺这一条。
+
+**除非有理由，否则就装到这个默认目录**——它正是 AI 工具会扫描的那条路径（见第 5 步），所以默认安装不需要任何额外配置就能被发现。装到自定义目录也一样能用（没有任何东西写死默认路径），但那样你得自己把工具指向它，并且这份 README 里的每一处路径——下面的两条命令和第 6 步的常驻规则都算——都要换成那个目录实际的绝对路径。
+
 ```bat
 :: 安装后做一次只读自检（cmd.exe）。路径要带引号：默认路径没有空格，自定义路径可能有。
 powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
@@ -1670,7 +1735,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 先只做只读检查（--version、--capabilities）。不要用截图来证明安装成功。
 ```
 
-### 6. 升级、卸载与排障
+### 6. 常驻规则：本地截图一律用它
+
+装好 skill，只是告诉工具它**能**做什么；在 Agent 自己的指令文件里写一条常驻规则，才能让它成为**默认**的截图方式——每个项目都生效，不必每次临时交代。
+
+规则写进 Agent 的全局指令文件：Windows 上就是 `%UserProfile%\.agents\AGENTS.md`（还没有的话记得把它加进 `.gitignore`，它不属于任何仓库）。读别的全局文件名（例如 `CLAUDE.md`）的工具，就把规则写进那份文件；只想对单个项目生效，写进该项目自己的 `AGENTS.md` 也可以。
+
+```text
+本地截图一律走 evernight-capture skill：用绝对路径调用
+"%UserProfile%\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE"——不要把这个 exe 复制到别处，也不要用临时拼的截图脚本替代——并遵循同目录的 SKILL.md。优先用窗口自身内容通道（--capture wgc / printwindow / dwm.thumbnail）加 --yes；读桌面像素的通道仍需我本人确认，不得代我应答那个确认框。
+```
+
+装到了自定义目录？那就把规则里的绝对路径换成那个目录的路径——一条指向 exe 并不在那里的路径的规则，比没有规则更糟。
+
+这条规则做不到、也不声称能做到的两件事：
+
+- 它是**给 Agent 的工作规则，不是授权**。上面[截图授权与 `--yes`](#截图授权与---yes)那套照旧：读桌面像素的通道要由人回答，任何指令文件都改变不了这一点。
+- 它只在工具真的读到那份文件时才生效。写在 `AGENTS.md` 里的一行不是注册机制（见第 5 步），也不会让本来不扫 `.agents\skills` 的工具去扫它。
+
+### 7. 升级、卸载与排障
 
 - **升级**：跑新的安装包、保持同一个目录即可原地升级，并会记住你的选择。失败或中断会回滚，不会留下一个只写了一半的目录。
 - **换目录**等于装第二份独立副本：旧目录原样保留（不会替你迁移或删除）。两份都在时，卸载项会各自列出——删掉不要的那份，或让工具只指向其中一份。

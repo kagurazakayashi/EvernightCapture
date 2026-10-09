@@ -563,6 +563,25 @@ if ($issProduct -ne [string]$manifest.product) {
     Write-Host "installer\ecapture.iss 的 PRODUCT_NAME（$issProduct）与载荷清单的 product（$([string]$manifest.product)）不一致，拒绝打包。" -ForegroundColor Red
     exit 12
 }
+# 通知身份（AppUserModelID）的唯一来源是 src\Notification.h 的 kNotifyAumid：这里读那一份，用
+# /DAumid 递下去，并核对 .iss 的默认值与 [Icons] 真的取的是 {#Aumid}。
+# 为什么要在打包阶段拦下来：这三处任何一对不上，装出来的包就会把 toast 交给一个从没登记过的身份，
+# 于是通知不弹、而程序这边照旧报 status=submitted —— 那种现场在用户屏幕上表现为"什么都没发生"，
+# 靠事后排查最难定位，所以在这里失败而不是留给使用的人猜。
+$aumid = [regex]::Match((Get-Content -LiteralPath (Join-Path $repo 'src\Notification.h') -Raw),
+                        'kNotifyAumid\s*=\s*L"([^"]+)"').Groups[1].Value
+if (-not $aumid) {
+    Write-Host 'src\Notification.h 里找不到 kNotifyAumid 常量，拒绝打包（通知身份没有唯一来源）。' -ForegroundColor Red
+    exit 12
+}
+if ($issText -notmatch ('#define Aumid "' + [regex]::Escape($aumid) + '"')) {
+    Write-Host "installer\ecapture.iss 的 Aumid 默认值与 src\Notification.h 的 kNotifyAumid（$aumid）不一致，拒绝打包。" -ForegroundColor Red
+    exit 12
+}
+if ($issText -notmatch 'AppUserModelID:\s*"\{#Aumid\}"') {
+    Write-Host 'installer\ecapture.iss 的 [Icons] 没有把 AppUserModelID 取 /DAumid 那一份（会漂成第二份定义），拒绝打包。' -ForegroundColor Red
+    exit 12
+}
 # 配置这一对文件名的唯一来源是载荷清单的 configPayload：.iss 的默认值必须与它一致（编译时还会用
 # /DConfigTemplate 与 /DUserConfig 把清单的值递下去）。两条都必须来自清单那一份 —— 安装器硬写一个
 # 名字、清单用另一个名字，实际用户配置就可能被当成产品文件覆盖或删掉。
@@ -642,6 +661,7 @@ $isccArgs = @(
     "/DOutputBase=$outBase",
     ("/DAppIdGuid={0}" -f $appIdPlain),
     ("/DMarkerVersion={0}" -f $markerVersion),
+    ("/DAumid={0}" -f $aumid),
     ("/DConfigTemplate={0}" -f $cfg.TemplateFile),
     ("/DUserConfig={0}" -f $cfg.UserConfigFile),
     "/DManagedList=$managedListPath",

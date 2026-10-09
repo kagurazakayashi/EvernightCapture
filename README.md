@@ -12,7 +12,7 @@ VC++ runtime on the target machine. The output is program-friendly: everything e
 "no conditions given" case is JSON, exit codes are stable, and every diagnostic carries a stable `code`, so the tool
 works just as well typed by hand as called from a script or an AI agent.
 
-Current version **0.4.0**: every `--capture` value is implemented (`wgc` / `dwm` / `printwindow` / `bitblt` /
+Current version **1.0.0**: every `--capture` value is implemented (`wgc` / `dwm` / `printwindow` / `bitblt` /
 `duplication` / `auto`), and `--monitor` gives whole-screen capture plus "filter windows by monitor". An earlier
 build also had a `magnification` channel; it was removed because Windows 11's `magnification.dll` no longer exports
 `MagGetImage`, so the route had no off-screen read path, would have had to place a magnifier control window on the
@@ -221,6 +221,10 @@ Miscellaneous
   --lang, -l <language>                       Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
   --history <on|off>                          whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
   --integrity-hints <on|off>                  whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission
+  --notify <on|off>                           whether each delivered image hands the system notification platform one toast this run (on / off), overriding the configured one; whether it goes out never changes delivery facts or the exit code
+  --notify-merge <on|off>                     whether several targets become one notification or one each (on / off), overriding the configured one
+  --notify-detail <title|basic|minimal>       how much the notification spells out: title includes the window title, basic only the owner, minimal only where the file went. Content lands in the notification centre, readable on the lock screen
+  --purpose <text>                            one sentence saying why this capture happened; shown as the first body line of the notification. Read by humans only, it decides nothing, and it has a length limit
   --help, -h                                  Print this text help
   --version                                   Print version and stage
 
@@ -990,7 +994,7 @@ Fields per row (window inspect returns the same object as `window` instead of th
   "contract": "windowquery",
   "contractVersion": 1,
   "query": "list",
-  "program": { "version": "0.4.0" },
+  "program": { "version": "1.0.0" },
   "authorization": {
     "readOnly": true,
     "pixelsRead": 0,
@@ -1614,6 +1618,67 @@ outcome of any one run — it creates no directory and attempts no write, which 
 `history_root_writability_not_probed`. An archive failure never changes the authorization tiers, and nothing is
 elevated, ACL-changed or re-labelled to make archiving succeed.
 
+## Desktop notification after a capture (on by default)
+
+Once an image has been fully delivered, ECAPTURE hands the Windows notification platform one toast. It is a
+convenience for a human watching the screen, and nothing more: the picture already landed before this step even
+starts.
+
+**`submitted` is not "you saw it".** The status reports that the toast was handed over, and the notification
+platform decides what happens next — Focus assist, notification settings, per-app silence rules and an
+unregistered app identity can each hide it completely while this tool keeps reporting the handover as successful.
+Delivery facts are `images[]`; the notification is display state. Read one when you want to know whether the
+picture exists, the other when you want to know what was attempted.
+
+An unpackaged Win32 program can only get a toast shown under an AppUserModelID registered on a Start Menu
+shortcut. The installer creates exactly that shortcut (see the installation section). A copy run straight out of
+`build\`, and an install whose shortcut was later removed or moved, may therefore report `submitted` while nothing
+appears — that is a display outcome, not a capture failure.
+
+### What each result says
+
+The top-level `notification` object appears on the capture path and nowhere else (read-only queries never send
+notifications and never grow a field for them):
+
+| `status` | Meaning | Next step |
+| -------- | ------- | --------- |
+| `submitted` | handed to the system notification platform; `submitted` counts how many, `withImage` how many of those carried a picture | nothing — it is not proof anything appeared |
+| `failed` | the handover itself was refused; a note carries `notify.send_failed` or `notify.unavailable` with the raw HRESULT | notification settings, Focus assist, AppUserModelID registration |
+| `disabled` | you turned it off (`--notify off` or `enabled = false`) | nothing is wrong |
+| `no_delivery` | nothing was delivered this run, so there was nothing to report | read `errors[]` |
+
+A notification that fails never changes `images[]`, `errors[]` or the exit code, and never triggers a recapture.
+`--quiet` removes the explanatory note but cannot remove the `status`, which is why the status is its own field.
+
+### The picture in the notification is the history copy
+
+A toast carries an image only when this run has one that really exists on disk: it reuses the archive copy from
+`images[].history.file`. So turning history off means notifications still arrive, **without a picture**, and the
+body line then names the primary output instead. A copy that failed to commit is never referenced — pointing a
+notification at a half-written file would be worse than pointing at nothing. Nothing is created, copied or
+re-encoded for this.
+
+### How much leaves the process
+
+Notification content lands in the notification centre, which is readable **on the lock screen**, so the level is
+an explicit choice rather than a side effect:
+
+- `title` (default) — includes the window title itself
+- `basic` — no window title: owning process, handle, and where the file went
+- `minimal` — only where the file went
+
+`--purpose <text>` puts one caller-written sentence as the first body line, so an agent can say why it took the
+picture. Capped at 200 characters, echoed verbatim under `-v` as `input.purpose`, it decides nothing: it does not
+select a target, does not replace consent, and does not change any result.
+
+### Switches
+
+`--notify on|off`, `--notify-merge on|off` (one toast for a whole batch instead of one per target) and
+`--notify-detail title|basic|minimal` override the three `notification` keys in `ECAPTURE.ini`. They never change
+what is captured: a route that reads screen pixels still asks you in person, and `--yes` is unrelated to them.
+Read-only queries (`--list`, `--inspect`, `--screens`, `--capabilities`, `--diagnostics`, `--show-config`) never
+send one, and the short-lived helper process never can — it captures nothing and delivers nothing.
+
 ## Configuration file (`ECAPTURE.ini`)
 
 `ECAPTURE.ini` supplies persistent **user preferences** — the settings a person wants every run to start with. It is
@@ -1683,6 +1748,9 @@ Section and key names are ASCII and case-insensitive. The complete schema (ident
 | `timeouts`    | `processing_ms`            | `0`             | `0..86400000` (`0` = no overall budget; isolated calls keep their built-in ceiling)                                                                     | `--timeout-ms`                           |
 | `timeouts`    | `consent_ms`               | `0`             | `0..86400000` (`0` = wait for the person indefinitely)                                                                                                  | `--consent-timeout-ms`                   |
 | `history`     | `enabled`                  | `true`          | only `true` / `false`; `false` archives nothing new and deletes or reads nothing old (`images[].history.status = disabled`)                              | `--history on\|off`                      |
+| `notification`| `enabled`                  | `true`          | only `true` / `false`; `false` hands nothing to the notification platform. A display switch only: never an authorization, never a capture switch, never changes the exit code  | `--notify on\|off`                       |
+| `notification`| `merge`                    | `false`         | only `true` / `false`; `true` = one notification for the whole batch instead of one per target (`images.size()` counted in the headline)                                                  | `--notify-merge on\|off`                 |
+| `notification`| `detail`                   | `title`         | `title` (window title included; readable on the lock screen) / `basic` (no title) / `minimal` (where the file went only)                                                    | `--notify-detail <level>`                |
 | `diagnostics` | `integrity_hints`          | `true`          | only `true` / `false`; `false` removes only the extra integrity explanation text — codes, raw values, delivery facts and capability fields are unaffected | `--integrity-hints on\|off`              |
 | `query`       | `window_list_limit`        | `50`            | `1..8192`; the `--list` page size used when the command line gave no `--limit`                                                                          | `--limit`                                |
 
@@ -1976,6 +2044,20 @@ The default directory is `%UserProfile%\.agents\skills\yashi-evernight-capture`,
 folder. **The folder you choose *is* the skill root**: `SKILL.md` sits directly in it, with `ECAPTURE.EXE` beside it,
 and no extra nested folder is created. Setup remembers the folder you chose when you upgrade.
 
+Setup also creates one Start Menu shortcut, `EvernightCapture`. That entry is not there to be double-clicked — this
+is a command-line tool — it exists because Windows only accepts a toast's app identity (AppUserModelID) when a
+Start Menu shortcut carries it. Without that registration the notification feature reports its handover as
+successful while nothing appears on screen. Uninstall removes the shortcut this installer created and nothing else
+in that folder. This build deliberately offers **no** "don't create shortcuts" option (`AllowNoIcons` is off, so
+`/NOICONS` is ignored): a skipped shortcut is invisible to the tool itself - it would keep reporting a successful
+handover while no notification could ever appear - so the entry is created on every install.
+
+**Install to that default folder unless you have a reason not to** - it is exactly the path agent tooling scans (step
+5), so a default install is discovered with no extra configuration. A custom folder works just as well (nothing is
+hard-coded to the default), but you then have to point your tool at it yourself, and every path in this README -
+the two commands below and the standing rule in step 6 included - has to be replaced with that folder's actual
+absolute path.
+
 ```bat
 :: Read-only self-check after installing (cmd.exe). Quote the path: the default contains no spaces, a custom one may.
 powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
@@ -2029,7 +2111,35 @@ directory by absolute path, with the path quoted. Start with read-only checks (-
 to prove the install works by taking a screenshot.
 ```
 
-### 6. Upgrade, uninstall, troubleshooting
+### 6. A standing rule: use this tool for local screenshots
+
+Installing the skill tells a tool what it *can* do. A standing rule in the agent's own instruction file is what makes
+this the *default* way to take a screenshot - in every project, without being asked each time.
+
+Write the rule into the agent's global instruction file: on Windows that is `%UserProfile%\.agents\AGENTS.md` (add it
+to `.gitignore` if it is not there; it belongs to no repository). A tool that reads a differently named global file
+(for instance `CLAUDE.md`) needs the rule in that file instead; for one project only, that project's own `AGENTS.md`
+works too.
+
+```text
+Local screenshots all go through the evernight-capture skill: call
+"%UserProfile%\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE" by its absolute path - never copy the exe
+elsewhere and never substitute an ad-hoc screenshot script - and follow the SKILL.md in that same folder. Prefer a
+window-content route (--capture wgc / printwindow / dwm.thumbnail) with --yes; anything that reads desktop pixels
+still needs my own confirmation, and you must not answer that dialog for me.
+```
+
+Installed into a custom folder? Then replace the absolute path in the rule with that folder's path - a rule pointing
+at a path the exe does not live at is worse than no rule.
+
+Two things the rule cannot do, and does not claim to:
+
+- It is a **working rule for the agent, not an authorization**. [Screenshot authorization and `--yes`](#screenshot-authorization-and---yes)
+  still applies in full: a route that reads desktop pixels asks a person, whatever an instruction file says.
+- It only works if the tool actually reads that file. A line in `AGENTS.md` is not a registration mechanism (step 5)
+  and it does not make a tool scan `.agents\skills` when it otherwise would not.
+
+### 7. Upgrade, uninstall, troubleshooting
 
 - **Upgrade**: run a newer setup and keep the same folder - it upgrades in place and remembers your choice. If the
   copy fails or is interrupted, setup rolls back rather than leaving a half-written folder.

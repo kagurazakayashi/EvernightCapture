@@ -192,6 +192,36 @@ history.file_exists_hint	別の画像でもう一度実行してください。�
 history.commit_failed	履歴コピーを確定できませんでした
 history.same_file	出力名がちょうど今回使う履歴の確定名なので、コピーをスキップしました（たった今引き渡したものを自分で上書きしないため）
 history.same_file_hint	history のツリー内へ書き込むときにこれが現れます。主画像とその引き渡し事実はそのままです。コピーも欲しければ history の外に出力名を選んでください
+
+# ---------------------------------------------------------------------------
+# 撮影後のデスクトップ通知（src/Notification.cpp）：本文テンプレと 2 つの失敗コード
+#
+# 通知の内容はシステムの通知センターに入り、あそこはロック画面でも読めます。三つのレベル
+#（detail）がここにどれだけ使用者データを書くかを決め、その判断は MakeTargetNotifyPayload に
+# 一箇所だけあります。二つのコードに共通する規矩：画像はすでに納品済みなので、通知の失敗は
+# 撮影の失敗ではなく、終了コードも変えません。
+# ---------------------------------------------------------------------------
+notify.toast.window	ウィンドウを撮影しました
+notify.toast.screen	モニターを撮影しました
+notify.toast.merged	%1 個の対象を撮影しました
+notify.line.purpose	用途：%1
+notify.line.title	タイトル：%1
+notify.line.device	モニター：%1
+notify.line.owner	プロセス：%1（%2）
+notify.line.hwnd_only	ハンドル：%1
+notify.line.saved_history	履歴コピー：%1
+notify.line.saved_output	保存先：%1
+notify.line.saved_stdout	標準出力へ書き込みました
+notify.row.title_owner	%1（%2）
+notify.row.device	モニター：%1
+notify.row.owner	%1
+notify.row.file	%1
+notify.row.more	他 %1 件、完全な一覧は結果にあります
+notify.stdout_placeholder	標準出力
+notify.send_failed	通知をシステムの通知プラットフォームに引き渡せませんでした
+notify.send_failed_hint	画像は正常に納品済みです。これは通知が出なかっただけを言います。Windows の通知設定と集中モード、そしてこのプログラムに AppUserModelID が登録されているか（登録はインストーラの役割）を確認してください。通知の失敗は撮影の失敗ではありません
+notify.unavailable	このマシンでは通知プラットフォームを問い出せません
+notify.unavailable_hint	画像は正常に納品済みで、この通知はそもそも始まっていません（アパートメントが起動しない、インターフェースが答えられない、またはその呼び出しが信頼できるエラーコードを一切返していません）。見るのは実行環境と権限で、通知設定ではありません
 io.timeout_delivered	画像は完全に引き渡されました（%1 バイト）が、その書き出しが終わった時点で自動予算 %2 ms を使い切っていました（実時間 %3 ms）
 io.timeout_delivered_hint	すでにディスクへ書き出した分（または標準出力へ送出し終えた分）は巻き戻されず、images からも消えません。この 1 件は「この一括処理が予算内に終わらなかった」だけを意味します。--timeout-ms を大きくするか、確定の時点で長く待たない出力先を選んでください：保存先をローカルディスクへ移す、または標準出力を読み取る側を先に用意しておく
 io.output_collision	複数のターゲットが同じ出力名に解決されるため、画面取得も書き出しも行われませんでした
@@ -463,6 +493,10 @@ opt.no-config	今回は設定ファイルを完全に無視し、組み込み既
 opt.show-config	今回の設定を読み取り専用で出力します：どのファイルを読んだか、読めたか、各項目の実効値がどの由来か（ウィンドウ選択も画素取得も確認ボックスもディレクトリ作成もしません）
 opt.history	今回、納品済みの各画像歴史コピーを別途残すかどうか（on / off）。設定ファイルの該当項目を上書きします
 opt.integrity-hints	今回、完全性に関する説明文を付けるかどうか（on / off）。エラーコード・原値・納品事実は影響を受けず、off にしても権限は直りません
+opt.notify	今回、納品済みの画像ごとにデスクトップ通知を一つ渡すかどうか（on / off）。設定の値を上書きします。出せるかどうかは納品事実にも終了コードにも影響しません
+opt.notify-merge	今回、複数の対象を一つにまとめるか対象ごとに一つ出すか（on / off）。設定の値を上書きします
+opt.notify-detail	通知にどれだけ書くか：title はウィンドウタイトルを含む、basic は所有者のみ、minimal は保存先のみ。内容は通知センターに入り、ロック画面でも読めます
+opt.purpose	今回の撮影用途を一文で。通知の本文一行目に出ます。人が読むだけで何も判断に関わらず、長さには上限があります
 opt.no-crop	設定ファイル内のクロップ群を取り消します（今回はクロップを一切しません）。今回の --roi / --client-area と同時に指定すると衝突です
 opt.no-scale	設定ファイル内のスケール群を取り消します（今回は縮小しません）。今回の --scale と同時に指定すると衝突です
 config.not_found	読もうとした設定ファイルが存在しません
@@ -501,5 +535,8 @@ config.path_unresolvable_hint	この設定の置かれているディレクト�
 cli.config_view_conflict	--show-config は設定を読み取り専用で問うため、撮影の意図や他の照会コマンドと同時に指定できません
 cli.config_view_conflict_hint	設定ビューは --config / --no-config と、観察したい設定の上書き引数（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / クロップ・スケール / 2 つの期限 / --history / --integrity-hints / --limit）を受けます。ウィンドウ条件、--monitor、選択戦略、--yes / --dry-run と他の照会コマンドは別の実行で
 cli.onoff_value	この値は on か off のみ
+cli.notify_detail_value	このレベルは title、basic、minimal のみ
+cli.purpose_too_long	--purpose が長すぎます
+cli.purpose_too_long_hint	この一文の上限は %1 文字です。通知にはそれ以上の長さを入れる枠がありません
 cli.crop_cancel_conflict_hint	--no-crop は設定ファイル内のクロップ群を取り消すためのもので、今回ご指定の --roi / --client-area とは正反代です。--no-crop を外すか、そのクロップを外してください
 cli.scale_cancel_conflict_hint	--no-scale は設定ファイル内のスケール群を取り消すためのもので、今回の --scale とは同時に成立しません。--no-scale を外すか、その --scale を外してください

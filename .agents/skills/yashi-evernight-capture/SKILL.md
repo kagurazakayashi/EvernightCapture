@@ -12,7 +12,7 @@ license: MulanPSL-2.0
 `ECAPTURE.EXE` (EvernightCapture) is a Windows command-line screenshot tool: it selects windows by conditions and
 writes that window's picture - or a whole monitor's - to an image. Success and failure both come back as JSON with
 stable exit codes and stable diagnostic `code` values, so it is meant to be driven programmatically. Current build:
-`0.4.0`, stage `capture-channels` (`--version` prints both).
+`1.0.0`, stage `release` (`--version` prints both).
 
 Three kinds of call, and the difference matters:
 
@@ -74,7 +74,7 @@ Do not assume the tool is on `PATH`.
 
 - `ECAPTURE.EXE --help` is the authority on the option list. **`--help` exits with code 3 and `--version` with 0;
   neither is a failure.** Add `--lang en` for English message text (`zh-CN` / `zh-TW` / `en` / `ja`).
-- **A copy can be older than this guide while still printing `0.4.0`.** Ask it read-only and compare the **contract**
+- **A copy can be older than this guide while still printing `1.0.0`.** Ask it read-only and compare the **contract**
   and the **identity**, not the version string: `--capabilities` -> `cursor.paths[]` rows for `duplication.frame` /
   `screen.duplication` say `capability: "pointer_state_unverified"` (an old copy says `excludes_cursor`), and
   `color.paths[]` rows carry `honorsExplicitPolicy` (an old copy has no such key); `program.buildId` differs between
@@ -119,6 +119,12 @@ Do not assume the tool is on `PATH`.
   `history_run_state_not_reported` caveat says this document does not report this run's state), so for the actual
   setting use `--show-config` (`history.enabled`, with its source) and for the actual artifact use that run's
   `images[].history`.
+- **A notification is display state, never proof anyone saw it.** `notification.status = submitted` means one toast
+  was handed to the Windows notification platform; Focus assist, notification settings and an unregistered
+  AppUserModelID each leave the screen showing nothing while that field still reads `submitted`. So never treat it as
+  "the user has been informed" - anything you need them to know still belongs in your own reply. And never re-shoot
+  a delivered image to "fix" a `failed` / `disabled` notification: that step cannot change `images[]`, `errors[]` or
+  the exit code, so there is nothing for a recapture to repair.
 - **Never re-capture an image that already delivered** to "repair" a `config.*` complaint or a missing history copy -
   the primary file on disk is the delivery, and re-shooting costs the user another authorization and puts a second
   frame on disk. See *Handling a result*.
@@ -297,6 +303,20 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   `history.*` code on `failed` / `skipped` (details on the matching `errors` entry, `stage: history`). `--quiet`
   cannot hide any of it. Say so when you tell a user where their pictures went: the tool keeps a second persistent
   copy, and it never rotates, prunes, uploads or deletes it - removing history is the user's own deliberate action.
+- **Each delivered image also hands the notification platform one toast** (factory default on; `notification.enabled`
+  / `--notify off` to stop). Read `notification.status` as display state only: `submitted` (handed over; `submitted`
+  counts how many, `withImage` how many of those carried a picture) / `failed` (note carries `notify.send_failed` or
+  `notify.unavailable` with the raw HRESULT) / `disabled` (the user switched it off - not a failure) /
+  `no_delivery` (nothing landed, so there was nothing to report). The image it shows **is** that history copy
+  (`images[].history.file`), so a run with history off, or where the copy did not commit, sends the text with no
+  picture - that is the documented consequence, not an error. How much leaves the process is the user's choice:
+  `notification.detail` = `title` (window title included, readable on the lock screen) / `basic` / `minimal`.
+  Read-only queries never send one and grow no such field; the helper process never can.
+- **Say why you took the picture, on one line.** `--purpose "<text>"` puts your own sentence as the first body line of
+  that notification, so a human glancing at the screen sees which task this capture belongs to. It is capped at 200
+  characters, echoed verbatim as `input.purpose` under `-v`, and it decides nothing - it does not select a target,
+  does not substitute for consent, and cannot change the result. Prefer a real purpose over an empty call: it is the
+  only part of this feature that tells the human what your run was for.
 - **Partial success is real**: with `--all` or `--monitor all`, `captured` can be greater than 0 while the exit code is
   7. Never throw away what already landed.
 - Every output name of the batch is planned before the first frame, and writes are atomic. Two targets expanding to the
@@ -373,6 +393,7 @@ repair a field you then read as an affirmation.
 | **`access denied` while `session.integrityLevel` says below Medium** - the executable may sit in a folder carrying a `Mandatory Label\Low Mandatory Level` label (`.agents` skill roots are a known case on the machine this project measured), and that round also carries `note.low_integrity` | `capture.failed` 7 with `hresult: 0x80070005` (`wgc`) or `win32: 5` (`printwindow`), and / or `io.write_failed` 8 with `win32: 5` **after the frame was already acquired**, and / or - image delivered, copy refused - `history.write_failed` 7 with `win32: 5`, `stage: history` (the archive root sits next to the running exe, so the same label blocks it; the `value` names the path that was refused, and the already-delivered picture must not be re-shot) | low integrity is **one possible cause of this code pair, not its only one**: an occupied target, a path that does not parse, or a directory that genuinely refuses writes look the same in the code, so check `session.integrityLevel` from `--capabilities` (that field, not `icacls` on the folder and not your parent shell's `whoami /groups`, is the statement about this process). Raising `--timeout-ms`, renaming the target, reinstalling codecs or looping through backends cannot change it. What was measured to still work on that one development machine: `--capture dwm` for a window's own picture - which is a measurement, not a guarantee elsewhere, and it escalates to the desktop-pixel route when the window gives no picture - and writing `--out` into a folder that carries the same low label. Desktop-pixel routes still need the person's own Yes; the level changes nothing about authorization. Telling the user to run as administrator is not the fix. Relocating the install, removing the label or changing an ACL is a security-setting change: **propose it and let the owner do it deliberately, never do it yourself as part of making a capture "pass"** |
 | Output problem | `io.write_failed`, `io.file_exists`, `io.output_collision` (8) | create the directory, or choose a name that cannot collide; keep what already landed |
 | **The image was delivered but its history copy was not** | `history.unavailable`, `history.write_failed`, `history.file_exists` (a copy never overwrites an existing history file), `history.budget_spent`, `history.same_file` - exit **7** with the image still in `images`, `images[].history.status` = `failed` / `skipped`, `stage: history` | **do not capture again**: re-shooting cannot produce that copy, it costs the user another authorization and it puts a second frame on disk. Use the image you already have, and say plainly that the extra copy did not land. `skipped` is not a failure of anything (`budget_spent` = the shared budget was already spent; `same_file` = the `--out` name *is* that archive name, so writing it would overwrite the deliverable). What could actually change it is the location - writable, a real directory, not a reparse point - never a different `--capture`, a different format or a bigger budget. Never escalate, re-label or re-ACL anything to make the archive pass |
+| **`notification.status` is `failed`, or it says `submitted` yet the user saw nothing** | `notify.send_failed` (the platform refused this handover; `hresult` is that call's own value) or `notify.unavailable` (this route could not be answered at all - no `hresult`, because none was given). A missing picture on a `submitted` toast is usually `images[].history.status` not being `saved`, which is a separate fact and not an error | Do **not** re-shoot the image to "repair" it, and do not report the capture as failed: the picture already delivered and this step cannot reach `images[]`, `errors[]` or the exit code. What can actually change the outcome is the app identity - the AppUserModelID the installer registers on a Start Menu shortcut - so a copy run from `build\`, or an install whose shortcut was later removed, may hand over successfully while nothing appears. Check `images[].history` before promising a picture, and if the user needs to know something, say it in your own reply: `submitted` is a handover, never evidence anyone saw it |
 | Timeout at the write stage | `io.timeout` 8 when nothing landed; **7 with the image kept** when the budget only crossed after the commit | fix the budget tail; do not re-capture a picture that is already delivered |
 | Encode step could not run at all | `capture.encoder_unavailable`, 7 | no image can be produced here whatever the target; check the media components / this session |
 

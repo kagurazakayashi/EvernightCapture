@@ -10,7 +10,7 @@
 目標機器不需要安裝 VC++ 執行時。輸出對程式友善：`--help`、`--version`，以及「一個條件都不給」那一種情形是
 純文字，其餘一律 JSON；退出碼穩定，診斷帶穩定的 `code`，所以既適合人手工輸入，也適合被腳本與 AI 呼叫。
 
-目前版本 **0.4.0**：`--capture` 的取值全部可用（`wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`），
+目前版本 **1.0.0**：`--capture` 的取值全部可用（`wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`），
 `--monitor` 提供整張螢幕截圖與「按螢幕過濾視窗」。曾經實作過的 `magnification` 通道已刪除：Windows 11 的
 `magnification.dll` 不再匯出 `MagGetImage`，這條路沒有離屏讀圖的走法，只能把放大鏡控制項視窗擺到螢幕上搶
 z 序，而拿到的畫面與 `bitblt` 等價。這段依據記在 `src/CliOptions.h` 的註解裡。
@@ -182,6 +182,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --lang, -l <language>                       文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
   --history <on|off>                          本次要不要為每張完成交付的圖另存一份歷史副本（on / off），覆蓋設定裡那條
   --integrity-hints <on|off>                  本次要不要附完整性方面的解釋文字（on / off）；錯誤碼、原值與交付事實從來不受它影響，關掉它也修不好權限
+  --notify <on|off>                           本次每張交付完成後要不要交一條桌面通知（on / off），覆蓋配置裡那條；彈不彈都不改交付事實與退出碼
+  --notify-merge <on|off>                     本次多個目標是合併成一條通知還是每個目標一條（on / off），覆蓋配置裡那條
+  --notify-detail <title|basic|minimal>       通知裡寫多細：title 帶視窗標題、basic 只報歸屬、minimal 只報落點。通知會進系統通知中心，鎖屏上也讀得到
+  --purpose <text>                            本次截圖用途的一句話，寫進通知正文第一行；只給人讀，不參與任何判據，長度有上限
   --help, -h                                  輸出文字說明（本段）
   --version                                   輸出版本與階段
 
@@ -777,7 +781,7 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 與截圖完全�
   "contract": "windowquery",
   "contractVersion": 1,
   "query": "list",
-  "program": { "version": "0.4.0" },
+  "program": { "version": "1.0.0" },
   "authorization": {
     "readOnly": true,
     "pixelsRead": 0,
@@ -1267,6 +1271,60 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 `history_root_writability_not_probed` 與 `history_run_state_not_reported`。歸檔失敗絕不改變授權分級，也絕不
 為了「讓歸檔成功」而提權、改 ACL 或改目錄標籤。
 
+## 截圖後的桌面通知（預設開啟）
+
+一張圖完成交付之後，ECAPTURE 會向 Windows 的通知平台交一條 toast。它只是給正在看著螢幕的人一個交代，
+不多也不少：圖在這一步開始之前就早就落地了。
+
+**`submitted` 不等於「你看見了」。** 這個狀態說的是「已經交給通知平台」，之後由那一側決定結果——
+專注助理、通知設定、按應用的靜音規則、沒登記過的應用身分，任何一個都能讓它完全不出現，而本工具照樣把
+這一步報成交付成功。交付事實在 `images[]` 裡，通知說的是展示狀態：想知道圖在不在，讀前者；想知道試過
+沒有，讀後者。
+
+未打包的 Win32 程式要讓 toast 真的顯示出來，必須有一個登記在開始功能表捷徑上的 AppUserModelID。
+安裝程式會建立那一條捷徑（見安裝那一節）。所以直接從 `build\` 裡跑的那一份、用 `/NOICONS` 裝出來的
+複本，以及捷徑後來被刪掉的安裝，都可能出現「報了 `submitted` 而螢幕上什麼都沒有」——那是展示結果，
+不是截圖失敗。
+
+### 每種結果說什麼
+
+頂層的 `notification` 物件只出現在截圖那一步。唯讀查詢既不彈通知，也不會憑空長出這一格：
+
+| `status` | 含義 | 下一步 |
+| -------- | ---- | ------ |
+| `submitted` | 已交給系統的通知平台；`submitted` 那個數是交出去幾條，`withImage` 是其中帶圖的幾條 | 沒有下一步——它不證明螢幕上出現過什麼 |
+| `failed` | 那一次交付本身被拒；note 裡帶 `notify.send_failed` 或 `notify.unavailable` 與 HRESULT 原值 | 查通知設定、專注助理、AppUserModelID 有沒有登記上 |
+| `disabled` | 你自己關掉了（`--notify off` 或 `enabled = false`） | 什麼都沒壞 |
+| `no_delivery` | 這一次沒有任何圖完成交付，因此無可報告 | 讀 `errors[]` |
+
+通知失敗從不改動 `images[]`、`errors[]` 或退出碼，也從不為了補一條通知去重拍一張圖。`--quiet` 會把那句
+給人看的說明去掉，但去不掉 `status`——這正是它單獨佔一格的原因。
+
+### 通知裡那張圖就是歷史複本
+
+通知只有在**這一次真有一張已落在磁碟上**的圖可指時才帶圖：它重用 `images[].history.file` 那一份歸檔複本。
+所以關掉歷史之後通知照舊送達，只是**不帶圖**，而正文那一行改報主輸出的名字。沒提交成功的複本絕不被引用——
+把通知指向一個只寫了一半的檔案，比什麼都不指向更糟。這一步不新建、不複製、也不重新編碼任何東西。
+
+### 有多少內容離開了本程序
+
+通知的內容會進入通知中心，而那塊地方**在鎖螢幕上也讀得到**，所以寫多少是一個明確的選擇，不是副作用：
+
+- `title`（預設）—— 連視窗標題本身一起寫
+- `basic` —— 不寫視窗標題：只報歸屬程序、句柄與檔案去向
+- `minimal` —— 只報檔案去向
+
+`--purpose <text>` 把呼叫方自己寫的一句話放在正文第一行，於是 agent 能說明這一次為什麼截圖。上限 200 個字元，
+`-v` 會原樣回顯成 `input.purpose`；它不決定任何事——不選目標，不代替授權，也不改變結果。
+
+### 開關
+
+`--notify on|off`、`--notify-merge on|off`（整批合併成一條，而不是每個目標一條）與
+`--notify-detail title|basic|minimal` 覆蓋 `ECAPTURE.ini` 裡那三個 `notification` 鍵。它們從不改變截的是什麼：
+會讀到桌面像素的那幾條照樣一定當面問你，`--yes` 與這幾條無關。唯讀查詢（`--list`、`--inspect`、`--screens`、
+`--capabilities`、`--diagnostics`、`--show-config`）一條都不發；那個短命的輔助程序也發不了——它既不取像素，
+也不交付任何檔案。
+
 ## 設定檔（ECAPTURE.ini）
 
 命令列說的是「本次要拍什麼」，設定檔存的是「每次都按什麼樣決定」的持久偏好。它不是授權的替代，也不是把目標寫在紙上的辦法：即使這個檔案存在、內容完整，裸執行不給任何條件照舊一次截圖都不做——仍像以前一樣交出文字說明。
@@ -1320,6 +1378,9 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `timeouts` | `processing_ms` | `0` | 0..86400000；`0`＝不設總預算（每次隔離呼叫仍受內建上限） | `--timeout-ms` |
 | `timeouts` | `consent_ms` | `0` | 0..86400000；`0`＝一直等人回答 | `--consent-timeout-ms` |
 | `history` | `enabled` | `true` | 只認 `true` / `false` | `--history on\|off` |
+| `notification` | `enabled` | `true` | 只認 `true` / `false`；`false` 時一條都不交給通知平台。只是展示開關：不是授權，也不改變截什麼與退出碼 | `--notify on\|off` |
+| `notification` | `merge` | `false` | 只認 `true` / `false`；`true` 時整批合併成一條，而不是每個目標一條 | `--notify-merge on\|off` |
+| `notification` | `detail` | `title` | `title`（含視窗標題，鎖螢幕上也讀得到）/ `basic`（不含標題）/ `minimal`（只報檔案去向） | `--notify-detail <level>` |
 | `diagnostics` | `integrity_hints` | `true` | 只認 `true` / `false` | `--integrity-hints on\|off` |
 | `query` | `window_list_limit` | `50` | 1..8192；只是 `--list` 未給 `--limit` 時的預設分頁大小 | `--limit` |
 
@@ -1513,6 +1574,10 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 預設目錄是 `%UserProfile%\.agents\skills\yashi-evernight-capture`，精靈允許你選任意目錄。**你選的目錄就是 Skill 根目錄**：`SKILL.md` 直接位於其中，`ECAPTURE.EXE` 就在它旁邊，不會再多套一層同名目錄。升級時安裝程式會記住你上次選的目錄。
 
+安裝程式還會另外建立一條開始功能表捷徑 `EvernightCapture`。它不是拿来雙擊的——這是個命令列工具——它存在的唯一理由是：Windows 只認**開始功能表捷徑上登記的 AppUserModelID**，沒有那一條，通知功能會把「已經交給通知平台」報成成功，而螢幕上什麼都不出現。解除安裝只回收安裝程式自己建立的這條捷徑，那個目錄裡的別的東西一概不碰。這一版**故意沒有**「不建立捷徑」這一項（`AllowNoIcons` 關著，`/NOICONS` 會被忽略）：漏建捷徑這件事程式自己問不出來，只會留下一個永遠報著「已交給通知平台」而螢幕上什麼都不出現的功能，所以每次安裝都無條件鋪這一條。
+
+**除非有理由，否則就裝到這個預設目錄**——它正是 AI 工具會掃描的那條路徑（見第 5 步），所以預設安裝不需要任何額外設定就能被發現。裝到自訂目錄一樣能用（沒有任何東西寫死預設路徑），但那樣你得自己把工具指向它，而且這份 README 裡的每一處路徑——下面的兩條命令和第 6 步的常駐規則都算——都要換成那個目錄實際的絕對路徑。
+
 ```bat
 :: 安裝後做一次唯讀自檢（cmd.exe）。路徑要帶引號：預設路徑沒有空白，自訂路徑可能有。
 powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skills\yashi-evernight-capture\verify-install.ps1"
@@ -1547,7 +1612,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 先只做唯讀檢查（--version、--capabilities）。不要用截圖來證明安裝成功。
 ```
 
-### 6. 升級、卸載與排障
+### 6. 常駐規則：本機截圖一律用它
+
+裝好 skill，只是告訴工具它**能**做什麼；在 Agent 自己的指令檔裡寫一條常駐規則，才能讓它成為**預設**的截圖方式——每個專案都生效，不必每次臨時交代。
+
+規則寫進 Agent 的全域指令檔：Windows 上就是 `%UserProfile%\.agents\AGENTS.md`（還沒有的話記得把它加進 `.gitignore`，它不屬於任何倉庫）。讀別的檔名（例如 `CLAUDE.md`）的工具，就把規則寫進那份檔案；只想對單一專案生效，寫進該專案自己的 `AGENTS.md` 也可以。
+
+```text
+本機截圖一律走 evernight-capture skill：用絕對路徑呼叫
+"%UserProfile%\.agents\skills\yashi-evernight-capture\ECAPTURE.EXE"——不要把這個 exe 複製到別處，也不要用臨時拼的截圖腳本替代——並遵循同目錄的 SKILL.md。優先使用視窗自身內容通道（--capture wgc / printwindow / dwm.thumbnail）加 --yes；讀取桌面像素的通道仍需我本人確認，不得代我應答那個確認框。
+```
+
+裝到自訂目錄？那就把規則裡的絕對路徑換成那個目錄的路徑——一條指向 exe 並不在那裡的路徑的規則，比沒有規則更糟。
+
+這條規則做不到、也不聲稱能做到的兩件事：
+
+- 它是**給 Agent 的工作規則，不是授權**。上面[截圖授權與 `--yes`](#截圖授權與---yes)那套照舊：讀取桌面像素的通道要由人回答，任何指令檔都改變不了這一點。
+- 它只在工具真的讀到那份檔案時才生效。寫在 `AGENTS.md` 裡的一行不是註冊機制（見第 5 步），也不會讓本來不掃 `.agents\skills` 的工具去掃它。
+
+### 7. 升級、卸載與排障
 
 - **升級**：跑新的安裝封裝、保持同一個目錄即可原地升級，並會記住你的選擇。失敗或中斷會回復（rollback），不會留下寫了一半的目錄。
 - **換目錄**等於裝第二份獨立副本：舊目錄原樣保留（不會替你遷移或刪除）。兩份都在時，卸載項目會各自列出——刪掉不要的那份，或讓工具只指向其中一份。

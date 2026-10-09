@@ -29,6 +29,11 @@ const wchar_t* const kCfgHdr[] = {L"unset", L"auto", L"tonemap", L"refuse", null
 const wchar_t* const kCfgFormat[] = {L"auto", L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif",
                                      nullptr};
 const wchar_t* const kCfgCropMode[] = {L"none", L"client-area", L"roi", nullptr};
+// notification.detail 的三档与 --notify-detail **完全同一份词表**：配置侧不需要额外的 unset
+// 那一档，因为"这次不要弹"写在 notification.enabled = false 里，不是 detail 的一个取值。
+// 所以这里引用 option_values 那一份，不在配置层抄第二份拼法（上面那几条各自多出一个配置专用词，
+// 才需要自己列一份）。
+constexpr const wchar_t* const* kCfgNotifyDetail = option_values::kNotifyDetail;
 
 using cli_limits::kJpegQualityMax;
 using cli_limits::kJpegQualityMin;
@@ -203,6 +208,16 @@ const std::vector<ConfigField>& ConfigSchema() {
          nullptr, 0, kMaxTimeoutMs, L"0", L"consent-timeout-ms"},
         {L"history.enabled", L"history", L"enabled", ConfigValueKind::kBool,
          nullptr, 0, 0, L"true", L"history"},
+        // 截图后的桌面通知。三条都归"偏好"，不参与授权判据：桌面像素那一条该问人照样问人，
+        // 关掉通知也一个像素都不多截，打开也不代替那一次批准。
+        // 默认是**弹**（enabled = true），而附图这一件没有单独的开关：它恒等于历史副本那一张
+        // （images[].history.file），所以历史关掉时通知照发、只是不带图。
+        {L"notification.enabled", L"notification", L"enabled", ConfigValueKind::kBool,
+         nullptr, 0, 0, L"true", L"notify"},
+        {L"notification.merge", L"notification", L"merge", ConfigValueKind::kBool,
+         nullptr, 0, 0, L"false", L"notify-merge"},
+        {L"notification.detail", L"notification", L"detail", ConfigValueKind::kEnum,
+         kCfgNotifyDetail, 0, 0, L"title", L"notify-detail"},
         {L"diagnostics.integrity_hints", L"diagnostics", L"integrity_hints",
          ConfigValueKind::kBool, nullptr, 0, 0, L"true", L"integrity-hints"},
         {L"query.window_list_limit", L"query", L"window_list_limit", ConfigValueKind::kDecimal,

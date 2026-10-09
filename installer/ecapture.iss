@@ -4,9 +4,9 @@
 ; 校验后把载荷目录、版本/架构/输出路径，以及一份"这次铺下去的相对路径清单"（编译期展开的
 ; managed-list 片段）用 /D 传给 ISCC。手工编译也可以，但必须先自行准备好载荷目录与那份片段：
 ;
-;   ISCC.exe /DSourceDir="<载荷绝对路径>" /DAppVersion=0.4.0 /DArch=x64 ^
+;   ISCC.exe /DSourceDir="<载荷绝对路径>" /DAppVersion=1.0.0 /DArch=x64 ^
 ;            /DManagedList="<载荷目录>\managed-list.pinc" ^
-;            /DOutputDir="<输出绝对路径>" /DOutputBase="EvernightCapture-0.4.0-x64-setup" ^
+;            /DOutputDir="<输出绝对路径>" /DOutputBase="EvernightCapture-1.0.0-x64-setup" ^
 ;            /DIconFile="<仓库>\resources\icon.ico" installer\ecapture.iss
 ;
 ; 为什么要编译期烘进清单，而不是运行时读一个随包文件：PrepareToInstall 在所有文件复制**之前**执行，
@@ -103,6 +103,14 @@
 #ifndef AppIdGuid
   #define AppIdGuid "{B7A2E1C4-5D3F-4E6A-9C21-8F0B3D5E7A10}"
 #endif
+; 通知身份（AppUserModelID）的唯一来源是 src/Notification.h 里的 kNotifyAumid：build-installer.ps1
+; 从那一份头文件读出来，用 /DAumid 递下来，并在打包阶段静态核对这里的默认值与下面 [Icons] 真的用了
+; {#Aumid} —— 不一致就拒绝出包。为什么要它：未打包的 Win32 程序交出去的 toast 只能靠这个字符串在
+; 开始菜单快捷方式上对号；对不上时系统把它归成未知应用或直接丢掉，而程序自己仍会如实报
+; "已交给通知平台"（那一句从来不证明屏幕上出现过什么）。所以这一条不是装饰，是通知功能的前提。
+#ifndef Aumid
+  #define Aumid "yashi.EvernightCapture"
+#endif
 
 ; 构建链只有 x64（build.ps1 只调用 vcvars64.bat），所以这里拒绝编出一个"自称 arm64、里面是 x64"的包。
 #if Arch != "x64"
@@ -133,7 +141,11 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
-AllowNoIcons=yes
+; AllowNoIcons **故意不开**。这条快捷方式不是可有可无的启动入口，而是通知功能唯一的身份登记点：
+; Windows 只认开始菜单快捷方式上的 AppUserModelID。一旦允许"不创建"，Inno 就会把这个选择记进卸载键
+; （实测值 "Inno Setup: No Icons" = 1），之后的安装沿用同一条记录，于是界面与命令行都不报错、
+; 而屏幕上永远不会有通知 —— 程序那边仍然只报"已交给通知平台"，那种现场最难查。
+; 所以这里宁可没有开关：功能载荷无条件铺下去，/NOICONS 也不再能把它跳掉。
 DisableReadyPage=no
 
 [Languages]
@@ -151,6 +163,15 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 ; 归属标记也不记录它 —— 用户自己写的输出路径模板与偏好不会被打进发行清单或被当成产品文件。
 ; 模板本身（上面那条整目录复制）才是受管载荷：升级会把它更新成当前版本，用户的这份 ECAPTURE.ini 不会。
 Source: "{#SourceDir}\{#ConfigTemplate}"; DestDir: "{app}"; DestName: "{#UserConfig}"; Flags: ignoreversion onlyifdoesntexist uninsneveruninstall
+
+[Icons]
+; 这一条不是"给人从开始菜单双击启动截图 CLI"用的 —— 那是个命令行工具，没人这么用它。它存在的唯一
+; 理由是给通知一个登记得上的系统身份：Windows 只认**开始菜单快捷方式上的 AppUserModelID**，缺了它，
+; 本工具交出去的 toast 会被归成"未知应用"甚至直接丢弃，而程序这边只能如实报"已交给通知平台"（那
+; 从来不代表屏幕上真的出现过什么）。所以它是通知功能的载荷，不是装饰。
+; 它不碰任何相邻的开始菜单项，也不改 PATH、不改任何 AI 工具的配置；这条快捷方式由 Inno 自己创建、
+; 自己记进卸载记录、自己回收，删除范围只有它建的这一个文件。
+Name: "{group}\EvernightCapture"; Filename: "{app}\ECAPTURE.EXE"; AppUserModelID: "{#Aumid}"; Comment: "EvernightCapture screenshot CLI (this entry also registers the desktop notification identity)"
 
 [UninstallDelete]
 ; 只清这一个安装器自己写的归属标记；备份目录、用户新增文件、用户配置 {#UserConfig}、

@@ -230,6 +230,27 @@ struct HdrRequest {
 
 
 // ---------------------------------------------------------------------------
+// 截图后的桌面通知（toast）的两项取舍。判据本体在 src/Notification.h，这里只落"用户要哪一档"。
+//
+// 通知的内容会进入系统通知中心，而那块地方**在锁屏上也读得到**，所以写多少由用户自己定档，
+// 本工具不在文案里替人多带任何未在该档承诺过的字段。
+// ---------------------------------------------------------------------------
+enum class NotifyDetail {
+    // 默认档：多带**窗口标题本身**。标题是外部数据（谁起的名字本工具管不着），它进通知中心
+    // 就等于把它公开在锁屏上 —— 这一档是明确的选择，不是疏忽。
+    kTitle,
+    kBasic,    // 不带窗口标题：只报归属（进程名 / 句柄）与落点
+    kMinimal,  // 只报落点，一个目标字段都不带
+};
+
+// 一次截了多个目标时交通知的方式。
+enum class NotifyMode {
+    kPerTarget,  // 默认：每个目标一条，各带各的附图
+    kMerged,     // 合并成一条：标题报数量，正文逐个列（列不下的数量照实写在最后那一行）
+};
+
+
+// ---------------------------------------------------------------------------
 // 取值表：一份概念只写一处。
 //
 // --help 的取值列、解析层的合法性判定（CliOptions.cpp 的 Apply）与配置文件那一路的 schema
@@ -251,6 +272,9 @@ inline constexpr const wchar_t* kCropMode[] = {L"none", L"client-area", L"roi", 
 // 新偏好在命令行上的覆盖写法（--history / --integrity-hints）。配置那一侧用 true / false，
 // 命令行这一侧用 on / off：两种都只有明确的一个意思，不做"看着像真就算真"的模糊推断。
 inline constexpr const wchar_t* kOnOff[] = {L"on", L"off", nullptr};
+// 通知写多细。title 是默认档（带窗口标题），三份词表在 --help、解析层与配置 schema 共用。
+// 配置里不需要额外的"unset"那一档：这条偏好本来就有一个生效档位，关掉通知走 enabled=false。
+inline constexpr const wchar_t* kNotifyDetail[] = {L"title", L"basic", L"minimal", nullptr};
 }  // namespace option_values
 
 struct Options {
@@ -349,6 +373,20 @@ struct Options {
     // 它只管解释：错误码、win32/HRESULT 原值、交付事实与 --capabilities 里那些能力事实字段
     // 从来不受这条影响，关掉它也修不好权限。
     bool integrityHints = true;
+    // ---- 截图后的桌面通知（判据本体在 src/Notification.h）----
+    // notifyEnabled：每张交付完成后要不要给系统通知平台交一条 toast。**默认开启**。
+    // 它只是一件展示：一条都没交出去、或系统压根不让交，都不改 images 里的交付事实、
+    // 不改 errors 里的失败码、也不改退出码 —— 通知失败永远不是截图失败。
+    bool notifyEnabled = true;
+    // notifyMerge：多个目标时合并成一条通知。false（默认）= 每个目标一条，各带各的附图。
+    bool notifyMerge = false;
+    // notifyDetail：通知里写到多细。默认 kTitle = 带窗口标题，而那一档会把标题公开在
+    // 系统通知中心（锁屏上也读得到）；要收回去就换 kBasic / kMinimal。
+    NotifyDetail notifyDetail = NotifyDetail::kTitle;
+    // --purpose：调用方自己写下的一句"这次为什么截"，出现在通知正文的第一行。
+    // 它**不**进配置文件（那是每次的意图，与目标选择同一性质），也不参与任何判据 ——
+    // 本工具不据这句话决定截谁、要不要批准、或结果算不算成功。
+    std::wstring purpose;
     // 窗口查询在**本次 CLI 没写 --limit** 时使用的每页条数。0 = 用 cli_limits::kDefaultWindowListLimit
     // （写 0 而不是直接抄那个数：两份数字不许各写一套，见 WindowQuery.cpp 那一条收敛）。
     uint64_t listLimitDefault = 0;
@@ -451,6 +489,9 @@ inline constexpr const wchar_t* kConfigViewConflict = L"cli.config_view_conflict
 // 多个目标却要写到标准输出：标准输出一次只能交付一张图，属参数用法错误（退出码 1）。
 // 判据是"实际命中的目标数"，所以 --all / --monitor all 只命中一个时仍然放行。
 inline constexpr const wchar_t* kStdoutMultipleTargets = L"cli.stdout_multiple_targets";
+// --purpose 的原文超过 cli_limits::kNotifyPurposeMaxChars。它与"这一句写了什么"无关，
+// 纯粹是长度：解析期当场拒掉，退出码 1，不发通知也不截图。
+inline constexpr const wchar_t* kPurposeTooLong = L"cli.purpose_too_long";
 // 参数层（退出码 2 / 3）
 inline constexpr const wchar_t* kNoCondition = L"cli.no_condition";
 // ---------------------------------------------------------------------------
@@ -741,6 +782,18 @@ inline constexpr const wchar_t* kHistoryWriteFailed = L"history.write_failed";
 inline constexpr const wchar_t* kHistoryFileExists = L"history.file_exists";
 inline constexpr const wchar_t* kHistoryBudgetSpent = L"history.budget_spent";
 inline constexpr const wchar_t* kHistorySameFile = L"history.same_file";
+// 截图后的桌面通知（toast）。两条码分开的理由与 history 那一条一样：**下一步不同**。
+// 共同点是它们都不改退出码，也不进 errors —— 通知失败不是截图失败，图早就落地了。
+//   notify.send_failed   这条路试了而系统拒了（那一次调用给出了自己的 HRESULT）。
+//                        下一步是查通知设置、专注助手与 AUMID 有没有注册上。
+//   notify.unavailable   这条路本身说不通：套间起不来、接口问不出来、或那次调用连一个
+//                        可信的码都没交回。下一步是查执行环境（完整性级别、组策略），
+//                        而不是照着 send_failed 那条去改通知设置。
+// 两条都只增不改名；细节（含 HRESULT 原值）在同一条 note 记录里，stage=notify。
+// 无论哪一条，JSON 顶层 notification.status 才是调用方该读的判据：note 整段会被 --quiet 去掉，
+// 而"通知有没有交出去"是一件已经发生过的事实，不能靠一条可被抑制的提示来表达。
+inline constexpr const wchar_t* kNotifySendFailed = L"notify.send_failed";
+inline constexpr const wchar_t* kNotifyUnavailable = L"notify.unavailable";
 }  // namespace codes
 
 // 命令行取值的上限。数字只在这里写一次：解析判据与 --capabilities 报告的 limits 段读的都是
@@ -778,6 +831,11 @@ inline constexpr uint64_t kRoiMaxValue = 16384ull;
 // 两份数字不许各写一套：相等那条判据写在 tests\image_state.cpp 里现场核对。
 inline constexpr uint64_t kScaleMaxSide = kRoiMaxValue;
 inline constexpr uint64_t kScaleMaxPixels = kRoiMaxValue * kRoiMaxValue;
+
+// --purpose 的原文长度上限（字符数）。它是给人看的一句话而不是数据通道：再长也会挤掉通知里
+// 那一格并把 toast 的 XML 撑开，所以照实在解析期拒掉，而不是收下之后在展示层悄悄截断 ——
+// 那会让人以为自己写的那句已经完整交出去了。
+inline constexpr uint64_t kNotifyPurposeMaxChars = 200;
 }  // namespace cli_limits
 
 // 诊断的 stage 取值（上面 Diagnostic 的 stage 字段）：出在哪一步。与 code 一样只增不改名。
@@ -793,6 +851,9 @@ inline constexpr const wchar_t* kStdout = L"stdout";    // 图片字节写标准
 // 历史归档那一次独立副本（目录创建与独占提交都算在这一步）。它与主输出的 write / stdout 分得开：
 // 主图已经落地而副本没落地时，调用方要能只看 stage 就分清是哪一头。
 inline constexpr const wchar_t* kHistory = L"history";  // 主交付之外的历史副本
+// 截图后的那一条桌面通知（交送给系统通知平台那一步）。它独立成一个 stage：图早在主交付时就
+// 落地了，这一步成不成都不属于 write / stdout，也不属于 history 那一份副本。
+inline constexpr const wchar_t* kNotify = L"notify";     // 交付完成后的 toast
 inline constexpr const wchar_t* kReport = L"report";    // 结果渲染与送出
 }  // namespace stages
 
@@ -869,10 +930,14 @@ enum ExitCode : int {
 // 版本数字本体在 src/Version.h（文件属性里的 VERSIONINFO 与 CMake 都从那里取）
 inline constexpr const wchar_t* kVersion = ECAPTURE_TEXT(ECAPTURE_VERSION_STRING);
 // 已实现的取图通道
-inline constexpr const wchar_t* kStage = L"capture-channels";
+inline constexpr const wchar_t* kStage = L"release";
 
 const wchar_t* FormatName(ImageFormat format);  // "png" / "jpeg" / ...
 const wchar_t* MultiKey(MultiMatch m);  // "ask" / "index" / "topmost" / "bottommost" / "all"
+// 通知那两份枚举的机器名（进 JSON 与 --show-config，ASCII，不随 --lang 变）。与上面两条同族：
+// 枚举到词的映射只写这一处，解析层、配置合并与渲染层读的都是它，不在三处各抄一份拼法。
+const wchar_t* NotifyModeName(NotifyMode m);      // "per_target" / "merged"
+const wchar_t* NotifyDetailName(NotifyDetail d);  // "title" / "basic" / "minimal"
                                         // -v 的 input.policy 回显的是**策略**，不是用户写的那个名字：
                                         // 新旧别名指向同一条策略，追溯时看这里。
 

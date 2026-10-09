@@ -131,6 +131,36 @@ function Get-FileFacts {
     return ($out -join "`n")
 }
 
+function Clear-StaleUninstallEntry {
+    <#
+        只删"记录路径落在本次临时根里"的那条 HKCU 卸载记录 —— 那是本套判据安装留下的。
+        用户真实安装（记录指向他自己的目录）一律不碰：判据不该改用户机器上的安装状态。
+        这条记录同时被 Inno 的 UsePreviousAppDir 当成"上次装到哪"，留着它就会让随后构建的
+        安装包把临时目录当默认目录，并在"程序和功能"里挂一条指向临时目录的幽灵项。
+    #>
+    param([Parameter(Mandatory)][string]$Key, [Parameter(Mandatory)][string]$Root)
+    if (-not $Key -or -not (Test-Path -LiteralPath $Key)) { return $false }
+    $prop = Get-ItemProperty -LiteralPath $Key -Name 'Inno Setup: App Path' -ErrorAction SilentlyContinue
+    $appPath = if ($prop) { [string]$prop.'Inno Setup: App Path' } else { '' }
+    if (-not $appPath) {
+        Write-Host ("  !! 卸载记录里没有 'Inno Setup: App Path'，来源不明、按用户真实安装处理、不删：{0}" -f $Key) -ForegroundColor DarkYellow
+        return $false
+    }
+    $appFull = [IO.Path]::GetFullPath($appPath)
+    $rootFull = [IO.Path]::GetFullPath($Root)
+    if (-not $appFull.StartsWith($rootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Host ("  !! 卸载记录指向临时根之外，按用户真实安装处理、不删：{0}" -f $appFull) -ForegroundColor DarkYellow
+        return $false
+    }
+    Remove-Item -LiteralPath $Key -Recurse -Force -ErrorAction SilentlyContinue
+    return (-not (Test-Path -LiteralPath $Key))
+}
+
+# Inno 用这条 HKCU 卸载记录实现 UsePreviousAppDir（也是"程序和功能"里那条记录）。
+# 本套判据每装一次都会改写它，所以收尾时按记录路径复核后清掉落在临时根里的那一条。
+# 具体键名（含 AppId）在第 1 节读到随包清单后填。
+$uninstallKey = $null
+
 if (-not (Test-Path -LiteralPath $SetupExe)) {
     Write-Host "找不到安装包：$SetupExe —— 整套安装/卸载判据没法跑（先跑 .\build-installer.ps1）。" -ForegroundColor Yellow
     Skip-Ec '安装 / 重装 / 卸载全周期' "没有安装包：$SetupExe"
@@ -163,6 +193,9 @@ try {
     # 配置的两份文件：模板是受管载荷（装在 exe 旁边、字节等于发行清单）；实际用户配置不是载荷，
     # 第一例里它之所以存在，是因为"确实不存在"才被从模板独占创建出来的。
     $mf1 = Get-Content -LiteralPath (Join-Path $d1 'install-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    # AppId 从随包清单取（与安装器里的 AppId 同一个），据此定位安装器写下的那条 HKCU 卸载记录。
+    $wantAppId1 = (([string]$mf1.appId) -replace '^\{\{', '{') -replace '\}\}$', '}'
+    $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $wantAppId1 + '_is1'
     $tplName = [string]$mf1.configPayload.templateFile
     $userCfgName = [string]$mf1.configPayload.userConfigFile
     Assert-Ec ($tplName -and $userCfgName) '随包清单必须声明配置模板名与用户配置名（安装自检与判据都读这一份）'
@@ -197,7 +230,6 @@ try {
     # 旧写法 @($mLines -contains 'product=...').Count -gt 0 里 -contains 交回布尔、@($false) 的 .Count 也
     # 是 1，标记被写成什么样都绿，属于恒真断言，这里不再用那种形状。
     Assert-Ec ([bool]$marker) '安装器没写下归属标记'
-    $wantAppId1 = (([string]$mf1.appId) -replace '^\{\{', '{') -replace '\}\}$', '}'
     $owner1 = Test-EcOwnershipMarker `
         -Lines @(@($marker -split "`r?`n") | ForEach-Object { $_.Trim() }) `
         -ExpectedProduct ([string]$mf1.product) -ExpectedAppId $wantAppId1 `
@@ -574,8 +606,18 @@ try {
         foreach ($need in @('build\ecapture-hdr-tests.exe', 'build\ecapture-identity-tests.exe', 'build\ecapture-windows-tests.exe')) {
             Assert-Ec (Test-Path -LiteralPath (Join-Path $dOff $need)) "安装目录里缺 $need" -Quiet
         }
+
+        # 第 8 节这次安装同样是真安装，会在 HKCU 里留下卸载记录（第 6 节只卸载了 $d1 那一份）。
+        # 判完就卸掉：否则那条记录会把随后构建的安装包默认目录带偏到临时目录，还会在"程序和
+        # 功能"里挂一条指向临时目录的幽灵项（2026-10-11 实测踩过）。
+        $uOff = Uninstall-From -Dir $dOff
+        Assert-Ec ($uOff -and $uOff.Exit -eq 0) ("为离线计划准备的安装没能干净卸载（退出码 {0}）" -f $(if ($uOff) { $uOff.Exit } else { 'n/a' }))
+        Assert-Ec (-not (Test-Path -LiteralPath $uninstallKey)) '卸载后 HKCU 里仍留着指向临时目录的卸载记录（会把安装包默认目录带偏）'
     }
 } finally {
+    # 兜底：第 8 节那次安装若中途失败没走到卸载，这条记录仍会留在 HKCU 里。这里按记录路径复核，
+    # 只删落在本次临时根里的那一条，用户真实的安装记录一律不动。
+    if ($uninstallKey) { [void](Clear-StaleUninstallEntry -Key $uninstallKey -Root $run.Path) }
     if ($Keep) {
         Write-Host ("  保留现场：{0}" -f $run.Path) -ForegroundColor Yellow
     } else {

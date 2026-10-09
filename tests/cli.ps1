@@ -78,7 +78,13 @@ $MATCH_FLAGS = @('--hwnd','--pid','--process','--exe','--title','--title-contain
 #   --no-crop / --no-scale（取消配置文件里那两组的入口，接在裁剪与缩放那一节后面）
 # 实测 zh-CN 10012 / zh-TW 10052 / en 19028 / ja 11359，下面四个数按各自实际长度抬起，
 # 并把余量留在"再加一条短选项"还能装下的位置上。
-$HELP_LIMITS = @{ 'zh-CN' = 10250; 'zh-TW' = 10300; 'en' = 19300; 'ja' = 11600 }
+# 这一次上调：截图后的桌面通知那一批入口。新增的是**四行目录**，没有新增分组标题（它们接在
+# behavior 那一节里），每一条都对应一个真存在的选项：
+#   --notify / --notify-merge（两条 on/off 覆盖入口，与 --history 同族）
+#   --notify-detail（三档取值）
+#   --purpose（调用方自己写的那一句，只在通知里出现）
+# 实测 zh-CN 10396 / zh-TW 10436 / en 19875 / ja 11816。
+$HELP_LIMITS = @{ 'zh-CN' = 10500; 'zh-TW' = 10550; 'en' = 20000; 'ja' = 12000 }
 function Get-HelpLimit([string]$tag) {
     if ($HELP_LIMITS.ContainsKey($tag)) { return $HELP_LIMITS[$tag] }
     return $HELP_LIMITS['zh-CN']
@@ -370,7 +376,11 @@ $cases = @(
     @{ Name = '未知取图方式'; A = @('--capture','waiwang','--pid','1','out.png'); Exit = 1
        Errors = @('cli.unknown_capture_method')
        Check = { param($o) $o.errors[0].hint -like '*wgc, dwm, printwindow*' } }
-    @{ Name = '显式 --help 时忽略其余参数'; A = @('--help','--hwnd','zzz'); Exit = 3; Text = $true }
+    @{ Name = '显式 --help 时忽略其余参数'; A = @('--help','--hwnd','zzz'); Exit = 3; Text = $true
+       # 这条判的是"多余参数不会把帮助换成别的东西"：既不退化成一次截图尝试，也不因为 --hwnd
+       # 取值没被用到就报成用法错。片段取帮助自己的骨架（用法行 + 条件那一节的标题），
+       # 而不是某一条选项的说明 —— 后者会随每次加选项漂。
+       Has = @('用法:', '窗口匹配条件') }
 
     # ---------- 尚未实现的通道 ----------
     @{ Name = '已删除的通道取值在解析期就被拒绝'
@@ -1591,7 +1601,12 @@ foreach ($r in $results) {
 
     if ($c.Text) {
         if ($looksJson) { $problems += '期望文本输出，实际是 JSON' }
-        foreach ($frag in @($c.Has)) { if (-not $body.Contains($frag)) { $problems += "缺少片段: $frag" } }
+        # 一条片段都没写时不许跑进这个循环：hashtable 里没 Has 这个键会交出 $null，而 @($null)
+        # 是一支长度为 1 的数组，于是 $body.Contains($null) 会被报成"缺少片段"——判据自己说不通，
+        # 却把一次本来正常的运行判成失败。缺键与写了空值都不该判任何东西。
+        foreach ($frag in @($c.Has | Where-Object { $_ })) {
+            if (-not $body.Contains($frag)) { $problems += "缺少片段: $frag" }
+        }
         if ($c.Name -like '*帮助体积*') {
             $help = (Invoke-Ec @('--help')).Stdout
             $lim = Get-HelpLimit $Lang

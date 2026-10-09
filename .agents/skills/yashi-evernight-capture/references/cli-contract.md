@@ -1,4 +1,4 @@
-# ECAPTURE 调用契约（v0.4.0）
+# ECAPTURE 调用契约（v1.0.0）
 
 本文是给调用方的参考。选项清单的**权威来源始终是 `ECAPTURE.EXE --help`**（退出码 3），
 本文只在它之外补充截图授权的两级判据、用户偏好配置（`ECAPTURE.ini`）那一层、期限与阻塞隔离、JSON 字段、
@@ -46,6 +46,10 @@
 | `--no-config` | | 开关 | **本次完全忽略配置文件**，只用内置默认加本次命令行——排障与自检的隔离入口。不删除、不改写、不创建那份文件。与 `--config` 同时给出 = `cli.conflicting_options`+1。那份配置坏掉时这一条照样跑得起来，所以"跟配置有没有关"就用它判。**只有启用态算数**：`--no-config=false` / `=0` / `=no` / `=n` / `=off` 等于没写——配置照常读，与 `--config` 同时给也不报冲突；`--help=false` / `--version=false` 同样既不开启那两条也不跳过配置，写坏的取值（`--help=bogus`）是 `cli.switch_takes_no_value`+1，不是绕过坏配置的口子 |
 | `--history` | | `on` / `off` | 本次要不要为每张**完成主交付**的图另存一份历史副本，覆盖 `history.enabled`（出厂默认开着）。只认 `on` / `off` 两个词（忽略大小写与首尾空白），写别的 = `cli.invalid_value`+1（`option`=`--history`），不退化成默认那档也不当没写。`off` 是**用户的一项决定而不是故障**：不建目录、不开始归档、也不读取或删除任何已有历史，已交付那张图报 `images[].history.status = disabled`（没有 `code`，与 `saved` / `skipped` / `failed` 并列互不替代）。见「截图历史归档」一节 |
 | `--integrity-hints` | | `on` / `off` | 本次要不要在"系统说不"那一类失败上**附加那句完整性解释文字**，覆盖 `diagnostics.integrity_hints`。取值判据与上一条相同。关掉它**只去掉附加说明**：错误码、`win32` / HRESULT 原值、交付事实、`--capabilities` 里已存在的能力事实字段一条都不受影响，`note.low_integrity` 那条不再补写；它也修不好任何权限，别把它读成"问题解决了" |
+| `--notify` | | `on` / `off` | 本次每张**完成交付**的图要不要向系统的通知平台交一条 toast，覆盖 `notification.enabled`（出厂默认开着）。取值判据与 `--history` 相同：只认 `on` / `off`，写别的 = `cli.invalid_value`+1，不退化成默认那档也不当没写。**它只决定展示**：交不成交、交成几条都不改动 `images[]`、`errors[]` 与退出码，桌面像素那一该当面问照样问，`--yes` 与这条无关。结果里 `notification.status` 才是这一次的落点 |
+| `--notify-merge` | | `on` / `off` | 本次多个目标是**合并成一条**通知（标题报数量、正文逐个列，列不下的数量写在最后一行而不是无声截断）还是每个目标一条各带各的图，覆盖 `notification.merge`（默认 `off` = 每目标一条）。取值判据同上 |
+| `--notify-detail` | | `title` / `basic` / `minimal` | 通知里写多细，覆盖 `notification.detail`（默认 `title`）。`title` = 连**窗口标题本身**一起写；`basic` = 不写标题，只报归属进程 / 句柄 / 文件去向；`minimal` = 只报文件去向。判据在于"有多少内容离开本进程"：通知会进入系统通知中心，那块地方**在锁屏上也读得到**，所以这一档是使用者的明确选择而不是副作用。写错的档位 = `cli.invalid_value`+1，**不**退化成默认的 `title`（那等于把一次"我要少写点"的尝试变成"照旧把标题写上锁屏"，方向正好相反） |
+| `--purpose` | | 一句话（≤200 字符） | 调用方自己说明"这次为什么截图"，作为通知正文的第一行给人看。超过 200 字符 = `cli.purpose_too_long`+1（在解析期当场拒掉，而不是收下之后在展示层截断 —— 那会让人以为自己写的那句已经完整交出去了）。`-v` 原样回显成 `input.purpose`。**它不参与任何判据**：不选目标、不代替授权、不改变结果，也不写进配置文件（那是这一次的意图，与目标选择同一性质） |
 | `--capabilities` | | 开关 | **只读能力查询**，输出 JSON（见「只读的能力查询」一节）。问的是这台机器现在能走哪几条路线：版本与会话条件、每条通道的 `available` / `unavailable` / `unverified`、每种格式、`--yes` 实际管到哪几条内部路径、以及各种取值上限。一个像素都不取、不弹确认框、不写文件、不联网、不读环境变量，也不需要窗口条件。只接受 `--lang` / `-v` / `-q`，与截图那一套选项或输出路径同时给出 = `cli.query_conflict` + 退出码 1 |
 | `--screens` | | 开关 | **只读屏幕枚举**，输出 JSON（见「只读的屏幕枚举」一节）。列本机每块屏的编号、设备名、是否主屏、物理矩形、DPI 与旋转（问得到的话）、归属适配器关联，并写明这几种身份各自稳到哪一层；`screens[].selectors` 里的 `device:…` / `id:…` 可以直接写回 `--monitor`。一个像素都不取、不弹确认框、不写文件、不改任何显示设置。只接受 `--lang` / `-v` / `-q`，与截图那一套选项同时给出 = `cli.query_conflict` + 退出码 1 |
 | `--diagnostics` | | 开关 | **只读诊断/版本查询**，输出 JSON：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态。字段与 `--capabilities` 出自同一个判据函数，不是第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；`-v` 追加每一问的原始答案。互斥规则同上 |
@@ -164,7 +168,7 @@ ECAPTURE.EXE --capabilities -v     # 另加 probes 段：每一问的原始答�
 **两份文档不是两套信息**：都由 `src/EnvReport.cpp` 的 `BuildEnvReport` 算出，只差段落取舍（`--diagnostics`
 固定带 `build` 段，`--capabilities` 只在 `-v` 时展开）。版本、`status`、后端清单、`limits` 都是同一份。
 
-**构建标识可核对**：`buildId` = `版数-架构-十六进制链接时间戳`（例：`0.4.0-x64-6ABC6DF2`），那个时间戳与
+**构建标识可核对**：`buildId` = `版数-架构-十六进制链接时间戳`（例：`1.0.0-x64-6ABC6DF2`），那个时间戳与
 `dumpbin /headers` 读发布产物读到的是同一个字段。读的是本进程已映射进内存的 PE 头，不开文件也不枚举目录，
 所以安装路径里的用户名不会跟着漏出来。`build.subsystemVersion` 只是事实，配 `subsystem_version_is_linker_default`
 这一条 caveat：那是 MSVC 链接器默认值，不是支持声明。
@@ -532,6 +536,9 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 | `timeouts` | `processing_ms` | `0` | `0`–`86400000`（`0` = 不设总预算，被隔离的那几步仍有内置上限兜底） | `--timeout-ms` |
 | `timeouts` | `consent_ms` | `0` | `0`–`86400000`（`0` = 一直等人回答） | `--consent-timeout-ms` |
 | `history` | `enabled` | `true` | 只认 `true` / `false` | `--history on` / `--history off` |
+| `notification` | `enabled` | `true` | 只认 `true` / `false`；`false` 时一条都不交给通知平台。**只是展示开关**：不是授权、不改变截什么、也不改退出码 | `--notify on` / `--notify off` |
+| `notification` | `merge` | `false` | 只认 `true` / `false`；`true` = 整批合并成一条而不是每个目标一条 | `--notify-merge on` / `--notify-merge off` |
+| `notification` | `detail` | `title` | `title`（含窗口标题，锁屏上读得到）/ `basic`（不含标题）/ `minimal`（只报文件去向） | `--notify-detail <level>` |
 | `diagnostics` | `integrity_hints` | `true` | 只认 `true` / `false` | `--integrity-hints on` / `--integrity-hints off` |
 | `query` | `window_list_limit` | `50` | `1`–`8192`；只是 `--list` 本次没给 `--limit` 时的分页默认条数，本身不发起任何查询 | `--limit` |
 
@@ -770,7 +777,7 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
   不要换通道重试，也不要把条件放宽一点再试一次：这三条说的是"选定之后目标已经不是那一扇了"，而工具不会拿先前批准的
   许可去截一个后来的新对象。`capture.target_changed` 常常是因为目标改了标题、不再满足你给的 `--title*` 条件 ——
   这时该重新确认一次"要截哪个窗口"，而不是假定它还是同一个东西。
-- **先确认手里那个二进制就是本文描述的这一版**：同印 `0.4.0` 的旧副本可能实现的是旧契约。只读地比
+- **先确认手里那个二进制就是本文描述的这一版**：同印 `1.0.0` 的旧副本可能实现的是旧契约。只读地比
   `--capabilities`：`cursor.paths[]` 里 `duplication.frame` / `screen.duplication` 两条应为
   `capability: pointer_state_unverified`（旧副本写 `excludes_cursor`），`color.paths[]` 每行应带 `honorsExplicitPolicy`
   （旧副本没有这个键），`program.buildId` 也会不同。**旧副本"接受"了本文说会被拒的那一条，不等于要求被兑现**：
@@ -888,6 +895,8 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 ```json
 { "captured": 1,
   "images": [ … 每条都带 path / scope / rect，见下两节 ],
+  "notification": { "status": "submitted", "mode": "per_target", "detail": "title",
+                    "submitted": 1, "withImage": 1 },   // 仅截图那一路；只读查询不带这一格
   "errors": [ { "code","message","option","value","hint","target","backend","stage","hresult","win32",
                 "line","detail" } ],   // 后两条只有 config.* 那一族会写，为空时整个键省略
   "notes":  [ 同 errors 的形状 ],
@@ -896,6 +905,13 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 
 - `captured` 与 `images` 恒在（空时 `[]`）；`errors` 只要非空就必须出现；`notes` 仅非空且未 `--quiet`；
   `input` 仅 `--verbose`。**为空的字段整个键省略，不输出 `null` 占位。**
+- `notification` 只在截图那一路出现（`status` / `mode` / `detail` 三个恒在，计数仅非零时出现），读的是**展示状态**而不是
+  交付事实：`status` = `submitted`（已交给系统的通知平台；**不**证明屏幕上出现过什么 —— 专注助手、通知设置与没登记的
+  AppUserModelID 都能让它完全不现，而这里照旧报 `submitted`）/ `failed`（那一次交付本身被拒，note 里带
+  `notify.send_failed` 或 `notify.unavailable` 与 HRESULT 原值）/ `disabled`（用户关掉了，不是故障）/ `no_delivery`
+  （这次没有任何图完成交付，因此无可报告）。`withImage` 说的是其中带图的条数，而**图恒出自 `images[].history.file`**
+  那份历史副本：历史关掉或那张副本没落地时通知照发、只是不带图。这一格成不成都不回头改 `images[]`、`errors[]` 或
+  退出码，所以绝不要为了"补一条通知"去重拍一张已经交付的图。
 - `images[]` 里的 `path` / `scope` / `rect` 是**隐私判据**（这一帧出自哪条内部路径、像素是窗口自己的还是屏幕上那块区域、
   当初批准采样的是哪一片），`--quiet` 不抑制它们——`images` 整个数组从来不会被抑制。
 - `images[].history` 同理是**交付事实**（主交付之外那份历史副本的下落，见「截图历史归档」一节），`--quiet` 也藏不掉；
@@ -1188,6 +1204,20 @@ build 与实际 build，`value` / `backend` 都是那条通道名。下一步是
 `history.same_file`（`status = skipped`：`--out` 写进了 `history\` 那棵树，而算出来的名字正好是这次要用的归档名。
 写下去就是把刚交出去的那一张自己盖掉，所以跳过副本；主图与它的交付事实原样保留。想两个都要就把主输出
 写在别处。也不写进 `errors`）
+
+**`notify.*`（截图后那条桌面通知；两条都不进 `errors`、都不改退出码，只在 `notes` 与顶层 `notification` 那一格里说话）**
+`notify.send_failed`（这条路**试了而系统拒了**：`notification.status = failed`（或部分成功时仍报 `submitted` 而
+`failed` 计数非零），`hresult` 是那一次调用自己交回的原值（`0x80070005`、`0x80070057`、`REGDB_E_CLASSNOTREG` 那一族
+都照实传，不折成 `E_FAIL`）。下一步查的是通知设置、专注助手与 **AppUserModelID 有没有登记在开始菜单快捷方式上**
+（那一条由安装器负责，而这一版故意不留「不创建快捷方式」的退路：`AllowNoIcons` 关着，`/NOICONS` 会被忽略。
+缺它的现场是从 `build\` 直接跑、或那条快捷方式后来被删掉 —— 漏建这件事程序自己问不出来））
+`notify.unavailable`（这条路**本身说不通**：WinRT 套间起不来、通知平台的接口问不出答案，或那一次调用连一个可信的
+错误码都没交回。`hresult` 这时整个键省略 —— 没有码就不许编一个假的码进去。下一步查的是执行环境与权限
+（完整性级别、组策略），而不是通知设置。与上一条分开给码的理由与 `capture.target_unverifiable` / `history.*`
+那几族同源：**"没能问出来"与"问出来而被拒"的下一步不同**）
+两条共同守住的边界：通知是**展示状态**，不是交付事实。`submitted` 只说"已交给通知平台"，从不证明屏幕上出现过什么；
+`failed` 也从不意味着图没截好。`images[]`、`errors[]` 与退出码到这里已经定案，这一步一个字段都不回头改，
+也从不为补一条通知而重拍一张 —— 那一格读不出来的东西，重拍也读不出来。
 
 **`note.*`（不是错误，`--quiet` 会去掉）**
 `note.dry_run` `note.capture_channel`（`auto` 回退后实际用了哪条）`note.duplicate_value`

@@ -14,6 +14,7 @@
 #include "Config.h"      // IsConfigReadFailure：config.* 那两条退出码的判据只写一处
 #include "EnvReport.h"
 #include "Lang.h"
+#include "Notification.h"  // 交付完成后的那条桌面通知：状态名的本体在那个头文件
 #include "ProcessIntegrity.h"
 #include "ScreenIdentity.h"   // MonitorSelectorLabel / KindName：选择器的回显只写一处
 #include "ScreenQuery.h"
@@ -224,6 +225,31 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
 }
 
 // ---------------------------------------------------------------------------
+// notification：截图之后那一条桌面通知的下场（判据本体在 src/Notification.h）
+//
+// 这一格说的是**展示状态**，与交付事实分得很开：图在通知之前就早已落地，而通知成不成都不回头
+// 改 images、errors 或退出码。status 恒在（四种取值各指一件事），计数只在这次真的动过时才出现。
+//
+// 为什么它是顶层的一格而不是只留一条 note：note 整段会被 --quiet 去掉，而"这次有没有把通知交
+// 出去"是一件已经发生过的事实。反过来，就算它写着 submitted，也**不**证明屏幕上真出现过什么 ——
+// 专注助手与通知设置能把那条藏得无影无踪，而本工具一个字都问不出来。调用方要读的事实只有一份，
+// 那是 images[]。
+// ---------------------------------------------------------------------------
+void WriteNotification(Json& j, const NotifyOutcome& n, const Options& opt) {
+    j.Key(L"notification").Obj();
+    j.Key(L"status").Value(NotifyStatusName(n.status, n.disabled));
+    j.Key(L"mode").Value(NotifyModeName(opt.notifyMerge ? NotifyMode::kMerged
+                                                        : NotifyMode::kPerTarget));
+    j.Key(L"detail").Value(NotifyDetailName(opt.notifyDetail));
+    // 三个计数只在非零时出现：disabled 那一路一个都没试过，此时写一串 0 会让人以为
+    // "试过而全失败了"。附图那一条出自历史副本，所以它与 submitted 不一定相等。
+    if (n.submitted > 0) j.Key(L"submitted").Value(static_cast<long long>(n.submitted));
+    if (n.withImage > 0) j.Key(L"withImage").Value(static_cast<long long>(n.withImage));
+    if (n.failed > 0) j.Key(L"failed").Value(static_cast<long long>(n.failed));
+    j.End();
+}
+
+// ---------------------------------------------------------------------------
 // input：--verbose 才输出的规范化输入，用于排查"程序到底理解了什么"
 // ---------------------------------------------------------------------------
 void WriteInputEcho(Json& j, const Options& opt) {
@@ -328,6 +354,10 @@ void WriteInputEcho(Json& j, const Options& opt) {
     }
     j.End();
     j.Key(L"lang").Value(LanguageTag(CurrentLanguage()));
+    // --purpose 的原文回显：那是调用方自己写下的一句话，本工具既不解读也不据它判任何事，
+    // 交回原文只为让人核对"通知上那句是不是我要的那句"。没写过时整个键不出现
+    //（与 input.scale 那条"给了才写"同一条规矩）。
+    if (!opt.purpose.empty()) j.Key(L"purpose").Value(opt.purpose);
     // 配置这一组说的是"这一次读的是哪一份、每一项最后听谁的"。它与上面那些回显同一性质
     //（排查"程序到底理解了什么"），所以只有 --verbose 才出现，而且恒不写文件、不改配置。
     //   selection  这一份是**怎么**定下来的：default / explicit / none
@@ -610,6 +640,9 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     std::vector<Diagnostic> notes = parse.warnings;
     std::vector<CapturedImage> images;
     int code = parse.ok ? EX_OK : EX_USAGE;
+    // 通知的下场。默认那份就是"这一步没发生"（kNone + 非 disabled），所以连 parse 都失败的
+    // 那一路也能照原样交出一格，不必为它另写一条渲染分支。
+    NotifyOutcome notify;
 
     if (parse.ok) {
         // --capture 的取值在解析期就已限定为已实现的通道，这里不再做能力判断
@@ -629,6 +662,28 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
         if (opt.integrityHints)
             AnnotateIntegrityDenials(ProbeProcessIntegrity(nullptr), &errors, &notes);
         code = outcome.exitCode;
+
+        // 截图后的桌面通知。它挂在这一条链路的最末尾：历史副本已经判完、images[].history.file
+        // 已经落定，那一张图这时是**真在磁盘上**的，通知引用的正是它（这一步不新建任何文件）。
+        //
+        // 三条拦在前面的规矩：
+        //   * 关掉了就一步都不做（连"问一问通知平台能不能用"都不问）—— status 报 disabled，
+        //     与"试了而没送出去"那条分得很开。
+        //   * 一张都没交付成功时不发：那种场合说"截好了"是假的。
+        //   * 只读查询那几路根本走不到这里（上面各分支早已 return），所以 --list / --inspect /
+        //     --capabilities / --screens / --show-config 永远不发通知，也不必在这里再判一次。
+        // 发出去的成败**只**汇总成下面那一格与一条 note：images、errors、code 到这里已经定案，
+        // 通知失败永远不是截图失败，也从不让人为重拍一张而去动后端或重试。
+        if (!opt.notifyEnabled) {
+            notify.disabled = true;   // status 留 kNone：这一步根本没开始
+        } else if (!images.empty()) {
+            notify = SendCaptureNotifications(
+                images, opt.notifyMerge ? NotifyMode::kMerged : NotifyMode::kPerTarget,
+                opt.notifyDetail, opt.purpose, ShowToastViaWinrt);
+            // note 只在送不出去时出现，而它归 notes 那一族：--quiet 会把它整段去掉。这不会让
+            // 上面那一格变成假的 —— status 恒在，被抑制掉的只是给人看的那句解释。
+            if (!notify.note.code.empty()) notes.push_back(std::move(notify.note));
+        }
     }
 
     // 省略 --out 与显式 --out - 是同一件事：真实诊断、退出码与已经交出去的图原样送出，
@@ -641,6 +696,10 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     j.Key(L"captured").Value(static_cast<long long>(images.size()));
     j.Key(L"images");
     WriteImages(j, images);
+    // 通知那一格只属于截图这一路。只读查询失败时落下来的也是同一个形状（images 为空、
+    // errors 里有那一条），而那几路本来就不发通知，给它添一格等于替查询承诺了一件它不做的事。
+    if (!(opt.EnvQueryMode() || opt.WindowQueryMode() || opt.ConfigViewMode()))
+        WriteNotification(j, notify, opt);
     // errors 不受 --quiet 影响：调用方失败时必须能看到原因
     if (!errors.empty()) {
         j.Key(L"errors");

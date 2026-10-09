@@ -193,6 +193,36 @@ history.file_exists_hint	Run it again on another image; when a history name coll
 history.commit_failed	The history copy was not committed
 history.same_file	The output name is exactly the history name this decision would use, so the copy was skipped (nothing just delivered gets overwritten by itself)
 history.same_file_hint	This happens when you write into the history tree itself. The primary image and its delivery facts stay as they are; want a copy too, choose an output name outside history
+
+# ---------------------------------------------------------------------------
+# Desktop notification after a capture (src/Notification.cpp): body templates + 2 failure codes
+#
+# Notification content lands in the system notification centre, which is readable on the lock
+# screen. The three detail levels decide how much user data appears here, and that decision lives
+# in MakeTargetNotifyPayload only. What both codes have in common: the image already landed, so a
+# notification failure is never a capture failure and never changes the exit code.
+# ---------------------------------------------------------------------------
+notify.toast.window	Captured a window
+notify.toast.screen	Captured a monitor
+notify.toast.merged	Captured %1 targets
+notify.line.purpose	Purpose: %1
+notify.line.title	Title: %1
+notify.line.device	Monitor: %1
+notify.line.owner	Process: %1 (%2)
+notify.line.hwnd_only	Handle: %1
+notify.line.saved_history	History copy: %1
+notify.line.saved_output	Saved: %1
+notify.line.saved_stdout	Written to standard output
+notify.row.title_owner	%1 (%2)
+notify.row.device	Monitor: %1
+notify.row.owner	%1
+notify.row.file	%1
+notify.row.more	%1 more, the full list is in the result
+notify.stdout_placeholder	standard output
+notify.send_failed	The notification was not handed to the system notification platform
+notify.send_failed_hint	The image was delivered normally; this only says the notification did not go out. Check Windows notification settings and Focus assist, and whether this program has a registered AppUserModelID (the installer registers that one). A notification failure never means the capture failed
+notify.unavailable	This machine cannot answer for the notification platform
+notify.unavailable_hint	The image was delivered normally; this notification simply never started (no apartment, the interface could not be answered, or that call returned no trustworthy error code at all). Look at the execution environment and permissions, not at notification settings
 io.timeout_delivered	The image was delivered in full (%1 bytes), but the automatic budget of %2 ms had run out when that write finished (%3 ms elapsed)
 io.timeout_delivered_hint	What already landed on disk (or reached stdout) is not rolled back and stays in images; this only says the batch did not finish inside the budget. Raise --timeout-ms, or pick an output that does not wait that long to commit: move the target folder onto a local disk, or have whatever reads stdout ready first
 io.output_collision	Several targets resolve to the same output name; nothing was captured or written
@@ -468,6 +498,10 @@ opt.no-config	ignore the configuration file completely for this run and use buil
 opt.show-config	read-only view of this run's configuration: which file was read, whether it was read, and which source each effective setting came from (no window selection, no pixels, no dialog, no directories created)
 opt.history	whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
 opt.integrity-hints	whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission
+opt.notify	whether each delivered image hands the system notification platform one toast this run (on / off), overriding the configured one; whether it goes out never changes delivery facts or the exit code
+opt.notify-merge	whether several targets become one notification or one each (on / off), overriding the configured one
+opt.notify-detail	how much the notification spells out: title includes the window title, basic only the owner, minimal only where the file went. Content lands in the notification centre, readable on the lock screen
+opt.purpose	one sentence saying why this capture happened; shown as the first body line of the notification. Read by humans only, it decides nothing, and it has a length limit
 opt.no-crop	cancel the crop group coming from the configuration file (no cropping at all this run); conflicting with this run's --roi / --client-area
 opt.no-scale	cancel the scale group coming from the configuration file (no scaling this run); conflicting with this run's --scale
 config.not_found	the configuration file to read does not exist
@@ -506,5 +540,8 @@ config.path_unresolvable_hint	The directory of this configuration could not be d
 cli.config_view_conflict	--show-config reads this configuration read-only and cannot be combined with capture intent or another query command
 cli.config_view_conflict_hint	the configuration view accepts --config / --no-config and the preference overrides you want to observe (--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / crop and scale / the two timeouts / --history / --integrity-hints / --limit); window conditions, --monitor, selection strategies, --yes / --dry-run and the other query commands belong to a separate run
 cli.onoff_value	this value must be on or off
+cli.notify_detail_value	this level must be title, basic or minimal
+cli.purpose_too_long	--purpose is too long
+cli.purpose_too_long_hint	that sentence is capped at %1 characters; the notification has no slot for a longer one
 cli.crop_cancel_conflict_hint	--no-crop cancels the crop group coming from the configuration file; it says the opposite of the --roi / --client-area you wrote this run. Drop --no-crop, or drop that crop
 cli.scale_cancel_conflict_hint	--no-scale cancels the scale group coming from the configuration file; it cannot hold together with the --scale you wrote this run. Drop --no-scale, or drop that --scale

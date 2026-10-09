@@ -93,8 +93,15 @@ Add-Type -AssemblyName System.Windows.Forms | Out-Null
 Add-Type -AssemblyName System.Drawing | Out-Null
 # Screen.Bounds 的类型是 System.Drawing.Rectangle，所以那条引用不能少（实测报 CS0618 之外的
 # "未引用的程序集"，第一次跑就撞上了）。
-Add-Type -TypeDefinition $dotNetType -ReferencedAssemblies `
-    'System.Windows.Forms', 'System.Drawing', 'mscorlib', 'System' | Out-Null
+# 引用清单必须**按 shell 分开给**：.NET（pwsh 7）把 `List<>` 与 `Rectangle` 拆成了转发类型，只给
+# mscorlib / System 会分别报 CS1069（找不到 List<>）与 CS0012（Rectangle 在未引用的程序集里）；
+# 而 Windows PowerShell 5.1 的默认引用集里本来就有这两个类型，那边又认不得下面那两个 .NET 专属
+# 程序集名。判据本身没错，错的是少一份跨 shell 都成立的清单。
+$ecRefs = @('System.Windows.Forms', 'System.Drawing', 'mscorlib', 'System')
+if ($PSEdition -eq 'Core') {
+    $ecRefs += @('System.Collections', 'System.Drawing.Primitives')
+}
+Add-Type -TypeDefinition $dotNetType -ReferencedAssemblies $ecRefs | Out-Null
 
 # 本机监视器设备路径的**第二条独立问答**：EnumDisplayDevices 第二层带
 # EDD_GET_DEVICE_INTERFACE_NAME，交回的就是监视器的设备接口路径。它与 --screens 的
@@ -165,7 +172,7 @@ public static class EcDevPaths {
     }
 }
 '@
-Add-Type -TypeDefinition $devPathType | Out-Null
+Add-Type -TypeDefinition $devPathType -ReferencedAssemblies $ecRefs | Out-Null
 
 try {
     # =========================================================================

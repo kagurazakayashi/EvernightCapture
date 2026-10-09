@@ -13,15 +13,15 @@
 #ifndef ECAPTURE_VERSION_H
 #define ECAPTURE_VERSION_H
 
-#define ECAPTURE_VERSION_MAJOR 0
-#define ECAPTURE_VERSION_MINOR 4
+#define ECAPTURE_VERSION_MAJOR 1
+#define ECAPTURE_VERSION_MINOR 0
 #define ECAPTURE_VERSION_PATCH 0
 
 // 点号形式：--version 与文件属性里的"文件版本 / 产品版本"都用它。
 // 改版本号必须同时改上面三个数字（FILEVERSION / PRODUCTVERSION 靠它们做数值比较）。
-#define ECAPTURE_VERSION_STRING "0.4.0"
+#define ECAPTURE_VERSION_STRING "1.0.0"
 
-// "0.4.0" -> L"0.4.0"。## 之前不展开宏，所以要先套一层。
+// "1.0.0" -> L"1.0.0"。## 之前不展开宏，所以要先套一层。
 #define ECAPTURE_WIDE_(s) L##s
 #define ECAPTURE_WIDE(s) ECAPTURE_WIDE_(s)
 #define ECAPTURE_TEXT(s) ECAPTURE_WIDE(s)

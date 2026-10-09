@@ -324,6 +324,7 @@ $suites = @(
     [pscustomobject]@{ Name = 'delivery';     Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '交付事实与期限合规分开记' },
     [pscustomobject]@{ Name = 'config';      Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = 'ECAPTURE.ini：严格解析、逐键判定、CLI>INI>内置合并与来源、只读配置视图、历史关闭与清理保留' },
     [pscustomobject]@{ Name = 'history';      Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '主交付之外那一份历史副本：命名、独占提交、失败归类与清理/落点跟随' },
+    [pscustomobject]@{ Name = 'notification'; Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '截图后的桌面通知：三档内容、附图跟随历史副本、XML 转义、失败归类与交付事实不受影响' },
     [pscustomobject]@{ Name = 'save';         Real = 'desktop'; OfflineLayer = '';            Note = '原子写、覆盖保护、批次命名' },
     [pscustomobject]@{ Name = 'image';        Real = 'desktop'; OfflineLayer = '';            Note = '帧形状判据与像素操作' },
     [pscustomobject]@{ Name = 'crop';         Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--roi / --client-area' },

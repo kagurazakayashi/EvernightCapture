@@ -389,6 +389,10 @@ constexpr const wchar_t* const* kLangValues = option_values::kLang;
 // --history / --integrity-hints 的覆盖写法：只有 on / off 两个词，各一个明确的意思。
 constexpr const wchar_t* const* kOnOffValues = option_values::kOnOff;
 
+// --notify-detail 的三档。判据本体在 src/Notification.h：这一档决定**通知里写多少用户数据**，
+// 而通知中心那块地方在锁屏上也读得到，所以词表与 --help 与配置 schema 共用这一份。
+constexpr const wchar_t* const* kNotifyDetailValues = option_values::kNotifyDetail;
+
 struct OptionSpec {
     const wchar_t* name;        // 规范名（不含前导 -）
     const wchar_t* shortName;   // 单字母别名，可为空
@@ -483,6 +487,18 @@ constexpr OptionSpec kOptions[] = {
     {L"history", L"", true, L"behavior", L"<on|off>", kOnOffValues, L"opt.history"},
     {L"integrity-hints", L"", true, L"behavior", L"<on|off>", kOnOffValues,
      L"opt.integrity-hints"},
+    // 三条通知偏好（判据本体在 src/Notification.h）。它们与上面两条同族：配置里存 true / false
+    // 与档位，命令行这一侧只做**本次**覆盖，所以开关那一档沿用 on / off 那一份词表。
+    // 默认是弹的：关掉要用户自己写一句 enabled = false，而不是本工具替他安静下来。
+    {L"notify", L"", true, L"behavior", L"<on|off>", kOnOffValues, L"opt.notify"},
+    {L"notify-merge", L"", true, L"behavior", L"<on|off>", kOnOffValues, L"opt.notify-merge"},
+    {L"notify-detail", L"", true, L"behavior", L"<title|basic|minimal>", kNotifyDetailValues,
+     L"opt.notify-detail"},
+    // --purpose 不是偏好而是**本次的一句话**：调用方（通常是 AI 或脚本）自己说明这次为什么截。
+    // 它不进配置文件，也不参与任何判据 —— 本工具不据它决定截谁、要不要批准、结果算不算成功。
+    // 长度上限见 cli_limits::kNotifyPurposeMaxChars：超长在解析期当场拒掉，而不是收下之后
+    // 在展示层截断（那会让人以为自己写的那句已经完整交出去了）。
+    {L"purpose", L"", true, L"behavior", L"<text>", nullptr, L"opt.purpose"},
     {L"help", L"h", false, L"behavior", L"", nullptr, L"opt.help"},
     {L"version", L"", false, L"behavior", L"", nullptr, L"opt.version"},
     // ---- 配置文件的选择 ----
@@ -803,6 +819,19 @@ const wchar_t* MultiKey(MultiMatch m) {
         case MultiMatch::kTopmost: return L"topmost";
         case MultiMatch::kBottommost: return L"bottommost";
         case MultiMatch::kAll: return L"all";
+    }
+    return L"?";
+}
+
+const wchar_t* NotifyModeName(NotifyMode m) {
+    return m == NotifyMode::kMerged ? L"merged" : L"per_target";
+}
+
+const wchar_t* NotifyDetailName(NotifyDetail d) {
+    switch (d) {
+        case NotifyDetail::kTitle: return L"title";
+        case NotifyDetail::kBasic: return L"basic";
+        case NotifyDetail::kMinimal: return L"minimal";
     }
     return L"?";
 }
@@ -1477,6 +1506,35 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
     record(L"diagnostics.integrity_hints", opt.integrityHints ? L"true" : L"false",
            sourceFor(L"integrity-hints", L"diagnostics.integrity_hints"));
 
+    // ---- notification.*（截图后的桌面通知）----
+    // 三条都与 history.enabled 同一条线：CLI 写过就以 CLI 为准，没写过才吃配置，都没写过留内置
+    // 默认（**弹，每目标一条，带窗口标题**）。--purpose 不在这里：那句是本次的意图，不进配置文件。
+    //
+    // 这三档只是"要不要交、交几条、写多细"的展示取舍，谁也不参与授权判据：桌面像素那一条该问人
+    // 照样问人（src/Consent.h），关掉通知也一个像素都不多截。
+    if (!gave(L"notify") && snap.Has(L"notification.enabled")) {
+        opt.notifyEnabled = snap.ValueOf(L"notification.enabled") == L"true";
+    }
+    record(L"notification.enabled", opt.notifyEnabled ? L"true" : L"false",
+           sourceFor(L"notify", L"notification.enabled"));
+
+    if (!gave(L"notify-merge") && snap.Has(L"notification.merge")) {
+        opt.notifyMerge = snap.ValueOf(L"notification.merge") == L"true";
+    }
+    record(L"notification.merge", opt.notifyMerge ? L"true" : L"false",
+           sourceFor(L"notify-merge", L"notification.merge"));
+
+    if (!gave(L"notify-detail") && snap.Has(L"notification.detail")) {
+        // 取值已在读配置那一步按 schema 的枚举表判过（非法写法当场失败，不降级成缺省），
+        // 所以这里只翻译，不再判一次合法性 —— 两处各判迟早对不上。
+        const std::wstring& v = snap.ValueOf(L"notification.detail");
+        if (v == L"basic") opt.notifyDetail = NotifyDetail::kBasic;
+        else if (v == L"minimal") opt.notifyDetail = NotifyDetail::kMinimal;
+        else opt.notifyDetail = NotifyDetail::kTitle;
+    }
+    record(L"notification.detail", NotifyDetailName(opt.notifyDetail),
+           sourceFor(L"notify-detail", L"notification.detail"));
+
     // ---- query.window_list_limit ----
     // 这一项是"未给 --limit 时的**默认**条数"，与本次 --limit 写过没有是两件事：命令行给了
     // --limit 也不该把配置里那份默认抹回 50（否则 pagination.defaultLimit 会在用户明明配过 7 的
@@ -1767,6 +1825,11 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // 期限与新偏好
         if (name == L"timeout-ms" || name == L"consent-timeout-ms" || name == L"history" ||
             name == L"integrity-hints")
+            return true;
+        // 通知那一组偏好：--show-config 正是用来看"这次会弹几条、写多细"的，所以三条覆盖入口
+        // 都要能带着跑。--purpose **不在这一列**：它是本次截图的一句话而不是偏好，
+        // 与"一个像素都不取"的配置视图说不通，所以照冲突处理。
+        if (name == L"notify" || name == L"notify-merge" || name == L"notify-detail")
             return true;
         // 分页默认也归偏好（query.window_list_limit），观察它要能带 --limit
         if (name == L"limit") return true;
@@ -2151,9 +2214,10 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         // 读哪一份、读不读，都在解析函数开头那一段判完（那一段排在任何诊断之前）。
         // 这里只把这两条认下来，让它们不落到"这个选项没处理"那一条兜底里去。
         if (name == L"config" || name == L"no-config") return;
-        // 两条新偏好的本次覆盖入口：off 覆盖配置里的 true，on 覆盖配置里的 false。
+        // 四条 on/off 偏好的本次覆盖入口：off 覆盖配置里的 true，on 覆盖配置里的 false。
         // 认不了就整条不认，不退化成"那就算开启" —— 那会把一次写错的开关变成一个没人要的决定。
-        if (name == L"history" || name == L"integrity-hints") {
+        if (name == L"history" || name == L"integrity-hints" || name == L"notify" ||
+            name == L"notify-merge") {
             bool on = false;
             if (!ParseOnOff(value, &on)) {
                 std::wstring list;
@@ -2165,7 +2229,42 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
                 return;
             }
             if (name == L"history") opt.historyEnabled = on;
-            else opt.integrityHints = on;
+            else if (name == L"integrity-hints") opt.integrityHints = on;
+            else if (name == L"notify") opt.notifyEnabled = on;
+            else opt.notifyMerge = on;
+            return;
+        }
+
+        // --notify-detail：只认那三档。认不了就整条不认，不退化成默认的 title ——
+        // 那等于把一次"我想少写点"的尝试变成"照旧把窗口标题写上锁屏"，方向正好相反。
+        if (name == L"notify-detail") {
+            const std::wstring v = ToLower(Trim(value));
+            if (v == L"title") opt.notifyDetail = NotifyDetail::kTitle;
+            else if (v == L"basic") opt.notifyDetail = NotifyDetail::kBasic;
+            else if (v == L"minimal") opt.notifyDetail = NotifyDetail::kMinimal;
+            else {
+                std::wstring list;
+                for (const wchar_t* const* p = kNotifyDetailValues; *p; ++p) {
+                    if (p != kNotifyDetailValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kInvalidValue, Msg(L"cli.notify_detail_value"), L"--notify-detail",
+                    value, list);
+            }
+            return;
+        }
+
+        // --purpose：一句由调用方自己写的话。这里只判长度与"整条为空"，不判内容 ——
+        // 本工具不读懂它在说什么，也不据它决定截谁、要不要批准、结果算不算成功。
+        // 控制字符与换行留给展示层折成空格（Notification.cpp 那份 XML 转义），不在这里改写原文：
+        // -v 的回显要交回用户敲的那一句本身。
+        if (name == L"purpose") {
+            if (value.size() > cli_limits::kNotifyPurposeMaxChars) {
+                Err(codes::kPurposeTooLong, Msg(L"cli.purpose_too_long"), L"--purpose", value,
+                    Msgf(L"cli.purpose_too_long_hint", cli_limits::kNotifyPurposeMaxChars));
+                return;
+            }
+            opt.purpose = value;
             return;
         }
 

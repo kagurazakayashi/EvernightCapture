@@ -199,6 +199,35 @@ history.file_exists_hint	换一张再来一次；历史归档名撞上已有文�
 history.commit_failed	历史副本没提交成功
 history.same_file	主输出的名字恰好就是这一次要用的历史归档名，副本已跳过（免得盖掉刚交出去的那一张）
 history.same_file_hint	把图写进 history 那棵树里时会出现这一条。主图与它的交付事实原样保留；想要副本就换一个不在 history 里的输出名
+
+# ---------------------------------------------------------------------------
+# 截图后的桌面通知（src/Notification.cpp）：正文模板与两条失败码
+#
+# 通知的内容会进入系统通知中心，而那块地方在锁屏上也读得到。三档 detail 决定这里写出多少
+# 用户数据，判据只在 MakeTargetNotifyPayload 一处。两条码共同的规矩：图早就落地了，
+# 通知失败永远不是截图失败，也不改退出码。
+# ---------------------------------------------------------------------------
+notify.toast.window	已截取窗口
+notify.toast.screen	已截取屏幕
+notify.toast.merged	已截取 %1 个目标
+notify.line.purpose	用途：%1
+notify.line.title	标题：%1
+notify.line.device	屏幕：%1
+notify.line.owner	进程：%1（%2）
+notify.line.hwnd_only	句柄：%1
+notify.line.saved_history	历史副本：%1
+notify.line.saved_output	已保存：%1
+notify.line.saved_stdout	已写到标准输出
+notify.row.title_owner	%1（%2）
+notify.row.device	屏幕：%1
+notify.row.owner	%1
+notify.row.file	%1
+notify.row.more	另有 %1 个，完整清单见结果
+notify.stdout_placeholder	标准输出
+notify.send_failed	通知没能交给系统的通知平台
+notify.send_failed_hint	图已经正常交付，这一条只说通知没弹出去。检查 Windows 通知设置、专注助手，以及本程序有没有注册过 AppUserModelID（那一条由安装器登记）；通知失败从不代表截图失败
+notify.unavailable	这台机器问不出通知平台
+notify.unavailable_hint	图已经正常交付，只是这一条通知根本没开始发（套间起不来、接口问不出来，或那一次调用连一个可信的错误码都没交回）。要查的是执行环境与权限，不是通知设置
 io.timeout_delivered	图已完整交付（%1 字节），但这一次交付结束时自动预算 %2 ms 已用尽（实际用时 %3 ms）
 io.timeout_delivered_hint	已经落地的这一张不会被回滚，也不会从 images 里消失；这条说的只是这一批没在预算内结束。加大 --timeout-ms，或换一条不在提交那一步等很久的输出：目标目录挪到本地盘，或先把读走标准输出的那一方准备好
 io.output_collision	多个目标算出同一个输出名，整批没有截图也没有写文件
@@ -482,6 +511,10 @@ opt.no-config	本次完全忽略配置文件，只用内置默认与本次命令
 opt.show-config	只读地交出本次这份配置：读的是哪个文件、有没有读到、每一项生效偏好各来自哪个来源（不选窗口、不取像素、不弹框、不建目录）
 opt.history	本次要不要给每张完成交付的图另存一份历史副本（on / off），覆盖配置里那条
 opt.integrity-hints	本次要不要附完整性方面的解释文字（on / off）；错误码、原值与交付事实从来不受它影响，关掉它也修不好权限
+opt.notify	本次每张交付完成后要不要交一条桌面通知（on / off），覆盖配置里那条；弹不弹都不改交付事实与退出码
+opt.notify-merge	本次多个目标是合并成一条通知还是每个目标一条（on / off），覆盖配置里那条
+opt.notify-detail	通知里写多细：title 带窗口标题、basic 只报归属、minimal 只报落点。通知会进系统通知中心，锁屏上也读得到
+opt.purpose	本次截图用途的一句话，写进通知正文第一行；只给人读，不参与任何判据，长度有上限
 opt.no-crop	取消配置文件里那一组裁剪（本次一个裁剪都不做）；与本次的 --roi / --client-area 同时给出算冲突
 opt.no-scale	取消配置文件里那一组缩放（本次不缩放）；与本次的 --scale 同时给出算冲突
 config.not_found	要读的配置文件不存在
@@ -520,5 +553,8 @@ config.path_unresolvable_hint	定不出这份配置所在的目录，或那条�
 cli.config_view_conflict	--show-config 只读地问这份配置，不能与截图意图或别的查询命令同时给出
 cli.config_view_conflict_hint	配置视图接受 --config / --no-config 与要观察的偏好覆盖参数（--lang / -v / -q / --capture / --cursor / --hdr / --out / --format / --quality / --no-overwrite / 裁剪缩放 / 两条期限 / --history / --integrity-hints / --limit）；窗口条件、--monitor、选择策略、--yes / --dry-run 与别的查询命令请另起一次
 cli.onoff_value	这个取值只认 on 或 off
+cli.notify_detail_value	这一档只认 title、basic 或 minimal
+cli.purpose_too_long	--purpose 太长了
+cli.purpose_too_long_hint	这一句的上限是 %1 个字符；通知那一格放不下更长的一句话
 cli.crop_cancel_conflict_hint	--no-crop 是用来取消**配置文件里那一组**裁剪的，它与本次亲手写的 --roi / --client-area 说的正好相反。去掉 --no-crop，或去掉那一条裁剪
 cli.scale_cancel_conflict_hint	--no-scale 是用来取消**配置文件里那一组**缩放的，与本次写的 --scale 不能同时成立。去掉 --no-scale，或去掉那一条 --scale
