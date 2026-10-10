@@ -43,8 +43,10 @@ const std::vector<PathScopeEntry>& RegisteredCapturePaths() {
 PixelScope ScopeOf(const std::wstring& path) { return ScopeOf(path.c_str()); }
 
 bool NeedsHumanConsent(const wchar_t* path, bool yesGiven) {
-    if (ScopeOf(path) == PixelScope::kDesktop) return true;
-    return !yesGiven;
+    // "给了 --yes 就免掉程序确认"这一条判据只在 core/Authorization.h 写一次
+    //（YesGivenExempts：只有绑定窗口自己的画面那一档能免）。这里负责的是另一半事实：
+    // 这条路径的像素到底从哪来。
+    return !YesGivenExempts(ScopeOf(path), yesGiven);
 }
 
 const wchar_t* WindowPathOf(CaptureMethod method) {

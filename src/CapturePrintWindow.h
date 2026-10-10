@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】PrintWindow 通道声明（让目标窗口自己画到 DC）。共用模型见 src/core/。
 // PrintWindow 取帧通道（--capture printwindow）：让窗口自己画到 DC。
 
 #include <cstdint>

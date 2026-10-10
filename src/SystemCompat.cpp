@@ -1,3 +1,4 @@
+// 【平台层 · Windows】本机版本与通道门槛探测的实现（判据本体在 SystemCompat.h，那份是平台无关的表）。
 #include "SystemCompat.h"
 
 #include <string>

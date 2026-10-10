@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】辅助进程管道的重叠 I/O 状态机：HANDLE / OVERLAPPED 都只在本文件以内出现。
 // 一次重叠（异步）管道 I/O 的生命周期状态机。
 //
 // 这里解决的是一个 Win32 契约问题：CancelIoEx **只请求**取消，它返回时操作可能仍在飞行中。

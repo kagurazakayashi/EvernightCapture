@@ -554,7 +554,7 @@ ScreenIdentityCheck CompareScreenIdentity(const ScreenCandidate& wanted,
 }
 
 SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget,
-                                      const RECT& approvedArea,
+                                      const PhysRect& approvedArea,
                                       const std::vector<ScreenCandidate>& current,
                                       ScreenCandidate* fresh) {
     ScreenCandidate now{};
@@ -569,8 +569,8 @@ SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget,
     }
     // 身份说形状没变，还要与"刚批准的那一片"再对一次：批准区域是人看过的那份事实，
     // 采样矩形越出它以外就不是被批准的画面。零容差 —— 与 DesktopPermit::Covers 同一判据。
-    const RECT& b = now.screen.bounds;
-    const RECT& a = approvedArea;
+    const PhysRect& b = now.screen.bounds;
+    const PhysRect& a = approvedArea;
     if (b.left < a.left || b.top < a.top || b.right > a.right || b.bottom > a.bottom) {
         return SamplingRecheck::kStale;
     }

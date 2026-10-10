@@ -22,6 +22,7 @@
 #include "Lang.h"
 #include "WorkerIo.h"
 #include "WorkerProtocol.h"
+#include "platform/windows/WinBridge.h"   // WaitTimeout：截止时间到 Win32 等待参数的换算在平台侧
 
 namespace ecapture {
 namespace {
@@ -909,7 +910,7 @@ void RunTask(const Task& task, Reply* reply) {
         case kTaskMatchWindows: {
             MatchRequest req;
             req.match = task.match;
-            req.onScreens = task.onScreens;
+            req.onScreens = FromNativeRects(task.onScreens);
             const MatchOutcome m = EnumerateMatches(req);
             reply->status = m.status;
             reply->detail = WideFromAscii(m.detail);

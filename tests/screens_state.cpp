@@ -57,8 +57,8 @@ bool Contains(const std::wstring& haystack, const std::wstring& needle) {
     return haystack.find(needle) != std::wstring::npos;
 }
 
-RECT RectOf(int l, int t, int r, int b) {
-    RECT rc{};
+PhysRect RectOf(int l, int t, int r, int b) {
+    PhysRect rc{};
     rc.left = l;
     rc.top = t;
     rc.right = r;
@@ -68,7 +68,7 @@ RECT RectOf(int l, int t, int r, int b) {
 
 // 一条「什么都问得出来」的候选：设备名带前缀、devnode 路径与适配器路径都有真值、
 // DPI 与旋转都读到了。每条用例只改自己那一项，失败时才知道是谁动的。
-ScreenCandidate Healthy(uint32_t ordinal, const wchar_t* device, RECT bounds, bool primary,
+ScreenCandidate Healthy(uint32_t ordinal, const wchar_t* device, PhysRect bounds, bool primary,
                         const wchar_t* path) {
     ScreenCandidate c;
     c.screen.ordinal = ordinal;
@@ -106,7 +106,7 @@ ScreenCandidate Healthy(uint32_t ordinal, const wchar_t* device, RECT bounds, bo
 
 // 没有 facts 的那一档：编号 / 主屏 / all / 设备名这四种选择器都不需要显示配置，
 // 这时每一问都是"没问过"，而不是"问出来是空"。
-ScreenCandidate WithoutFacts(uint32_t ordinal, const wchar_t* device, RECT bounds, bool primary) {
+ScreenCandidate WithoutFacts(uint32_t ordinal, const wchar_t* device, PhysRect bounds, bool primary) {
     ScreenCandidate c = Healthy(ordinal, device, bounds, primary, L"");
     c.facts = ScreenFacts{};
     c.facts.dpi.read = ReadState::kFailed;
@@ -366,7 +366,7 @@ void TestIdentityRecheck() {
 void TestSamplingRecheck() {
     const std::vector<ScreenCandidate> all = TwoScreens();
     const ScreenCandidate& wanted = all[1];
-    const RECT approved = wanted.screen.bounds;   // 判定器刚批准的那一片（= 弹框前那一刻的矩形）
+    const PhysRect approved = wanted.screen.bounds;   // 判定器刚批准的那一片（= 弹框前那一刻的矩形）
     ScreenCandidate fresh{};
 
     Check(RecheckScreenSampling(wanted, approved, all, &fresh) == SamplingRecheck::kOk &&

@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "platform/windows/WinBridge.h"   // WindowScreenRect 交回的是原生 RECT，进共用结构前转一次
+
 namespace ecapture {
 namespace {
 
@@ -15,8 +17,8 @@ bool CaptureWindowBitBlt(uint64_t hwndValue, uint32_t /*timeoutMs*/, const Deskt
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
 
-    const RECT rect = WindowScreenRect(hwnd);
-    if (rect.right <= rect.left || rect.bottom <= rect.top) {
+    const PhysRect rect = FromNativeRect(WindowScreenRect(hwnd));
+    if (RectIsEmpty(rect)) {
         CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"),
                      codes::kWindowGone);
         return false;
@@ -30,7 +32,7 @@ bool CaptureScreenBitBlt(const ScreenInfo& screen, uint32_t /*timeoutMs*/,
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
 
-    const RECT& rect = screen.bounds;
+    const PhysRect& rect = screen.bounds;
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
         CaptureError(err, kChannel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.screen_rect_broken"));
         return false;

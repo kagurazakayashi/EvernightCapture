@@ -14,13 +14,9 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
-#include "CaptureCommon.h"
 #include "CliOptions.h"
+#include "core/Geometry.h"   // PhysRect：--monitor 限缩到哪几块屏的矩形
+#include "core/Status.h"     // BlockedStatus：那一步停在哪儿（与辅助进程同一份线上词表）
 
 namespace ecapture {
 
@@ -73,7 +69,7 @@ struct WindowInfo {
 // 条件求值的输入：解析过的匹配条件，加上 --monitor 限缩到哪几块屏的矩形。
 struct MatchRequest {
     MatchOptions match;
-    std::vector<RECT> onScreens;   // 空 = 不限屏
+    std::vector<PhysRect> onScreens;   // 空 = 不限屏
 };
 
 // 条件求值的结果。失败只给原因码（文字由调用方按 --lang 现取），

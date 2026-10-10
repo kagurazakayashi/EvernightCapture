@@ -33,20 +33,24 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "CaptureScope.h"
 #include "CliOptions.h"
 #include "ScreenMatch.h"
+#include "core/Error.h"     // NativeErrorCode：这一格放 GetLastError 的原值
+#include "core/Geometry.h"   // PhysRect：批准的那一块屏幕区域
 
 namespace ecapture {
 
 class Deadline;
 
 // 弹框要问的那一轮。全部由授权判定器算出，UI 只是把它显示出来。
+// 授权层与像素范围的语义在 core/Authorization.h（PixelScope、--yes 那条例外、
+// 各平台要求哪几层授权）。本文件是**这次请求的授权状态机**与它问人的那份接口。
+//
+// 【GUI 归属】IConsentPrompt 是程序自有界面的接缝：现在 Windows 的实现在这一头文件里
+// 声明（DialogConsentPrompt -> MessageBoxW），wxWidgets 那一份实现接进来时替换的是它，
+// ConsentGate 与 CaptureScope 那两层判据一行都不用改。Wayland 的系统授权是**另一层**
+// （操作系统自己的来源选择界面），本接缝既不实现它也不替代它。
 struct ConsentQuestion {
     PixelScope scope = PixelScope::kWindowContent;
     std::wstring path;                  // 实际要走的那条内部路径（dwm.screen / screen.wgc …）
@@ -68,7 +72,7 @@ enum class ConsentAnswer {
 struct ConsentReply {
     ConsentAnswer answer = ConsentAnswer::kUnavailable;
     // answer == kUnavailable 时这才是"为什么弹不出来"的 GetLastError 原值；其余为 0。
-    DWORD win32 = 0;
+    NativeErrorCode win32 = kNativeErrorNone;
     // 这一条是"期限到点、由本工具把框按'否'关掉"的标记：与"人自己点了否"同为拒绝，
     // 但调用方要能分清（--consent-timeout-ms 到点 vs 人不同意）。
     bool timedOut = false;
@@ -113,7 +117,7 @@ private:
 // 驱动在弹框线程上跑完一次的结果。沿用 MessageBoxW 的约定：code 0 = 没弹成。
 struct DialogResult {
     int code = 0;
-    DWORD win32 = 0;      // code == 0 时这才是失败原值（在弹框那条线程上取的）
+    NativeErrorCode win32 = kNativeErrorNone;  // code == 0 时这才是失败原值（在弹框那条线程上取的）
 };
 
 class DialogDriver {
@@ -131,7 +135,7 @@ public:
     // 期限到点后在**等待线程**上被调用，宽限期内每个轮询切片重试一次：
     // 试着把框关掉。dialogThreadId 是弹框线程的 id（0 = 那条线程还没跑起来）。
     // 返回值只表示"关的指令送出去了没有"；生效与否一律由 done 事件 + 宽限期裁决。
-    virtual bool RequestClose(DWORD dialogThreadId) = 0;
+    virtual bool RequestClose(uint32_t dialogThreadId) = 0;
 };
 
 // 看守一次弹框直到拿到一个可信的结束（或放弃这条框）。规则：
@@ -148,8 +152,11 @@ ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t t
 
 // 生产入口：用 MessageBoxW 弹一帧（flags 须含 MB_YESNO —— 到点关框的升级链要点那块
 // "否"按钮，见 Consent.cpp 的 MessageBoxDriver），其余规则同上。
-ConsentReply ShowConsentDialog(const std::wstring& body, const std::wstring& title, UINT flags,
-                               uint64_t timeoutMs);
+// 【过渡桥接】flags 这一格装的是 Win32 的 MessageBox 位（UINT 的原值），所以这条入口
+// 是 Windows 那一侧的实现；声明留在这里是为了让"弹框生命周期"与"授权状态机"只有一处说法。
+// wxWidgets 接进来后由它自己的确认框入口顶替这一条。
+ConsentReply ShowConsentDialog(const std::wstring& body, const std::wstring& title,
+                               uint32_t flags, uint64_t timeoutMs);
 
 // 一次桌面取样的凭证。构造函数私有，唯一的发出者是 ConsentGate，而 GrabScreenRect、
 // duplication、整屏 wgc 都把它做成必需参数 —— 内部退路想绕开授权就拿不到这张凭证，
@@ -164,21 +171,21 @@ public:
     // 当时批准的是不是这一块区域：**严格包含，零容差**。向外扩一个像素去采人没批准过的
     // 画面就是扩大批准的隐私范围，所以没有"测量误差"这回事可以豁免它 ——
     // 而正常取样的矩形本来就量在批准矩形之内（见 Consent.cpp 里 Covers 的注释）。
-    bool Covers(const RECT& area) const;
+    bool Covers(const PhysRect& area) const;
     const std::wstring& TargetKey() const { return targetKey_; }
-    RECT Approved() const { return approved_; }
+    PhysRect Approved() const { return approved_; }
 
 private:
     friend class ConsentGate;
-    DesktopPermit(std::wstring targetKey, RECT approved)
+    DesktopPermit(std::wstring targetKey, PhysRect approved)
         : targetKey_(std::move(targetKey)), approved_(approved) {}
 
-    static DesktopPermit Issue(std::wstring targetKey, RECT approved) {
+    static DesktopPermit Issue(std::wstring targetKey, PhysRect approved) {
         return DesktopPermit(std::move(targetKey), approved);
     }
 
     std::wstring targetKey_;
-    RECT approved_{};
+    PhysRect approved_{};
 };
 
 // 本次请求的目标清单里的一项：给判定器用来核对"要截的就是人看到的那些"。
@@ -189,7 +196,7 @@ struct GateTarget {
     bool screen = false;
     std::wstring key;      // 窗口给 0x…，屏幕给设备名 —— 与诊断里的 target 同形
     std::wstring subject;  // 目标身份那一段文字（DescribeWindow / DescribeScreen），不含区域
-    RECT area{};           // 该目标当前的屏幕矩形（窗口矩形 / 该屏矩形）
+    PhysRect area{};           // 该目标当前的屏幕矩形（窗口矩形 / 该屏矩形）
 };
 
 struct GateConfig {
@@ -231,13 +238,14 @@ public:
     // 弹框前把清单（目标、区域、拓扑、输出）冻结成快照：框上的文字与答"是"后签发的授权
     // 都出自这同一份；应答返回之后先重新查询拓扑与快照比较，确认期间布局变了就按
     // capture.consent_stale 收尾（不授权，也不把新布局当成批准过的基线）。
-    bool AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey, const RECT& area,
-                          std::optional<DesktopPermit>* out, Diagnostic* err);
+    bool AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey,
+                          const PhysRect& area, std::optional<DesktopPermit>* out,
+                          Diagnostic* err);
 
     // 流水线在取帧前量到的目标矩形要能刷新到这里，好让弹框上写的是"现在就在那儿"的矩形。
     // 只影响还没弹出去的那一轮：一旦弹框，本轮问的就是那一刻的快照，之后刷新改不了它。
     // 已经批准的桌面授权用的是快照里冻结的区域，所以挪动过的窗口会被判成"范围已变"而重新问。
-    void SetTargetArea(const std::wstring& targetKey, const RECT& area);
+    void SetTargetArea(const std::wstring& targetKey, const PhysRect& area);
 
     // 已经有人在某一级确认上答过"否"（或根本弹不出框）：本次请求剩下的采集一律停止。
     bool Refused() const { return windowLevel_ == Level::kRefused || desktopLevel_ == Level::kRefused; }
@@ -264,12 +272,13 @@ private:
     ConsentQuestion MakeQuestion(const wchar_t* path, PixelScope scope,
                                  const ConsentSnapshot& snap) const;
     Diagnostic Denied(const wchar_t* path, const std::wstring& targetKey, PixelScope scope,
-                      bool unavailable, DWORD gle, bool timedOut) const;
+                      bool unavailable, NativeErrorCode gle, bool timedOut) const;
     // 确认基线在弹框期间失效（拓扑变了）：这一问不授权，也不换基线重试
     Diagnostic Stale(const wchar_t* path, const std::wstring& targetKey) const;
     // 人同意、且确认后拓扑复核与快照一致之后：把快照里列出的目标区域冻结成本次桌面授权
     void GrantDesktop(const ConsentSnapshot& snap);
-    bool DesktopGrantedFor(const std::wstring& targetKey, const RECT& area, RECT* approved) const;
+    bool DesktopGrantedFor(const std::wstring& targetKey, const PhysRect& area,
+                           PhysRect* approved) const;
 
     GateConfig config_;
     IConsentPrompt& prompt_;

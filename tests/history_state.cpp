@@ -383,7 +383,7 @@ public:
         if (advance_ms) clock_ms += advance_ms;
         return SaveFileAtomic(path, bytes, overwrite, err);
     }
-    bool EmitBytes(const std::vector<uint8_t>& bytes, uint64_t* emitted, DWORD* ioError) override {
+    bool EmitBytes(const std::vector<uint8_t>& bytes, uint64_t* emitted, NativeErrorCode* ioError) override {
         ++stdoutCalls;
         const size_t n = fail_after < bytes.size() ? fail_after : bytes.size();
         buffer_.insert(buffer_.end(), bytes.begin(), bytes.begin() + n);

@@ -61,12 +61,12 @@ CropRequest ClientArea() {
     return r;
 }
 
-RECT Rect(int64_t l, int64_t t, int64_t r, int64_t b) {
-    RECT rc{};
-    rc.left = static_cast<LONG>(l);
-    rc.top = static_cast<LONG>(t);
-    rc.right = static_cast<LONG>(r);
-    rc.bottom = static_cast<LONG>(b);
+PhysRect Rect(int64_t l, int64_t t, int64_t r, int64_t b) {
+    PhysRect rc{};
+    rc.left = static_cast<int32_t>(l);
+    rc.top = static_cast<int32_t>(t);
+    rc.right = static_cast<int32_t>(r);
+    rc.bottom = static_cast<int32_t>(b);
     return rc;
 }
 
@@ -193,22 +193,22 @@ void TestDescribeImage() {
 
     // 窗口内容那几条：此刻量到的可见矩形尺寸与交付尺寸完全相同才承认
     const DeliveredImage viaMeasured =
-        DescribeDeliveredImage(200, 120, Rect(100, 50, 300, 170), true, RECT{}, false);
+        DescribeDeliveredImage(200, 120, Rect(100, 50, 300, 170), true, PhysRect{}, false);
     Check(viaMeasured.hasScreenRect && viaMeasured.screenRect.left == 100,
           "可见矩形与交付尺寸相同：承认它");
 
     // 尺寸不同 = 窗口在这中间改了大小，或者这条通道把透明边框一起交了（printwindow 那条退路）。
     // 这时不承认，宁可少写一个字段。
     const DeliveredImage mismatched =
-        DescribeDeliveredImage(200, 120, Rect(100, 50, 301, 170), true, RECT{}, false);
+        DescribeDeliveredImage(200, 120, Rect(100, 50, 301, 170), true, PhysRect{}, false);
     Check(!mismatched.hasScreenRect, "可见矩形宽 1 像素之差：不承认，也不写猜出来的屏幕坐标");
     const DeliveredImage biggerFrame =
-        DescribeDeliveredImage(214, 134, Rect(100, 50, 300, 170), true, RECT{}, false);
+        DescribeDeliveredImage(214, 134, Rect(100, 50, 300, 170), true, PhysRect{}, false);
     Check(!biggerFrame.hasScreenRect && biggerFrame.width == 214u,
           "交付的图像比可见矩形大（带上了透明边框）：同样不承认");
-    Check(!DescribeDeliveredImage(200, 120, RECT{}, false, RECT{}, false).hasScreenRect,
+    Check(!DescribeDeliveredImage(200, 120, PhysRect{}, false, PhysRect{}, false).hasScreenRect,
           "两问都没答案：hasScreenRect 为假，尺寸本身照旧交回");
-    Check(!DescribeDeliveredImage(200, 120, Rect(100, 50, 100, 170), true, RECT{}, false)
+    Check(!DescribeDeliveredImage(200, 120, Rect(100, 50, 100, 170), true, PhysRect{}, false)
                .hasScreenRect,
           "量到的矩形本身是零宽：不作为原点证据");
     const DeliveredImage preferSampled =
@@ -282,19 +282,19 @@ void TestRoiScreenMapping() {
               k.cropScreen.top == 70 && k.cropScreen.right == 160 && k.cropScreen.bottom == 110,
           "图像原点核实得出来：cropScreenRect = 原点 + 图像坐标偏移");
     // 图像原点 = cropScreenRect 左上角 − cropRect 左上角（文档里那条闭合关系）
-    Check(k.cropScreen.left - static_cast<LONG>(k.crop.x) == known.screenRect.left,
+    Check(k.cropScreen.left - static_cast<int32_t>(k.crop.x) == known.screenRect.left,
           "映射是自反的：由 cropScreenRect 与 cropRect 能倒推出图像原点");
 
     CropResolution unknown = ResolveWindowCrop(Roi(10, 20, 50, 40), Image(400, 300), NoClient());
     Check(unknown.status == CropStatus::kCropped && !unknown.hasCropScreen,
           "图像原点核实不出来：裁剪照做（它只需要图像尺寸），但那一行整个不出现");
 
-    // 屏幕坐标本身贴到 LONG 边缘时不许绕回：宁可少写一行
+    // 屏幕坐标本身贴到 int32 边缘时不许绕回：宁可少写一行
     const DeliveredImage edge =
-        ImageAt(400, 300, std::numeric_limits<LONG>::max() - 5, 0);
+        ImageAt(400, 300, std::numeric_limits<int32_t>::max() - 5, 0);
     CropResolution edgeRes = ResolveWindowCrop(Roi(10, 20, 50, 40), edge, NoClient());
     Check(edgeRes.status == CropStatus::kCropped && !edgeRes.hasCropScreen,
-          "加上偏移会超出 LONG 范围：不写 cropScreenRect，也不交一个绕回来的坐标");
+          "加上偏移会超出 int32 范围：不写 cropScreenRect，也不交一个绕回来的坐标");
 }
 
 // ---------------------------------------------------------------------------

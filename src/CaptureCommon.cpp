@@ -12,6 +12,7 @@
 #include <dwmapi.h>
 
 #include "ImageOps.h"
+#include "platform/windows/WinBridge.h"   // RECT <-> PhysRect：只有这一层认识原生矩形
 
 using Microsoft::WRL::ComPtr;
 
@@ -433,7 +434,7 @@ bool ClientScreenRect(HWND hwnd, RECT* out) {
 // 屏幕取图、消息泵与 z 序验证
 // ---------------------------------------------------------------------------
 
-bool PermitCovers(const DesktopPermit& permit, const RECT& area, const wchar_t* channel,
+bool PermitCovers(const DesktopPermit& permit, const PhysRect& area, const wchar_t* channel,
                   Diagnostic* err) {
     if (permit.Covers(area)) return true;
     // 凭证是授权判定器在人看过的那块区域上签发的。现在要取的矩形不在它里面，说明目标在
@@ -443,7 +444,7 @@ bool PermitCovers(const DesktopPermit& permit, const RECT& area, const wchar_t* 
     return false;
 }
 
-bool GrabScreenRect(const RECT& rect, const wchar_t* channel, const wchar_t* path,
+bool GrabScreenRect(const PhysRect& rect, const wchar_t* channel, const wchar_t* path,
                     const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err) {
     if (!PermitCovers(permit, rect, channel, err)) return false;
 
@@ -488,7 +489,7 @@ bool GrabScreenRect(const RECT& rect, const wchar_t* channel, const wchar_t* pat
     // 实际截到哪一块"一起交回，调用方才不会把一张比目标小的图当成完整目标（窗口内容路径不填这几项）。
     out->reportsCrop = true;
     out->requestedRect = rect;
-    out->capturedRect = clip;
+    out->capturedRect = FromNativeRect(clip);
     out->clipped = clip.left != left || clip.top != top || clip.right != left + width ||
                    clip.bottom != top + height;
     out->rotation = 0;   // GDI 拷的就是屏幕上此刻的朝向，没有再转一次

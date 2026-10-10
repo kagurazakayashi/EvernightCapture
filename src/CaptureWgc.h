@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】WGC（Windows.Graphics.Capture）通道声明。共用模型见 src/core/。
 // Windows.Graphics.Capture 取帧：一次调用抓一帧，转成 CPU 可读的 BGRA8。
 
 #include <cstdint>

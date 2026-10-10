@@ -1738,6 +1738,78 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 - **產物**：`build\installer\EvernightCapture-<版本>-<架構>-setup.exe` 與緊貼的 `<...>.exe.sha256`。版本取自 `src\Version.h`（沒有第二份手寫版本），命名帶版本與架構，末尾摘要會重中路径、版本、`buildId` 與 SHA-256。`build\`（staging、安裝封裝、日誌）已在 `.gitignore` 裡，不含入版發佈產物。帶時間戳的產物不承諾逐位元組可重現。
 - 兩個腳本都不要求管理員權限，也不修改系統的執行原則；上面的例子只用 `-ExecutionPolicy Bypass` 對單一程序生效，不是全域設定。
 
+## 跨平台分層與功能矩陣（維護者）
+
+本倉庫正在從「只有 Windows 的取圖工具」長成「共用一套模型、三條平台路線」。
+**這一步只畫界線，沒有實作 Linux 截圖**：X11 與 Wayland 後端一行都沒有編進構建，所以下面那兩列
+全部是「計畫支援」或「明確不做」。把沒有實作的格子寫成可用，就是造假。
+
+### 目錄與歸屬
+
+| 位置 | 是什麼 | 相依約束 |
+| ---- | ------ | -------- |
+| `src/core/` | 平台無關的模型與判據：`Platform.h` 平台身分、`Geometry.h` 座標、`Frame.h` 圖像影格、`Status.h` 卡住的原因碼、`Target.h` 目標描述、`Error.h` 錯誤碼與三值結果、`Authorization.h` 像素範圍與授權層、`Capability.h` 功能矩陣 | 一條都不 include `windows.h`，也不出現 HWND / RECT / HANDLE / HRESULT / WinRT |
+| `src/` 裡這幾份共用模型與策略頭 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 與上面同一條：這些頭說的是「截什麼、批准了什麼、這一影格長成什麼樣」，與用哪家 API 弄到手無關 |
+| `src/platform/windows/WinBridge.h` | 核心與 Win32 之間**唯一**的轉換處：`RECT ↔ PhysRect`（單個與整批）與 `Deadline → 等待毫秒` | 只允許平台層的 `.cpp` include 它。轉換呼叫出現的那一行，就是審查看得見「這裡跨了一次平台界線」的那一行 |
+| `CaptureCommon.h`、五條通道頭、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【平台層 · Windows】GDI / D3D / WinRT / 命名管道 / 字串資源的真實使用者 | 每個檔案開頭就寫明自己是平台層；共用核心反向 include 它們就是破界 |
+
+**這不是把 `RECT` 換個名字**：`PhysRect` 的四條邊寫死成 `int32_t`，而「空矩形」「包含」「量不出來」
+這三條判據在 `core/Geometry.h` 只有一份實作，四個平台共用同一份算術。`RECT` 與 `LONG` 仍是
+Windows 那側的原生型別，只在通道內部與輔助進程管道的線上格式裡出現，進出共用結構都要顯式轉換。
+
+### 共用模型怎麼表達「不知道」
+
+| 種類 | 型別 | 沒有答案時長什麼樣 |
+| ---- | ---- | ------------------ |
+| 座標 | `PhysRect` / `MaybePhysRect` | `MaybePhysRect.known = false`；零尺寸矩形是一條**量出來的事實**，與「問不出來」是兩種下場 |
+| 目標 | `TargetRef`（平台 + 工作階段 + 識別 + 識別形狀） | 識別是 `kUnknownNativeId` / `form = kUnknown`；`SameTargetAs()` 跨平台、跨工作階段或問不出來時回 `Tri::kUnknown`，不回 `kNo` |
+| 圖像影格 | `CapturedFrame` | 不綁任何原生資源（HANDLE）；`reportsCrop = false` 說的是「這條通道沒有丟區域」，`cursorStateKnown = false` 說的是「沒有讀數」，`displayHdrState = kUnknown` 絕不折成 SDR |
+| 錯誤 | `NativeErrorCode`（32 位元無符號承載） | `0 = 沒有錯誤可報`；欄位名字（`win32` / `hresult`）負責說明它是哪一種來源，跨平台時**不許**拿數值比數值 |
+| 能力 | `Tri` / `CapStatus` / `MatrixStatus` | 編譯期有沒有實作、這台機器現在讓不讓走、本專案實測過沒有，三件事分開寫 |
+| 授權 | `PixelScope` / `GrantLayer` / `ConsentAnswer` | 關框、彈不出框、到點沒人答一律是拒絕，不是同意 |
+
+### 功能矩陣
+
+取值詞表（與 `src/core/Capability.h` 同一份，一格都不許缺）：
+**已實作**（本構建有實作且在登錄過的環境實測過）· **執行期探測**（有實作，能不能兌現要問本機）·
+**未驗證**（有實作，但本專案在那種環境沒實測過）· **計畫支援**（本構建還沒實作）· **明確不做**（平台不提供這條路，或設計上決定不走）。
+
+| 能力 | Windows | Linux X11 | Linux Wayland |
+| ---- | ------- | --------- | ------------- |
+| 目標選擇（列出視窗與螢幕並按條件命中） | 已實作 | 計畫支援（XWayland 只看得到 X11 視窗） | 明確不做（合成器不給用戶端全域視窗清單，本工具不虛構一個） |
+| 視窗截圖（只含所選視窗自己的畫面） | 已實作 | 計畫支援 | 計畫支援（走 Portal；能不能按視窗取要探測入口實作） |
+| 螢幕截圖（整塊輸出的桌面像素） | 已實作，必人工確認 | 計畫支援 | 計畫支援（Portal + PipeWire） |
+| 互動授權 | 已實作（只有程式確認框；Windows 沒有每次呼叫的系統截屏授權） | 計畫支援（同 Windows，只有程式確認這一級） | 計畫支援（程式確認 + 系統授權**兩層都要**，誰也不替代誰） |
+| 最小化視窗的畫面 | 明確不做（`--list=all` 能列出來，但不截取） | 計畫支援（未映射視窗只有舊 pixmap，要如實說明來源） | 明確不做（沒有視窗清單也沒有視窗代碼，沒有可指的對象） |
+| 游標（`--cursor`） | 執行期探測（WGC 那個開關有版本門檻；桌面複製那兩條登錄為不可核實） | 計畫支援 | 計畫支援（取決於入口給不給游標中繼資料） |
+| HDR（`--hdr`） | 未驗證（tone mapping 已實作並離線逐點判過，但本專案沒有能開 HDR 的顯示器實測過） | 計畫支援 | 計畫支援 |
+| 無圖形工作階段 | 已實作（說明 / 版本 / 設定 / 能力查詢照跑；桌面像素那幾條如實報 unavailable） | 計畫支援 | 計畫支援 |
+
+`--capabilities` 目前仍然只報 Windows 那一路的探測結果，這份矩陣進不進 JSON 是後續步驟 ——
+在那之前報一堆「計畫支援」只會讓呼叫方誤判。矩陣、本節與 README 必須一起改。
+
+### 隱私界線（寫進判據，不只是寫在文件裡）
+
+1. 只有**真正綁定所選視窗自己的畫面**、不從桌面採別的像素的那條路徑，才可能被 `--yes` 免掉程式確認；
+   先取全螢幕再裁成視窗大小仍然屬於桌面截圖。判據看的是像素從哪來，不看最後那張圖多大。
+2. 桌面像素那一級一定要有人明確點頭：`--yes`、`--quiet`、環境變數、呼叫身分都不能替代；
+   漏登錄的新路徑按桌面處理（預設更嚴格）。單一視窗失敗也不會悄悄改成「那就截桌面再裁」。
+3. 程式自己的確認框與作業系統的授權介面是兩層。Wayland 那一層（XDG Desktop Portal 的授權與來源選擇）
+   屬於桌面服務，本程式不仿製、不替代、不自動批准；反過來 Portal 記住了工作階段也不能省掉程式那一次確認。
+   `RequiredGrantLayers()` 把這一條寫成判據，`tests\core-boundary.ps1` 逐條釘住「少一層就不放行」。
+
+### 這一層的驗證入口
+
+| 命令 | 判什麼 |
+| ---- | ------ |
+| `.\tests\core-boundary.ps1` | 離線一層：`build\ecapture-core-tests.exe` 用共用模型跑判據（座標、影格、目標、矩陣、隱私），一個像素都不取、不彈框 |
+| `scripts/core-portability-check.sh` | Linux 一層：同一份 `tests/core_boundary_state.cpp` 用 g++ 編譯並執行，再加一條「這些頭不許滲平台型別」的靜態清單。**在那裡編得過，就是界線成立的機器證明** |
+
+兩條入口用同一個來源檔——它一條都不 include `windows.h`。這一步刻意沒做的（屬於後續步驟）：
+X11 / Wayland 後端、wxWidgets 取代 `DialogConsentPrompt` 與 WinRT toast、Portal + PipeWire 接線、
+把 `std::wstring`（UTF-16）換成明確宣告編碼的文字型別、輔助進程線上格式去掉 `RECT` / `HRESULT`、
+以及 `Report.h`（JSON 渲染屬核心、寫標準輸出屬平台服務）的再拆一分。
+
 ## 授權
 
 EvernightCapture 採用 [Mulan PSL v2（木蘭寬鬆許可證，第2版）](http://license.coscl.org.cn/MulanPSL2)，

@@ -305,7 +305,7 @@ NotifyOutcome SendCaptureNotifications(const std::vector<CapturedImage>& images,
     }
 
     for (const NotifyPayload& payload : payloads) {
-        HRESULT hr = 0;
+        NativeErrorCode hr = kNativeErrorNone;
         if (sender(payload, &hr)) {
             ++out.submitted;
             if (!payload.image.empty()) ++out.withImage;
@@ -327,7 +327,7 @@ NotifyOutcome SendCaptureNotifications(const std::vector<CapturedImage>& images,
             out.note.message = Msg(codes::kNotifySendFailed);
             AttachHint(&out.note);
             out.note.stage = stages::kNotify;
-            out.note.hresult = HResultText(out.lastError);
+            out.note.hresult = HResultText(static_cast<HRESULT>(out.lastError));
         }
         return out;
     }
@@ -341,7 +341,7 @@ NotifyOutcome SendCaptureNotifications(const std::vector<CapturedImage>& images,
     out.note.code = out.lastError == 0 ? codes::kNotifyUnavailable : codes::kNotifySendFailed;
     out.note.message = Msg(out.note.code.c_str());
     out.note.stage = stages::kNotify;
-    if (out.lastError != 0) out.note.hresult = HResultText(out.lastError);
+    if (out.lastError != 0) out.note.hresult = HResultText(static_cast<HRESULT>(out.lastError));
     return out;
 }
 

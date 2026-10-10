@@ -12,15 +12,14 @@
 #include <string>
 #include <vector>
 
+#include "core/Authorization.h"   // PixelScope 本体与 --yes 那条判据（三家平台共用一份）
+
 namespace ecapture {
 
 enum class CaptureMethod;
 
-// 一条实际执行到的内部路径的像素来源。
-enum class PixelScope {
-    kWindowContent,  // 只有所选窗口自己的画面
-    kDesktop,        // 可能含其它窗口 / 桌面像素
-};
+// PixelScope（这条路径的像素从哪来）本体在 core/Authorization.h：授权层要求、
+// 将来的 X11 / Wayland 后端与这张登记表读的都是同一个枚举，不在两处各写一遍。
 
 // 内部路径的机器名（进 JSON 的 images[].path，取值只增不改名）。
 // 一个通道可以有多条路径：dwm 的缩略图主路径不走屏幕，它的"把宿主窗口盖到目标位置上再拷

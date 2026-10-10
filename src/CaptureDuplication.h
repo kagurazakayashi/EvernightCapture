@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】Desktop Duplication 通道声明（DXGI 输出与桌面帧）。几何判据本身在 DupGeometry.h，那份是平台无关算术。
 // DXGI 桌面复制取帧通道（--capture duplication）：拿整张显示器的合成分，再按目标矩形裁剪。
 //
 // 这一条通道读的是**某一块输出**的合成分，所以有两件事必须说清楚：

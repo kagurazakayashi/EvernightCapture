@@ -819,7 +819,7 @@ inline constexpr uint64_t kMaxWindowListItems = 8192ull;
 // 判「到底命中多少个」看结果里的 pagination.matched，不是看本批交回几条。
 inline constexpr uint64_t kDefaultWindowListLimit = 50ull;
 // ---- --roi 的四条数上限 ----
-// 与帧的单边上限 kFrameMaxSide（src/CaptureCommon.h）**同一个数**：一条比交付图像还能宽的
+// 与帧的单边上限 kFrameMaxSide（src/core/Frame.h）**同一个数**：一条比交付图像还能宽的
 // 裁剪矩形本来就不成立，而 kFrameMaxSide 那条"16384 是 D3D11 纹理边长上限"的理由在这里同样
 // 成立。两份数字不许各写一套 —— 相等那条判据写在 tests\crop_state.cpp 里现场核对
 //（CliOptions.h 不去 include 取帧公共件，那会把 Consent / ScreenMatch 全拖进解析层）。

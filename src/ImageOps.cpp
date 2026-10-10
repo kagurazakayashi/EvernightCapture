@@ -129,7 +129,7 @@ bool CropFrame(CapturedFrame* frame, uint32_t x, uint32_t y, uint32_t width, uin
     return true;
 }
 
-bool RotateCropFrame(const CapturedFrame& frame, const RECT& srcRect, uint32_t angle,
+bool RotateCropFrame(const CapturedFrame& frame, const PhysRect& srcRect, uint32_t angle,
                      CapturedFrame* out) {
     if (!out) return false;
     if (InspectFrameShape(frame) != FrameShape::kOk) return false;

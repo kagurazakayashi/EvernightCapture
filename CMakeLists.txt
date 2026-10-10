@@ -783,3 +783,28 @@ target_link_libraries(ecapture-config-tests PRIVATE
 set_target_properties(ecapture-config-tests PROPERTIES OUTPUT_NAME "ecapture-config-tests")
 set_property(TARGET ecapture-config-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# ---------------------------------------------------------------------------
+# 跨平台核心边界的离线判据（由 tests\core_boundary.ps1 编译并运行）。
+#
+# 为什么单独一个可执行文件：这一步交付的是"共用核心 / 平台实现"的分界本身，而分界最容易在
+# 下一次改动里悄悄漏掉。这个程序的存在就是那道门 —— 它的源文件 tests\core_boundary_state.cpp
+# 一条都不 include windows.h，只用共用模型（src/core/ 与那几份共用数据模型头）。
+# 所以 Windows 这边编得过 = 搬走原生类型之后模型与判据仍然自洽；
+# 同一份文件在 Linux 上由 scripts\core-portability-check.sh 用 g++ 编得过 = 那一层真的平台无关。
+#
+# 这里**不**链任何 Windows 库，也不链 .rc 与资源：一链就把边界又糊回去了。
+# 链进来的生产源文件只有 CaptureScope.cpp（路径登记表与 --yes 那条例外的本体）。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-core-tests
+  tests/core_boundary_state.cpp
+  src/CaptureScope.cpp)
+
+target_include_directories(ecapture-core-tests PRIVATE src)
+target_compile_features(ecapture-core-tests PRIVATE cxx_std_20)
+set_target_properties(ecapture-core-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+target_compile_options(ecapture-core-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
+target_compile_definitions(ecapture-core-tests PRIVATE UNICODE _UNICODE NOMINMAX)
+set_target_properties(ecapture-core-tests PROPERTIES OUTPUT_NAME "ecapture-core-tests")
+set_property(TARGET ecapture-core-tests PROPERTY MSVC_RUNTIME_LIBRARY
+               "MultiThreaded$<$<CONFIG:Debug>:Debug>")

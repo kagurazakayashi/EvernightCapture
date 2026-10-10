@@ -28,7 +28,7 @@ void OptStr(Json& j, const wchar_t* key, const std::wstring& value) {
     j.Key(key).Value(value);
 }
 
-void WriteRect(Json& j, const wchar_t* key, const RECT& r) {
+void WriteRect(Json& j, const wchar_t* key, const PhysRect& r) {
     j.Key(key).Obj();
     j.Key(L"x").Value(static_cast<long long>(r.left));
     j.Key(L"y").Value(static_cast<long long>(r.top));
@@ -188,7 +188,7 @@ ScreenQueryResult BuildScreenQuery(const std::vector<ScreenCandidate>& all) {
     bool first = true;
     int64_t minX = 0, minY = 0, maxX = 0, maxY = 0;
     for (const ScreenCandidate& c : all) {
-        const RECT& b = c.screen.bounds;
+        const PhysRect& b = c.screen.bounds;
         if (b.right <= b.left || b.bottom <= b.top) continue;   // 零尺寸的条目不参与并集
         if (first) {
             minX = b.left;

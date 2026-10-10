@@ -37,11 +37,6 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "CliOptions.h"
 
 namespace ecapture {
@@ -52,6 +47,10 @@ struct MatchOptions;    // CliOptions.h：用户给的那些条件
 // ---------------------------------------------------------------------------
 // 选定那一刻的身份快照
 // ---------------------------------------------------------------------------
+// 中性承载：hwnd 这一格装的是 Windows 的 HWND 数值（本头文件从头到尾没有出现过 HWND 这个类型）。
+// 跨平台那份"目标怎么被说出来"在 core/Target.h（平台 + 会话 + 那一家自己的标识），
+// 各平台的后端接进来时由适配层把这里的快照映射进那个形状 —— 而不是把 HWND 换成另一个名字
+// 继续当三家共用的身份。
 struct WindowIdentity {
     uint64_t hwnd = 0;
     uint32_t pid = 0;

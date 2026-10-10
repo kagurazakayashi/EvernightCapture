@@ -5,12 +5,8 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>   // RECT（images[].rect 用的是屏幕矩形）
-
 #include "CliOptions.h"
+#include "core/Geometry.h"   // PhysRect：images[].rect 用的那块屏幕矩形
 #include "CropGeometry.h"   // ImageRect：images[].cropRect 用的那个图像像素坐标矩形
 #include "CursorControl.h"  // CursorReport：images[] 里光标那三个键的本体（判据在那个头文件）
 #include "HdrColor.h"       // HdrReport：images[] 里 HDR 那组键的本体（判据在那个头文件）
@@ -54,14 +50,14 @@ struct CapturedImage {
     // 这一帧的像素来源："window" = 只有所选窗口自己的画面，"desktop" = 屏幕上那块区域，
     // 可能含其它窗口。由 path 算出来，所以它与实际授权的那次判断同源，不会各说一套。
     std::wstring scope;
-    RECT rect{};               // 授权与实际取样的那块屏幕矩形（量不出来时整个键不输出）
+    PhysRect rect{};           // 授权与实际取样的那块屏幕矩形（量不出来时整个键不输出）
     // 会读桌面像素的那几条通道（duplication、拷屏幕的 bitblt）另外报告"实际截到的那一块"：
     // rect 是请求的目标矩形，capturedRect 是真正截到的那块，两者不同就是 clipped —— 调用方
     // 由此能判"这张图不是完整目标"，而不是拿一张比窗口小的图当成整个窗口。
     // reportsCrop 为假表示这条通道截的就是整个目标（窗口内容路径），没有丢区域这回事。
     bool reportsCrop = false;
-    RECT requestedRect{};
-    RECT capturedRect{};
+    PhysRect requestedRect{};
+    PhysRect capturedRect{};
     bool clipped = false;
     uint32_t rotation = 0;     // reportsCrop 为真时有效：交付前对桌面帧顺时针转的度数
     // 窗口内部裁剪（--roi / --client-area）：只有这一次真的裁了才写这一组字段。
@@ -77,7 +73,7 @@ struct CapturedImage {
     uint32_t fullWidth = 0;  // 裁之前那张整窗图像的尺寸
     uint32_t fullHeight = 0;
     bool hasCropScreen = false;
-    RECT cropScreen{};
+    PhysRect cropScreen{};
     // 等比缩小（--scale）：写过这条选项时这一组才有效（scaled 为真）。
     //   scaleApplied        这一次真的缩小了；false = 图本来就在天花板之内，原样交付
     //   scaleFromWidth/Height  缩之前那张（裁之后）图的尺寸；width/height 是缩之后的

@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include "ScreenIdentity.h"   // 选择器判据只有一份，见那个头文件顶部那四条规矩
+#include "platform/windows/WinBridge.h"   // MONITORINFO 的 rcMonitor（RECT）-> 共用坐标模型
 
 namespace ecapture {
 namespace {
@@ -20,13 +21,11 @@ BOOL CALLBACK CollectMonitor(HMONITOR hmon, HDC /*dc*/, LPRECT /*rect*/, LPARAM 
     s.monitor = reinterpret_cast<uint64_t>(hmon);
     s.ordinal = static_cast<uint32_t>(list->size() + 1);
     s.deviceName = info.szDevice;
-    s.bounds = info.rcMonitor;
+    s.bounds = FromNativeRect(info.rcMonitor);
     s.primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
     list->push_back(std::move(s));
     return TRUE;
 }
-
-bool RectNonEmpty(const RECT& r) { return r.right > r.left && r.bottom > r.top; }
 
 }  // namespace
 
@@ -68,10 +67,10 @@ std::vector<ScreenInfo> SelectScreens(const Options& opt, std::vector<Diagnostic
     return out;
 }
 
-std::vector<RECT> SelectedScreenRects(const Options& opt, std::vector<Diagnostic>* errors) {
-    std::vector<RECT> rects;
+std::vector<PhysRect> SelectedScreenRects(const Options& opt, std::vector<Diagnostic>* errors) {
+    std::vector<PhysRect> rects;
     for (const auto& s : SelectScreens(opt, errors)) {
-        if (RectNonEmpty(s.bounds)) rects.push_back(s.bounds);
+        if (!RectIsEmpty(s.bounds)) rects.push_back(s.bounds);
     }
     return rects;
 }

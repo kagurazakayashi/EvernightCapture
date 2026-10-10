@@ -12,12 +12,8 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "CliOptions.h"
+#include "core/Geometry.h"   // PhysRect：该屏在虚拟屏幕上的矩形（跨平台共用坐标模型）
 
 namespace ecapture {
 
@@ -25,7 +21,7 @@ struct ScreenInfo {
     uint64_t monitor = 0;     // HMONITOR，wgc 通道拿它建 GraphicsCaptureItem
     uint32_t ordinal = 0;     // 1 起的屏幕编号
     std::wstring deviceName;  // "\\.\DISPLAY1"，duplication 通道按它挑 DXGI 输出
-    RECT bounds{};            // 该屏在虚拟屏幕上的矩形
+    PhysRect bounds{};        // 该屏在虚拟屏幕上的矩形
     bool primary = false;
 };
 
@@ -37,7 +33,7 @@ std::vector<ScreenInfo> EnumScreens();
 std::vector<ScreenInfo> SelectScreens(const Options& opt, std::vector<Diagnostic>* errors);
 
 // "这个窗口算不算落在所选屏上"：矩形与该屏有重叠即算，跨屏窗口在两块屏上都能被找到。
-std::vector<RECT> SelectedScreenRects(const Options& opt, std::vector<Diagnostic>* errors);
+std::vector<PhysRect> SelectedScreenRects(const Options& opt, std::vector<Diagnostic>* errors);
 
 // 屏幕目标的"身份"在本进程内靠设备名追。编号（ordinal）只是 EnumDisplayMonitors 在本次枚举里
 // 给的位置，热插拔或改分辨率之后同一个编号可能指到另一块屏上，所以它不能用来核对"还是那块屏"。

@@ -22,12 +22,8 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>   // DWORD（那一次写交回来的 Win32 错误码原值）
-
 #include "Capture.h"
+#include "core/Error.h"   // NativeErrorCode（那一次写交回来的系统错误码原值）
 #include "Deadline.h"
 #include "HistoryArchive.h"   // 主交付之外那一份历史副本（接口在这，命名与提交在 HistoryArchive.h）
 
@@ -50,7 +46,7 @@ public:
     // 图片字节写标准输出：true = 全部字节已达。emitted 回写实际发出的字节数 ——
     // "一个字节都没出去"与"半段流留在管道里"是两种现场，调用方要分得开。
     virtual bool EmitBytes(const std::vector<uint8_t>& bytes, uint64_t* emitted,
-                           DWORD* ioError) = 0;
+                           NativeErrorCode* ioError) = 0;
 };
 
 // 交付这一步要问的几件事：同一份预算（整批共用那一份，不许重新领）、哪一个出口、

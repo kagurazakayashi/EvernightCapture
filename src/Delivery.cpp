@@ -128,7 +128,7 @@ void DeliverImage(const DeliveryRun& run, const DeliveryTarget& target, PendingI
     // ---- 3) 开工：这一段没有可安全中断的等待点，只能让它跑完 ----
     Diagnostic ioErr;
     uint64_t emitted = 0;
-    DWORD gle = 0;
+    NativeErrorCode gle = 0;
     bool delivered = false;
     if (toStdout) {
         delivered = run.sink->EmitBytes(encoded, &emitted, &gle);

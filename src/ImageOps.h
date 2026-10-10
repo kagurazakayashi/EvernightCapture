@@ -7,7 +7,8 @@
 #include <cstdint>
 #include <vector>
 
-#include "CaptureCommon.h"
+#include "core/Frame.h"    // CapturedFrame 与帧上限（跨平台共用形状）
+#include "core/Geometry.h"  // PhysRect：这张帧自己的像素坐标里的那一块
 
 namespace ecapture {
 
@@ -84,7 +85,7 @@ bool CropFrame(CapturedFrame* frame, uint32_t x, uint32_t y, uint32_t width, uin
 // 90/270 时 srcRect 本来就是交换过宽高的那一块，转回来正好等于交付尺寸，不会二次交换。
 // 输出行距恒等于 width*4（源帧的行距填充不参与，也不复制到结果里）。
 // 源帧形状不合法、srcRect 越界、相加绕回、结果超过单边与整帧上限都返回 false。
-bool RotateCropFrame(const CapturedFrame& frame, const RECT& srcRect, uint32_t angle,
+bool RotateCropFrame(const CapturedFrame& frame, const PhysRect& srcRect, uint32_t angle,
                      CapturedFrame* out);
 
 // 行距补齐（stride > width*4）重排成紧凑行，编码接口只接受紧凑行。

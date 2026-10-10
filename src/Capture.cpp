@@ -24,6 +24,7 @@
 #include "CaptureDwm.h"
 #include "CaptureDuplication.h"
 #include "CapturePrintWindow.h"
+#include "platform/windows/WinBridge.h"   // RECT <-> PhysRect；隔离调用的矩形走线上格式
 #include "Consent.h"
 #include "CropGeometry.h"
 #include "CursorControl.h"   // 光标能力的闸门与 requested/effective/basis 那三个键的合成（判据在那个头文件）
@@ -73,7 +74,7 @@ struct Target {
     // 选定那一刻问到的屏幕身份（按标识选屏那一路才有答案）。取帧之前的复核靠它分辨
     // "还是那块屏"与"这个设备名已经发给另一块面板了"—— 只看名字的话后者看不出来。
     ScreenFacts screenFacts;
-    RECT area{};  // 授权与 JSON 都用它：窗口 = 整窗外框矩形，屏幕 = 该屏矩形
+    PhysRect area{};  // 授权与 JSON 都用它：窗口 = 整窗外框矩形，屏幕 = 该屏矩形
 
     // %n 用的名字
     std::wstring Name() const { return isScreen ? ScreenDisplayName(screen) : window.title; }
@@ -98,7 +99,7 @@ struct AttemptAuth {
 };
 
 AttemptAuth AuthorizeAttempt(ConsentGate& gate, const wchar_t* path, const std::wstring& targetKey,
-                             const RECT& area, Diagnostic* err) {
+                             const PhysRect& area, Diagnostic* err) {
     AttemptAuth auth;
     if (ScopeOf(path) != PixelScope::kDesktop) {
         auth.ok = gate.AuthorizeWindow(path, targetKey, err);
@@ -187,7 +188,7 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
 //
 // timeoutMs 是"这一步自己愿意等多久"（等帧、泵消息），dl 是"这一次运行还剩多少预算"。
 // 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
-bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
+bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const PhysRect& area,
                        const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
                        const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
                        CapturedFrame* out, Diagnostic* err) {
@@ -315,7 +316,7 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
 // 显式指定的那条绝不回退：用户要哪个就要哪个。
 // 交给这里的不是裸句柄，而是选定那一刻的快照与查询层（WindowTarget）—— 每一次尝试之前
 // 都要照它复核一遍，所以通道手里没有"跳过复核直接取像素"的那条路可走。
-bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const RECT& area,
+bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const PhysRect& area,
                        const WindowTarget& win, CaptureMethod method,
                        const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
                        const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
@@ -436,7 +437,7 @@ bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
                      CapturedImage* img, std::optional<Diagnostic>* mappingNote, Diagnostic* err) {
     if (opt.crop.mode == CropMode::kNone) return true;
     const HWND hwnd = reinterpret_cast<HWND>(t.window.hwnd);
-    const RECT visible = WindowScreenRect(hwnd);
+    const PhysRect visible = FromNativeRect(WindowScreenRect(hwnd));
     const DeliveredImage image = DescribeDeliveredImage(
         frame->width, frame->height, visible,
         visible.right > visible.left && visible.bottom > visible.top, frame->capturedRect,
@@ -444,9 +445,9 @@ bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
 
     ClientAreaProbe client;
     if (opt.crop.mode == CropMode::kClientArea) {
-        RECT area{};
+        RECT area{};   // 原生问答交回的是 RECT，进共用结构前转一次
         client.readable = ClientScreenRect(hwnd, &area);
-        client.screenRect = area;
+        client.screenRect = FromNativeRect(area);
     }
 
     const CropResolution res = ResolveWindowCrop(opt.crop, image, client);
@@ -536,7 +537,7 @@ struct WindowSelection {
 WindowSelection PickWindows(const Options& opt, const Deadline& dl,
                             std::vector<Diagnostic>* errors) {
     WindowSelection sel;
-    std::vector<RECT> onScreens;
+    std::vector<PhysRect> onScreens;
     if (opt.monitor.given) {
         onScreens = SelectedScreenRects(opt, errors);
         if (!errors->empty()) return sel;
@@ -549,7 +550,7 @@ WindowSelection PickWindows(const Options& opt, const Deadline& dl,
     std::vector<WindowInfo> iconic;
     if (sel.isolate) {
         Diagnostic err;
-        if (!IsolatedMatch(opt.match, onScreens, dl, &hits, &iconic, &err)) {
+        if (!IsolatedMatch(opt.match, ToNativeRects(onScreens), dl, &hits, &iconic, &err)) {
             // 期限到了 / 辅助进程没起来 / 消息不合：都照实报，不悄悄退回本进程再跑一遍 ——
             // 那样等于把期限当成建议，而慢的那一步下一次还会再慢一遍。
             if (err.code == codes::kMatchTimeout || err.code == codes::kInvalidRegex) {
@@ -593,7 +594,8 @@ WindowQueryLayer MakeTargetQuery(const MatchRequest& request, bool isolate, cons
         std::vector<WindowInfo> iconic;
         if (isolate) {
             Diagnostic err;
-            if (!IsolatedMatch(request.match, request.onScreens, dl, &hits, &iconic, &err)) {
+            if (!IsolatedMatch(request.match, ToNativeRects(request.onScreens), dl, &hits, &iconic,
+                                &err)) {
                 return false;   // 问不出来：期限到了 / 辅助进程坏了，调用方按无法验证处理
             }
         } else {
@@ -671,7 +673,7 @@ CaptureOutcome RunCapture(const Options& opt) {
             t.win.query = query;
             // 窗口目标用整窗外框当授权范围：桌面路径实际会从屏幕上读走的就是这一块
             // （DWM 那条退路摆的覆盖窗口也按它对齐），比可见边框矩形更宽一点而不是更窄。
-            t.area = WindowFullRect(reinterpret_cast<HWND>(w.hwnd));
+            t.area = FromNativeRect(WindowFullRect(reinterpret_cast<HWND>(w.hwnd)));
             targets.push_back(std::move(t));
         }
     }
@@ -853,7 +855,8 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         // 量一遍当下的矩形再交给判定器：确认框上写的区域与实际要取样的区域必须是同一块。
         // 目标在确认之后挪走或变大，凭证的 Covers 就会拒绝，这一次不截。
-        if (!t.isScreen) t.area = WindowFullRect(reinterpret_cast<HWND>(t.window.hwnd));
+        if (!t.isScreen)
+            t.area = FromNativeRect(WindowFullRect(reinterpret_cast<HWND>(t.window.hwnd)));
         // 每个目标开工之前一次 kFull 复核：连"当初那条选择条件现在还成立吗"一起问
         //（标题、按屏过滤那类易变属性）。这一档要重跑条件求值，所以一个目标一次，
         // 不在每条通道的每一次尝试之前重复；那几处用的是 kCheap（CaptureOneChannel）。
@@ -1047,8 +1050,8 @@ CaptureOutcome RunCapture(const Options& opt) {
                 img.clipped = frame.clipped;
                 img.rotation = frame.rotation;
                 if (frame.reportsCrop && frame.clipped) {
-                    const RECT& want = frame.requestedRect;
-                    const RECT& got = frame.capturedRect;
+                    const PhysRect& want = frame.requestedRect;
+                    const PhysRect& got = frame.capturedRect;
                     clippedNote = Diagnostic{
                         codes::kCaptureClipped,
                         Msgf(L"note.capture_clipped",

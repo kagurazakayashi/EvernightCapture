@@ -27,7 +27,7 @@ struct CompiledConditions {
     std::vector<std::wstring> titleContains;
     std::vector<std::wstring> classes;        // 已小写
     std::vector<std::wregex> titleRegexes;
-    std::vector<RECT> onScreens;              // --monitor 的屏幕限制；空 = 不限
+    std::vector<PhysRect> onScreens;          // --monitor 的屏幕限制；空 = 不限
 };
 
 // 求值中途的 regex_error：异常不许穿出 EnumWindows 那条回调边界，所以就地换成原因码。

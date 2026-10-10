@@ -47,7 +47,7 @@ void Check(bool ok, const char* what) {
 
 void Section(const char* title) { std::printf("\n=== %s ===\n", title); }
 
-RECT R(int l, int t, int r, int b) { return RECT{l, t, r, b}; }
+PhysRect R(int l, int t, int r, int b) { return PhysRect{l, t, r, b}; }
 
 // ---------------------------------------------------------------------------
 // 假应答器：记下每一轮问的是什么，按脚本回答
@@ -87,7 +87,7 @@ public:
     std::vector<Asked> asked;
     std::vector<ConsentAnswer> answers;   // 空 = 一律答"是"
     std::vector<bool> timedOuts;
-    DWORD unavailableWin32 = 0;
+    NativeErrorCode unavailableWin32 = 0;
     std::function<void()> onAsk;          // 弹框在世时执行：推进假时钟 / 探测预算冻结
     bool throwInAsk = false;              // 应答器抛异常：判暂停作用域的异常退栈恢复
 };
@@ -100,7 +100,7 @@ std::vector<ScreenInfo> g_screens;
 
 std::vector<ScreenInfo> FakeTopology() { return g_screens; }
 
-ScreenInfo MakeScreen(const wchar_t* device, RECT bounds, bool primary) {
+ScreenInfo MakeScreen(const wchar_t* device, PhysRect bounds, bool primary) {
     ScreenInfo s;
     s.deviceName = device;
     s.bounds = bounds;
@@ -109,7 +109,7 @@ ScreenInfo MakeScreen(const wchar_t* device, RECT bounds, bool primary) {
     return s;
 }
 
-GateTarget Target(const wchar_t* key, RECT area, bool screen = false) {
+GateTarget Target(const wchar_t* key, PhysRect area, bool screen = false) {
     GateTarget t;
     t.key = key;
     t.area = area;
@@ -165,8 +165,8 @@ struct BudgetFixture {
     }
 };
 
-const RECT kAreaA = R(100, 100, 500, 400);
-const RECT kAreaB = R(600, 0, 900, 300);
+const PhysRect kAreaA = R(100, 100, 500, 400);
+const PhysRect kAreaB = R(600, 0, 900, 300);
 const std::wstring kA = L"0xAAAA";
 const std::wstring kB = L"0xBBBB";
 
@@ -190,7 +190,7 @@ class FakeDialog final : public DialogDriver {
 public:
     // —— 剧本 ——
     int answer = IDNO;           // Show 返回的按钮值
-    DWORD failWin32 = 0;         // 非 0 => "没弹成"（MessageBoxW 返回 0 的同一约定）
+    NativeErrorCode failWin32 = 0;         // 非 0 => "没弹成"（MessageBoxW 返回 0 的同一约定）
     bool throwInShow = false;    // 驱动崩了：按"不可用"判，异常不许跑出线程
     int appearAfterMs = 0;       // 窗口 Show 开始这么久之后才找得到（弹框创建延迟）
     int honorCloseAfter = 0;     // 第 N 次有效关框请求之后框才真关；INT_MAX = 永不关
@@ -201,7 +201,7 @@ public:
     std::atomic<int> effectiveCloses{0};   // 其中"窗口已在、指令真的送出去了"的次数
     std::atomic<bool> showEntered{false};
     std::atomic<bool> showReturned{false};
-    std::atomic<DWORD> seenThreadId{0};
+    std::atomic<uint32_t> seenThreadId{0};
 
     DialogResult Show() override {
         showStart_ = GetTickCount64();
@@ -219,7 +219,7 @@ public:
         return r;
     }
 
-    bool RequestClose(DWORD dialogThreadId) override {
+    bool RequestClose(uint32_t dialogThreadId) override {
         closeSlices.fetch_add(1);
         if (dialogThreadId != 0) seenThreadId.store(dialogThreadId);
         if (GetTickCount64() - showStart_ < ULONGLONG(appearAfterMs)) return false;
@@ -764,7 +764,7 @@ int main() {
     // 重新查询拓扑再与那份快照比。确认期间热插拔 / 拔线 / 改分辨率 / 挪位置 —— 一律停在
     // 签发之前：不授权、不采像素、不把"确认后第一次看到的新布局"追认成旧请求的基线，
     // 也不在同一次调用里对着新布局自动再弹一帧（重来一遍时会在新的快照上重新问）。
-    const RECT kMovedArea = R(2000, 100, 2400, 400);
+    const PhysRect kMovedArea = R(2000, 100, 2400, 400);
 
     // 正对照：确认期间什么都没变 —— 授权照发，凭证批准的就是框上展示的那一片。
     {

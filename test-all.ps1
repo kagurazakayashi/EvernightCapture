@@ -318,6 +318,7 @@ $suites = @(
     [pscustomobject]@{ Name = 'windows';      Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--list / --inspect 结构化窗口发现' },
     [pscustomobject]@{ Name = 'screens';      Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--screens 与按标识选屏的三种下场' },
     [pscustomobject]@{ Name = 'capabilities'; Real = 'none';    OfflineLayer = '';            Note = '--capabilities / --diagnostics 判据与真机自述（只读查询，不拍像素）' },
+    [pscustomobject]@{ Name = 'core-boundary'; Real = 'none';   OfflineLayer = '';            Note = '跨平台核心边界：共用模型不渗平台类型、功能矩阵与隐私判据（一个像素都不取）' },
     [pscustomobject]@{ Name = 'compat';       Real = 'none';    OfflineLayer = '';            Note = '版本下限闸门与发布产物的 API set 导入（只读探测，不拍像素）' },
     [pscustomobject]@{ Name = 'cursor';       Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--cursor 逐路径登记表与结果三键' },
     [pscustomobject]@{ Name = 'hdr';          Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--hdr 色彩事实分层与 tone mapping 数学' },

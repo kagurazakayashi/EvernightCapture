@@ -1,3 +1,4 @@
+// 【平台层 · Windows】WinRT toast 那份发送器实现（Notification.h 的接缝在这里落地；wxWidgets 版是后续步骤）。
 #include "Notification.h"
 
 #include "WinrtApartment.h"
@@ -17,8 +18,8 @@ namespace ecapture {
 //
 // 发不出去一律是"这一次没弹"，绝不升级为截图失败：调用方拿到 false 与这一次自己的 HRESULT，
 // 剩下的事在 SendCaptureNotifications 里汇总成一条 note。
-bool ShowToastViaWinrt(const NotifyPayload& payload, HRESULT* hr) {
-    if (hr) *hr = 0;
+bool ShowToastViaWinrt(const NotifyPayload& payload, NativeErrorCode* hr) {
+    if (hr) *hr = kNativeErrorNone;
 
     // 套间按线程建（见 WinrtApartment.h：进程级"只初始化一次"是错的）。通知平台这一步跑在
     // 父进程的主线程上 —— 辅助子进程一个像素都不产，也就没有任何一条通知该从那里发。

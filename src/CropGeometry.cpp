@@ -6,15 +6,16 @@
 namespace ecapture {
 namespace {
 
-constexpr int64_t kLongMin = std::numeric_limits<LONG>::min();
-constexpr int64_t kLongMax = std::numeric_limits<LONG>::max();
+constexpr int64_t kCoordMin = std::numeric_limits<int32_t>::min();
+constexpr int64_t kCoordMax = std::numeric_limits<int32_t>::max();
 
-// 落在 LONG 范围内才敢写成 RECT（屏幕坐标那套系就是 LONG）。
-bool FitsLong(int64_t v) { return v >= kLongMin && v <= kLongMax; }
+// 落在 int32 范围内才敢写成共用坐标模型里的那一块（PhysRect 的四条边就是这个宽度；
+// Windows 的 RECT 用 LONG、X11 用 int32，两家在 64 位平台上都是 32 位带符号）。
+bool FitsLong(int64_t v) { return v >= kCoordMin && v <= kCoordMax; }
 
 // 一条矩形，屏幕坐标，判它是不是装得进 image 那块交付图像，并算出图像坐标里的那一块。
 // 返回 false = 装不进去（含负偏移：那一条边根本没被交付）。
-bool MapScreenRectIntoImage(const RECT& screen, const DeliveredImage& image, ImageRect* out,
+bool MapScreenRectIntoImage(const PhysRect& screen, const DeliveredImage& image, ImageRect* out,
                             uint64_t* right, uint64_t* bottom) {
     const int64_t w = static_cast<int64_t>(screen.right) - screen.left;
     const int64_t h = static_cast<int64_t>(screen.bottom) - screen.top;
@@ -50,8 +51,8 @@ bool RoiFitsTarget(const CropRequest& request, uint32_t rectWidth, uint32_t rect
 }
 
 DeliveredImage DescribeDeliveredImage(uint32_t frameWidth, uint32_t frameHeight,
-                                      const RECT& measuredWindowRect, bool measuredOk,
-                                      const RECT& sampledScreenRect, bool sampledRectOk) {
+                                      const PhysRect& measuredWindowRect, bool measuredOk,
+                                      const PhysRect& sampledScreenRect, bool sampledRectOk) {
     DeliveredImage image;
     image.width = frameWidth;
     image.height = frameHeight;
@@ -148,8 +149,8 @@ CropResolution ResolveWindowCrop(const CropRequest& request, const DeliveredImag
         const int64_t bottom = top + static_cast<int64_t>(request.height);
         if (FitsLong(left) && FitsLong(top) && FitsLong(right) && FitsLong(bottom)) {
             res.hasCropScreen = true;
-            res.cropScreen = RECT{static_cast<LONG>(left), static_cast<LONG>(top),
-                                  static_cast<LONG>(right), static_cast<LONG>(bottom)};
+            res.cropScreen = PhysRect{static_cast<int32_t>(left), static_cast<int32_t>(top),
+                                     static_cast<int32_t>(right), static_cast<int32_t>(bottom)};
         }
     }
     return res;

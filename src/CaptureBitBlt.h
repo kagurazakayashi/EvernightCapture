@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】BitBlt 通道声明（从屏幕 DC 拷矩形）。共用模型见 src/core/。
 // BitBlt 屏幕 DC 取帧通道（--capture bitblt）：拷屏幕上该窗口那块矩形。
 
 #include <cstdint>
