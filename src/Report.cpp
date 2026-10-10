@@ -81,7 +81,7 @@ void DiagnosticArray(Json& j, const std::vector<Diagnostic>& items) {
 }
 
 // 一个屏幕矩形：负坐标照写（副屏可以在主屏左边/上边），零宽高整个键省略由调用方判。
-void WriteRect(Json& j, const wchar_t* key, const RECT& r) {
+void WriteRect(Json& j, const wchar_t* key, const PhysRect& r) {
     j.Key(key).Obj()
         .Key(L"x").Value(static_cast<long long>(r.left))
         .Key(L"y").Value(static_cast<long long>(r.top))
@@ -794,7 +794,7 @@ void ClaimStdout() { g_stdoutClaimed = true; }
 
 bool StdoutClaimed() { return g_stdoutClaimed; }
 
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError, uint64_t* emittedBytes) {
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, NativeErrorCode* ioError, uint64_t* emittedBytes) {
     if (emittedBytes) *emittedBytes = 0;
     HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!handle || handle == INVALID_HANDLE_VALUE) {

@@ -40,7 +40,7 @@ void Check(bool ok, const char* what) {
 
 void Section(const char* title) { std::printf("\n=== %s ===\n", title); }
 
-RECT Rect(long l, long t, long r, long b) { return RECT{l, t, r, b}; }
+PhysRect Rect(int32_t l, int32_t t, int32_t r, int32_t b) { return PhysRect{l, t, r, b}; }
 
 // ---------------------------------------------------------------------------
 // 合成帧：每个像素的 RGBA 都由它的 (x,y) 唯一决定，所以"这一格是从哪一格来的"能被逐点核对。
@@ -111,7 +111,7 @@ CapturedFrame NaiveRotateWhole(const CapturedFrame& tex, uint32_t angle) {
 }
 
 // 独立判据第二步：从"已经转正的整幅桌面图"里按桌面坐标裁出目标那一块。
-CapturedFrame NaiveCrop(const CapturedFrame& rotated, const RECT& desktop, const RECT& visible) {
+CapturedFrame NaiveCrop(const CapturedFrame& rotated, const PhysRect& desktop, const PhysRect& visible) {
     CapturedFrame out;
     out.width = static_cast<uint32_t>(visible.right - visible.left);
     out.height = static_cast<uint32_t>(visible.bottom - visible.top);
@@ -133,7 +133,7 @@ CapturedFrame NaiveCrop(const CapturedFrame& rotated, const RECT& desktop, const
 
 // 一条完整的"旋转 + 裁剪"判据：生产的换算与搬移必须与上面那两步逐点相同。
 // 纹理尺寸按旋转推：90/270 时驱动交的是面板朝向，宽高与桌面相反。
-void CheckRotateThenCrop(uint32_t angle, const RECT& desktop, const RECT& target,
+void CheckRotateThenCrop(uint32_t angle, const PhysRect& desktop, const PhysRect& target,
                         const char* label) {
     const uint32_t dw = static_cast<uint32_t>(desktop.right - desktop.left);
     const uint32_t dh = static_cast<uint32_t>(desktop.bottom - desktop.top);
@@ -211,11 +211,11 @@ void TestTransform() {
 void TestRotateCropGeometry() {
     Section("四种旋转下的矩形换算（与朴素的先旋转再裁剪对拍）");
 
-    const RECT land = Rect(0, 0, 200, 120);
+    const PhysRect land = Rect(0, 0, 200, 120);
     CheckRotateThenCrop(0u, land, Rect(20, 30, 90, 80), "0 度：屏内一块窗口逐点相同");
     CheckRotateThenCrop(180u, land, Rect(20, 30, 90, 80), "180 度：换算与搬移逐点相同");
 
-    const RECT port = Rect(0, 0, 120, 200);
+    const PhysRect port = Rect(0, 0, 120, 200);
     CheckRotateThenCrop(90u, port, Rect(10, 40, 70, 150), "90 度：换算与搬移逐点相同");
     CheckRotateThenCrop(270u, port, Rect(10, 40, 70, 150), "270 度：换算与搬移逐点相同");
     CheckRotateThenCrop(90u, port, Rect(0, 0, 120, 200), "90 度：整屏大小也要逐点相同");
@@ -236,7 +236,7 @@ void TestRotateCropGeometry() {
 void TestCropPlan() {
     Section("裁剪计划：交付尺寸、capturedRect 与丢了哪几边");
 
-    const RECT d = Rect(0, 0, 1920, 1080);
+    const PhysRect d = Rect(0, 0, 1920, 1080);
     const DupCropPlan full = PlanDupCrop(d, Rect(100, 100, 500, 300), 1920, 1080, 0u);
     Check(full.ok, "屏内窗口：计划成立");
     Check(!full.clipped && full.outWidth == 400 && full.outHeight == 200, "屏内窗口不算丢区域");
@@ -276,7 +276,7 @@ void TestCropPlan() {
     Check(!badAngle.ok && badAngle.reason == DupCropReason::kBadAngle, "角度不是 0/90/180/270：不猜");
 
     // 90 度时读取矩形的宽高与交付尺寸相反 —— 这条正是"宽高交换只做一次"的判据
-    const RECT v = Rect(0, 0, 1080, 1920);
+    const PhysRect v = Rect(0, 0, 1080, 1920);
     const DupCropPlan r90 = PlanDupCrop(v, Rect(20, 100, 620, 400), 1920, 1080, 90u);
     Check(r90.ok && r90.outWidth == 600 && r90.outHeight == 300,
           "90 度：交付尺寸是桌面朝向的 600x300，不是纹理的 300x600");

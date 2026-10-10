@@ -207,9 +207,9 @@ namespace {
 // 用完整窗口矩形（含 DWM 那圈透明边）而不是扩展边框：这里要的是"人把窗口放在哪"。
 bool OnAnyScreen(const CompiledConditions& c, const WindowInfo& w) {
     if (c.onScreens.empty()) return true;
-    const RECT r{w.x, w.y, w.x + w.width, w.y + w.height};
-    for (const RECT& m : c.onScreens) {
-        if (r.left < m.right && r.right > m.left && r.top < m.bottom && r.bottom > m.top) return true;
+    const PhysRect r{w.x, w.y, w.x + w.width, w.y + w.height};
+    for (const PhysRect& m : c.onScreens) {
+        if (RectOverlaps(r, m)) return true;   // 判据与这条改动之前逐字相同，见 core/Geometry.h
     }
     return false;
 }

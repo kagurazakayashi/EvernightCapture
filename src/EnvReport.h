@@ -41,11 +41,12 @@
 #include "CliOptions.h"
 #include "ProcessIntegrity.h"
 #include "SystemCompat.h"
+#include "core/Error.h"   // Tri：一条问句的三值下场（本体已搬到核心，这里只继续用）
 
 namespace ecapture {
 
-// 一条事实的三值结果。JSON 里固定写成 "yes" / "no" / "unknown" 三个 ASCII 小写词。
-enum class Tri { kYes, kNo, kUnknown };
+// Tri（一条事实的三值结果：yes / no / unknown）本体在 core/Error.h，全项目共用一个枚举；
+// JSON 里那三个 ASCII 小写词仍然只由下面的 TriName 一处给出。
 
 // 三值结果的机器名（进 JSON）。
 const wchar_t* TriName(Tri value);

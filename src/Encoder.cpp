@@ -17,6 +17,7 @@
 
 #include "ImageOps.h"
 #include "WinrtApartment.h"
+#include "platform/windows/WinBridge.h"   // WaitTimeout：截止时间到 Win32 等待参数的换算在平台侧
 
 namespace wgi = winrt::Windows::Graphics::Imaging;
 namespace wss = winrt::Windows::Storage::Streams;

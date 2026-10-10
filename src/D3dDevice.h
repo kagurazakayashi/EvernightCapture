@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】D3D11 / DXGI 设备与适配器工具：整份文件都是原生 COM 指针，不进共用核心。
 // 共享的 D3D11 设备。Windows.Graphics.Capture 与 DXGI 桌面复制都要求一个
 // 支持 BGRA、且能取到 IDXGIDevice 的设备，两边走同一套创建策略。
 

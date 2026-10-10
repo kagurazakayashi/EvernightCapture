@@ -49,14 +49,10 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "CliOptions.h"
 #include "ScreenMatch.h"
 #include "WindowMatch.h"   // ReadState（与窗口那一路同一个三值枚举，线上取值同源）
+#include "core/Geometry.h"  // PhysRect：批准区域与屏幕矩形（共用坐标模型）
 
 namespace ecapture {
 
@@ -191,7 +187,8 @@ enum class SamplingRecheck {
 
 // approvedTarget = 授权快照那一刻的候选（身份 + 事实），approvedArea = 判定器刚批准的
 // 屏幕矩形（DesktopPermit::Approved()）。kOk 时 *fresh 是本次采样要用的当下候选。
-SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget, const RECT& approvedArea,
+SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget,
+                                      const PhysRect& approvedArea,
                                       const std::vector<ScreenCandidate>& current,
                                       ScreenCandidate* fresh);
 

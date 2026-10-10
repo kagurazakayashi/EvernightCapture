@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】COM 套间初始化（WinRT 通道之前那一步）。共用模型不 include 本文件。
 // WinRT / COM 套间：**按线程**初始化，按线程释放。
 //
 // 为什么不能用进程级"只初始化一次"：RoInitialize 的作用域是**线程**，一个 static bool

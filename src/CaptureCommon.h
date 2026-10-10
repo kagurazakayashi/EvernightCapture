@@ -1,7 +1,13 @@
 #pragma once
-// 取帧通道的公共件：帧的内存形状、GDI 位图、窗口矩形、屏幕取图、消息泵。
+// 【平台层 · Windows】取帧通道的公共件：GDI 位图、窗口矩形问答、屏幕取图、消息泵。
 // 每个通道自己一个文件（CaptureWgc / CaptureDwm / CapturePrintWindow / CaptureBitBlt /
 // CaptureDuplication），像素级处理在 ImageOps，D3D 设备在 D3dDevice。
+//
+// 分层归属（划分跨平台边界这一步定下来的）：本头文件里的每一样都直接使 Win32 / GDI / D3D 资源
+//（HDC、HBITMAP、HWND、RECT、ID3D11Texture2D），所以它是 Windows 后端自己的件，不进共用核心。
+// 跨平台共用的那一半（一帧像素的形状与上限、BlockedStatus、RenderOutcome）已经搬到
+// src/core/Frame.h 与 src/core/Status.h；本文件 include 它们，所以既有调用点一行都不用改。
+// Linux 的 X11 / Wayland 后端将来在自己的目录里 provide 同职责的一组函数，不共用下面任何一条。
 
 #include <cstdint>
 #include <string>
@@ -15,6 +21,7 @@
 #include "CliOptions.h"
 #include "Consent.h"
 #include "HdrColor.h"   // FrameColorSpace：一帧的来源色彩空间（GPU 交回来、转换之前那一份事实）
+#include "core/Frame.h"  // CapturedFrame 本体与帧的内存上限（跨平台共用；本文件只放 Windows 取帧件）
 
 // CopyTextureToFrame 的两个 D3D 参数类型。本头文件不 include d3d11.h（各通道本来就 include 了），
 // 前向声明必须写在**全局作用域**：SDK 里它们就在那儿，声明进 ecapture 里会得到另一个同名类型，
@@ -28,99 +35,12 @@ namespace ecapture {
 // 一起渲染进 DC。老系统不认它，所以调用方失败后要退回 flags=0 再试。
 inline constexpr UINT kPwRenderFullContent = 0x00000002u;
 
-// 一帧 CPU 可读的像素：BGRA8，行长 = stride
-struct CapturedFrame {
-    std::vector<uint8_t> pixels;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t stride = 0;
-    std::wstring source;  // 产出这帧的通道名，如 "wgc"
-    std::wstring path;    // 实际走的那条内部路径名（"dwm.thumbnail" / "dwm.screen" / ...）
-                          // scope 由它算出来，所以图里写的来源与当初授权的是同一件事
-
-    // 以下只有"从整幅桌面帧里裁出一块"的那些通道（duplication、以及拷屏幕的 bitblt）会填：
-    // 那几条截到的可能只是目标的一部分（窗口跨屏、部分在屏幕外），调用方必须能看见这件事，
-    // 而不是拿到一张比目标小的图还以为截到了完整窗口。窗口内容路径（wgc / dwm 缩略图 /
-    // printwindow）拍的就是整个目标，reportsCrop 留 false = "没有丢区域"这层意思。
-    bool reportsCrop = false;
-    RECT requestedRect{};  // reportsCrop 为真时有效：这条通道本来要截的那一块（虚拟屏幕坐标）
-    RECT capturedRect{};   // reportsCrop 为真时有效：实际截到的那一块，同样虚拟屏幕坐标
-    bool clipped = false;  // requestedRect 是否没有被完整截到
-    uint32_t rotation = 0; // reportsCrop 为真时有效：交付前对桌面帧顺时针转的度数（0/90/180/270）
-
-    // 光标（--cursor）：这一条只有"真的有一个可设开关"的那条通道会填 —— 填的是**设完再读回来**
-    // 的那两个答案（cursorStateKnown = 那一问有没有答案，cursorInFrame = 这条会话现在画不画光标）。
-    // 其余通道一律留 false/false：那两条 false 在那儿说的是"没有可依据的读数"，不是一次 API 问答，
-    // 所以不该在这里冒充"我读过开关"。它们交回的帧在光标这件事上算什么，由 src/CursorControl.h
-    // 那张按路径登记的表说：printwindow / dwm / bitblt 的来源像素里本来就没有光标，而桌面复制那两条
-    // 登记成 pointer_state_unverified —— 官方说明允许指针**已经画在那幅桌面图像上**，这一问因此
-    // 没有答案，那两个 false 对它们不等于"读过并且确认没有"。
-    // 两个值与那张登记表怎么合成结果里的 requested/effective/basis 三个键，只有一份判据
-    //（MakeCursorReport）。
-    bool cursorStateKnown = false;
-    bool cursorInFrame = false;
-
-    // HDR 色彩（--hdr）：下面这三件是**三个独立的事实**，各自由唯一的那一步写，合成结果里那组键
-    // 时谁也不替谁作保（判据与合成只有一份，src/HdrColor.h 的 MakeHdrReport）：
-    //   sourceColorSpace 取帧那一步从 GPU 纹理描述里读回的内存布局（编码之前的原样）。最常见的
-    //     B8G8R8A8 那条恒为 kSrgbBgra8、toneMapped 为 false —— 与这条选项存在之前逐字节相同。
-    //     只有会带回广色域帧的两条通道（wgc / 桌面复制）在某次真带回 FP16 / 10 位帧时才写成别的值，
-    //     而那是被 --hdr tonemap 就地映射成 8 位 BGRA 之后仍然保留"映射前来源"那一份，供结果报告。
-    //   toneMapped 只在确实过了一遍浮点 tone mapping 时为 true（SDR 透传不置它）——"已映射"那一句
-    //     唯一的来源就是这里，不是 sourceColorSpace 写着广色域。
-    //   displayHdrState 显式 --hdr 策略下，这条路径在**开始采集之前**对"这块屏此刻是不是 HDR 模式"
-    //     那一次只读问答的答复。没问过（没写 --hdr、写成 auto、或这条路径根本不问）与问不出来一律
-    //     kUnknown，绝不折成 kSdr —— 一张 8 位 BGRA 帧本身不证明原始内容是 SDR（合成器可能把 HDR
-    //     画面压成 8 位再交给一个 B8G8R8A8 的帧池），而那一句"来源是 SDR"只能由这次问答或这条路径
-    //     结构上带不回广色域帧来支撑。拿去决定留哪一条提示的判据在 JudgeHdrPassiveNote。
-    FrameColorSpace sourceColorSpace = FrameColorSpace::kSrgbBgra8;
-    bool toneMapped = false;
-    DisplayHdrState displayHdrState = DisplayHdrState::kUnknown;
-};
-
-// 帧的内存不变量与资源上限。这两条数字都是能说明白的，不是随手挑的：
-//   单边 kFrameMaxSide = 16384 —— D3D11 纹理边长的上限（Feature Level 11_0），也是 GDI 那边
-//     Dib::Create 与辅助进程管道协议（WorkerProtocol.h）一直沿用的同一条线。8K 显示是 7680，
-//     在这条线之内还有近一倍的余量，所以正常截图撞不到它；撞到的就不是"一张截图"了。
-//   整帧 kFrameMaxBytes = 1 GiB —— 上面那条的自然推论（16384 × 16384 × 4），任何一步要分配的
-//     像素缓冲都在这个数之内。检查全部用 64 位乘法在**分配之前**做完，超限直接报错，
-//     不靠"分配失败抛异常"当检查（那条路在内存真耗尽时是不可恢复的）。
-// 行距另外要求落在 [width*4, 2*width*4]：下界是"必须装得下一行像素"，上界是给 GPU 与 GDI
-// 的对齐填充留一行余量 —— 比行长两倍还宽的行距不可能是填充，只能是形状本身已经坏了。
-inline constexpr uint32_t kFrameMaxSide = 16384u;
-inline constexpr uint64_t kFrameMaxBytes = 1024ull * 1024ull * 1024ull;
-
-// 会卡住的那几步（PrintWindow / DWM 缩略图 / 条件求值里的正则回溯）失败在哪一步的原因码。
-// 辅助进程只报这个码 + 系统错误码，**不报文字**：文案由父进程按 --lang 现场取，
-// 于是四种语言都不必跟着协议走。数值是管道里的线上格式，改顺序或改含义要同步
-// 改 WorkerProtocol.h 的 kProtocolVersion。
-enum class BlockedStatus : uint32_t {
-    kOk = 0,
-    kRectEmpty = 1,          // 目标窗口矩形已经量不出来（窗口没了 / 正被销毁）
-    kDibCreate = 2,          // 建 DIB 失败
-    kPrintWindowFailed = 3,  // PrintWindow 带 flag 与不带 flag 两次都返回 FALSE（窗口自己画到 DC）
-    kHostClass = 4,          // 注册 DWM 宿主窗口类失败
-    kHostCreate = 5,         // 建宿主窗口失败
-    kRegisterThumb = 6,      // DwmRegisterThumbnail 失败
-    kUpdateProps = 7,        // DwmUpdateThumbnailProperties 失败
-    kHostRectEmpty = 8,      // 宿主窗口自己的矩形量不出来
-    kRegexInvalid = 9,       // 本机正则库拒绝编译（语法就在这里判：解析层不预编译，见 CliOptions.cpp）
-    kBadTask = 10,           // 交来的任务不合法（尺寸 / 条数超限）
-    kInternal = 11,          // 那一步抛了异常（ASCII 细节在 detail）
-    kHostPrintWindowFailed = 12,  // 对宿主窗口的 PrintWindow 两次都返回 FALSE（dwm 通道）
-    kRegexTooComplex = 13,  // 回溯复杂度超限：模式语法没问题，但这台机器的正则库拒绝把它跑完
-};
-
-// 一次"只读某个窗口自己的画面"的调用结果。放在这里是因为它既能在本进程里产生，
-// 也能在辅助进程里产生（见 Worker.h），两边共用同一个形状。
-struct RenderOutcome {
-    BlockedStatus status = BlockedStatus::kOk;
-    DWORD win32 = 0;
-    HRESULT hresult = S_OK;
-    std::string detail;   // 只放 ASCII 细节（异常 what()），不放大自然语言
-    CapturedFrame frame;
-};
-
+// CapturedFrame（一帧 CPU 可读的 BGRA8 像素）、帧的内存不变量与资源上限
+// （kFrameMaxSide / kFrameMaxBytes）都在 core/Frame.h：那是三条平台共用的形状定义，
+// 放在这里会让"共用核心不暴露 HWND / HDC / PipeWire 对象"这条边界从中间断开。
+// 本文件从此只放 **Windows 取帧件**：GDI 的 Dib、D3D 纹理拷回 CPU、窗口矩形问答、屏幕取图、
+// 消息泵。BlockedStatus 与 RenderOutcome 在 core/Status.h 与 core/Frame.h（父进程与辅助进程
+// 共用同一个结果形状，而条件求值也要读那个状态码，所以不能让它们长在平台头里）。
 
 // 让屏幕坐标与物理像素一致：GDI 通道按屏幕矩形取图，被 DPI 虚拟化时
 // GetWindowRect 给的是缩放后坐标，截出来就是错位或只有一半。
@@ -172,6 +92,9 @@ private:
     uint32_t height_ = 0;
 };
 
+// 下面这三条问答返回/交出的是**原生 RECT**：它们量的是 Win32 那一刻的事实，调用方把它们
+// 搬进共用结构（CapturedImage.rect / GateTarget.area / ClientAreaProbe.screenRect）时，
+// 必须经 platform/windows/WinBridge.h 的 FromNativeRect 那一次看得见的转换 —— 转换点就是边界点。
 // 窗口完整矩形（含 DWM 那圈透明边框）；取不到时返回全零
 RECT WindowFullRect(HWND hwnd);
 // 用户实际看到的矩形：优先 DWMWA_EXTENDED_FRAME_BOUNDS，否则退回完整矩形
@@ -187,12 +110,12 @@ bool ClientScreenRect(HWND hwnd, RECT* out);
 // 从屏幕 DC 取一块矩形（超出虚拟屏幕的部分被丢掉）。
 // permit 是必需参数：这张凭证只能由授权判定器发出，所以任何"从屏幕上拿像素"的代码都绕不过
 // 那次人工确认 —— 包括通道自己在内部临时改走屏幕取图的那条退路。
-bool GrabScreenRect(const RECT& rect, const wchar_t* channel, const wchar_t* path,
+bool GrabScreenRect(const PhysRect& rect, const wchar_t* channel, const wchar_t* path,
                     const DesktopPermit& permit, CapturedFrame* out, Diagnostic* err);
 
 // 取样之前核对凭证：批准的是那一块，现在要取的必须是它里面的一块。
 // 不覆盖 = 目标在确认之后挪了位置或变了大小，这次不截（宁可少截一张也不拍别人的画面）。
-bool PermitCovers(const DesktopPermit& permit, const RECT& area, const wchar_t* channel,
+bool PermitCovers(const DesktopPermit& permit, const PhysRect& area, const wchar_t* channel,
                   Diagnostic* err);
 
 // 没有消息循环时，泵消息等 ms 毫秒：DWM 要几帧才把缩略图合成出来

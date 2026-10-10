@@ -192,7 +192,7 @@ public:
         if (setAfterMs_) clock_->ms = setAfterMs_;
         return ok;
     }
-    bool EmitBytes(const std::vector<uint8_t>&, uint64_t* emitted, DWORD*) override {
+    bool EmitBytes(const std::vector<uint8_t>&, uint64_t* emitted, NativeErrorCode*) override {
         ++wrongPathCalls;   // 文件那一路绝不该被叫到标准输出
         if (emitted) *emitted = 0;
         return false;
@@ -223,7 +223,7 @@ public:
         if (ok) fault::Arm(allow_);   // 收不回来的那一刻之后才开始缺内存
         return ok;
     }
-    bool EmitBytes(const std::vector<uint8_t>&, uint64_t* emitted, DWORD*) override {
+    bool EmitBytes(const std::vector<uint8_t>&, uint64_t* emitted, NativeErrorCode*) override {
         ++wrongPathCalls;   // 文件那一路绝不该被叫到标准输出
         if (emitted) *emitted = 0;
         return false;
@@ -250,7 +250,7 @@ public:
         return false;
     }
     bool EmitBytes(const std::vector<uint8_t>& bytes, uint64_t* emitted,
-                   DWORD* ioError) override {
+                   NativeErrorCode* ioError) override {
         ++calls;
         const size_t n = std::min<size_t>(failAfter_, bytes.size());
         buffer.insert(buffer.end(), bytes.begin(), bytes.begin() + n);

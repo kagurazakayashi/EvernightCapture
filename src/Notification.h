@@ -38,7 +38,7 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>  // HRESULT
+#include "core/Error.h"   // NativeErrorCode：那一次调用自己的返回值（Windows 上是 HRESULT）
 
 namespace ecapture {
 
@@ -102,7 +102,7 @@ struct NotifyOutcome {
     uint32_t submitted = 0;     // 交出去几条（merged 时至多 1）
     uint32_t withImage = 0;     // 其中带图的几条（附图恒出自历史副本）
     uint32_t failed = 0;
-    HRESULT lastError = 0;      // 仅 failed：那一次调用自己的返回值，不拿 E_FAIL 顶
+    NativeErrorCode lastError = kNativeErrorNone;  // 仅 failed：那一次调用自己的返回值，不拿 E_FAIL 顶
     // 送不出去时给人看的那一条诊断（含稳定码与 HRESULT 文本）。它**不**进 errors：
     // 通知失败不改退出码，也不该被读成一次截图失败。
     Diagnostic note;
@@ -111,7 +111,7 @@ struct NotifyOutcome {
 // 发送那一次调用。生产实现走 WinRT toast（NotificationToast.cpp），离线判据注入假应答 ——
 // 被 judged 的始终是下面那个编排函数与上面那两个构造函数，不是测试里另抄的一份。
 // 返回 true = 已交给通知平台；false 时 *hr 是这一次调用自己的结果。
-using ToastSender = std::function<bool(const NotifyPayload& payload, HRESULT* hr)>;
+using ToastSender = std::function<bool(const NotifyPayload& payload, NativeErrorCode* hr)>;
 
 // 整批的编排：按 mode 决定发几条、按 detail 决定写什么、按历史副本是否真落地决定带不带图，
 // 然后把每一条交出去并把下场汇总成一份如实的结果。
@@ -129,6 +129,6 @@ NotifyOutcome SendCaptureNotifications(const std::vector<CapturedImage>& images,
 
 // 生产那份发送器：WinRT toast。放在这里是为了让编排的默认实参与离线注入点同在一处声明。
 // 它要求本线程已有套间（调用方用 EnsureWinrtOnThisThread 保证），失败时如实给出 HRESULT。
-bool ShowToastViaWinrt(const NotifyPayload& payload, HRESULT* hr);
+bool ShowToastViaWinrt(const NotifyPayload& payload, NativeErrorCode* hr);
 
 }  // namespace ecapture

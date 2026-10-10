@@ -23,10 +23,7 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "core/Geometry.h"   // PhysRect：纹理坐标 / 虚拟屏幕坐标里的矩形（共用坐标模型）
 
 namespace ecapture {
 
@@ -85,24 +82,24 @@ enum class DupCropReason : uint32_t {
 struct DupCropPlan {
     bool ok = false;
     DupCropReason reason = DupCropReason::kNone;
-    RECT src{};              // 纹理坐标（旋转之前），left/top 含、right/bottom 不含
+    PhysRect src{};              // 纹理坐标（旋转之前），left/top 含、right/bottom 不含
     uint32_t outWidth = 0;   // 旋转之后交付的图像尺寸 = 实际截到的那块桌面区域
     uint32_t outHeight = 0;
-    RECT captured{};         // 实际截到的那块，虚拟屏幕坐标（给 JSON 的 capturedRect）
+    PhysRect captured{};         // 实际截到的那块，虚拟屏幕坐标（给 JSON 的 capturedRect）
     bool clipped = false;    // 目标矩形有没有被这块输出丢掉一部分
     int32_t lostLeft = 0;
     int32_t lostTop = 0;
     int32_t lostRight = 0;
     int32_t lostBottom = 0;
     // 目标矩形自己：原样带回，调用方直接写进 requestedRect 的对照里
-    RECT requested{};
+    PhysRect requested{};
 };
 
 // angle 是 DecideDupTransform 出来的那个度数（0/90/180/270）。
 // 桌面坐标可以整块在负值区（副屏在主屏左边/上边），换算全部在带符号 64 位里判，
 // 判过才转回无符号的像素偏移 —— 旧实现直接用 int 减完再 max(0,·)，
 // 越界与相加绕回都拦不住。
-DupCropPlan PlanDupCrop(const RECT& desktop, const RECT& target, uint32_t textureWidth,
+DupCropPlan PlanDupCrop(const PhysRect& desktop, const PhysRect& target, uint32_t textureWidth,
                         uint32_t textureHeight, uint32_t angle);
 
 // ---------------------------------------------------------------------------
@@ -112,7 +109,7 @@ struct DupOutputInfo {
     uint32_t adapterIndex = 0;  // 属于哪块适配器（D3D11CreateDevice 要按它建设备）
     uint32_t outputIndex = 0;   // 该适配器的第几个输出
     std::wstring deviceName;    // "\\.\DISPLAY1"，与 EnumDisplayMonitors 的 szDevice 同形
-    RECT desktopRect{};         // 该输出在虚拟屏幕上的矩形（已含旋转的朝向）
+    PhysRect desktopRect{};         // 该输出在虚拟屏幕上的矩形（已含旋转的朝向）
     bool attachedToDesktop = false;  // FALSE = 这块输出当前没接进桌面（禁用/热拔出中）
 };
 
@@ -136,12 +133,13 @@ struct DupPickResult {
 // 屏幕目标：先按设备名找，名字对不上再按矩形完全相同找（跳过没接进桌面的输出）。
 // 绝不"随便挑一块还在的" —— 换一块屏截就是截了没人批准过的画面。
 DupPickResult PickDupOutputForScreen(const std::vector<DupOutputInfo>& outputs,
-                                     const std::wstring& deviceName, const RECT& bounds);
+                                     const std::wstring& deviceName, const PhysRect& bounds);
 
 // 窗口目标：取与窗口重叠面积最大的那块输出。面积并列时按 (adapterIndex, outputIndex)
 // 最小者，保证同一台机器上同一个窗口每次截到同一块屏（不随驱动枚举顺序抖）。
 // 跨屏的窗口只会截到最大重叠那一块，剩下的部分由 DupCropPlan 报成 clipped。
-DupPickResult PickDupOutputForRect(const std::vector<DupOutputInfo>& outputs, const RECT& window);
+DupPickResult PickDupOutputForRect(const std::vector<DupOutputInfo>& outputs,
+                               const PhysRect& window);
 
 // 给人看的输出一览（设备名 + 矩形 + 适配器序号），写进"找不到输出"那类诊断的 hint。
 // 纯 ASCII + 数字，不随 --lang 变，调用方能直接拿去对号入座。

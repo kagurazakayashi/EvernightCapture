@@ -52,12 +52,13 @@
     { "from": "build/ecapture-image-tests.exe",        "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-wgc-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
     { "from": "build/ecapture-identity-tests.exe",     "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
-    { "from": "build/ecapture-dup-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" }
+    { "from": "build/ecapture-dup-tests.exe",          "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" },
+    { "from": "build/ecapture-core-tests.exe",         "to": "build/", "role": "test-binary", "required": true, "glob": false, "freshness": "current-build" }
   ],
   "installPlan": {
     "offlineTests": [
       "invoker", "orchestration", "cli",
-      "windows", "screens", "capabilities", "compat",
+      "windows", "screens", "capabilities", "compat", "core-boundary",
       "hdr", "delivery", "history", "notification", "crop", "scale", "wgc", "identity", "dup"
     ],
     "offlineSuiteDeps": {
@@ -68,6 +69,7 @@
       "screens":      { "scripts": ["tests/screens.ps1"], "binaries": ["ecapture-screens-tests.exe"], "aux": [], "note": "离线层跑状态注入判据" },
       "capabilities": { "scripts": ["tests/capabilities.ps1"], "binaries": ["ecapture-capabilities-tests.exe"], "aux": [], "note": "离线层跑状态注入判据" },
       "compat":       { "scripts": ["tests/compat.ps1"], "binaries": ["ecapture-compat-tests.exe"], "aux": [], "note": "离线层 + 只读导入表检查" },
+      "core-boundary": { "scripts": ["tests/core-boundary.ps1"], "binaries": ["ecapture-core-tests.exe"], "aux": [], "note": "离线层判跨平台核心边界：那份源文件不 include windows.h，判共用模型不渗平台类型、功能矩阵每格有登记、隐私判据不被搬家改松改紧；一个像素都不取" },
       "hdr":          { "scripts": ["tests/hdr.ps1"], "binaries": ["ecapture-hdr-tests.exe"], "aux": [], "note": "离线层是 HDR 色彩数学与表一致性的判据本体，与有没有 HDR 显示器无关" },
       "delivery":     { "scripts": ["tests/delivery.ps1"], "binaries": ["ecapture-delivery-tests.exe"], "aux": [], "note": "离线层跑交付事实与期限合规" },
       "crop":         { "scripts": ["tests/crop.ps1"], "binaries": ["ecapture-crop-tests.exe"], "aux": [], "note": "离线层跑裁剪几何" },

@@ -2030,6 +2030,87 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 - **成果物**：`build\installer\EvernightCapture-<版>-<アーキテクチャ>-setup.exe` と隣の `<...>.exe.sha256`。版は `src\Version.h` から取り（手書きの版は二つと持たない）、名前には版とアーキテクチャを含め、最後の要約にパス、版、`buildId`、SHA-256 を再掲する。`build\`（staging、インストーラー、ログ）は `.gitignore` 済みで、追跡されるリリース成果物は含まない。タイムスタンプを含む成果物はバイト単位の再現性を約束しない。
 - どちらのスクリプトも管理者権限を要求せず、システムの実行ポリシーも変えない。上の例の `-ExecutionPolicy Bypass` はその 1 プロセス限りで、グローバル設定ではない。
 
+## クロスプラットフォームの層と機能マトリクス（メンテナー向け）
+
+このリポジトリは「Windows のみの画面取得ツール」から「ひとつの共通モデル + 3 つのプラットフォーム経路」へ
+成長する途中です。**今回のステップは境界を引くだけで、Linux の画面取得は未実装です。** X11 も Wayland も
+バックエンドは 1 行もビルドに含まれていないため、下の表の Linux 列はすべて「計画中」または「対応しない」です。
+未実装のマスを実装済みと書くことは偽装になります。
+
+### ディレクトリと帰属
+
+| 場所 | 中身 | 依存の制約 |
+| ---- | ---- | ---------- |
+| `src/core/` | プラットフォーム非依存のモデルと判定：`Platform.h` プラットフォーム身分、`Geometry.h` 座標、`Frame.h` 画像フレーム、`Status.h` 停止理由コード、`Target.h` 対象の記述、`Error.h` エラーコードと三値結果、`Authorization.h` ピクセル範囲と認可層、`Capability.h` 機能マトリクス | `windows.h` を 1 つも include せず、HWND / RECT / HANDLE / HRESULT / WinRT も出現しない |
+| `src/` の共通モデル・方針ヘッダ | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 上のと同じ規則。これらは「何を撮り、何が承認され、このフレームがどんな形か」を記述し、どの API で入手したかは扱わない |
+| `src/platform/windows/WinBridge.h` | コアと Win32 の**唯一**の変換点：`RECT ↔ PhysRect`（単体と一括）と `Deadline → 待ちミリ秒` | プラットフォーム層の `.cpp` だけが include できる。変換呼び出しが行になる箇所が、レビュー時に「ここでプラットフォームの境界をまたいだ」と見える行である |
+| `CaptureCommon.h`、5 つのチャネルヘッダ、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【プラットフォーム層 · Windows】GDI / D3D / WinRT / 名前付きパイプ / 文字列リソースの実使用者 | 各ファイル冒頭でプラットフォーム層であることを明記。共通コアが逆にこれらを include すれば境界の破れ |
+
+**`RECT` の名前替えではありません。** `PhysRect` の 4 つの辺は `int32_t` に固定し、「空矩形」「包含」「測定できない」
+の 3 つの判定は `core/Geometry.h` に実装が 1 つしかなく、4 プラットフォームが同じ演算を共用します。
+`RECT` と `LONG` は Windows 側ネイティブ型のまま、チャネル内部とワーカー プロトコルのワイヤー形式にのみ現れ、
+共通モデルの内外を渡る時は常に明示的な変換を要します。
+
+### 共通モデルは「分からない」をどう表すか
+
+| 種別 | 型 | 答えがない時の姿 |
+| ---- | -- | ---------------- |
+| 座標 | `PhysRect` / `MaybePhysRect` | `MaybePhysRect.known = false`。サイズ 0 の矩形は**測定された事実**であり、「尋ねても答えがなかった」とは別の結末 |
+| 対象 | `TargetRef`（プラットフォーム + セッション + ID + ID の形式） | ID は `kUnknownNativeId` / `form = kUnknown`。`SameTargetAs()` はプラットフォーム間・セッション間・答えがない場合は `Tri::kUnknown` を返し、`kNo` にしません |
+| 画像フレーム | `CapturedFrame` | ハンドルを保持しない。`reportsCrop = false` は「このチャネルは領域を失っていない」、`cursorStateKnown = false` は「読み取り値がない」、`displayHdrState = kUnknown` は SDR に丸めません |
+| エラー | `NativeErrorCode`（32 ビット符号なしの受け皿） | `0 = 報告すべきエラーなし`。フィールド名（`win32` / `hresult`）が由来を述べ、プラットフォームをまたいで数値同士を比べることは禁止 |
+| 能力 | `Tri` / `CapStatus` / `MatrixStatus` | ビルドに含まれているか / この機械で今許されるか / このプロジェクトで実測したか、の 3 つを分けて書く |
+| 認可 | `PixelScope` / `GrantLayer` / `ConsentAnswer` | ダイアログを閉じた、出せなかった、時間切れ — いずれも拒否であり同意ではない |
+
+### 機能マトリクス
+
+語彙（`src/core/Capability.h` と同じ表で、どれかのマスが空になってはいけません）：
+**実装済み**（このビルドに実装があり、登録済みの環境で実測）· **実行時プローブ**（実装あり、成否は機械しだい）·
+**未検証**（実装あり、このプロジェクトがその環境で実測していない）· **計画中**（このビルドは未実装）·
+**対応しない**（プラットフォームがその道を与えない、または設計として歩かない）。
+
+| 能力 | Windows | Linux X11 | Linux Wayland |
+| ---- | ------- | --------- | ------------- |
+| 対象の選択（ウィンドウと画面を列挙し条件で当てる） | 実装済み | 計画中（XWayland は X11 ウィンドウしか見えません） | 対応しない（コンポジタはクライアントに全体のウィンドウ一覧を与えない。本作は捏造しません） |
+| ウィンドウ撮影（選んだウィンドウ自体の画素） | 実装済み | 計画中 | 計画中（Portal 経由。ウィンドウ単位の源が使えるかは portal 実装のプローブ） |
+| 画面撮影（出力 1 面のデスクトップ画素） | 実装済み、必ず人手の確認 | 計画中 | 計画中（Portal + PipeWire） |
+| 対話型の認可 | 実装済み（アプリ自身の確認のみ。Windows には呼び出し毎のシステム画面認可がない） | 計画中（Windows と同じくアプリ自身の確認のみ） | 計画中（アプリ確認 + システム認可の**両方**が必須。どちらも他方を置き換えられません） |
+| 最小化ウィンドウの画素 | 対応しない（`--list=all` には出ますが撮影しません） | 計画中（未マップのウィンドウは古い pixmap のみ — その旨を明記） | 対応しない（ウィンドウ一覧もハンドルもなく、指せる対象がありません） |
+| カーソル（`--cursor`） | 実行時プローブ（WGC のスイッチにはバージョン下限があり、デスクトップ複製の 2 経路は検証不能として登録） | 計画中 | 計画中（portal がカーソルのメタデータを与えるかに依存） |
+| HDR（`--hdr`） | 未検証（tone mapping は実装しオフラインで 1 点ずつ判定済みですが、本作には HDR 表示器がありません） | 計画中 | 計画中 |
+| グラフィックなしのセッション | 実装済み（help / version / config / capabilities は動きます。デスクトップ画素の経路は unavailable を正直に報告） | 計画中 | 計画中 |
+
+`--capabilities` は現時点では Windows のプローブ結果だけを報告します。このマトリクスを JSON に載せるかは後続の
+ステップです。それ之前に「計画中」を並べると呼び出し側が誤って判断するためです。マトリクス、本節、README は
+必ず同時に更新してください。
+
+### プライバシーの境界（文章ではなく判定式として）
+
+1. `--yes` でアプリ確認を省略できるのは、**選んだウィンドウ自体の画素に束縛され**、デスクトップから他の画素を
+   採らない経路だけです。画面全体を撮ってからウィンドウサイズに切り出すのも、依然としてデスクトップ撮影です。
+   判定は「画素がどこから来たか」を見て、最終画像の大きさを見ません。
+2. デスクトップ画素のレベルは必ず人の明確な同意が必要です。`--yes`、`--quiet`、環境変数、呼び出し元身分では
+   置き換えられず、未登録の経路はデスクトップ扱い（既定でより厳しい方）です。単一ウィンドウが失敗した時に、
+   こっそりデスクトップ撮影 + 切り出しへ切り替えることもしません。
+3. アプリ自身の確認ダイアログと、OS の認可画面は 2 つの層です。Wayland のその層（XDG Desktop Portal の認可と
+   選択画面）はデスクトップ サービスのものでて、本作は模倣も代替も自動承認もしません。逆に Portal がセッションを
+   憶えていてもアプリ側の確認は省略できません。`RequiredGrantLayers()` がこれを判定式にし、
+   `tests\core-boundary.ps1` が「層が 1 つ欠ければ通さない」を 1 項目ずつ固定します。
+
+### この層の検証エントリ
+
+| コマンド | 何を判定するか |
+| ------- | -------------- |
+| `.\tests\core-boundary.ps1` | オフライン層：`build\ecapture-core-tests.exe` が共通モデルに対して判定（座標・フレーム・対象・マトリクス・プライバシー）を実行。画素もダイアログも使いません |
+| `scripts/core-portability-check.sh` | Linux 層：同じ `tests/core_boundary_state.cpp` を g++ でビルドして実行し、さらに「これらのヘッダはプラットフォーム型を漏らさない」という静的リストを確認。**ここで通ることが境界が実在する機械的な証明です** |
+
+両エントリは 1 つの同じソースファイルを使っており、それは `windows.h` を 1 も include しません。
+今回のステップで意図的に手を入れなかったもの（後続ステップ）：X11 / Wayland バックエンド、
+`DialogConsentPrompt` と WinRT toast の wxWidgets への置き換え、Portal + PipeWire の接続、
+`std::wstring`（UTF-16）から符号化を明言したテキスト型への移行、ワーカー ワイヤー形式からの
+`RECT` / `HRESULT` の除去、そして `Report.h`（JSON 描画はコア、stdout 書き込みはプラットフォーム サービス層）
+のさらなる分割。
+
 ## ライセンス
 
 EvernightCapture は [Mulan Permissive Software License v2（Mulan PSL v2、木蘭寬鬆許可證 第2版）](http://license.coscl.org.cn/MulanPSL2) の下で

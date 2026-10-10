@@ -28,9 +28,9 @@
 //      都不能被当成"客户区是空的"或"那块矩形在图外"。
 
 #include <cstdint>
-#include <windows.h>
 
 #include "CliOptions.h"
+#include "core/Geometry.h"   // PhysRect：虚拟屏幕坐标里的那一块（共用坐标模型）
 
 namespace ecapture {
 
@@ -49,14 +49,14 @@ struct DeliveredImage {
     uint32_t width = 0;
     uint32_t height = 0;
     bool hasScreenRect = false;
-    RECT screenRect{};
+    PhysRect screenRect{};
 };
 
 // 客户区那一块，虚拟屏幕坐标（左上含、右下不含）。readable 为假 = 这一问没有答案，
 // 与"客户区是零尺寸"是两件事。
 struct ClientAreaProbe {
     bool readable = false;
-    RECT screenRect{};
+    PhysRect screenRect{};
 };
 
 enum class CropStatus {
@@ -82,7 +82,7 @@ struct CropResolution {
     CropFail fail = CropFail::kNone;
     ImageRect crop{};              // status == kCropped 时有效：图像坐标里要留下的那一块
     bool hasCropScreen = false;    // 这块裁剪矩形能不能同时报成屏幕坐标
-    RECT cropScreen{};             // hasCropScreen 时有效：虚拟屏幕坐标，与 rect 同一套系
+    PhysRect cropScreen{};         // hasCropScreen 时有效：虚拟屏幕坐标，与 rect 同一套系
     uint32_t imageWidth = 0;       // 以下四个数只为诊断服务：图像多大、请求的矩形右下边到哪
     uint32_t imageHeight = 0;
     uint64_t requestRight = 0;     // 64 位里算出来的右下边，所以越界时也报得出真实数字
@@ -104,8 +104,8 @@ bool RoiFitsTarget(const CropRequest& request, uint32_t rectWidth, uint32_t rect
 // 两个都不成立时 hasScreenRect 为假，调用方仍然能裁 --roi（那块矩形只需要图像尺寸），
 // 但 --client-area 与 cropScreenRect 那一行就交不出来了。
 DeliveredImage DescribeDeliveredImage(uint32_t frameWidth, uint32_t frameHeight,
-                                      const RECT& measuredWindowRect, bool measuredOk,
-                                      const RECT& sampledScreenRect, bool sampledRectOk);
+                                      const PhysRect& measuredWindowRect, bool measuredOk,
+                                      const PhysRect& sampledScreenRect, bool sampledRectOk);
 
 // 把一次裁剪请求落到交付的那张整窗图像上。这是裁剪判据唯一的一份实现：取帧之前的
 // RoiFitsTarget 只看"放不放进得下当初那块矩形"，真正的裁剪矩形以这里算出来的为准。

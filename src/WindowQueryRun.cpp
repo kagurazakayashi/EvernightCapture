@@ -14,6 +14,7 @@
 #include "Lang.h"
 #include "ScreenMatch.h"
 #include "Worker.h"          // IsolatedMatch / BlockedToDiagnostic（条件求值的同一条路线）
+#include "platform/windows/WinBridge.h"   // 屏幕矩形 -> 辅助进程管道上的线上格式
 
 namespace ecapture {
 
@@ -35,7 +36,7 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
     result.limit = EffectiveListLimit(spec);
     result.limitDefaulted = (spec.limit == 0);
 
-    std::vector<RECT> onScreens;
+    std::vector<PhysRect> onScreens;
     if (opt.monitor.given) {
         // --monitor 的编号越界在这里就报：它与 --index 越界同一类（写错了编号），退出码 1。
         onScreens = SelectedScreenRects(opt, &result.errors);
@@ -58,8 +59,8 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
     WindowQuerySnapshot snapshot;
     if (isolate) {
         Diagnostic err;
-        if (!IsolatedMatch(request.match, request.onScreens, dl, &snapshot.hits,
-                           &snapshot.iconic, &err)) {
+        if (!IsolatedMatch(request.match, ToNativeRects(request.onScreens), dl,
+                           &snapshot.hits, &snapshot.iconic, &err)) {
             // 期限到了 / 正则不合本机上限 / 辅助进程坏了：照实报，不悄悄退回本进程再跑一遍
             //（那样等于把期限当成建议，慢的那一步下一次还会再慢一遍），也**不**在这里重新分类
             //（判据见 WindowQuery.h 的 RecordMatchFailure）。

@@ -2338,6 +2338,86 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 - Neither script asks for administrator rights and neither changes the machine's execution policy; the examples above
   use `-ExecutionPolicy Bypass` for one process only, which is not a global setting.
 
+## Cross-Platform Layers and Feature Matrix (maintainers)
+
+This repository is growing from "a Windows-only capture tool" into "one shared model with three
+platform paths". **This step only draws the boundary; Linux capture is not implemented.** Not a single
+line of X11 or Wayland backend is compiled into the build, so every cell in the Linux columns below is
+"planned" or "not supported". Marking an unimplemented cell as usable would be fabrication.
+
+### Directories and ownership
+
+| Location | What it is | Dependency rule |
+| -------- | ---------- | --------------- |
+| `src/core/` | Platform-neutral model and judgements: `Platform.h` platform identity, `Geometry.h` coordinates, `Frame.h` image frame, `Status.h` why a call stopped, `Target.h` target description, `Error.h` error codes and tri-state, `Authorization.h` pixel scope and grant layers, `Capability.h` feature matrix | Never includes `windows.h`; no HWND / RECT / HANDLE / HRESULT / WinRT anywhere |
+| Shared model and policy headers in `src/` | `CliOptions.h`, `Config.h`, `CaptureScope.h`, `Consent.h`, `Capture.h`, `CropGeometry.h`, `ImageOps.h`, `ScreenMatch.h`, `ScreenIdentity.h`, `WindowMatch.h`, `WindowIdentity.h`, `DupGeometry.h`, `EnvReport.h`, `Delivery.h`, `Report.h`, `Notification.h`, `Deadline.h` | Same rule as above: these describe *what* is captured, *what* was approved and *what* the frame looks like, not which API produced it |
+| `src/platform/windows/WinBridge.h` | The **only** place where the core meets Win32: `RECT ↔ PhysRect` (single and batch) and `Deadline → wait milliseconds` | Only platform-layer `.cpp` files may include it. Each conversion call is a visible crossing, reviewable line by line |
+| `CaptureCommon.h`, the five channel headers, `Worker*.h`, `D3dDevice.h`, `WinrtApartment.h`, `NotificationToast.cpp`, `Lang.cpp`, `SystemCompat.cpp` | [Platform layer - Windows] the real users of GDI / D3D / WinRT / named pipes / string resources | Each file states up front that it is the platform layer; the shared core including them is a boundary breach |
+
+**This is not a rename of `RECT`.** `PhysRect` pins its four edges to `int32_t`, and "empty", "contains"
+and "could not be measured" each have exactly one implementation in `core/Geometry.h`, shared by all four
+platforms. `RECT` and `LONG` stay native types used inside channels and in the worker pipe wire format;
+crossing into or out of the shared model requires an explicit conversion.
+
+### How the shared model says "unknown"
+
+| Kind | Type | What "no answer" looks like |
+| ---- | ---- | --------------------------- |
+| Coordinates | `PhysRect` / `MaybePhysRect` | `MaybePhysRect.known = false`; a zero-size rect is a **measured fact**, a different outcome from "could not ask" |
+| Target | `TargetRef` (platform + session + id + id form) | `kUnknownNativeId` / `form = kUnknown`; `SameTargetAs()` returns `Tri::kUnknown` across platforms, across sessions or when the question had no answer - never `kNo` |
+| Image frame | `CapturedFrame` | Binds no handle; `reportsCrop = false` means "this channel lost no region", `cursorStateKnown = false` means "no reading", `displayHdrState = kUnknown` is never folded into SDR |
+| Error | `NativeErrorCode` (32-bit unsigned carrier) | `0 = nothing to report`; the field name (`win32` / `hresult`) states which error space it came from, and values are never compared across platforms |
+| Capability | `Tri` / `CapStatus` / `MatrixStatus` | Compiled into this build, currently allowed by this machine, verified by this project: three separate statements |
+| Authorization | `PixelScope` / `GrantLayer` / `ConsentAnswer` | Closed dialog, dialog that never appeared, timeout: all refusals, never consent |
+
+### Feature matrix
+
+Vocabulary (same table as `src/core/Capability.h`; no cell may be left blank):
+**implemented** (built, and tested in the registered environment) - **runtime probe** (built, outcome
+depends on this machine) - **unverified** (built, never tested by this project in that environment) -
+**planned** (not built yet) - **not supported** (the platform does not offer it, or the design declines it).
+
+| Capability | Windows | Linux X11 | Linux Wayland |
+| ---------- | ------- | --------- | ------------- |
+| Target selection (list and match windows and screens) | implemented | planned (XWayland only sees X11 windows) | not supported (compositors give clients no global window list; this tool will not fake one) |
+| Window capture (the selected window's own pixels) | implemented | planned | planned (via Portal; window-scoped sources are a portal-implementation probe) |
+| Screen capture (desktop pixels of one output) | implemented, always behind a human confirm | planned | planned (Portal + PipeWire) |
+| Interactive grant | implemented (program dialog only; Windows has no per-call system screen grant) | planned (program dialog only, until probed otherwise) | planned (program confirm **and** the system Portal grant; neither replaces the other) |
+| Minimized window pixels | not supported (`--list=all` lists them, they are never captured) | planned (an unmapped window only offers a stale pixmap - say so) | not supported (no window list, no handle, nothing to point at) |
+| Cursor (`--cursor`) | runtime probe (the WGC switch has a build floor; duplication paths are registered unprovable) | planned | planned (depends on portal cursor metadata) |
+| HDR (`--hdr`) | unverified (tone mapping implemented and judged offline, but this project has no HDR display) | planned | planned |
+| Headless session | implemented (help / version / config / capabilities still run; desktop pixel paths report unavailable) | planned | planned |
+
+`--capabilities` still reports only the Windows probe results; putting this matrix into that JSON is a
+later step - reporting a pile of "planned" today would only mislead callers. The matrix, this section and
+the README must be changed together.
+
+### Privacy boundaries (encoded as judgements, not just prose)
+
+1. Only a path whose pixels are **bound to the selected window itself** can be exempted by `--yes`.
+   Grabbing the whole screen first and cropping it to the window size is still a desktop capture:
+   the judgement reads where pixels come from, not how big the final image is.
+2. Desktop pixels always need an explicit human yes. `--yes`, `--quiet`, environment variables and caller
+   identity cannot replace it, and an unregistered path is treated as desktop (stricter by default). A
+   failed single-window request is never quietly turned into a desktop grab plus crop.
+3. The program's own dialog and the operating system's authorization UI are two layers. On Wayland the
+   system layer (the XDG Desktop Portal grant and source choice) belongs to the desktop service: this tool
+   does not imitate, replace or auto-approve it, and a remembered Portal session does not skip the program's
+   confirm either. `RequiredGrantLayers()` encodes it and `tests\core-boundary.ps1` pins "one layer short = refused".
+
+### Verification entry points for this layer
+
+| Command | What it judges |
+| ------- | -------------- |
+| `.\tests\core-boundary.ps1` | Offline layer: `build\ecapture-core-tests.exe` runs the judgements against the shared model (coordinates, frame, target, matrix, privacy). Captures no pixels, shows no dialog |
+| `scripts/core-portability-check.sh` | Linux layer: the same `tests/core_boundary_state.cpp` compiled and run with g++, plus a static list proving those headers leak no platform type. **Compiling there is the machine proof that the boundary is real** |
+
+Both entries use one and the same source file, which never includes `windows.h`. Deliberately not done in
+this step (later work): the X11 / Wayland backends, wxWidgets replacing `DialogConsentPrompt` and the WinRT
+toast, the Portal + PipeWire integration, replacing `std::wstring` (UTF-16) with a text type that states its
+encoding, dropping `RECT` / `HRESULT` from the worker wire format, and splitting `Report.h` (JSON rendering
+belongs to the core, writing to stdout belongs to the platform service layer).
+
 ## License
 
 EvernightCapture is licensed under the [Mulan Permissive Software License v2 (Mulan PSL v2)](http://license.coscl.org.cn/MulanPSL2).

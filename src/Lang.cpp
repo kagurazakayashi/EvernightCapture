@@ -1,3 +1,4 @@
+// 【平台层 · Windows】从 exe 的字符串资源读本地化文案（LoadStringW）。文案内容在 resources/strings-*.txt。
 #include "Lang.h"
 
 #include <cwctype>

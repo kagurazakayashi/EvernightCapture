@@ -31,11 +31,6 @@
 #include <memory>
 #include <string>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "CliOptions.h"
 
 namespace ecapture {
@@ -128,11 +123,9 @@ private:
 Diagnostic BudgetSpent(const Deadline& dl, const wchar_t* code, const wchar_t* stage,
                        const wchar_t* backend);
 
-// 把 Deadline 换算成等待毫秒数（未启用 = INFINITE）。
-inline DWORD WaitTimeout(const Deadline& dl) {
-    if (!dl.Enabled()) return INFINITE;
-    const uint64_t left = dl.RemainingMs();
-    return left > 0xFFFFFFFFull ? INFINITE : static_cast<DWORD>(left);
-}
+// 换算成具体等待 API 的那一个"还剩多久"参数是**平台**的事，不在这一层：
+// Windows 走 src/platform/windows/WinBridge.h 的 WaitTimeout（未启用 = INFINITE），
+// 将来的 X11 / PipeWire 那一路在自己的平台层里按自己的无限值换算。
+// 本头文件只提供 RemainingMs() / kNoLimit 这一份平台无关的数。
 
 }  // namespace ecapture

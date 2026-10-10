@@ -6,19 +6,19 @@
 namespace ecapture {
 namespace {
 
-int64_t W(const RECT& r) { return static_cast<int64_t>(r.right) - r.left; }
-int64_t H(const RECT& r) { return static_cast<int64_t>(r.bottom) - r.top; }
+int64_t W(const PhysRect& r) { return static_cast<int64_t>(r.right) - r.left; }
+int64_t H(const PhysRect& r) { return static_cast<int64_t>(r.bottom) - r.top; }
 
-bool Empty(const RECT& r) { return W(r) <= 0 || H(r) <= 0; }
+bool Empty(const PhysRect& r) { return W(r) <= 0 || H(r) <= 0; }
 
-RECT Intersect(const RECT& a, const RECT& b) {
-    RECT r{std::max(a.left, b.left), std::max(a.top, b.top), std::min(a.right, b.right),
+PhysRect Intersect(const PhysRect& a, const PhysRect& b) {
+    PhysRect r{std::max(a.left, b.left), std::max(a.top, b.top), std::min(a.right, b.right),
            std::min(a.bottom, b.bottom)};
-    if (Empty(r)) return RECT{};
+    if (Empty(r)) return PhysRect{};
     return r;
 }
 
-int64_t Area(const RECT& r) { return W(r) * H(r); }
+int64_t Area(const PhysRect& r) { return W(r) * H(r); }
 
 // 纹理坐标的四个边界，全部用 int64 算：desktop / target 是有符号的虚拟屏幕坐标，
 // 相减之后还要与无符号的纹理宽高比大小，混着比会把负数当成巨大的无符号数。
@@ -106,7 +106,7 @@ DupTransformDecision DecideDupTransform(DupRotation rotation, uint32_t desktopWi
     }
 }
 
-DupCropPlan PlanDupCrop(const RECT& desktop, const RECT& target, uint32_t textureWidth,
+DupCropPlan PlanDupCrop(const PhysRect& desktop, const PhysRect& target, uint32_t textureWidth,
                         uint32_t textureHeight, uint32_t angle) {
     DupCropPlan p;
     p.requested = target;
@@ -123,7 +123,7 @@ DupCropPlan PlanDupCrop(const RECT& desktop, const RECT& target, uint32_t textur
         return p;
     }
 
-    const RECT visible = Intersect(desktop, target);
+    const PhysRect visible = Intersect(desktop, target);
     if (Empty(visible)) {
         p.reason = DupCropReason::kNotOnOutput;
         return p;
@@ -170,8 +170,8 @@ DupCropPlan PlanDupCrop(const RECT& desktop, const RECT& target, uint32_t textur
         return p;
     }
 
-    p.src = RECT{static_cast<LONG>(src.left), static_cast<LONG>(src.top),
-                 static_cast<LONG>(src.right), static_cast<LONG>(src.bottom)};
+    p.src = PhysRect{static_cast<int32_t>(src.left), static_cast<int32_t>(src.top),
+                 static_cast<int32_t>(src.right), static_cast<int32_t>(src.bottom)};
     p.outWidth = static_cast<uint32_t>(nw);
     p.outHeight = static_cast<uint32_t>(nh);
     p.ok = true;
@@ -199,7 +199,7 @@ DupPickResult Found(const DupOutputInfo& o, bool byName) {
 }  // namespace
 
 DupPickResult PickDupOutputForScreen(const std::vector<DupOutputInfo>& outputs,
-                                     const std::wstring& deviceName, const RECT& bounds) {
+                                     const std::wstring& deviceName, const PhysRect& bounds) {
     bool usable = false;
     for (const DupOutputInfo& o : outputs) {
         if (!Usable(o)) continue;
@@ -220,7 +220,7 @@ DupPickResult PickDupOutputForScreen(const std::vector<DupOutputInfo>& outputs,
     return r;
 }
 
-DupPickResult PickDupOutputForRect(const std::vector<DupOutputInfo>& outputs, const RECT& window) {
+DupPickResult PickDupOutputForRect(const std::vector<DupOutputInfo>& outputs, const PhysRect& window) {
     const DupOutputInfo* best = nullptr;
     int64_t bestArea = 0;
     for (const DupOutputInfo& o : outputs) {

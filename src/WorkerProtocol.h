@@ -1,4 +1,8 @@
 #pragma once
+// 【平台层 · Windows】辅助进程管道上的线上格式。
+// 【过渡桥接】这里的 Task / Reply 仍按 RECT / DWORD / HRESULT 序列化（改它要同步
+// kProtocolVersion 并两端同改），而共用结构已经换成 core/Geometry.h 与 core/Error.h。
+// 转换只发生在边界上：编解码处用 platform/windows/WinBridge.h 的 From/ToNativeRects。
 // 隔离执行用的内部消息格式（父进程 <-> 本工具自己的工作辅助进程）。
 //
 // 这份格式**不是**对外契约的一部分：它不在 --help 里、没有稳定的 JSON、外部程序不该依赖它，

@@ -14,6 +14,7 @@
 
 #include "CaptureCommon.h"
 #include "Worker.h"
+#include "platform/windows/WinBridge.h"   // 宿主矩形（RECT）-> 授权判定器要的 PhysRect
 
 namespace ecapture {
 namespace {
@@ -53,7 +54,8 @@ public:
 
     // 失败只给原因码 + 系统错误码（这条函数在本进程与辅助进程里都要能跑，
     // 而辅助进程不产出任何本地化文字）。
-    bool Start(HWND src, const RECT& at, BlockedStatus* fail, DWORD* gle, HRESULT* hr);
+    bool Start(HWND src, const RECT& at, BlockedStatus* fail, NativeErrorCode* gle,
+               NativeErrorCode* hr);
     // 从屏幕外挪到源窗口位置上，供退路（从屏幕拷）使用
     void MoveOver(const RECT& at);
     bool OnTopOfItsRect() const;
@@ -67,7 +69,8 @@ private:
     int y_ = kOffscreen;
 };
 
-bool ThumbHost::Start(HWND src, const RECT& at, BlockedStatus* fail, DWORD* gle, HRESULT* hr) {
+bool ThumbHost::Start(HWND src, const RECT& at, BlockedStatus* fail, NativeErrorCode* gle,
+                       NativeErrorCode* hr) {
     if (!RegisterHostClassOnce()) {
         if (fail) *fail = BlockedStatus::kHostClass;
         if (gle) *gle = LastError();
@@ -87,7 +90,8 @@ bool ThumbHost::Start(HWND src, const RECT& at, BlockedStatus* fail, DWORD* gle,
     const HRESULT regHr = DwmRegisterThumbnail(hwnd_, src, &thumb_);
     if (FAILED(regHr) || !thumb_) {
         if (fail) *fail = BlockedStatus::kRegisterThumb;
-        if (hr) *hr = SUCCEEDED(regHr) ? E_POINTER : regHr;
+        if (hr)
+            *hr = static_cast<NativeErrorCode>(SUCCEEDED(regHr) ? E_POINTER : regHr);
         return false;
     }
 
@@ -106,7 +110,7 @@ bool ThumbHost::Start(HWND src, const RECT& at, BlockedStatus* fail, DWORD* gle,
     const HRESULT propHr = DwmUpdateThumbnailProperties(thumb_, &props);
     if (FAILED(propHr)) {
         if (fail) *fail = BlockedStatus::kUpdateProps;
-        if (hr) *hr = propHr;
+        if (hr) *hr = static_cast<NativeErrorCode>(propHr);
         return false;
     }
     return true;
@@ -282,8 +286,8 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGa
     }
     ThumbHost host;
     BlockedStatus startFail = BlockedStatus::kOk;
-    DWORD startGle = 0;
-    HRESULT startHr = S_OK;
+    NativeErrorCode startGle = kNativeErrorNone;
+    NativeErrorCode startHr = kNativeErrorNone;   // 承载 HRESULT 的原值（见 core/Error.h）
     if (!host.Start(src, at, &startFail, &startGle, &startHr)) {
         *err = BlockedToDiagnostic(startFail, startGle, startHr, std::string(), kChannel,
                                   stages::kCapture);
@@ -292,7 +296,8 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGa
     const RECT full = WindowFullRect(src);
     const RECT over = OverlayRect(host, full);
     std::optional<DesktopPermit> permit;
-    if (!gate.AuthorizeDesktop(paths::kDwmScreen, targetKey, over, &permit, err)) return false;
+    if (!gate.AuthorizeDesktop(paths::kDwmScreen, targetKey, FromNativeRect(over), &permit, err))
+        return false;
     // 人点头之后、把宿主窗口摆上屏幕之前，再核一次身份，而且用的是 kFull 那一档：
     // 上面那次 PrintWindow 失败到这里的确认框之间可能停了几秒，而屏幕上那块区域此刻属于谁
     // 完全取决于目标还在不在 —— 用户批准的是当初那一扇窗口，许可不会转移给一个后来的新对象。
@@ -313,7 +318,8 @@ bool CaptureWindowDwmThumbnail(uint64_t hwndValue, uint32_t timeoutMs, ConsentGa
                      codes::kConsentStale);
         return false;
     }
-    return GrabScreenRect(host.Rect(), kChannel, paths::kDwmScreen, *permit, out, err);
+    return GrabScreenRect(FromNativeRect(host.Rect()), kChannel, paths::kDwmScreen, *permit, out,
+                        err);
 }
 
 }  // namespace ecapture

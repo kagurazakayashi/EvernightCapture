@@ -21,6 +21,7 @@
 #include "D3dDevice.h"
 #include "DupGeometry.h"
 #include "ImageOps.h"
+#include "platform/windows/WinBridge.h"   // DXGI 的 RECT -> 共用坐标模型
 
 using Microsoft::WRL::ComPtr;
 
@@ -98,7 +99,7 @@ bool BuildOutputTable(std::vector<LiveOutput>* out, Diagnostic* err) {
             entry.info.adapterIndex = a;
             entry.info.outputIndex = o;
             entry.info.deviceName = desc.DeviceName;
-            entry.info.desktopRect = desc.DesktopCoordinates;
+            entry.info.desktopRect = FromNativeRect(desc.DesktopCoordinates);
             entry.info.attachedToDesktop = desc.AttachedToDesktop != FALSE;
             out->push_back(std::move(entry));
         }
@@ -153,10 +154,10 @@ std::wstring DuplicationHint(HRESULT hr) {
 }
 
 // 该输出的桌面矩形（用户看到的朝向，与虚拟屏幕坐标同一系）
-uint32_t DesktopWidthOf(const RECT& r) {
+uint32_t DesktopWidthOf(const PhysRect& r) {
     return r.right > r.left ? static_cast<uint32_t>(static_cast<int64_t>(r.right) - r.left) : 0u;
 }
-uint32_t DesktopHeightOf(const RECT& r) {
+uint32_t DesktopHeightOf(const PhysRect& r) {
     return r.bottom > r.top ? static_cast<uint32_t>(static_cast<int64_t>(r.bottom) - r.top) : 0u;
 }
 
@@ -181,7 +182,7 @@ bool CopyDesktopToCpu(ID3D11Device* device, IDXGIResource* resource, const HdrRe
 // 一次整幅桌面帧的采集结果：纹理朝向的那份像素 + 该输出的桌面矩形 + 驱动报回的旋转。
 struct DesktopGrab {
     CapturedFrame frame;
-    RECT desktop{};
+    PhysRect desktop{};
     DupRotation rotation = DupRotation::kUnspecified;
 };
 
@@ -271,7 +272,7 @@ bool GrabOutputFrame(ID3D11Device* device, const LiveOutput& picked, uint32_t ti
 
 // 旋转判据 + 裁剪计划：从纹理朝向的整幅帧里，按目标矩形取出该交付的那一块。
 // 交付的坐标空间因此恒等于虚拟屏幕坐标（也就是人工确认时给人看的那些矩形所在的系）。
-bool ExtractTargetRect(const DesktopGrab& grab, const RECT& target, CapturedFrame* out,
+bool ExtractTargetRect(const DesktopGrab& grab, const PhysRect& target, CapturedFrame* out,
                        Diagnostic* err) {
     const DupTransformDecision transform =
         DecideDupTransform(grab.rotation, DesktopWidthOf(grab.desktop),
@@ -334,7 +335,7 @@ bool ExtractTargetRect(const DesktopGrab& grab, const RECT& target, CapturedFram
 
 // 屏幕目标必须交出整块屏：裁不全 = 拓扑在确认之后变了，不能交一张"尺寸比该屏小"的图，
 // 也不能悄悄换成另一块输出（那块屏的画面从来没人批准过）。
-bool ExtractWholeScreen(const DesktopGrab& grab, const RECT& bounds, CapturedFrame* out,
+bool ExtractWholeScreen(const DesktopGrab& grab, const PhysRect& bounds, CapturedFrame* out,
                         Diagnostic* err) {
     CapturedFrame frame;
     if (!ExtractTargetRect(grab, bounds, &frame, err)) return false;
@@ -353,7 +354,7 @@ bool ExtractWholeScreen(const DesktopGrab& grab, const RECT& bounds, CapturedFra
 }
 
 // 公共路线：定位输出 -> 在该输出的适配器上建设备 -> 取整幅桌面帧 -> 按旋转换算 -> 取出目标矩形
-bool CaptureRectDuplication(const RECT& rect, const ScreenInfo* screen, const wchar_t* path,
+bool CaptureRectDuplication(const PhysRect& rect, const ScreenInfo* screen, const wchar_t* path,
                             uint32_t timeoutMs, const HdrRequest& hdr, const Deadline& dl,
                             CapturedFrame* out, Diagnostic* err) {
     std::vector<LiveOutput> table;
@@ -420,8 +421,8 @@ void ResetFrameGeometry(CapturedFrame* out) {
     out->pixels.clear();
     out->width = out->height = out->stride = 0;
     out->reportsCrop = false;
-    out->requestedRect = RECT{};
-    out->capturedRect = RECT{};
+    out->requestedRect = PhysRect{};
+    out->capturedRect = PhysRect{};
     out->clipped = false;
     out->rotation = 0;
     out->sourceColorSpace = FrameColorSpace::kSrgbBgra8;
@@ -441,8 +442,8 @@ bool CaptureWindowDuplication(uint64_t hwndValue, uint32_t timeoutMs, const Desk
     const HWND hwnd = reinterpret_cast<HWND>(hwndValue);
     ResetFrameGeometry(out);
 
-    const RECT ext = WindowScreenRect(hwnd);
-    if (ext.right <= ext.left || ext.bottom <= ext.top) {
+    const PhysRect ext = FromNativeRect(WindowScreenRect(hwnd));
+    if (RectIsEmpty(ext)) {
         CaptureError(err, kChannel, Msg(L"cap.rect_empty"), Msg(L"cap.window_gone"));
         return false;
     }
@@ -456,7 +457,7 @@ bool CaptureScreenDuplication(const ScreenInfo& screen, uint32_t timeoutMs,
                               CapturedFrame* out, Diagnostic* err) {
     ResetFrameGeometry(out);
 
-    if (screen.bounds.right <= screen.bounds.left || screen.bounds.bottom <= screen.bounds.top) {
+    if (RectIsEmpty(screen.bounds)) {
         CaptureError(err, kChannel, Msg(L"cap.rect_empty_screen"), Msg(L"cap.screen_rect_broken"));
         return false;
     }

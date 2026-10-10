@@ -322,7 +322,7 @@ void TestOrchestration() {
     std::vector<NotifyPayload> seen;
     NotifyOutcome ok = SendCaptureNotifications(
         images, NotifyMode::kPerTarget, NotifyDetail::kTitle, L"",
-        [&](const NotifyPayload& p, HRESULT* hr) { seen.push_back(p); (void)hr; return true; });
+        [&](const NotifyPayload& p, NativeErrorCode* hr) { seen.push_back(p); (void)hr; return true; });
     Check(ok.status == NotifyStatus::kSubmitted, "全部交出去就是 submitted");
     Check(ok.submitted == 3, "每目标一条时是三条");
     Check(ok.withImage == 2, "带图那两条按实际算");
@@ -334,7 +334,7 @@ void TestOrchestration() {
     seen.clear();
     NotifyOutcome m = SendCaptureNotifications(
         images, NotifyMode::kMerged, NotifyDetail::kTitle, L"",
-        [&](const NotifyPayload& p, HRESULT* hr) { seen.push_back(p); (void)hr; return true; });
+        [&](const NotifyPayload& p, NativeErrorCode* hr) { seen.push_back(p); (void)hr; return true; });
     Check(m.submitted == 1 && seen.size() == 1, "合并就是一条");
     Check(!seen.empty() && !seen[0].image.empty(), "合并那条仍取第一个有副本的图");
 
@@ -342,15 +342,15 @@ void TestOrchestration() {
     int calls = 0;
     NotifyOutcome part = SendCaptureNotifications(
         images, NotifyMode::kPerTarget, NotifyDetail::kMinimal, L"",
-        [&](const NotifyPayload&, HRESULT* hr) {
+        [&](const NotifyPayload&, NativeErrorCode* hr) {
             ++calls;
-            if (calls == 2) { *hr = static_cast<HRESULT>(0x80070005L); return false; }
+            if (calls == 2) { *hr = static_cast<NativeErrorCode>(0x80070005u); return false; }
             *hr = 0;
             return true;
         });
     Check(part.status == NotifyStatus::kSubmitted, "有一条没出去也仍算交出去了那些");
     Check(part.submitted == 2 && part.failed == 1, "两条成一条败要分开数");
-    Check(part.lastError == static_cast<HRESULT>(0x80070005L), "留住那一次自己的码");
+    Check(part.lastError == static_cast<NativeErrorCode>(0x80070005u), "留住那一次自己的码");
     Check(part.note.code == L"notify.send_failed", "试了而被拒归 send_failed");
     Check(part.note.stage == L"notify", "stage 说的是通知那一步");
     Check(part.note.hresult == L"0x80070005", "码要原样进诊断，不折成别的");
@@ -358,7 +358,7 @@ void TestOrchestration() {
     // 全部失败但有码：仍然是 send_failed，而不是"这条路说不通"。
     NotifyOutcome all = SendCaptureNotifications(
         images, NotifyMode::kPerTarget, NotifyDetail::kMinimal, L"",
-        [](const NotifyPayload&, HRESULT* hr) { *hr = static_cast<HRESULT>(0x80070057L); return false; });
+        [](const NotifyPayload&, NativeErrorCode* hr) { *hr = static_cast<NativeErrorCode>(0x80070057u); return false; });
     Check(all.status == NotifyStatus::kFailed, "一条都没出去是 failed");
     Check(all.submitted == 0 && all.failed == 3, "三条都算失败");
     Check(all.note.code == L"notify.send_failed", "有码就归 send_failed");
@@ -366,7 +366,7 @@ void TestOrchestration() {
     // 一条都没出去而且**拿不出任何码**：那是"这条路说不通"，与"系统拒了"的下一步不同。
     NotifyOutcome blind = SendCaptureNotifications(
         images, NotifyMode::kPerTarget, NotifyDetail::kMinimal, L"",
-        [](const NotifyPayload&, HRESULT* hr) { *hr = 0; return false; });
+        [](const NotifyPayload&, NativeErrorCode* hr) { *hr = 0; return false; });
     Check(blind.status == NotifyStatus::kFailed, "全失败");
     Check(blind.note.code == L"notify.unavailable", "拿不出码时归 unavailable，不编一个 E_FAIL");
     Check(blind.note.hresult.empty(), "没有码就不许写一个假的码进诊断");
@@ -375,7 +375,7 @@ void TestOrchestration() {
     int untouched = 0;
     NotifyOutcome empty = SendCaptureNotifications(
         {}, NotifyMode::kPerTarget, NotifyDetail::kTitle, L"",
-        [&](const NotifyPayload&, HRESULT* hr) { ++untouched; (void)hr; return true; });
+        [&](const NotifyPayload&, NativeErrorCode* hr) { ++untouched; (void)hr; return true; });
     Check(empty.status == NotifyStatus::kNone, "零交付时这一步没开始");
     Check(untouched == 0, "一张都没落地就一条都不发");
     Check(empty.note.code.empty(), "没开始过就不附失败解释");
@@ -383,8 +383,8 @@ void TestOrchestration() {
     // 交付事实不许被这一层的成败改动：同一份 images 在发送前后逐字段相同。
     std::vector<CapturedImage> before = images;
     SendCaptureNotifications(images, NotifyMode::kPerTarget, NotifyDetail::kTitle, L"",
-                             [](const NotifyPayload&, HRESULT* hr) {
-                                 *hr = static_cast<HRESULT>(0x80004005L);
+                             [](const NotifyPayload&, NativeErrorCode* hr) {
+                                 *hr = static_cast<NativeErrorCode>(0x80004005u);
                                  return false;
                              });
     Check(before.size() == images.size(), "发送失败不增删交付记录");

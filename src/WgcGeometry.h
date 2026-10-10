@@ -45,7 +45,7 @@ struct WgcFrameDecision {
     uint32_t newHeight = 0;
 };
 
-// 每帧的几何判据。maxSide 与 ImageOps / CaptureCommon 的 kFrameMaxSide 同一条线：重建帧池
+// 每帧的几何判据。maxSide 与 ImageOps / core/Frame.h 的 kFrameMaxSide 同一条线：重建帧池
 // 之前先按这条线拦下来，不拿一个本来就装不下的尺寸去 Recreate。
 WgcFrameDecision DecideWgcFrame(const WgcGeometry& g, uint32_t maxSide);
 

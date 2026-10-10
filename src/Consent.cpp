@@ -54,13 +54,6 @@ uint64_t Fingerprint(const std::vector<ScreenInfo>& screens) {
     return h;
 }
 
-bool RectContains(const RECT& outer, const RECT& inner) {
-    return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right &&
-           inner.bottom <= outer.bottom;
-}
-
-bool RectIsEmpty(const RECT& r) { return r.right <= r.left || r.bottom <= r.top; }
-
 // 问一次人：这次运行若配了自动预算（GateConfig::autoBudget），就**只在真人等待的这一段**
 // 暂停它 —— 弹框阻塞、以及同意后关闭动画的缓冲（RunMonitoredDialog 里的 Sleep）都在这段
 // 之内。暂停不回填预算：弹框之前已耗尽的预算恢复后照样是零。调用点只在真的要 Ask 时才走到
@@ -171,7 +164,7 @@ public:
         return r;
     }
 
-    bool RequestClose(DWORD dialogThreadId) override {
+    bool RequestClose(uint32_t dialogThreadId) override {
         const HWND dialog = FindThreadDialog(static_cast<LONG>(dialogThreadId));
         if (!dialog) return false;
         PostMessageW(dialog, WM_CLOSE, 0, 0);
@@ -233,7 +226,7 @@ ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t t
             if (elapsed >= timeoutMs + kDialogCloseGraceMs) break;   // 放弃收尾（见下）
             // 每个切片重试：框弹得晚、上一条消息被无视、瞬时的查找/投递失败，
             // 都在这条有界循环里被补上。
-            driver->RequestClose(static_cast<DWORD>(ReadThreadId(*state)));
+            driver->RequestClose(static_cast<uint32_t>(ReadThreadId(*state)));
         }
         // timeoutMs == 0 到这里就继续等 —— 那是"等人回答"的文档语义，不是没兑现的上限。
     }
@@ -276,7 +269,7 @@ ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t t
     return reply;
 }
 
-ConsentReply ShowConsentDialog(const std::wstring& body, const std::wstring& title, UINT flags,
+ConsentReply ShowConsentDialog(const std::wstring& body, const std::wstring& title, uint32_t flags,
                                uint64_t timeoutMs) {
     return RunMonitoredDialog(
         std::make_shared<MessageBoxDriver>(body, title, flags), timeoutMs);
@@ -323,7 +316,7 @@ ConsentReply DialogConsentPrompt::Ask(const ConsentQuestion& q) {
 // DesktopPermit
 // ---------------------------------------------------------------------------
 
-bool DesktopPermit::Covers(const RECT& area) const {
+bool DesktopPermit::Covers(const PhysRect& area) const {
     if (RectIsEmpty(area) || RectIsEmpty(approved_)) return false;
     // 严格包含、零容差：向外扩任何像素去采样都是把人没批准过的画面带进图里，
     // "测量误差"不能成为扩大隐私范围的理由。而正常路径本来就量在批准矩形之内：
@@ -345,7 +338,7 @@ ConsentGate::ConsentGate(GateConfig config, IConsentPrompt& prompt, TopologyProv
 
 uint64_t ConsentGate::TopologyFingerprint() const { return Fingerprint(topology_()); }
 
-void ConsentGate::SetTargetArea(const std::wstring& targetKey, const RECT& area) {
+void ConsentGate::SetTargetArea(const std::wstring& targetKey, const PhysRect& area) {
     for (GateTarget& t : config_.targets) {
         if (t.key == targetKey) {
             t.area = area;
@@ -388,7 +381,7 @@ ConsentQuestion ConsentGate::MakeQuestion(const wchar_t* path, PixelScope scope,
 }
 
 Diagnostic ConsentGate::Denied(const wchar_t* path, const std::wstring& targetKey, PixelScope scope,
-                               bool unavailable, DWORD gle, bool timedOut) const {
+                               bool unavailable, NativeErrorCode gle, bool timedOut) const {
     const bool desktop = scope == PixelScope::kDesktop;
     Diagnostic d;
     // 三种"没有得到同意"各有各的下一步：人答了否（要换条件或换人来答）、框根本弹不出来
@@ -435,8 +428,8 @@ void ConsentGate::GrantDesktop(const ConsentSnapshot& snap) {
     topologyAtAsk_ = snap.topology;  // 基线是弹框**之前**那一次取值，不是应答之后首次所见
 }
 
-bool ConsentGate::DesktopGrantedFor(const std::wstring& targetKey, const RECT& area,
-                                    RECT* approved) const {
+bool ConsentGate::DesktopGrantedFor(const std::wstring& targetKey, const PhysRect& area,
+                                    PhysRect* approved) const {
     if (desktopLevel_ != Level::kGranted) return false;
     if (TopologyFingerprint() != topologyAtAsk_) return false;  // 拓扑变了 = 授权作废
     for (const GateTarget& t : desktopAreas_) {
@@ -487,14 +480,14 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
 }
 
 bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey,
-                                   const RECT& area, std::optional<DesktopPermit>* out,
+                                   const PhysRect& area, std::optional<DesktopPermit>* out,
                                    Diagnostic* err) {
     if (Refused()) {   // 这一级或另一级被人否过（也包括弹不出框）：不再问第二遍，也不再截
         if (err) *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyUnavailable_, 0,
                                lastDenyTimedOut_);
         return false;
     }
-    RECT approved{};
+    PhysRect approved{};
     if (DesktopGrantedFor(targetKey, area, &approved)) {
         if (out) *out = DesktopPermit::Issue(targetKey, approved);
         return true;

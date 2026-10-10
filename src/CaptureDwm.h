@@ -1,4 +1,5 @@
 #pragma once
+// 【平台层 · Windows】DWM 缩略图通道声明（宿主窗口 + 它内部那条拷屏幕的退路）。共用模型见 src/core/。
 // DWM 缩略图取帧通道（--capture dwm）。
 
 #include <cstdint>

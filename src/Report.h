@@ -33,12 +33,8 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>   // DWORD（写标准输出的错误码原值）
-
 #include "CliOptions.h"
+#include "core/Error.h"   // NativeErrorCode（写标准输出的错误码原值）
 
 namespace ecapture {
 
@@ -65,7 +61,7 @@ bool EmitStderrRaw(const std::wstring& text);
 // emittedBytes 回收**实际发出去**的字节数：返回 false 时它可能是 0（一个字节都没出去），
 // 也可能停在中间（管道里留下的是半张图）。这两种现场调用方要分得开，不能都当成"什么都没写"。
 // 第一次写之前就把 stdout 声明为图片专用，此后 EmitStdout 一律返回 false 而不再写它。
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, DWORD* ioError = nullptr,
+bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, NativeErrorCode* ioError = nullptr,
                      uint64_t* emittedBytes = nullptr);
 
 // stdout 是否已被图片字节占用（或明确将要用它发图）。为真时结果 JSON 只能走 stderr。
