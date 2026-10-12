@@ -326,12 +326,10 @@ void TestCombinedConditions() {
 // 它由 tests\windows.ps1 与 tests\timeout.ps1 在带外层时限的受控子进程里判。
 // ---------------------------------------------------------------------------
 ParseResult ParseArgs(std::initializer_list<std::wstring> args) {
-    // ParseCommandLine 要的是"活着的 wchar_t* 数组"：先把取值存下来再取指针。
-    std::vector<std::wstring> store(args);
-    std::vector<wchar_t*> argv;
-    argv.reserve(store.size());
-    for (auto& s : store) argv.push_back(s.data());
-    return ParseCommandLine(static_cast<int>(argv.size()), argv.data());
+    // 收 CliTokens（第 0 条是程序名那一条），不再手搭 wchar_t* 数组：搭数组那件事属于平台入口。
+    CliTokens tokens;
+    for (const std::wstring& s : args) tokens.PushBack(s);
+    return ParseCommandLine(tokens);
 }
 
 void TestParseDefersRegexCompile() {

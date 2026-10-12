@@ -4,10 +4,7 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "HostPath.h"  // 绝对路径的回显走路径服务：两平台的形状判据不同，不在这抄一份 GetFullPathNameW
 
 #include "Json.h"
 #include "Capture.h"
@@ -37,22 +34,16 @@ std::wstring HwndHex(uint64_t hwnd) {
 
 std::wstring AbsoluteOf(const std::wstring& path) {
     if (path.empty() || path == L"-") return path;
-    const DWORD cap = 8 * MAX_PATH;
-    std::vector<wchar_t> buffer(cap);
-    const DWORD n = GetFullPathNameW(path.c_str(), cap, buffer.data(), nullptr);
-    if (n == 0 || n >= cap) return std::wstring();
-    return std::wstring(buffer.data());
+    // 定不出绝对路径时交回空串：-v 的 input.output 没有内容就整个键不出现（精简契约），
+    // 拿一条"看着像"的猜测值回显比不回显更坏。
+    std::wstring abs;
+    return NormalizeAbsolutePath(path, &abs) ? abs : std::wstring();
 }
 
 void StrArray(Json& j, const std::vector<std::wstring>& items) {
     j.Arr();
     for (const auto& s : items) j.Value(s);
     j.End();
-}
-
-void OptString(Json& j, const wchar_t* key, const std::wstring& value) {
-    if (value.empty()) return;   // 精简契约：没内容就不出现这个键
-    j.Key(key).Value(value);
 }
 
 // 空字段一律省略，调用方按存在与否取值
@@ -385,157 +376,12 @@ void WriteInputEcho(Json& j, const Options& opt) {
     j.End();
 }
 
-const wchar_t* GroupTitle(const std::wstring& group) {
-    if (group == L"target") return L"grp.target";
-    if (group == L"match") return L"grp.match";
-    if (group == L"pick") return L"grp.pick";
-    if (group == L"capture") return L"grp.capture";
-    if (group == L"crop") return L"grp.crop";
-    if (group == L"consent") return L"grp.consent";
-    if (group == L"timeout") return L"grp.timeout";
-    if (group == L"output") return L"grp.output";
-    if (group == L"config") return L"grp.config";
-    if (group == L"query") return L"grp.query";
-    return L"grp.behavior";
-}
-
-std::wstring FlagColumn(const OptionInfo& o) {
-    std::wstring s = L"--" + o.name;
-    if (!o.shortName.empty()) s += L", -" + o.shortName;
-    return s;
-}
-
 }  // namespace
-
-// ---------------------------------------------------------------------------
-// 纯文本帮助：骨架由选项目录生成，所以不会和实现脱节；每一句文案都取自资源（见 Lang.h），
-// 换行与缩进写在文案里，好让每种语言自己安排对齐。
-// ---------------------------------------------------------------------------
-std::wstring HelpText() {
-    std::wstring t;
-    t += Msg(L"help.header") + L"\r\n";
-    t += L"\r\n";
-    t += Msg(L"help.usage1") + L"\r\n";
-    t += Msg(L"help.usage2") + L"\r\n";
-    t += Msg(L"help.usage3") + L"\r\n";
-    t += Msg(L"help.usage4") + L"\r\n";
-    t += L"\r\n";
-
-    const auto& catalog = OptionCatalog();
-    // config 那一组是"这次读哪一份配置"的两条入口（--config / --no-config）。它排在 output 之后、
-    // 两条查询之前：它既不是截图那一级，也不是查询那一级，而查询这一路里 --show-config 恰恰
-    // 要回答"读的是哪一份"，所以这一段紧邻着查询那一节。
-    const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"crop", L"consent",
-                               L"timeout", L"output", L"config", L"query", L"behavior"};
-    size_t width = 0;
-    for (const auto& o : catalog) {
-        std::wstring col = FlagColumn(o);
-        if (!o.valueHint.empty()) col += L" " + o.valueHint;
-        width = std::max(width, col.size());
-    }
-    for (const wchar_t* g : groups) {
-        t += Msg(GroupTitle(g));
-        t += L"\r\n";
-        for (const auto& o : catalog) {
-            if (o.group != g) continue;
-            std::wstring col = FlagColumn(o);
-            if (!o.valueHint.empty()) col += L" " + o.valueHint;
-            col = L"  " + col;
-            col.append(width + 3 - col.size(), L' ');
-            t += col + Msg(o.messageKey.c_str()) + L"\r\n";
-        }
-        t += L"\r\n";
-    }
-
-    t += Msg(L"help.syntax") + L"\r\n";
-    t += Msg(L"help.output1") + L"\r\n";
-    t += Msg(L"help.output2") + L"\r\n";
-    t += Msg(L"help.exit1") + L"\r\n";
-    t += Msg(L"help.exit2") + L"\r\n";
-    t += Msg(L"help.status") + L"\r\n";
-    t += Msg(L"help.system") + L"\r\n";
-    // 授权这件事写在选项目录里（grp.consent 那一行 + --yes 的说明），不另立一段正文：
-    // 免得同一个规矩在两处各写一遍，改了一处忘了另一处。
-    t += L"\r\n";
-    t += Msg(L"help.examples") + L"\r\n";
-    for (const wchar_t* key : {L"help.example1", L"help.example2", L"help.example3", L"help.example4",
-                               L"help.example5", L"help.example6", L"help.example7",
-                               L"help.example8", L"help.example9"}) {
-        t += L"  " + Msg(key) + L"\r\n";
-    }
-    return t;
-}
-
-std::wstring VersionText() {
-    // minWindowsBuild 是本工具**对外声明**的最低 Windows 内部版本，与运行时那道能力检查取的是
-    // 同一个数（src/SystemCompat.h 的 kSupportedMinBuild），所以脚本不必先读文档就能问出
-    // "这个 exe 打算在哪种系统上工作"。它是声明，不是实测范围：实测只有 README
-    // 《系统支持》那一节写的那一个版本。
-    return std::wstring(L"EvernightCapture ") + kVersion + L"  (ECAPTURE.EXE / x64)  stage=" + kStage +
-           L"  minWindowsBuild=" + std::to_wstring(os_floor::kSupportedMinBuild) + L"\r\n";
-}
-
-// ---------------------------------------------------------------------------
-// --show-config：这一次这份配置的只读视图
-// ---------------------------------------------------------------------------
-//
-// 这份文档回答的是"读的是哪一份文件、有没有读到、每一项生效偏好各来自哪个来源"，
-// 而它本身一条像素都不取：不选窗口、不弹确认框、不建输出目录、也不建历史目录。
-// 取值全部来自解析层已经算好的那一份（Options::settings 与 config* 三个字段），这里**不**
-// 重读文件、也不重判一次优先级 —— 两份实现迟早对同一个键给出两种答案。
-// 它也不写回任何东西：一份坏掉的配置在这里只会被如实报出来，不会被"顺手修好"。
-std::wstring RenderConfigView(const Options& opt) {
-    Json j;
-    j.Obj();
-    j.Key(L"contract").Value(L"configview");
-    j.Key(L"contractVersion").Value(1);
-    j.Key(L"program").Obj().Key(L"version").Value(kVersion).End();
-
-    j.Key(L"config").Obj();
-    // selection：这一份是**怎么**定下来的（default = 程序同目录那份；explicit = --config 点名；
-    // none = --no-config 或 help/version 那一路一条都不读）。
-    j.Key(L"selection").Value(opt.configSelection.empty() ? std::wstring(L"default")
-                                                          : opt.configSelection);
-    OptString(j, L"file", opt.configPath);
-    OptString(j, L"state", opt.configState);
-    // loaded 说的是"读到了一个文件"，而不是"读到的每一项都有效"：后者看 settings 与 errors。
-    // 一份不存在（absent）的文件不是失败，也不该被读成"配置坏了"。
-    j.Key(L"loaded").Value(opt.configState == L"loaded");
-    j.End();
-
-    // 每一项生效偏好：value 是**规范化后**的写法（枚举小写、数字去空白），source 是三档来源。
-    // 顺序恒为 schema 的顺序，调用方可以按 key 分支而不必依赖位置。
-    j.Key(L"settings").Arr();
-    for (const Options::ResolvedSetting& s : opt.settings) {
-        j.Obj().Key(L"key").Value(s.id).Key(L"value").Value(s.value).Key(L"source")
-            .Value(s.source).End();
-    }
-    j.End();
-
-    // 输出格式那条链的根据（显式 --format / 命令行输出名的扩展名 / 配置的 format /
-    // 配置路径的扩展名 / 落到 png）。这一项单独报，是因为"读到了配置"与"这一项由谁定下来"
-    // 是两件事，而 auto 那条设置本身不关掉扩展名推断。
-    OptString(j, L"formatBasis", opt.formatBasis);
-
-    // 这份文档没说过什么（ASCII token，不随 --lang 变，也不被 --quiet 藏掉）：
-    //   no_pixels_no_files             这一路不取像素、不弹框、不创建输出与历史目录
-    //   not_repaired                   本工具不改写也不修复配置：坏了就只报，不"顺手改好"
-    //   preferences_listed_not_executed 带着 --show-config 这一次不出图，所以截图那一级的偏好
-    //          （取法 / 光标 / HDR / 裁剪 / 缩放 / 输出）只是被**读出来**并报了来源，
-    //          没有被写进那一条执行链路；真去截图时同一批判据才会生效
-    j.Key(L"caveats").Arr();
-    j.Value(L"no_pixels_no_files");
-    j.Value(L"not_repaired");
-    j.Value(L"preferences_listed_not_executed");
-    j.End();
-    j.End();
-    return j.Str();
-}
 
 // ---------------------------------------------------------------------------
 // 响应组装
 // ---------------------------------------------------------------------------
-int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Response* out) {
+int BuildResponse(const ParseResult& parse, Response* out) {
     const Options& opt = parse.options;
     out->body.clear();
     out->toStderr = false;
@@ -737,90 +583,12 @@ int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Resp
     // 图片要占用 stdout 时，JSON 改走 stderr，两个通道永不混流。取值与 Main 的兜底路径同源：
     // 半途异常时（见 Main.cpp）也是同一个判断，不会一处说"在 stderr"另一处写到 stdout。
     out->toStderr = ResultGoesToStderr(opt) || configFailed;
-    (void)argc;
-    (void)argv;
     return code;
 }
 
 // ---------------------------------------------------------------------------
-// 输出层：UTF-8 直写，绕开 CRT 文本模式；行尾统一 CRLF，避免老式控制台阶梯错位
+// 该走哪条流：这是共用判据，两条通道的实现在各平台服务里（src/OutputStream.h）
 // ---------------------------------------------------------------------------
-namespace {
-
-// 图片写 stdout 的那个时点记在这里：BuildResponse 与 Main 的兜底路径都按同一个事实决定
-// 结果送去哪条流，而不是各猜一次给出互相矛盾的答复。
-bool g_stdoutClaimed = false;
-
-std::wstring NormalizeNewlines(const std::wstring& in) {
-    std::wstring out;
-    out.reserve(in.size() + 8);
-    for (size_t i = 0; i < in.size(); ++i) {
-        if (in[i] == L'\r' && i + 1 < in.size() && in[i + 1] == L'\n') continue;  // 已有 CRLF
-        if (in[i] == L'\n') out += L"\r\n";
-        else out.push_back(in[i]);
-    }
-    return out;
-}
-
-bool WriteHandle(DWORD which, const std::wstring& text) {
-    HANDLE handle = GetStdHandle(which);
-    if (!handle || handle == INVALID_HANDLE_VALUE) return false;
-    const std::wstring body = NormalizeNewlines(text);
-    const int need = WideCharToMultiByte(CP_UTF8, 0, body.data(), static_cast<int>(body.size()),
-                                         nullptr, 0, nullptr, nullptr);
-    if (need <= 0) return false;
-    std::vector<char> buf(static_cast<size_t>(need));
-    WideCharToMultiByte(CP_UTF8, 0, body.data(), static_cast<int>(body.size()), buf.data(), need,
-                        nullptr, nullptr);
-    DWORD written = 0;
-    return WriteFile(handle, buf.data(), static_cast<DWORD>(buf.size()), &written, nullptr) &&
-           written == static_cast<DWORD>(buf.size());
-}
-
-}  // namespace
-
-bool EmitStdout(const std::wstring& text) {
-    // 图片已占用 stdout 时这里就是硬边界：文字一律改道，绝不让 JSON 混进 PNG 里。
-    // 返回 false 表示"没送到约定通道"，由调用方决定退出码（见 Main.cpp）。
-    if (StdoutClaimed()) return false;
-    return WriteHandle(STD_OUTPUT_HANDLE, text);
-}
-
-bool EmitStderrRaw(const std::wstring& text) { return WriteHandle(STD_ERROR_HANDLE, text); }
-
 bool ResultGoesToStderr(const Options& opt) { return opt.output == L"-" || StdoutClaimed(); }
-
-void ClaimStdout() { g_stdoutClaimed = true; }
-
-bool StdoutClaimed() { return g_stdoutClaimed; }
-
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, NativeErrorCode* ioError, uint64_t* emittedBytes) {
-    if (emittedBytes) *emittedBytes = 0;
-    HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (!handle || handle == INVALID_HANDLE_VALUE) {
-        // 句柄本身就取不到：这里 GetLastError 早就不是失败原因了，照实报"句柄无效"
-        if (ioError) *ioError = ERROR_INVALID_HANDLE;
-        return false;
-    }
-    // 写第一块字节之前就声明归属：哪怕这次只发出去半张图，stdout 也不能再给文字用。
-    ClaimStdout();
-    size_t offset = 0;
-    while (offset < bytes.size()) {
-        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(bytes.size() - offset, 1u << 20));
-        DWORD written = 0;
-        const BOOL ok = WriteFile(handle, bytes.data() + offset, chunk, &written, nullptr);
-        if (!ok || written != chunk) {
-            // 立刻取错误码：断管 / 磁盘满 / 句柄失效在这一步是三种不同的故障，
-            // 调用方要靠它区分，晚一步就被后续 API 覆盖了。
-            if (ioError) *ioError = GetLastError();
-            // 已经排出去的那一段收不回来：把它照实交回去，别让调用方以为管道还是干净的。
-            if (emittedBytes) *emittedBytes = ok ? offset + written : offset;
-            return false;
-        }
-        offset += written;
-    }
-    if (emittedBytes) *emittedBytes = offset;
-    return true;
-}
 
 }  // namespace ecapture

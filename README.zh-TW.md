@@ -1421,8 +1421,10 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 `zh-Hans` 走簡體，`jp` 走日語；寫錯在解析期報 `cli.unknown_language`（退出碼 1），不會退回成預設語言。
 
 **只有給人看的文字會隨語言變**：診斷項的 `message` / `hint`、`--help` 全文。`code`、JSON 鍵名、取值列舉、
-`0x…` 句柄、`HRESULT` 數值一律不變，呼叫端依 `code` 分支即可。文案是 exe 自帶的嵌入資源
-（`resources/strings-<語言>.txt` 依語言編成四份 `RCDATA`），所以離線也能切換語言。
+`0x…` 句柄、`HRESULT` 數值一律不變，呼叫端依 `code` 分支即可。文案隨程式一起交付：建置期由
+`scripts/gen-lang-data.cmake` 把 `resources/strings-<語言>.txt` 四份依位元組產生一份 C++ 來源檔編進程式
+（Windows 上過去走 `RCDATA`，那條只有 `rc.exe` 有，共用語言層讀文案就得依賴 Win32 資源；現在兩個平台
+編譯同一份嵌入物，改文案由建置依賴自動觸發重編），所以離線也能切換語言。
 
 ## 邊界與未驗證項
 
@@ -1677,7 +1679,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 | `.\tests\build-path.ps1`    | 在含中日韓文字、空白、括號與 `%` 的目錄裡建置（外加一個中文的 `%TEMP%`），以及那個暫存批次檔的正文必須留在 ASCII 之內                                                                                                                                                                                                   |
 | `.\tests\streams.ps1`       | 串流與結構化結果的可靠性：單一個目標在 stdout 上交付一張、解析成多個目標的批次在彈框之前就被拒、判據是實際命中的目標數、批次中途失敗時已經截到的圖仍留在 `images`、結果送不到約定那條串流時報退出碼 `8`，以及省略 `--out` 與顯式 `--out -` 在成功／無匹配／歧義／非法參數／後端失敗／被拒絕／寫入斷管這七個場景上的對拍 |
 | `.\tests\window_shot.bat`   | 給人跑的走查：逐通道對一扇編譯出來的測試視窗截圖、由人親自點那些確認框，最後是整張螢幕那一步                                                                                                                                                                                                                            |
-| `.\scripts\check-lang.ps1`  | 四語文案的 key 與佔位符對齊，並確認 exe 裡真的編進了四份資源                                                                                                                                                                                                                                                            |
+| `.\scripts\check-lang.ps1`  | 四語文案的 key 與佔位符對齊，並把建置期產生的那份嵌入物（`build\generated\ec_lang_data.cpp`）與四份 `.txt` 逐條對帳，擋住「改了文案卻沒重編」                                                                                                                                                                                                                                                            |
 | `.\scripts\mkreadme.ps1`    | 用各語言 `--help` 的原樣輸出重新產生四份 README 的說明段；`-Check` 改成只判不寫，過期的說明段就是這樣被抓出來的                                                                                                                                                                                                         |
 
 所有實機測試的目標視窗一律是自家的：`tests\helper\ec_window.cs` 編到本次執行的暫存目錄裡，測試握著它的
@@ -1713,6 +1715,57 @@ PID 與 HWND，因此既不按處理程序名去找目標、也不按處理程�
 - **退出碼**：`0` = 計劃內套件全部跑到並通過（套件自己記的 SKIP 算未驗證，不算失敗）；`1` = 至少一套 FAIL / TIMEOUT / NO EXIT / NO START，**或計劃裡點名要跑的整套根本沒啟動**（腳本不見了、原始碼解析不乾淨、離線元資料不符）；`2` = 前置不成立（建置失敗、找不到產物、參數不認識、篩完沒有可執行測試、參數衝突、已有另一個總跑在跑）。建置失敗以退出碼 2 結束，絕不拿舊產物繼續。
 - **匯總只計真實結果**：「交出結果」只算真正給出終態的套件，NO START / NO EXIT 不算。三種「沒跑/未驗證」分開寫、不合并成一個數字：被 `-Quick` / `-Only` / `-Except` / `-Offline` 刻意沒排的、因 `-StopOnFail` 停下的剩餘、以及意外整套沒跑成的（只有最後這類判退出碼 1）；各套件自己記的 SKIP 屬於環境與安全邊界，既不升成失敗也不當成通過。
 - **日誌**寫在 `build\test-logs\<時間戳>\`（每套一份，另有一份合并的）；`build\` 已在 `.gitignore` 裡。
+
+### Linux 側開發入口：`build.sh` / `run.sh` / `debug.sh` / `test-all.sh`
+
+Linux 用 GCC / Clang，建置目錄固定在倉庫根的 `build-linux/<編譯器>-<設定>`，與 Windows 的 `build\` 各有各的
+CMakeCache，**不共用快取** —— 這也是 Windows 安裝器與打包判定可以繼續按 `build\ECAPTURE.EXE` 找產物的前提。
+四個腳本都從自身位置定位倉庫，所以**從任何工作目錄都能呼叫**，路徑含中文與空白照常；共用部分在
+`scripts/dev-common.sh`。腳本一律不裝相依、不 `sudo`、不改使用者的桌面與顯示器設定。
+
+| 命令 | 這條做什麼 |
+| ---- | ---------- |
+| `./build.sh` | 設定 + 建置（預設 `Release`，編譯器先看 `$CXX`，再退到 PATH 上的 g++ / clang++）。可加 `--config Debug`、`--compiler clang`、`--target wgc-tests`、`--clean`、`--gui`、`--list-targets`，`--` 之後原樣轉給 `cmake --build` |
+| `./run.sh` | 執行本平台**真的能建置**的那份可執行檔，預設 `core-tests`；用 `--target` 或 `--exe` 點名。找不到產物就報「前置不成立」，**絕不退回去跑別處的舊檔**；點名 `ecapture` 會當場得到它暫不可建置的準確原因，不會被靜默換成別的東西 |
+| `./debug.sh` | GDB / LLDB 除錯工作階段：預設 `Debug`（帶 `-g`），產物不在就先建置（`--rebuild` 強制重建、`--no-build` 只用現成的）；`--eval "break main"` 把一條除錯器命令當作**一個** argv 遞進去（依空白劈開會讓 gdb 在載入可執行檔之前就下斷點，結果下不上），`--script <檔案>` 走腳本檔，`--batch` 非互動 |
+| `./test-all.sh` | 測試總入口：先建置再**循序**跑，`--list` 只看計畫不啟動。分 `--layer offline`（預設）/ `isolated`（要圖形工作階段，有 `xvfb-run` 就用虛擬顯示，否則明白說用的是目前工作階段）/ `manual`（真機人工驗證，腳本不代跑）/ `all`；`--only` / `--except` 依套件名篩，`--stop-on-fail` 第一套沒過就收 |
+
+退出碼一套：`0` = 計畫內該跑的套件全部跑到並通過；`1` = 至少一套判定沒過，**或計畫內的套件因缺前置根本沒啟動**
+（記 `NOT RUN(缺前置)` 並逐條寫原因，不算通過也不算跳過）；`2` = 全域前置不成立（缺 cmake / 編譯器、建置階段失败、
+建置目錄不是本專案產生的）；`3` = 參數不合法或篩完沒有可執行測試。建置失败一定停在那裡，一份舊產物都不會被抓來跑。
+
+預設組與腳本落在同一個目錄，手打也一樣：
+
+```bash
+cmake --preset gcc-debug && cmake --build --preset gcc-debug
+```
+
+Linux 目前可建置的目標只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`
+與（裝了 wxWidgets 之後的）`ecapture-gui-probe`。完整 CLI 與那十幾份要取圖通道的測試程式仍在 `CMakeLists.txt` 的
+【平台層 · Windows】那一段裡；設定日誌會逐條列出這份名單，建置目錄裡也留一份
+`ecapture-buildable-targets.txt` 給腳本核對 —— 不拿「刪掉功能」換一次好看的 Linux 建置成功。
+
+### wxWidgets 相依接線（這一步只接線，沒有換掉任何彈窗）
+
+- **選用版本**：wxWidgets 3.2.x（上游穩定分支）。Linux 用發行套件包，Debian / Ubuntu 是 `libwxgtk3.2-dev`。
+- **發現方式**：CMake 的 MODULE 模式 `FindwxWidgets`，由它呼叫 `wx-config` 問版本、cflags 與 libs，
+  所以跟著發行套件實際裝的那份走，不寫死安裝路徑。多版本共存時用 `-DECAPTURE_WX_CONFIG=/全路徑/wx-config`
+  點名（腳本側是 `./build.sh --wx-config ...`），版本下限用 `-DECAPTURE_WX_MIN_VERSION=3.2.0`。
+- **元件與連結策略**：只要 `core` + `base` 兩個元件 —— `core` 自己帶上工具集（wxGTK）的相依，
+  本專案不在建置裡硬編 GTK 版本號。以共用函式庫連結。標頭、巨集、額外編譯選項、函式庫這四樣各自掛到目標上，
+  不用 `include(${wxWidgets_USE_FILE})`：那條是把設定潑到整個目錄的作用域。
+- **目標劃分**：`ecapture-gui-probe`（來源 `src/gui/WxGuiProbe.cpp`）是**獨立**目標，只證明相依真的接上了、
+  `wxApp` 能在圖形工作階段完成初始化；它不建視窗、不彈窗、不取一個畫素。兩份離線判定**不鏈** wxWidgets，
+  裝與不裝都能建置 —— GUI 與核心測試互不阻塞，這正是這一步要的分層。
+- **開關**：`ECAPTURE_ENABLE_GUI` 在 Linux 預設 `ON`（找不到 wx 就跳過該目標並說明原因），Windows 預設 `OFF`
+  （現有 Windows 建置入口與安裝包載荷清單不受任何影響，不會因為某台機器恰好裝了 wx 就多出一個目標）；
+  `ECAPTURE_REQUIRE_WX=ON`（腳本側 `./build.sh --gui`）把缺相依變成設定階段的硬錯誤。
+- **授權條款**：wxWidgets 是 LGPL 2.1 with an exception（動態連結下無額外義務）。
+- **本機狀態**：這台 Linux 開發機**沒裝 wxWidgets**，所以 GUI 目標的編譯與執行屬於**待驗證**；
+  實際測過的只有「缺相依時給出準確診斷」這條（`./build.sh --gui` 以退出碼 `2` 結束並列出安裝與點名方式）。
+
+確認彈窗（`Consent.cpp`）與截圖後通知（`NotificationToast.cpp`）這一步**沒有**改動：它們的 wxWidgets 實作是
+後續步驟。`--yes` 的適用範圍與畫素範圍判定照舊只有一份出處，在 `CaptureScope` 與 `src/core/Authorization.h`。
 
 ### 建置安裝封裝：`build-installer.ps1`
 
@@ -1751,6 +1804,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/core/` | 平台無關的模型與判據：`Platform.h` 平台身分、`Geometry.h` 座標、`Frame.h` 圖像影格、`Status.h` 卡住的原因碼、`Target.h` 目標描述、`Error.h` 錯誤碼與三值結果、`Authorization.h` 像素範圍與授權層、`Capability.h` 功能矩陣 | 一條都不 include `windows.h`，也不出現 HWND / RECT / HANDLE / HRESULT / WinRT |
 | `src/` 裡這幾份共用模型與策略頭 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 與上面同一條：這些頭說的是「截什麼、批准了什麼、這一影格長成什麼樣」，與用哪家 API 弄到手無關 |
 | `src/platform/windows/WinBridge.h` | 核心與 Win32 之間**唯一**的轉換處：`RECT ↔ PhysRect`（單個與整批）與 `Deadline → 等待毫秒` | 只允許平台層的 `.cpp` include 它。轉換呼叫出現的那一行，就是審查看得見「這裡跨了一次平台界線」的那一行 |
+| `src/gui/` | 跨平台自有 GUI 的唯一去處，走 wxWidgets。目前這裡只有相依接線用的探針 `WxGuiProbe.cpp`，**還沒有**任何自有介面 | 只有這一層碰 wxWidgets；`src/core/` 與共用模型不許 include 它，也不許被它反向定義判定。GUI 目標與離線判定互不相依 |
 | `CaptureCommon.h`、五條通道頭、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【平台層 · Windows】GDI / D3D / WinRT / 命名管道 / 字串資源的真實使用者 | 每個檔案開頭就寫明自己是平台層；共用核心反向 include 它們就是破界 |
 
 **這不是把 `RECT` 換個名字**：`PhysRect` 的四條邊寫死成 `int32_t`，而「空矩形」「包含」「量不出來」
@@ -1798,17 +1852,40 @@ Windows 那側的原生型別，只在通道內部與輔助進程管道的線上
    屬於桌面服務，本程式不仿製、不替代、不自動批准；反過來 Portal 記住了工作階段也不能省掉程式那一次確認。
    `RequiredGrantLayers()` 把這一條寫成判據，`tests\core-boundary.ps1` 逐條釘住「少一層就不放行」。
 
+### 命令列文字處理與多語資源（2026-10 遷移）
+
+`--help` / `--version` / 參數解析 / 設定讀取 / 文案這一層現在兩個平台共用同一份實作，靠的是四條界線：
+
+| 界線 | 約定 | 本體 |
+| ---- | ---- | ---- |
+| 內部文字 | `std::wstring`：Windows 上是 UTF-16 碼元，Linux 上是一個 `wchar_t` 一個碼位；對外位元組一律 UTF-8（無 BOM）。換碼只發生在四個邊界：命令列入口、嵌入文案取出、檔案讀寫、標準流出口 | `src/core/TextCoding.h` |
+| 非法編碼 | 不換個程式碼頁再試一次，也不丟後面的內容：一段非法位元組換成一個 `U+FFFD` 並**如實計數**，第一處的偏移一併交回。設定檔整份拒；命令列參數逐條報 `cli.invalid_utf8` 並讓本次失敗，絕不拿 `U+FFFD` 當一次合法的標題 / 路徑 / 正則 | 同上與 `src/core/CliTokens.h` |
+| 參數入口 | 平台入口只負責把本系統的 argv 收進 `CliTokens`（Windows 的 UTF-16 原樣搬、Linux 的位元組嚴格解碼），正文 `CliMain` 是共用的；Windows 入口另外分診輔助行程模式。Linux 那側 `DecodePosixArgv` 已按真實位元組陣列判過，`main` 那三行要等取影格那幾層遷完才鏈得起來 | `src/CliArgs.h`、`src/Main.h` |
+| 平台動作 | 路徑形狀、整份讀檔、寫標準流、系統顯示語言：宣告在共用頭，實作分兩側（`src/platform/windows/`、`src/platform/linux/`）。POSIX 上 `\` 是檔名裡的普通字元、`C:shot.png` 是目前目錄下一個合法的相對名，不照抄 Windows 的形狀判據；大小寫與空白的判定只折 ASCII，不跟執行期 locale 走 | `src/HostPath.h`、`src/HostFile.h`、`src/OutputStream.h`、`src/Lang.h` |
+
+Windows 專屬的說法（`--hwnd`、`--class`、`--capture` 的那些 Windows 通道，以及 `--monitor` 的 `device:` /
+`id:` 兩種識別碼）在非 Windows 建置裡逐條報 `cli.platform_unsupported`（退出碼 1）：既不靜默忽略，
+也不翻譯成「大概對等」的另一條參數。`--help` / `--version` 那一路先把人要的輸出交出去，不在這一條上報。
+
+標準流的分工照舊：影格佔用 stdout 之後文字一律改道 stderr；`--help` / `--version` / 未給條件仍是純文字，
+其餘是精簡 JSON。行尾交給出口那一層決定（Windows 歸一成 CRLF，Linux 用 `\n`），所以共用文字裡只寫 `\n`。
+
 ### 這一層的驗證入口
 
 | 命令 | 判什麼 |
 | ---- | ------ |
 | `.\tests\core-boundary.ps1` | 離線一層：`build\ecapture-core-tests.exe` 用共用模型跑判據（座標、影格、目標、矩陣、隱私），一個像素都不取、不彈框 |
 | `scripts/core-portability-check.sh` | Linux 一層：同一份 `tests/core_boundary_state.cpp` 用 g++ 編譯並執行，再加一條「這些頭不許滲平台型別」的靜態清單。**在那裡編得過，就是界線成立的機器證明** |
+| `.\tests\cli-text.ps1` | 離線一層：`build\ecapture-cli-text-tests.exe` 判編碼界線、四語嵌入與退回、參數與設定、JSON 跳脫與標準流紀律，一個像素都不取、不彈框 |
+| `./test-all.sh` 的 `cli-text` 套件，以及 `scripts/core-portability-check.sh` 的 3b / 4b | Linux 一層：同一批共用來源檔**不经由 CMake 目標**自己產生嵌入文案再用 g++ 編好跑完。這條同時是「共用 CLI 層真的不含平台頭」的機器證明，也是「改完文案不重編就會被查出來」的現場 |
+| `./test-all.sh` | Linux 總跑：`offline` 層把上面那條與 CMake 建置出來的 `ecapture-core-tests`、`ecapture-wgc-tests` 串起來判；`isolated` 層需要 wxWidgets 與圖形工作階段（缺相依記 `NOT RUN`，絕不算通過）；`manual` 層留給真機人工驗證 |
 
 兩條入口用同一個來源檔——它一條都不 include `windows.h`。這一步刻意沒做的（屬於後續步驟）：
-X11 / Wayland 後端、wxWidgets 取代 `DialogConsentPrompt` 與 WinRT toast、Portal + PipeWire 接線、
-把 `std::wstring`（UTF-16）換成明確宣告編碼的文字型別、輔助進程線上格式去掉 `RECT` / `HRESULT`、
-以及 `Report.h`（JSON 渲染屬核心、寫標準輸出屬平台服務）的再拆一分。
+X11 / Wayland 後端、wxWidgets 取代 `DialogConsentPrompt` 與 WinRT toast（這一步只把相依發現與連結接到位，
+外加一個不建視窗的探針目標）、Portal + PipeWire 接線、
+把 `std::wstring` 本身換成自帶編碼約定的型別（約定已經寫在 `src/core/TextCoding.h` 一處，型別還沒跟著換）、
+輔助進程線上格式去掉 `RECT` / `HRESULT`，以及 `Report.h` 剩下的那一拆（寫標準輸出已歸到平台服務
+`src/OutputStream.h`，應答組裝與桌面查詢的渲染仍在 Windows 那側）。
 
 ## 授權
 

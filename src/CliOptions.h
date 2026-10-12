@@ -12,6 +12,7 @@
 
 #include "Lang.h"
 #include "Version.h"
+#include "core/CliTokens.h"
 
 namespace ecapture {
 
@@ -447,6 +448,16 @@ inline constexpr const wchar_t* kInvalidValue = L"cli.invalid_value";
 inline constexpr const wchar_t* kInvalidFormat = L"cli.invalid_format";
 inline constexpr const wchar_t* kUnrecognizedExtension = L"cli.unrecognized_extension";
 inline constexpr const wchar_t* kUnexpectedPositional = L"cli.unexpected_positional";
+// 这一条参数在本平台的原生编码里读不通（Linux 上 argv 的字节不是合法 UTF-8）。
+// 退出码 1，逐条报出那条参数（value 里带 U+FFFD 标记）与第一处不可用字节的偏移（detail）。
+// 单独立一条而不是"当成一个奇怪的名字/取值"：把非法字节换成替换字符后继续用，等于把用户的
+// 原话换成另一句话去匹配窗口、去当输出路径 —— 那是静默损坏，不是报错。
+inline constexpr const wchar_t* kInvalidUtf8 = L"cli.invalid_utf8";
+// 这一条选项说的是只有 Windows 才有的东西（窗口句柄、窗口类名、Windows 的取图通道、
+// GDI 设备名与 devnode 路径那两种屏幕标识）。本构建跑在别的平台上时**明确报不支持**：
+// 不静默忽略，也不翻译成"大概 equivalent 的那个选项"（HWND 换成 X11 窗口号、
+// \\.\DISPLAY1 换成编号，都是拿一个标识当另一个用）。退出码 1，detail 带本平台名。
+inline constexpr const wchar_t* kPlatformUnsupported = L"cli.platform_unsupported";
 // 保留而不再发出：0.4.0 之前"没给 --out 而这次又没出图"会把真实原因整段换成这一条，
 // 于是调用方读到的是"缺少输出路径"而不是"人拒绝了 / 没命中 / 写坏了"。现在省略 --out 与
 // 显式 --out - 语义一致，这条 code 一律不出现；留着是为了它不被挪作别的含义。
@@ -904,8 +915,9 @@ struct OptionInfo {
 
 const std::vector<OptionInfo>& OptionCatalog();
 
-// 解析 argc/argv（宽字符，来自主动 --help 之外的 wmain）。
-ParseResult ParseCommandLine(int argc, wchar_t* const* argv);
+// 解析一串命令行参数（已经换成本项目的内部文字，见 src/core/CliTokens.h）。
+// 程序名占第 0 条，所以"没有参数"是 Count()==1，与 argc/argv 的习惯一致。
+ParseResult ParseCommandLine(const CliTokens& tokens);
 
 // 严格十进制：只认 [0-9]+，不许空白、正负号、0x 前缀、下划线与任何单位后缀，溢出即 false。
 // 命令行取值与配置文件里的数**共用这一份**判据（src/Config.cpp 调它），否则 INI 会接受

@@ -100,13 +100,12 @@ std::vector<CaptureMethod> ScreenAll() {
     return {CaptureMethod::kWgc, CaptureMethod::kDuplication, CaptureMethod::kBitBlt};
 }
 
-// 直接调解析层：argv 要的是"活着的 wchar_t* 数组"，所以先把取值存进一个 vector 再取指针。
+// 直接调解析层。收的是 CliTokens（第 0 条是程序名那一条，与原来 argv 的下标习惯一致），
+// 不再是 wchar_t* 数组 —— 那一层归平台入口，判据站在入口之后。
 ParseResult Run(std::initializer_list<std::wstring> args) {
-    std::vector<std::wstring> store(args);
-    std::vector<wchar_t*> argv;
-    argv.reserve(store.size());
-    for (auto& s : store) argv.push_back(s.data());
-    return ParseCommandLine(static_cast<int>(argv.size()), argv.data());
+    CliTokens tokens;
+    for (const std::wstring& s : args) tokens.PushBack(s);
+    return ParseCommandLine(tokens);
 }
 
 // ---------------------------------------------------------------------------

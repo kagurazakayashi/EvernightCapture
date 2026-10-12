@@ -8,18 +8,19 @@
       3. 同一个 key 在各语言里用到的占位符（%1 .. %9）必须一致——翻译时把 %2 翻没了，
          就等于把候选窗口列表这类关键信息丢了；
       4. 代码里写到的 key（Msg/Msgf 以及 kOptions 的 "opt.*"）必须在文案里存在。
-    另外用 Get-Resource 那段确认 exe 里真的编进了四份资源（改完 .txt 忘记重编时会挡住）。
+    另外把构建期生成的 generated\ec_lang_data.cpp 与四份 .txt 逐条对账，
+    挡住"改了文案却没重编"（RCDATA 那一路已经换成跨平台嵌入，见 src\LangData.h）。
 .EXAMPLE
     .\scripts\check-lang.ps1
-    .\scripts\check-lang.ps1 -Exe build\Debug\ecapture.exe
+    .\scripts\check-lang.ps1 -Generated build\generated\ec_lang_data.cpp
 #>
 param(
-    [string]$Exe
+    [string]$Generated
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Split-Path -Parent $PSScriptRoot).TrimEnd('\')
-if (-not $Exe) { $Exe = Join-Path $root 'build\ecapture.exe' }
+if (-not $Generated) { $Generated = Join-Path $root 'build\generated\ec_lang_data.cpp' }
 $langs = @('zh-CN', 'zh-TW', 'en', 'ja')
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
@@ -106,41 +107,39 @@ foreach ($key in ($union.Keys | Sort-Object)) {
     if (-not $mentioned.ContainsKey($key)) { $notes += "文案里没有被代码引用的 key：$key" }
 }
 
-# exe 里是否真有四份资源：用 FindResource 逐个确认（改完 .txt 没重编时会暴露）。
-# RT_RCDATA 是序号 10，所以 type 用 IntPtr 传，传字符串 "10" 找不到。
-if (Test-Path -LiteralPath $Exe) {
-    if (-not ('ResourceProbe' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class ResourceProbe {
-    [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern IntPtr LoadLibraryEx(string file, IntPtr hFile, uint flags);
-    [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
-    static extern IntPtr FindResourceW(IntPtr module, string name, IntPtr type);
-    [DllImport("kernel32", SetLastError = true)]
-    static extern uint SizeofResource(IntPtr module, IntPtr resInfo);
-    public static long Size(string file, string name) {
-        IntPtr mod = LoadLibraryEx(file, IntPtr.Zero, 0x2 /* LOAD_LIBRARY_AS_DATAFILE */);
-        if (mod == IntPtr.Zero) { return -1; }
-        IntPtr info = FindResourceW(mod, name, new IntPtr(10) /* RT_RCDATA */);
-        if (info == IntPtr.Zero) { return 0; }
-        return SizeofResource(mod, info);
-    }
-}
-'@
-    }
-    $names = @{ 'zh-CN' = 'ECP_TEXT_ZH_CN'; 'zh-TW' = 'ECP_TEXT_ZH_TW'; 'en' = 'ECP_TEXT_EN'; 'ja' = 'ECP_TEXT_JA' }
+# 构建期生成的那份语言数据源文件，与 resources/strings-*.txt 逐条对账：
+# 文案四份按原样嵌进 generated\ec_lang_data.cpp（见 scripts\gen-lang-data.cmake），
+# 改了 .txt 却没能触发重生成时，这里会当场查出"程序里那份"与"仓库里那份"不一样。
+# CMake 的 file(READ) 会把 \r\n 归一成 \n，所以比对之前两边都做同样的归一。
+if (Test-Path -LiteralPath $Generated) {
+    $text = [System.IO.File]::ReadAllText($Generated, $utf8)
+    $open = 'R"ECAP_LANG_DATA('
+    $close = ')ECAP_LANG_DATA";'
+    $vars = @{ 'zh-CN' = 'kZhCn'; 'zh-TW' = 'kZhTw'; 'en' = 'kEn'; 'ja' = 'kJa' }
+    $cursor = 0
+    $embedded = @{}
     foreach ($lang in $langs) {
-        $size = [ResourceProbe]::Size($Exe, $names[$lang])
-        if ($size -le 0) {
-            $problems += "exe 里没有（或为空）$($names[$lang]) 这份资源：$Exe（改完文案要重新构建）"
+        $decl = $text.IndexOf('static const char ' + $vars[$lang] + '[] = ' + $open, $cursor)
+        if ($decl -lt 0) { $problems += "$lang 那份没有嵌进 $Generated（生成脚本被改动过？）"; continue }
+        $from = $decl + ('static const char ' + $vars[$lang] + '[] = ' + $open).Length
+        $to = $text.IndexOf($close, $from)
+        if ($to -lt 0) { $problems += "$lang 那份的嵌入块没有闭合：$Generated"; continue }
+        $embedded[$lang] = $text.Substring($from, $to - $from).Replace("`r`n", "`n")
+        $cursor = $to + $close.Length
+    }
+    foreach ($lang in $langs) {
+        if (-not $embedded.ContainsKey($lang)) { continue }
+        $path = Join-Path $root "resources\strings-$lang.txt"
+        if (-not (Test-Path -LiteralPath $path)) { continue }   # 缺文件在前面已经报过
+        $source = [System.IO.File]::ReadAllText($path, $utf8).Replace("`r`n", "`n")
+        if ($source -ne $embedded[$lang]) {
+            $problems += "$lang 的嵌入内容与 resources\strings-$lang.txt 不一致（改完文案要重新构建）"
         } else {
-            Write-Host ("  {0,-6} {1,-14} {2} 字节" -f $lang, $names[$lang], $size) -ForegroundColor DarkGray
+            Write-Host ("  {0,-6} 已嵌入 {1} 字符" -f $lang, $embedded[$lang].Length) -ForegroundColor DarkGray
         }
     }
 } else {
-    $notes += "找不到 $Exe，跳过资源存在性检查"
+    $notes += "找不到 $Generated，跳过嵌入内容对账（先 .\build.ps1 生成一次）"
 }
 
 foreach ($n in $notes) { Write-Host "  提示  $n" -ForegroundColor DarkYellow }

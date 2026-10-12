@@ -109,13 +109,13 @@ struct Parsed {
 };
 
 Parsed Run(const std::vector<std::string>& args) {
-    std::vector<std::wstring> wide;
-    wide.push_back(L"ECAPTURE.EXE");
-    for (const std::string& a : args) wide.push_back(Wide(a));
-    std::vector<wchar_t*> argv;
-    for (std::wstring& w : wide) argv.push_back(w.data());
+    // 解析层现在收的是 CliTokens（程序名占第 0 格），不再收 wchar_t* 数组：
+    // 那一层是平台入口的事，判据直接站在入口之后。
+    CliTokens tokens;
+    tokens.PushBack(L"ECAPTURE.EXE");
+    for (const std::string& a : args) tokens.PushBack(Wide(a));
     Parsed p;
-    p.r = ParseCommandLine(static_cast<int>(argv.size()), argv.data());
+    p.r = ParseCommandLine(tokens);
     return p;
 }
 

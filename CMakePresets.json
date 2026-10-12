@@ -1,0 +1,69 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "description": "Linux 构建的公共设置：构建目录一律在 build-linux/ 下，与 Windows 的 build/ 完全分开，不共享缓存",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux/${presetName}",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "gcc-debug",
+      "displayName": "Linux GCC Debug（带符号，debug.sh 用这一份）",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "gcc-release",
+      "displayName": "Linux GCC Release",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "g++", "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "clang-debug",
+      "displayName": "Linux Clang Debug（带符号）",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "clang-release",
+      "displayName": "Linux Clang Release",
+      "inherits": "linux-base",
+      "cacheVariables": { "CMAKE_CXX_COMPILER": "clang++", "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "description": "官方 Windows 入口仍是 .\\build.ps1（它负责定位 vcvars64.bat）。这一组预设只在已经导入 MSVC 环境（Developer Command Prompt）时使用，构建目录沿用 build\\，不改安装器与打包判据的路径约定",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "msvc-release",
+      "displayName": "Windows MSVC Release（与 build.ps1 默认同一配置、同一目录）",
+      "inherits": "windows-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "msvc-debug",
+      "displayName": "Windows MSVC Debug",
+      "inherits": "windows-base",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "gcc-debug", "configurePreset": "gcc-debug" },
+    { "name": "gcc-release", "configurePreset": "gcc-release" },
+    { "name": "clang-debug", "configurePreset": "clang-debug" },
+    { "name": "clang-release", "configurePreset": "clang-release" },
+    { "name": "msvc-release", "configurePreset": "msvc-release" },
+    { "name": "msvc-debug", "configurePreset": "msvc-debug" }
+  ]
+}

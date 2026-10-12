@@ -2,21 +2,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cwctype>  // 只给"这像不像一个数字"那条判据用（iswdigit）；折叠大小写一律走 ASCII，见下面
 #include <string_view>
-#include <cwctype>
 #include <functional>
 #include <iterator>
 #include <limits>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
+#include "HostPath.h"   // 路径形状、绝对化与分隔符：判据在平台服务里，两平台各一份实现
 #include "Config.h"        // 用户偏好配置：读哪一份、逐键校验、来源合并（判据本体在那一层）
 #include "ScreenMatch.h"   // 只要那条 inline 的 StripScreenDevicePrefix：设备名前缀的形状只写一处
 #include "CursorControl.h"  // 只要 inline 的那张光标登记表：解析期判"这条通道做不做得到"
 #include "HdrColor.h"       // 只要 inline 的那张 HDR 登记表：解析期判"这条通道带不带得回广色域帧"
+#include "core/Platform.h"    // 本次构建的平台族：Windows 专属说法在这里判，不在调用点猜
+#include "core/TextCoding.h"
 
 namespace ecapture {
 namespace {
@@ -25,10 +23,10 @@ namespace {
 // 小工具
 // ---------------------------------------------------------------------------
 
-std::wstring ToLower(std::wstring s) {
-    for (auto& ch : s) ch = static_cast<wchar_t>(std::towlower(ch));
-    return s;
-}
+// 选项名、枚举取值与扩展名那一路的"忽略大小写"，合同说的就是 ASCII 那二十六个字母：
+// 只折 ASCII，不跟 C 运行期 locale 走。towlower 在两个平台上对同一个非 ASCII 字符可以给出
+// 不同答案（还依赖 locale），拿它判取值会让同一份参数在一边成立、另一边被判成非法。
+std::wstring ToLower(const std::wstring& s) { return AsciiLower(s); }
 
 bool EqualsInsensitive(const std::wstring& a, const std::wstring& b) {
     return ToLower(a) == ToLower(b);
@@ -38,15 +36,13 @@ bool StartsWith(const std::wstring& s, const std::wstring& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
 }
 
+// 取值的"首尾空白"同一条立场：只按 ASCII 空白裁。iswspace 认不认全角空格与不间断空格
+// 要看运行期 locale，而取值合同里没有"这些也算空白"。
 std::wstring Trim(const std::wstring& s) {
     size_t b = 0, e = s.size();
-    while (b < e && std::iswspace(s[b])) ++b;
-    while (e > b && std::iswspace(s[e - 1])) --e;
+    while (b < e && IsAsciiSpace(s[b])) ++b;
+    while (e > b && IsAsciiSpace(s[e - 1])) --e;
     return s.substr(b, e - b);
-}
-
-bool HasPathSeparator(const std::wstring& s) {
-    return s.find(L'\\') != std::wstring::npos || s.find(L'/') != std::wstring::npos;
 }
 
 // Levenshtein 距离，用于 "你是不是想输入 --title？" 这类提示。
@@ -59,7 +55,7 @@ size_t EditDistance(const std::wstring& a, const std::wstring& b, size_t limit) 
         cur[0] = i;
         size_t rowMin = cur[0];
         for (size_t j = 1; j <= b.size(); ++j) {
-            const size_t cost = (std::towlower(a[i - 1]) == std::towlower(b[j - 1])) ? 0u : 1u;
+            const size_t cost = (AsciiLowerChar(a[i - 1]) == AsciiLowerChar(b[j - 1])) ? 0u : 1u;
             cur[j] = std::min({prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost});
             rowMin = std::min(rowMin, cur[j]);
         }
@@ -83,8 +79,6 @@ size_t EditDistance(const std::wstring& a, const std::wstring& b, size_t limit) 
 //     （1e3）、不要下划线分隔、不要 0x 前缀，也不接受任何非 ASCII 数字。区间在同一次调用里
 //     判完，调用点没机会"忘了判上界"。
 //   * 句柄（--hwnd）保留文档里那三种写法，但正负号与溢出照样拒绝（见 ParseHandleValue）。
-
-constexpr bool IsAsciiDigit(wchar_t c) { return c >= L'0' && c <= L'9'; }
 
 constexpr bool IsAsciiHexDigit(wchar_t c) {
     return IsAsciiDigit(c) || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
@@ -410,6 +404,23 @@ struct OptionSpec {
     bool valueAlways = false;
 };
 
+// 说的全是 Windows 才有的那几件事，换平台没有"对等的那一条"可换：
+//   * --hwnd   一个 HWND 的数字。X11 的窗口号、Wayland 的 surface 都不是同一个标识，
+//              拿它们接同一个取值就是把一个标识当另一个用（AGENTS.md：目标标识含所属后端）。
+//   * --class  Win32 的窗口类名。别的系统上没有这一层名字。
+//   * --capture  这一组的每一条取值（wgc / dwm / printwindow / bitblt / duplication）都是
+//              Windows 的取图通道；--auto 是"按这条链回退"，链本身也是 Windows 的。
+// 屏幕的两条标识写法（--monitor=device: / id:）不在这张表里：--monitor 这个选项本身在
+// 别的平台上成立（编号与 primary、all 都说得通），不成立的只有那两种 Windows 形状的标识，
+// 所以那一条按取值判，见下面的 ScanPlatformUnsupported。
+bool IsWindowsOnlyOption(const std::wstring& name) {
+    static const std::wstring kList[] = {L"hwnd", L"class", L"capture"};
+    for (const std::wstring& n : kList) {
+        if (n == name) return true;
+    }
+    return false;
+}
+
 constexpr OptionSpec kOptions[] = {
     // ---- 截图目标 ----
     // valueHint 用方括号表示"取值可省略"：省略时下一个参数不会被吞掉，
@@ -657,13 +668,15 @@ struct ScannedItem {
     std::wstring token;      // kPositional / kUnknownOption：原始那一条参数
 };
 
-// 逐条吐出 argv 里的条目。规矩与正式解析一直相同的那一套：
+// 逐条吐出命令行里的条目。规矩与正式解析一直相同的那一套：
 //   * 裸 -- 之后的所有参数都是位置参数（-- 本身丢掉，不进位置参数）
 //   * 吃值的选项把下一个参数消费掉，哪怕它长得像另一个选项（--title --lang 就是标题为 "--lang"）
+//   * 以 '/' 起手算不算选项前缀是**本平台**的事（AcceptsSlashOptionPrefix）：Windows 认 cmd 那个
+//     /foo=bar 的写法，POSIX 上以 '/' 起手的只可能是路径，只能按位置参数走
 //   * 取值可省略的选项（--monitor）只在下一个参数合它那套取值语法时才吃它
 //   * -vq 这种布尔开关簇展开成多条 kOption
 // sink 会被调用任意次；返回值只是"扫完了"。
-void ScanArgv(int argc, wchar_t* const* argv,
+void ScanArgv(const CliTokens& tokens,
               const std::function<void(const ScannedItem&)>& sink) {
     auto positional = [&](std::wstring tok) {
         ScannedItem it;
@@ -672,16 +685,17 @@ void ScanArgv(int argc, wchar_t* const* argv,
         sink(it);
     };
     bool stopParsing = false;
-    for (int i = 1; i < argc; ++i) {
-        const std::wstring arg = argv[i];
+    for (std::size_t i = 1; i < tokens.Count(); ++i) {
+        const std::wstring arg = tokens.At(i);
         if (stopParsing || arg.empty()) { positional(arg); continue; }
         if (arg == L"--") { stopParsing = true; continue; }
 
         std::wstring body;
         bool longForm = false;
         if (StartsWith(arg, L"--")) { body = arg.substr(2); longForm = true; }
-        else if (arg[0] == L'-' || arg[0] == L'/') { body = arg.substr(1); }
-        else { positional(arg); continue; }
+        else if (arg[0] == L'-' || (AcceptsSlashOptionPrefix() && arg[0] == L'/')) {
+            body = arg.substr(1);
+        } else { positional(arg); continue; }
         if (body.empty()) { positional(arg); continue; }
 
         std::optional<std::wstring> inlineValue;
@@ -720,7 +734,7 @@ void ScanArgv(int argc, wchar_t* const* argv,
 
         if (!spec) {
             // 像路径（含 \ 或 /）就当位置参数，其余按误写的选项处理
-            if (!longForm && HasPathSeparator(arg)) { positional(arg); continue; }
+            if (!longForm && LooksLikePath(arg)) { positional(arg); continue; }
             ScannedItem it;
             it.kind = ScannedItem::Kind::kUnknownOption;
             it.name = name;
@@ -741,16 +755,16 @@ void ScanArgv(int argc, wchar_t* const* argv,
             // 取值可省略：只在下一个参数明显就是本选项的取值时才吃掉它，否则当开关用
             // （--monitor = 主屏），剩下的照常按位置参数处理。判据与实际解析同源。
             std::wstring next;
-            if (i + 1 < argc) next = Trim(argv[i + 1]);
+            if (i + 1 < tokens.Count()) next = Trim(tokens.At(i + 1));
             if (LooksLikeOptionalValue(std::wstring(spec->name), next)) {
-                emitOption(*spec, argv[++i], true);
+                emitOption(*spec, tokens.At(++i), true);
             } else {
                 emitOption(*spec, L"", false);
             }
             continue;
         }
-        if (i + 1 < argc) {
-            emitOption(*spec, argv[++i], true);
+        if (i + 1 < tokens.Count()) {
+            emitOption(*spec, tokens.At(++i), true);
             continue;
         }
         emitOption(*spec, L"", false, true);
@@ -776,12 +790,38 @@ LangToken ResolveLangToken(const std::wstring& raw, Language systemLang, Languag
     return LangToken::kInvalid;
 }
 
+// 逐条点出"这一条说法在本平台的构建里不成立"。Windows 构建恒不触发（判据是本次构建的平台族，
+// 不是运行时探测），所以既有 Windows 行为一条都不受影响；换成别的平台时，那些参数既不被
+// 悄悄忽略，也不被翻译成一条看着差不多、含义其实不同的参数。
+// 同一个选项重复给出只报一条：一句"这条参数这个平台没有"说一遍就够，不必按次数刷。
+void ScanPlatformUnsupported(const std::vector<ScannedItem>& items,
+                             const std::function<void(const std::wstring&, const std::wstring&)>& report) {
+    std::vector<std::wstring> done;
+    for (const ScannedItem& it : items) {
+        if (it.kind != ScannedItem::Kind::kOption || !it.option.spec) continue;
+        const std::wstring name = it.option.spec->name;
+        std::wstring value = it.option.value;
+        bool hit = IsWindowsOnlyOption(name);
+        if (!hit && name == L"monitor") {
+            // 只看形状，不重判语法：形状坏的那一条由 Apply 报它自己的码，两条不互相顶替。
+            std::wstring body;
+            const MonitorIdKind kind = SplitMonitorSelector(value, &body);
+            hit = (kind == MonitorIdKind::kDevice || kind == MonitorIdKind::kPath);
+        }
+        if (!hit) continue;
+        const std::wstring label = L"--" + name;
+        if (std::find(done.begin(), done.end(), label) != done.end()) continue;
+        done.push_back(label);
+        report(label, value);
+    }
+}
+
 // 把本次命令里的 --lang 全部过一遍，定下最终语言。重复给出以最后一个**有效**的指定为准
 // （--lang ja --lang auto 回到系统语言，--lang ja --lang bogus 停在 ja 并在正式解析报错）。
-void SelectLanguageFromCommandLine(int argc, wchar_t* const* argv) {
+void SelectLanguageFromCommandLine(const CliTokens& tokens) {
     const Language systemLang = DetectSystemLanguage();
     Language resolved = systemLang;
-    ScanArgv(argc, argv, [&](const ScannedItem& it) {
+    ScanArgv(tokens, [&](const ScannedItem& it) {
         if (it.kind != ScannedItem::Kind::kOption || !it.option.spec) return;
         if (!EqualsInsensitive(it.option.spec->name, L"lang")) return;
         Language next = resolved;
@@ -919,7 +959,7 @@ void PushUnique(std::vector<T>* list, T value, const wchar_t* label,
 
 // 从输出文件名推断扩展名（小写，不含点）。
 std::wstring ExtensionOf(const std::wstring& path) {
-    const size_t slash = path.find_last_of(L"\\/");
+    const size_t slash = path.find_last_of(PathSeparatorSet());
     const size_t dot = path.find_last_of(L'.');
     if (dot == std::wstring::npos || (slash != std::wstring::npos && dot < slash)) return L"";
     return ToLower(path.substr(dot + 1));
@@ -958,72 +998,24 @@ bool ContainsPlaceholder(const std::wstring& path) {
 //      --no-crop / --no-scale 是同一条线上的"本次取消"，不是"改一条"。
 namespace {
 
-// 命令行给的一条路径：相对写法相对**调用方 CWD**定绝对路径。
-std::wstring AbsoluteFromCwd(const std::wstring& raw) {
-    if (raw.empty()) return raw;
-    wchar_t buffer[8192];
-    const DWORD n = GetFullPathNameW(raw.c_str(), static_cast<DWORD>(std::size(buffer)), buffer,
-                                     nullptr);
-    if (n == 0 || n >= std::size(buffer)) return raw;  // 说不通就原样交回去，由对面如实报错
-    return std::wstring(buffer, n);
-}
-
 // ---------------------------------------------------------------------------
 // 配置里那一条输出路径的原点
 // ---------------------------------------------------------------------------
 //
 // INI 是持久下来的用户数据，它说出的路径不该跟着"这一次是谁在哪个目录里调用"变。所以这里
-// 只承认两种形状，第三种一律拒绝而不是猜：
-//   * **完全限定**：`C:\x\y.png`、`C:/x/y.png`（盘符 + 分隔符）、以**两条**分隔符起手的
-//     UNC（`\\server\share\x.png`）与扩展路径（`\\?\C:\shots\a.png`）—— 原样交出，含义与调用方的
-//     当前目录、当前盘无关；
-//   * **一般相对写法**：`shot.png`、`shots\capture.png` —— 以**被选中的那份 INI 自己所在的
-//     目录**为基准定绝对路径；
-//   * 剩下的两类是歧义写法：`C:shot.png` 是"C 盘当前目录下的 shot.png"，那个目录属于调用方
-//     的进程状态而不是这份文件的意思；`\shot.png` / `/shot.png` 没有盘符，说的是"当前盘的
-//     根下"。把前者当成 `C:\shot.png` 是静默换成另一种意思，把两者拿进程 CWD 补全是凭猜测
-//     换落点 —— 两条都在解析期明确拒绝（codes::kConfigPathAmbiguous）。
-// 判据只写在这一处，输出校验与 --show-config 读的是同一个结论。
-enum class ConfigPathFate { kQualified, kRelativeToIni, kDriveRelative, kRootRelative };
-
-bool IsAsciiAlpha(wchar_t c) {
-    return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z');
-}
-
-bool IsPathSep(wchar_t c) { return c == L'\\' || c == L'/'; }
-
-ConfigPathFate ClassifyConfigPath(const std::wstring& raw) {
-    if (raw.size() >= 2 && raw[1] == L':' && IsAsciiAlpha(raw[0])) {
-        // 第三个字符是分隔符才是盘符绝对路径；`C:` / `C:shot.png` 是盘符相对。
-        return raw.size() >= 3 && IsPathSep(raw[2]) ? ConfigPathFate::kQualified
-                                                    : ConfigPathFate::kDriveRelative;
-    }
-    if (IsPathSep(raw[0])) {
-        // 两条分隔符起手 = UNC 或扩展路径（完全限定）；单条 = 当前盘的根（歧义）。
-        return (raw.size() >= 2 && IsPathSep(raw[1])) ? ConfigPathFate::kQualified
-                                                      : ConfigPathFate::kRootRelative;
-    }
-    return ConfigPathFate::kRelativeToIni;
-}
-
-// GetFullPathNameW 的动态缓冲区版：要多少给多少，放不下或说不通就**如实失败**。
-// 定不出的那一条不许当"已经成功的绝对路径"交回下游。
-bool NormalizeAbsolutePath(const std::wstring& in, std::wstring* out) {
-    const DWORD need = GetFullPathNameW(in.c_str(), 0, nullptr, nullptr);
-    if (need == 0) return false;
-    std::wstring buf(static_cast<size_t>(need), L'\0');
-    // 成功返回的是写进去的字符数（不含终止符）；返回原需求长度 = 缓冲区不够。
-    const DWORD n = GetFullPathNameW(in.c_str(), static_cast<DWORD>(buf.size()), buf.data(),
-                                     nullptr);
-    if (n == 0 || n >= buf.size()) return false;
-    buf.resize(n);
-    *out = std::move(buf);
-    return true;
-}
-
-// 把 INI 里的一条输出路径定成下游要用的那一条。返回 false 时 \*code / \*detail 是这一条
-// 诊断的稳定码与不随 --lang 变的原因 token，\*out 不留下任何可用结论。
-// 调用方保证 raw 非空且不等于 "-"（那两个形状各自有明确的含义，见合并那一步）。
+// 只承认两种下场，第三种一律拒绝而不是猜：
+//   * **完全限定** —— 原样交出，含义与调用方的当前目录、当前盘无关。Windows 上是
+//     `C:\x\y.png`、`C:/x/y.png`（盘符 + 分隔符）、两条分隔符起手的 UNC（`\\server\share\x.png`）
+//     与扩展路径（`\\?\C:\shots\a.png`）；POSIX 上就是以 '/' 起手的那一条。
+//   * **一般相对写法**（`shot.png`、`shots\capture.png`）—— 以**被选中的那份 INI 自己所在的
+//     目录**为基准定绝对路径。
+//   * 剩下的歧义写法只有 Windows 才有：`C:shot.png` 说的是"C 盘当前目录下的 shot.png"，那个
+//     目录属于调用方的进程状态而不是这份文件的意思；`\shot.png` / `/shot.png` 没有盘符，
+//     说的是"当前盘的根下"。把前者当成 `C:\shot.png` 是静默换成另一种意思，把两者拿进程 CWD
+//     补全是凭猜测换落点 —— 两条都在解析期明确拒绝（codes::kConfigPathAmbiguous）。
+//     同一条分类走 HostPath（ClassifyConfigPath）：POSIX 上"盘符相对 / 根相对"这两个概念不存在，
+//     `C:shot.png` 就是当前目录下一个合法的相对文件名，不许拿 Windows 的分类把它拒掉。
+// 结论词表与"哪一类拒"的判定写在这一处，形状本身怎么认在平台服务里，两边各一份，不重复。
 bool ResolveConfigOutputPath(const std::wstring& configPath, const std::wstring& raw,
                              std::wstring* out, const wchar_t** code, std::wstring* detail) {
     switch (ClassifyConfigPath(raw)) {
@@ -1041,19 +1033,17 @@ bool ResolveConfigOutputPath(const std::wstring& configPath, const std::wstring&
         case ConfigPathFate::kRelativeToIni:
             break;
     }
-    // 基准问不出来（没有配置文件位置、或那一条里没有分隔符）就如实失败，不退回 CWD、
-    // 不退回源码树，也不退回安装位置。
-    const size_t slash = configPath.find_last_of(L"\\/");
-    if (configPath.empty() || slash == std::wstring::npos || slash + 1 >= configPath.size()) {
+    // 基准问不出来（没有配置文件位置、或那一条里没有本平台认得的分隔符）就如实失败，
+    // 不退回 CWD、不退回源码树，也不退回安装位置。
+    std::wstring baseDir;
+    std::wstring baseFile;
+    if (!SplitDirAndFile(configPath, &baseDir, &baseFile)) {
         *code = codes::kConfigPathUnresolvable;
         *detail = L"base-unavailable";
         return false;
     }
-    std::wstring joined = configPath.substr(0, slash);
-    joined += L'\\';
-    joined += raw;
     std::wstring resolved;
-    if (!NormalizeAbsolutePath(joined, &resolved)) {
+    if (!NormalizeAbsolutePath(JoinDirAndFile(baseDir, raw), &resolved)) {
         *code = codes::kConfigPathUnresolvable;
         *detail = L"normalize-failed";
         return false;
@@ -1584,12 +1574,25 @@ void MergeConfigIntoOptions(Options& opt, const ConfigSnapshot& snap,
 // ---------------------------------------------------------------------------
 // 解析主流程
 // ---------------------------------------------------------------------------
-ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
+ParseResult ParseCommandLine(const CliTokens& tokens) {
     ParseResult result;
     Options& opt = result.options;
 
     // 语言要在任何一条诊断产生之前就定下来
-    SelectLanguageFromCommandLine(argc, argv);
+    SelectLanguageFromCommandLine(tokens);
+    // 原生编码读不通的那几条参数：一条一份诊断，逐条说清是哪一条、第一处坏字节在哪。
+    // 这里不停下整次解析（其余诊断照收），因为"还有别的写法也不对"对人同样有用；
+    // 但这一份结果一定是失败的：非法字节不会变成一次合法的匹配、路径或正则。
+    for (std::size_t i = 1; i < tokens.Count(); ++i) {
+        const std::size_t bad = tokens.InvalidOffset(i);
+        if (bad == std::wstring::npos) continue;
+        Diagnostic d;
+        d.code = codes::kInvalidUtf8;
+        d.message = Msg(L"cli.invalid_utf8");
+        d.value = tokens.At(i);
+        d.detail = L"byte:offset=" + std::to_wstring(bad);
+        result.errors.push_back(std::move(d));
+    }
 
     // 结构化诊断：code 是给机器读的稳定标识，message 是给人读的中文补充
     auto Err = [&](const wchar_t* code, std::wstring msg, std::wstring option = std::wstring(),
@@ -1610,7 +1613,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     // 取任何一个像素之前，而不是先打扰人一次再告诉他文件写坏了。
     // 收下来的 items 由下面那一路重放给 Apply，不存在"第二份解析器"。
     std::vector<ScannedItem> items;
-    if (argc > 1) items.reserve(static_cast<size_t>(argc - 1));
+    if (tokens.Count() > 1) items.reserve(tokens.Count() - 1);
     // cliGiven 是合并那一步唯一的"CLI 写过没有"判据（记规范名）。它在**重放给 Apply 的那两处**
     // 登记，而不是在这里扫一遍就算：`--no-crop=false` 这类"普通开关写 =false 等于没写"的写法
     // 压根不会落到 Options 上，把它记成"写过"会凭空造出一条冲突来。两处必须是同一条判据。
@@ -1624,7 +1627,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
     bool noConfigEnabled = false;
     bool helpEnabled = false;
     bool versionEnabled = false;
-    ScanArgv(argc, argv, [&](const ScannedItem& it) {
+    ScanArgv(tokens, [&](const ScannedItem& it) {
         items.push_back(it);
         if (it.kind != ScannedItem::Kind::kOption) return;
         const std::wstring bare = it.option.spec->name;
@@ -1642,6 +1645,15 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
             else versionEnabled = true;
         }
     });
+
+    // 本平台不成立的那几条说法：--help / --version 那一路不报（它们的既有语义是"其余参数
+    // 一条都不执行"，先把人要的帮助与版本交出去），其余情况在**读配置之前**就报满。
+    if (!(helpEnabled || versionEnabled) && BuildPlatform() != PlatformKind::kWindows) {
+        ScanPlatformUnsupported(items, [&](const std::wstring& label, const std::wstring& value) {
+            Err(codes::kPlatformUnsupported, Msg(L"cli.platform_unsupported"), label, value,
+                Msg(L"cli.platform_unsupported_hint"));
+        });
+    }
 
     ConfigSnapshot snap = EmptyConfigSnapshot();
     ConfigOutputFacts cfgFacts;
@@ -1925,7 +1937,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (name == L"process") {
             const std::wstring v = Trim(value);
             if (v.empty()) { Err(codes::kInvalidValue, Msg(L"cli.process_empty"), L"--process", value); return; }
-            if (HasPathSeparator(v)) {
+            if (LooksLikePath(v)) {
                 Err(codes::kInvalidValue, Msg(L"cli.process_path"), L"--process", v,
                     Msg(L"cli.process_path_hint"));
                 return;
@@ -1939,7 +1951,7 @@ ParseResult ParseCommandLine(int argc, wchar_t* const* argv) {
         if (name == L"exe") {
             const std::wstring v = Trim(value);
             if (v.empty()) { Err(codes::kInvalidValue, Msg(L"cli.exe_empty"), L"--exe", value); return; }
-            if (!HasPathSeparator(v))
+            if (!LooksLikePath(v))
                 Note(codes::kExeLooksLikeName, Msg(L"cli.exe_no_path"), L"--exe", v);
             PushUnique(&opt.match.exePaths, v, L"--exe", &warnings);
             return;

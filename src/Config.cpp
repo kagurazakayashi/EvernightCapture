@@ -1,12 +1,12 @@
 #include "Config.h"
 
 #include <algorithm>
-#include <cwctype>
 #include <limits>
 
-#include <windows.h>
-
+#include "HostFile.h"     // 整份读一个文件：判据共用，动作在各平台的服务里（WinHostFile / PosixHostFile）
+#include "HostPath.h"     // 程序所在目录与路径拼接：分隔符与"问不出位置"的下场由平台答
 #include "Lang.h"
+#include "core/TextCoding.h"  // INI 的严格 UTF-8 解码（整份合才读，第一处坏字节的偏移进 detail）
 
 namespace ecapture {
 namespace {
@@ -42,11 +42,10 @@ using cli_limits::kMaxWindowListItems;
 using cli_limits::kScaleMaxPixels;
 using cli_limits::kScaleMaxSide;
 
-std::wstring LowerAscii(std::wstring s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
-    return s;
-}
+// section / key 与枚举取值的"大小写不敏感"说的就是 ASCII 那几个字母：比较前先折成小写。
+// 用 ASCII 折叠而不是 towlower：后者跟着 C 运行期 locale 走，会把非 ASCII 文字（例如路径与
+// roi 那类 kText 取值）也一起改写字母大小写，那是这套合同没有承诺过的行为。
+std::wstring LowerAscii(const std::wstring& s) { return AsciiLower(s); }
 
 bool IsSpace(wchar_t c) { return c == L' ' || c == L'\t'; }
 
@@ -64,67 +63,6 @@ std::wstring TrimWs(const std::wstring& s) {
     size_t e = s.size();
     while (e > b && IsSpace(s[e - 1])) --e;
     return s.substr(b, e - b);
-}
-
-// 严格 UTF-8 解码：拒绝 NUL、过长编码、代理区码点、超过 U+10FFFF 的序列与残缺尾字节。
-// 失败时 *badOffset 是第一处坏字节的偏移。**不**按系统代码页再试一遍 ——
-// 那正是"用会静默截断或按代码页转换的接口来假装满足 UTF-8 严格解析"的那条路。
-bool Utf8Decode(const std::vector<uint8_t>& bytes, std::wstring* out, size_t* badOffset) {
-    size_t i = 0;
-    const size_t n = bytes.size();
-    out->clear();
-    out->reserve(n);
-    while (i < n) {
-        const uint8_t b0 = bytes[i];
-        if (b0 == 0x00) {  // NUL 既不可见也没法在编辑器里复制：收到就如实拒
-            if (badOffset) *badOffset = i;
-            return false;
-        }
-        uint32_t cp = 0;
-        size_t need = 0;
-        if (b0 < 0x80) {
-            cp = b0;
-        } else if ((b0 & 0xE0) == 0xC0) {
-            cp = b0 & 0x1Fu;
-            need = 1;
-        } else if ((b0 & 0xF0) == 0xE0) {
-            cp = b0 & 0x0Fu;
-            need = 2;
-        } else if ((b0 & 0xF8) == 0xF0) {
-            cp = b0 & 0x07u;
-            need = 3;
-        } else {  // 以 continuation 字节开头，或 0xF8..0xFF 这种不合标准的写法
-            if (badOffset) *badOffset = i;
-            return false;
-        }
-        if (need > n - 1 - i) {  // 尾字节不够：文件在序列中间被截断
-            if (badOffset) *badOffset = i;
-            return false;
-        }
-        for (size_t k = 1; k <= need; ++k) {
-            const uint8_t b = bytes[i + k];
-            if ((b & 0xC0) != 0x80) {
-                if (badOffset) *badOffset = i + k;
-                return false;
-            }
-            cp = (cp << 6) | (b & 0x3Fu);
-        }
-        const uint32_t minForLen =
-            (need == 0) ? 0u : (need == 1) ? 0x80u : (need == 2) ? 0x800u : 0x10000u;
-        if (cp < minForLen || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu)) {
-            if (badOffset) *badOffset = i;
-            return false;
-        }
-        if (cp <= 0xFFFFu) {
-            out->push_back(static_cast<wchar_t>(cp));
-        } else {
-            const uint32_t v = cp - 0x10000u;
-            out->push_back(static_cast<wchar_t>(0xD800u + (v >> 10)));
-            out->push_back(static_cast<wchar_t>(0xDC00u + (v & 0x3FFu)));
-        }
-        i += need + 1;
-    }
-    return true;
 }
 
 // 一条 config.* 诊断。message 用的资源 key 与 code 同名（config.* 那一批在四份 strings 里
@@ -313,14 +251,18 @@ bool ParseIniBytes(const std::vector<uint8_t>& bytes, std::vector<IniEntry>* ent
     }
     const std::vector<uint8_t> body(bytes.begin() + static_cast<std::ptrdiff_t>(start),
                                      bytes.end());
-    std::wstring text;
-    size_t badAt = 0;
-    if (!Utf8Decode(body, &text, &badAt)) {
+    // 严格 UTF-8 解码（拒绝 NUL、过长编码、代理区码点、超过 U+10FFFF 的序列与残缺尾字节）
+    // 走 core/TextCoding 那一份判据：整份合才继续读，第一处坏字节的偏移交回调用方写进 detail。
+    // **不**按系统代码页再试一遍 —— 那正是"用会静默截断或按代码页转换的接口来假装满足
+    // UTF-8 严格解析"的那条路。
+    const StrictUtf8Text decoded = DecodeUtf8Strict(body, /*rejectNul=*/true);
+    if (!decoded.ok) {
         issues->push_back(IniIssue{codes::kConfigEncoding, std::wstring(), std::wstring(),
                                    std::wstring(),
-                                   L"byte:offset=" + std::to_wstring(badAt), 1});
+                                   L"byte:offset=" + std::to_wstring(decoded.badOffset), 1});
         return false;
     }
+    const std::wstring& text = decoded.text;
 
     std::wstring currentSection;             // 已小写；空 = 还没进任何 section
     std::vector<std::wstring> seenSections;  // 判重复 section
@@ -586,92 +528,22 @@ const std::wstring& ConfigSnapshot::ValueOf(const std::wstring& fieldId) const {
 }
 
 std::wstring DefaultConfigPath() {
-    std::wstring buffer(4096, L'\0');
-    DWORD n = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (n == 0 || n >= buffer.size()) return std::wstring();
-    buffer.resize(n);
-    const size_t slash = buffer.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) return std::wstring();
-    return buffer.substr(0, slash) + L"\\ECAPTURE.ini";
+    // "程序同目录那份 ECAPTURE.ini"里的**程序同目录**是平台的事：Windows 问模块路径，
+    // Linux 读 /proc/self/exe。问不出来就交回空串，由调用方报 config.read_failed ——
+    // 不猜当前目录、不猜源码树、也不猜安装位置。
+    std::wstring dir;
+    if (!ExeDirectory(&dir)) return std::wstring();
+    return JoinDirAndFile(dir, L"ECAPTURE.ini");
 }
 
 namespace {
 
-// 一个文件的字节读不出来是**哪一种**读不出来，三种下场的下一步不同，所以各给一个 detail token：
-//   not-found     路径上这一级根本没有这个文件
-//   path-invalid  中间某一级目录不存在，或者路径本身不合语法
-//   directory     这个名字被一个目录占着（GetPrivateProfileStringW 在这种情况下会一直阻塞，
-//                 这正是本文件不用它的原因之一）
-//   share-deny    另一个进程不让读（打开时用的就是共享读，所以这一条是真的有人独占）
-//   access        权限不够
-//   read          读到一半失败（盘、句柄失效……），带 win32 原值
-enum class ReadOutcome { kOk, kNotFound, kDirectory, kOther };
-
-struct RawRead {
-    ReadOutcome outcome = ReadOutcome::kOk;
-    std::vector<uint8_t> bytes;
-    uint32_t win32 = 0;
-    bool tooLarge = false;
-};
-
-RawRead ReadWholeFileBounded(const std::wstring& path) {
-    RawRead r;
-    const DWORD attrs = GetFileAttributesW(path.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES) {
-        const DWORD gle = GetLastError();
-        r.win32 = gle;
-        r.outcome = (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND)
-                        ? ReadOutcome::kNotFound
-                        : ReadOutcome::kOther;
-        return r;
-    }
-    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-        r.outcome = ReadOutcome::kDirectory;
-        return r;
-    }
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        const DWORD gle = GetLastError();
-        r.win32 = gle;
-        r.outcome = gle == ERROR_FILE_NOT_FOUND ? ReadOutcome::kNotFound : ReadOutcome::kOther;
-        return r;
-    }
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(h, &size) || size.QuadPart < 0) {
-        r.win32 = GetLastError();
-        r.outcome = ReadOutcome::kOther;
-        CloseHandle(h);
-        return r;
-    }
-    // 上限在**分配之前**判：一份超限的文件不该先被整个搬进内存再报错。
-    if (static_cast<uint64_t>(size.QuadPart) > config_limits::kMaxFileBytes) {
-        r.tooLarge = true;
-        r.outcome = ReadOutcome::kOther;
-        CloseHandle(h);
-        return r;
-    }
-    r.bytes.resize(static_cast<size_t>(size.QuadPart));
-    DWORD total = 0;
-    while (total < static_cast<DWORD>(r.bytes.size())) {
-        DWORD got = 0;
-        if (!ReadFile(h, r.bytes.data() + total, static_cast<DWORD>(r.bytes.size() - total), &got,
-                      nullptr) ||
-            got == 0) {
-            r.win32 = GetLastError();
-            r.outcome = ReadOutcome::kOther;
-            CloseHandle(h);
-            return r;
-        }
-        total += got;
-    }
-    CloseHandle(h);
-    r.outcome = ReadOutcome::kOk;
-    return r;
-}
-
-std::wstring DetailWithWin32(const wchar_t* token, uint32_t gle) {
-    return std::wstring(token) + L" win32=" + std::to_wstring(gle);
+// 整份读取一个文件走平台服务（src/HostFile.h）：那三条"上限在分配之前判 / 撞上同名目录要
+// 说清 / 原生码只作核对"的规矩在两套实现里各自满足，判据词表在这一层共用。
+// DetailWithNative 把系统给的原值按本平台的叫法（win32= / errno=）附在原因 token 之后，
+// 分支从来不读那个数 —— 那两个数空间互不相干，同一个 5 在两边是两件事。
+std::wstring DetailWithNative(const wchar_t* token, NativeErrorCode code) {
+    return std::wstring(token) + L" " + NativeErrorCodeLabel() + L"=" + std::to_wstring(code);
 }
 
 // 语法/类型问题 -> 已经带上文件位置的诊断。语法层与逐键判定都只认 "section.key" 与行号，
@@ -697,7 +569,7 @@ ConfigSnapshot LoadConfigFile(const std::wstring& absolutePath, bool explicitSel
         return snap;
     }
 
-    const RawRead raw = ReadWholeFileBounded(absolutePath);
+    const HostFileRead raw = ReadWholeFileBounded(absolutePath, config_limits::kMaxFileBytes);
     if (raw.outcome == ReadOutcome::kNotFound) {
         // 默认位置没有文件 = 正常状态，内置默认继续有效，不报错也不写文件；
         // 显式 --config 指的那一条不在 = 本次失败，且**不回退**到默认位置那一份。
@@ -707,7 +579,7 @@ ConfigSnapshot LoadConfigFile(const std::wstring& absolutePath, bool explicitSel
         }
         snap.state = ConfigLoadState::kFailed;
         snap.errors.push_back(ConfigDiag(codes::kConfigNotFound, BriefPath(absolutePath), L"", L"",
-                                         0, DetailWithWin32(L"path:not-found", raw.win32)));
+                                         0, DetailWithNative(L"path:not-found", raw.native)));
         return snap;
     }
     if (raw.outcome != ReadOutcome::kOk) {
@@ -722,7 +594,7 @@ ConfigSnapshot LoadConfigFile(const std::wstring& absolutePath, bool explicitSel
                                          raw.tooLarge
                                              ? L"limit:" +
                                                    std::to_wstring(config_limits::kMaxFileBytes)
-                                             : DetailWithWin32(token, raw.win32)));
+                                             : DetailWithNative(token, raw.native)));
         return snap;
     }
 

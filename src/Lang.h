@@ -1,6 +1,7 @@
 #pragma once
-// 多语言文案：文本取自 exe 自带的嵌入资源（resources/ecapture.rc 里四份按语言命名的
-// RCDATA），运行时用 FindResourceW + LoadResource 取那一份，解析成 key -> 文案 的表。
+// 多语言文案：文本取自程序自带的嵌入资源（resources/strings-*.txt 四份按语言命名的 UTF-8
+// 文案，构建期由 scripts/gen-lang-data.cmake 生成一份 C++ 源文件编进程序，见 src/LangData.h），
+// 运行时解析成 key -> 文案 的表。这一层不碰任何平台资源 API，两个平台跑同一份判据。
 //
 // key 是稳定的字符串（"cli.pid_range" / "opt.hwnd" / "cap.dwm.flat"），取不到时返回 "?key"，
 // 这样写错 key 会在输出里留下看得见的痕迹，而不是静默变成空白。
@@ -22,7 +23,9 @@ enum class Language {
     kJa,    // 日语
 };
 
-// 系统显示语言 -> 支持的语言；不支持的一律归到 kEn
+// 系统显示语言 -> 支持的语言；不支持的一律归到 kEn。
+// 由**平台服务**实现（Windows 读显示语言 LCID，Linux 读 LC_MESSAGES / LANG 那套环境变量）：
+// 判据是"这台机器的界面语言是什么"，各系统自己答，共用层不猜。
 Language DetectSystemLanguage();
 
 // "--lang" 的取值：大小写不敏感，'_' 与 '-' 等价，zh-TW / zhHant / cht / tw 都认。

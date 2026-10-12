@@ -1,17 +1,26 @@
-// EvernightCapture 多语言文案资源
+// EvernightCapture 载荷资源（Windows 专用那一部分）
 //
-// 四种语言的文本各一份 UTF-8 文件，整份编进 exe；运行时由 src/Lang.cpp 用
-// FindResourceW + LoadResource 取出对应那一份，解析成 key -> 文案 的表。
+// 这里只剩图标与文件属性两项：它们由 rc.exe 产出，本来就是 Windows 的资源。
 //
-// 为什么用 RCDATA 嵌文件而不是 STRINGTABLE：
+// 【多语言文案搬走了】四份 strings-*.txt 过去按 RCDATA 整份嵌进 exe，运行时由 src/Lang.cpp
+// 用 FindResourceW + LoadResource 取出。那条路只有 Windows 有，共用语言层要读文案就必须
+// #include <windows.h>，Linux 上根本没有这份载荷。现在改由构建期生成一份 C++ 源文件
+// （scripts/gen-lang-data.cmake → ${CMAKE_BINARY_DIR}/generated/ec_lang_data.cpp），
+// 两个平台编译同一份嵌入物；改文案由那条自定义命令的 DEPENDS 触发重生成与重编译，
+// 不再依赖 .rc 的 OBJECT_DEPENDS。嵌入名沿用这里的 ECP_TEXT_*，两边走同一组名字对账。
+//
+// 为什么仍然不选 STRINGTABLE（这一条对生成物同样成立）：
 //   * rc.exe 会解释字符串字面量里的转义（"\r" 变回车、"\u" 被吃掉、引号要写成 ""），
-//     而文案里有大量 Windows 路径（D:\shots\epad.png）和带引号的提示；按字节嵌文件没有这个坑。
-//   * rc.exe 的 LANGUAGE 子句不接受"文件名形式的数据"，而 CMake 的 RC 规则又会吞掉 rc 的 /l
-//     开关，所以四份文案没法在同一个 .rc 里按 LANGUAGE 分开。改用资源名区分，
-//     资源名本身就写明了语言，用资源编辑器看也比 LANGUAGE 号直观。
-//
-// 文件路径相对本 .rc 解析（CMake 已把 resources 目录给 rc 的搜索路径）。
+//     而文案里有大量 Windows 路径（D:\shots\epad.png）和带引号的提示；按字节嵌没有这个坑。
+//     生成脚本把原文按字节放进原始字符串字面量，同样不做转义。
+//   * rc.exe 的 LANGUAGE 子句不接受"文件名形式的数据"，CMake 的 RC 规则又会吞掉 rc 的 /l
+//     开关，四份文案没法在同一个 .rc 里按 LANGUAGE 分开；按名字/按变量各存一份更直白。
 #pragma code_page(65001)
+
+// winres.h 提供 VS_VERSION_INFO / VOS_NT_WINDOWS32 / VFT_APP 这些符号（只在 rc 下可用）。
+// 预处理语句要在资源定义之前：文件属性那一段用 ECAPTURE_VERSION_* 宏，所以 Version.h 也在这儿。
+#include <winres.h>
+#include "Version.h"
 
 // 应用程序图标。序号必须是 1：资源管理器 / 任务栏 / 控制台标题取的是
 // 编号最小的那份 RT_GROUP_ICON，rc.exe 会把 .ico 里的各尺寸自动汇成组图标。
@@ -21,17 +30,12 @@
 // 文件属性（VERSIONINFO）：资源管理器右键"属性"、"详细信息"面板、任务栏悬停提示，
 // 以及 Get-Item .VersionInfo / VerQueryValue 读到的就是这一段。
 //
-// * 全部写英文。这里的内容不参与 --lang 那套（四份 RCDATA 只管给人看的诊断文字与
-//   --help），属性面板由系统显示语言决定，工具给它中文也没有对应英文那份可退。
+// * 全部写英文。这里的内容不参与 --lang 那套（四份文案只管给人看的诊断文字与 --help），
+//   属性面板由系统显示语言决定，工具给它中文也没有对应英文那份可退。
 // * 版本号只在 src/Version.h 里写一次，下面靠宏代入；FILEVERSION / PRODUCTVERSION 是
 //   数值比较用的，字符串版 FileVersion / ProductVersion 给人看，两处必须同步。
 // * 块名 "040904B0" = 语言 0x0409（英语-美国）+ 代码页 0x04B0（1200，UTF-16），必须和
 //   VarFileInfo 里那条 Translation 成对写；不成对时部分系统的属性面板会显示空白。
-//
-// winres.h 提供 VS_VERSION_INFO / VOS_NT_WINDOWS32 / VFT_APP 这些符号（只在 rc 下可用）。
-#include <winres.h>
-#include "Version.h"
-
 VS_VERSION_INFO VERSIONINFO
     FILEVERSION    ECAPTURE_VERSION_MAJOR, ECAPTURE_VERSION_MINOR, ECAPTURE_VERSION_PATCH, 0
     PRODUCTVERSION ECAPTURE_VERSION_MAJOR, ECAPTURE_VERSION_MINOR, ECAPTURE_VERSION_PATCH, 0
@@ -64,8 +68,3 @@ BEGIN
         VALUE "Translation", 0x0409, 1200
     END
 END
-
-ECP_TEXT_ZH_CN RCDATA "strings-zh-CN.txt"
-ECP_TEXT_ZH_TW RCDATA "strings-zh-TW.txt"
-ECP_TEXT_EN    RCDATA "strings-en.txt"
-ECP_TEXT_JA    RCDATA "strings-ja.txt"

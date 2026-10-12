@@ -1857,8 +1857,11 @@ silently defaulting.
 
 **Only human-readable text changes with the language**: `message` / `hint` of diagnostics and the whole `--help`.
 `code`, JSON keys, value enums, `0x…` handles and `HRESULT` numbers never change, so callers can branch on `code`
-alone. The strings are embedded resources (`resources/strings-<language>.txt` compiled as four `RCDATA` blocks), so
-switching language works offline.
+alone. The strings ship inside the binary: at build time `scripts/gen-lang-data.cmake` embeds the four
+`resources/strings-<language>.txt` byte-for-byte into a generated C++ source file. (On Windows these used to be
+`RCDATA` blocks, which only `rc.exe` can produce and which forced the shared language layer to depend on Win32
+resources; both platforms now compile the same embedded copy, and editing a text file triggers a rebuild through the
+build dependency.) Switching language therefore works offline.
 
 ## Boundaries and unverified items
 
@@ -2227,7 +2230,7 @@ Two things the rule cannot do, and does not claim to:
 | `.\tests\build-path.ps1`    | Building from a directory holding CJK text, spaces, parentheses and `%` (plus a CJK `%TEMP%`), and that the temporary batch body stays ASCII                                                                                                                                                                                                                                                                                                                                                   |
 | `.\tests\streams.ps1`       | Stream and result reliability: one image on stdout for a single target, a batch that resolves to several targets refused before the dialog, the judgement using the number of targets actually hit, images already captured when a batch fails halfway staying in `images`, a result that cannot reach the agreed stream giving exit code `8`, and the no-`--out` / `--out -` equivalence across success, no match, ambiguity, bad arguments, a backend failure, a refusal and a broken stdout |
 | `.\tests\window_shot.bat`   | Human walkthrough: every channel against a compiled test window, a person clicking the dialogs, then the whole-screen step                                                                                                                                                                                                                                                                                                                                                                     |
-| `.\scripts\check-lang.ps1`  | The four string tables align on keys and placeholders, and the exe really carries four resources                                                                                                                                                                                                                                                                                                                                                                                               |
+| `.\scripts\check-lang.ps1`  | The four string tables align on keys and placeholders, and the embedded copy generated at build time (`build\generated\ec_lang_data.cpp`) still matches the four `.txt` files byte for byte - this is what catches "edited the text but never rebuilt"                                                                                                                                                                                                                                                                                                                                                                                               |
 | `.\scripts\mkreadme.ps1`    | Regenerates the help block of all four READMEs from each language's `--help`; `-Check` fails instead of writing, which is how a stale block gets caught                                                                                                                                                                                                                                                                                                                                        |
 
 Every desktop test targets a window of its own: `tests\helper\ec_window.cs` compiles into the run's
@@ -2293,6 +2296,69 @@ log directory.
   own SKIP stays an environment/safety boundary - it is neither promoted to a failure nor booked as a pass.
 - **Logs** go to `build\test-logs\<timestamp>\` (one file per suite plus a combined one); `build\` is gitignored.
 
+### Linux development entry points: `build.sh` / `run.sh` / `debug.sh` / `test-all.sh`
+
+Linux builds with GCC / Clang, and the build directory is always `build-linux/<compiler>-<config>` under the
+repository root. It keeps its own `CMakeCache.txt` and never shares a cache with Windows `build\` - which is also
+what lets the installer and packaging checks keep finding `build\ECAPTURE.EXE` unchanged. All four scripts locate the
+repository from their own location, so they work **from any working directory**, including paths with spaces and
+non-ASCII characters; the shared helpers live in `scripts/dev-common.sh`. None of them installs a dependency, uses
+`sudo`, or touches the user's desktop or display settings.
+
+| Command | What it does |
+| ------- | ------------ |
+| `./build.sh` | Configure + build (default `Release`; the compiler comes from `$CXX`, else the first of g++ / clang++ on PATH). Options: `--config Debug`, `--compiler clang`, `--target wgc-tests`, `--clean`, `--gui`, `--list-targets`, and anything after `--` is forwarded to `cmake --build` |
+| `./run.sh` | Runs an executable this platform can actually build (default `core-tests`; name one with `--target` or `--exe`). A missing artifact is reported as a failed precondition - it **never** falls back to some older binary elsewhere. Asking for `ecapture` returns the exact reason it is not buildable here instead of silently running something else |
+| `./debug.sh` | GDB / LLDB session. Defaults to `Debug` (with `-g`) and builds the artifact first if it is missing (`--rebuild` forces it, `--no-build` refuses to). `--eval "break main"` passes one debugger command as a single argv entry - splitting it on spaces would make gdb try to set the breakpoint before the executable is loaded, so nothing gets set; `--script <file>` runs a debugger script, `--batch` is non-interactive |
+| `./test-all.sh` | Test runner: builds first, then runs suites **serially**; `--list` prints the plan without starting anything. Layers: `--layer offline` (default), `isolated` (needs a graphics session - uses `xvfb-run` on a virtual display when available, otherwise states plainly that the current session is used), `manual` (real-desktop checks a human performs; the script never runs them), `all`. `--only` / `--except` select suites, `--stop-on-fail` stops at the first failure |
+
+One set of exit codes: `0` = every planned suite ran and passed; `1` = at least one suite failed **or a planned suite
+never started because a precondition was missing** (recorded as `NOT RUN(missing prerequisite)` with the reason,
+never booked as a pass and never folded into "skipped"); `2` = a global precondition failed (no cmake / compiler,
+the build stage failed, the build directory was not generated by this project); `3` = bad arguments, or a plan that filters down to nothing. A build failure stops there - no stale artifact is ever
+executed.
+
+Presets land in the same directories the scripts use, so driving cmake by hand is equivalent:
+
+```bash
+cmake --preset gcc-debug && cmake --build --preset gcc-debug
+```
+
+Only `ecapture-core-tests`, `ecapture-wgc-tests`, `ecapture-cli-text-tests` and (once wxWidgets is installed)
+`ecapture-gui-probe` are buildable on Linux today. The full CLI and the dozen-plus test executables that need a capture
+channel still live in the 【平台层 · Windows】 region of `CMakeLists.txt`; the configure log lists them one by one and
+the build directory keeps `ecapture-buildable-targets.txt` so scripts can check it. Features are never deleted to buy
+a good-looking Linux build.
+
+### wxWidgets dependency wiring (this step wires the dependency; no dialog was rewritten)
+
+- **Version chosen**: wxWidgets 3.2.x (the current upstream stable line). On Linux use the distro package -
+  `libwxgtk3.2-dev` on Debian / Ubuntu.
+- **Discovery**: CMake's MODULE-mode `FindwxWidgets`, which asks `wx-config` for the version, cflags and libraries.
+  So the build follows whatever the distro installed instead of hard-coding an install path. With several wx
+  versions present, name one with `-DECAPTURE_WX_CONFIG=/full/path/to/wx-config` (as `./build.sh --wx-config ...`),
+  and set a floor with `-DECAPTURE_WX_MIN_VERSION=3.2.0`.
+- **Components and link strategy**: only `core` + `base` - `core` already carries its toolkit (wxGTK) dependencies,
+  so no GTK version number is hard-coded here. Linked as shared libraries. Headers, definitions, extra compile flags
+  and libraries are attached to the target individually; `include(${wxWidgets_USE_FILE})` is deliberately not used,
+  because it spreads those settings over the whole directory scope.
+- **Target split**: `ecapture-gui-probe` (`src/gui/WxGuiProbe.cpp`) is a **separate** target that only proves the
+  dependency really is wired and that `wxApp` can finish initializing in a graphics session. It opens no window,
+  shows no dialog and captures no pixel. The two offline suites do **not** link wxWidgets, so they build whether or
+  not wx is installed - GUI and core tests never block each other, which is the layering this step is about.
+- **Switches**: `ECAPTURE_ENABLE_GUI` defaults to `ON` on Linux (the probe target is skipped with a reason when wx is
+  absent) and `OFF` on Windows (the existing Windows entry point and installer payload list stay untouched - a machine
+  that happens to have wx installed does not suddenly gain a target). `ECAPTURE_REQUIRE_WX=ON`
+  (`./build.sh --gui`) turns a missing dependency into a hard configure error.
+- **Licence**: wxWidgets is LGPL 2.1 with an exception (dynamic linking carries no extra obligation).
+- **This machine**: wxWidgets is **not installed** on this Linux development box, so compiling and running the GUI
+  target is **unverified**. What was actually verified is the missing-dependency diagnosis itself
+  (`./build.sh --gui` exits with code `2` and lists the install and the name-a-wx-config options).
+
+`Consent.cpp` (the confirmation dialog) and `NotificationToast.cpp` (the post-capture notification) were **not**
+changed in this step; their wxWidgets implementation is a later step. The scope of `--yes` and the pixel-scope rules
+still have exactly one home, in `CaptureScope` and `src/core/Authorization.h`.
+
 ### Building the installer: `build-installer.ps1`
 
 The root script is meant to be called by absolute path from any working directory; it locates the repository from its
@@ -2352,6 +2418,7 @@ line of X11 or Wayland backend is compiled into the build, so every cell in the 
 | `src/core/` | Platform-neutral model and judgements: `Platform.h` platform identity, `Geometry.h` coordinates, `Frame.h` image frame, `Status.h` why a call stopped, `Target.h` target description, `Error.h` error codes and tri-state, `Authorization.h` pixel scope and grant layers, `Capability.h` feature matrix | Never includes `windows.h`; no HWND / RECT / HANDLE / HRESULT / WinRT anywhere |
 | Shared model and policy headers in `src/` | `CliOptions.h`, `Config.h`, `CaptureScope.h`, `Consent.h`, `Capture.h`, `CropGeometry.h`, `ImageOps.h`, `ScreenMatch.h`, `ScreenIdentity.h`, `WindowMatch.h`, `WindowIdentity.h`, `DupGeometry.h`, `EnvReport.h`, `Delivery.h`, `Report.h`, `Notification.h`, `Deadline.h` | Same rule as above: these describe *what* is captured, *what* was approved and *what* the frame looks like, not which API produced it |
 | `src/platform/windows/WinBridge.h` | The **only** place where the core meets Win32: `RECT ↔ PhysRect` (single and batch) and `Deadline → wait milliseconds` | Only platform-layer `.cpp` files may include it. Each conversion call is a visible crossing, reviewable line by line |
+| `src/gui/` | The single place for the program's own GUI on every platform, built on wxWidgets. Today it holds only the dependency-wiring probe `WxGuiProbe.cpp` - there is **no** own interface here yet | Only this layer touches wxWidgets; `src/core/` and the shared models must not include it, and it must not define any judgement. The GUI target and the offline suites are independent of each other |
 | `CaptureCommon.h`, the five channel headers, `Worker*.h`, `D3dDevice.h`, `WinrtApartment.h`, `NotificationToast.cpp`, `Lang.cpp`, `SystemCompat.cpp` | [Platform layer - Windows] the real users of GDI / D3D / WinRT / named pipes / string resources | Each file states up front that it is the platform layer; the shared core including them is a boundary breach |
 
 **This is not a rename of `RECT`.** `PhysRect` pins its four edges to `int32_t`, and "empty", "contains"
@@ -2405,18 +2472,44 @@ the README must be changed together.
    does not imitate, replace or auto-approve it, and a remembered Portal session does not skip the program's
    confirm either. `RequiredGrantLayers()` encodes it and `tests\core-boundary.ps1` pins "one layer short = refused".
 
+### Command-line text handling and the message resources (2026-10 migration)
+
+`--help` / `--version` / option parsing / config reading / the message tables now share one implementation
+across both platforms. Four boundaries make that possible:
+
+| Boundary | The rule | Lives in |
+| -------- | -------- | -------- |
+| Text in memory | `std::wstring`: UTF-16 code units on Windows, one code point per `wchar_t` on Linux. Every byte that leaves or enters the program is UTF-8 (no BOM). Re-encoding happens only at four boundaries: the command-line entry, taking the embedded strings out, file I/O and the standard-stream exit | `src/core/TextCoding.h` |
+| Ill-formed input | Never retried under a different code page and never truncated: one ill-formed byte run becomes a single `U+FFFD`, the run count is reported honestly and so is the first bad offset. A config file is refused whole; a command-line argument produces one `cli.invalid_utf8` per offending token and the run fails - `U+FFFD` is never used as a legal title, path or regex | same file plus `src/core/CliTokens.h` |
+| Argument entry | A platform entry only converts the system argv into `CliTokens` (Windows copies the UTF-16 as-is, Linux decodes bytes strictly). The body `CliMain` is shared; the Windows entry additionally triages the worker-process form. Linux's `DecodePosixArgv` is judged against real byte arrays, but its three-line `main` cannot link until the capture layers move | `src/CliArgs.h`, `src/Main.h` |
+| Platform actions | Path shapes, whole-file reads, standard-stream writes and the display language: declared in shared headers, implemented per platform (`src/platform/windows/`, `src/platform/linux/`). On POSIX `\` is an ordinary filename character and `C:shot.png` is a legal relative name in the current directory - the Windows shape rules are not copied over. Case and whitespace judgements fold ASCII only, so they do not follow the runtime locale | `src/HostPath.h`, `src/HostFile.h`, `src/OutputStream.h`, `src/Lang.h` |
+
+Options that name something only Windows has (`--hwnd`, `--class`, the Windows capture channels of
+`--capture`, and the `device:` / `id:` monitor identifiers) report `cli.platform_unsupported` one per option in a
+non-Windows build (exit code 1): they are neither silently ignored nor translated into a "roughly equivalent"
+argument. The `--help` / `--version` paths hand over what the caller asked for first and do not raise this.
+
+The stream split is unchanged: once an image claims stdout, every text write goes to stderr, `--help` /
+`--version` / no-condition stay plain text and everything else is the compact JSON. Line endings belong to the
+output layer (Windows normalizes to CRLF, Linux writes `\n`), so the shared text only ever writes `\n`.
+
 ### Verification entry points for this layer
 
 | Command | What it judges |
 | ------- | -------------- |
 | `.\tests\core-boundary.ps1` | Offline layer: `build\ecapture-core-tests.exe` runs the judgements against the shared model (coordinates, frame, target, matrix, privacy). Captures no pixels, shows no dialog |
 | `scripts/core-portability-check.sh` | Linux layer: the same `tests/core_boundary_state.cpp` compiled and run with g++, plus a static list proving those headers leak no platform type. **Compiling there is the machine proof that the boundary is real** |
+| `.\tests\cli-text.ps1` | Offline layer: `build\ecapture-cli-text-tests.exe` judges the encoding boundary, the four embedded tables and fallback, options and config, JSON escaping and the standard-stream discipline. Captures no pixels, shows no dialog |
+| The `cli-text` suite of `./test-all.sh`, plus steps 3b / 4b of `scripts/core-portability-check.sh` | Linux layer: the same shared sources generated, compiled and run with g++ **without going through a CMake target**. This is both the machine proof that the shared CLI layer carries no platform header and the check that catches "edited the text but never rebuilt" |
+| `./test-all.sh` | Linux runner: the `offline` layer chains the check above with the CMake-built `ecapture-core-tests` and `ecapture-wgc-tests`; the `isolated` layer needs wxWidgets plus a graphics session (a missing dependency is recorded as `NOT RUN`, never as a pass); the `manual` layer is left to a human at a real desktop |
 
 Both entries use one and the same source file, which never includes `windows.h`. Deliberately not done in
 this step (later work): the X11 / Wayland backends, wxWidgets replacing `DialogConsentPrompt` and the WinRT
-toast, the Portal + PipeWire integration, replacing `std::wstring` (UTF-16) with a text type that states its
-encoding, dropping `RECT` / `HRESULT` from the worker wire format, and splitting `Report.h` (JSON rendering
-belongs to the core, writing to stdout belongs to the platform service layer).
+toast (this step only wires dependency discovery and linking, plus a probe target that opens no window),
+the Portal + PipeWire integration, replacing `std::wstring` itself with a type that carries its encoding (the
+convention is now stated once in `src/core/TextCoding.h`; the type has yet to follow), dropping `RECT` /
+`HRESULT` from the worker wire format, and the rest of splitting `Report.h` (writing to stdout now belongs to the
+platform service `src/OutputStream.h`, while response assembly and the desktop renderers stay on Windows).
 
 ## License
 

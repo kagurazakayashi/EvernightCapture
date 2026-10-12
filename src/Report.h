@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "CliOptions.h"
+#include "OutputStream.h"  // 标准流的两条通道与"stdout 归谁"：判据在这里，动作在各平台服务里
 #include "core/Error.h"   // NativeErrorCode（写标准输出的错误码原值）
 
 namespace ecapture {
@@ -45,27 +46,19 @@ struct Response {
 };
 
 // 结果 JSON 该去哪条流：图片占了 stdout 时只能是 stderr，其余情况走 stdout。
-// 兜底诊断也用它，避免在 Main.cpp / Report.cpp 各写一遍判断。
+// 兜底诊断也用它，避免在入口与这里各写一遍判断。
 bool ResultGoesToStderr(const Options& opt);
 
-// 根据解析结果生成响应；返回退出码。
-int BuildResponse(const ParseResult& parse, int argc, wchar_t* const* argv, Response* out);
+// 根据解析结果生成响应；返回退出码。参数不必再传一遍：解析层交回来的 ParseResult 已经装了
+// 全部规范化后的输入（-v 的 input 回显读的就是它），再拿着 argv 解析一次只会得出第二种答案。
+int BuildResponse(const ParseResult& parse, Response* out);
 
-// 纯文本帮助，由选项目录生成（不重复维护一份文字）
+// 纯文本帮助，由选项目录生成（不重复维护一份文字）。这三份文本与桌面无关，
+// 实现在 src/CliText.cpp：没有截图后端、也没有图形会话的构建里照样能跑。
 std::wstring HelpText();
 std::wstring VersionText();
-
-bool EmitStdout(const std::wstring& text);
-bool EmitStderrRaw(const std::wstring& text);
-// 图片字节写 stdout；ioError 回收 GetLastError 原值（断管与磁盘满是两种故障，别混成一句话）。
-// emittedBytes 回收**实际发出去**的字节数：返回 false 时它可能是 0（一个字节都没出去），
-// 也可能停在中间（管道里留下的是半张图）。这两种现场调用方要分得开，不能都当成"什么都没写"。
-// 第一次写之前就把 stdout 声明为图片专用，此后 EmitStdout 一律返回 false 而不再写它。
-bool EmitStdoutBytes(const std::vector<uint8_t>& bytes, NativeErrorCode* ioError = nullptr,
-                     uint64_t* emittedBytes = nullptr);
-
-// stdout 是否已被图片字节占用（或明确将要用它发图）。为真时结果 JSON 只能走 stderr。
-void ClaimStdout();
-bool StdoutClaimed();
+// --show-config 的只读视图：来源与文件位置全部读解析层已经算好的那一份，这里不重读文件、
+// 不重判优先级，也一个像素都不取。
+std::wstring RenderConfigView(const Options& opt);
 
 }  // namespace ecapture

@@ -1,6 +1,10 @@
 /.w*
 /A*.md
 /build
+# Linux 的构建目录与 Windows 的 build\ 完全分开：两边各有一份 CMakeCache、生成器与产物，
+# 共用同一份缓存会互相写坏编译器设置与安装器路径约定。子目录名 <编译器>-<配置>
+# （./build.sh 与 CMakePresets.json 落同一处），Linux 的 test-logs 也在这一棵下面。
+/build-linux/
 
 # 截图历史归档（history\）：那是持续保留的截图数据，不是构建产物、也不是可以随手重建的缓存，
 # 所以不入 git、不打进安装包、也不上传成 CI 工件。归档跟着"实际运行的那个 exe 所在目录"走，

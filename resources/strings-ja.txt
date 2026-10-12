@@ -116,6 +116,9 @@ cli.switch_no_value_hint	%1（On）または %1=false（Off）
 cli.unknown_option	不明なオプション
 cli.missing_value	このオプションには値が必要です
 cli.unexpected_positional	位置引数が多すぎます。先頭のみ出力パスとして扱い、他の条件はすべてオプションで指定してください
+cli.invalid_utf8	この引数は有効な UTF-8 テキストではないため、書かれたまま拒否しました（detail の byte:offset が最初の不正なバイト位置です）
+cli.platform_unsupported	この引数は Windows にしかない対象を指しています。今回のビルドのプラットフォームにはありません
+cli.platform_unsupported_hint	他のプラットフォームに置き換えられる同等のものはありません（ウィンドウハンドル、ウィンドウクラス名、Windows のキャプチャ経路、GDI デバイス名とデバイスインターフェースパス）。このオプションを外してください
 cli.conflicting_options	これらの選択方針は互斥です。1 つだけ選んでください
 cli.conflicting_hint	例：--index 2 だけを残す
 cli.query_conflict	照会コマンドは撮影オプションと同時に指定できません。--capabilities / --diagnostics は環境を読み取りで問うだけで、撮影はしません

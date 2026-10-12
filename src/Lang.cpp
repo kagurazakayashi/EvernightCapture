@@ -1,36 +1,27 @@
-// 【平台层 · Windows】从 exe 的字符串资源读本地化文案（LoadStringW）。文案内容在 resources/strings-*.txt。
+// 【跨平台核心】多语言文案：表解析、占位符代入、语言标签与当前语言。
+//
+// 文案字节来自构建期生成的嵌入物（见 src/LangData.h），不再来自 Windows 的 RCDATA；
+// 解码走 core/TextCoding 那一份严格 UTF-8。唯一还留在平台层的是"系统显示语言是哪一种"
+// （src/platform/windows/WinLocale.cpp 与 src/platform/linux/PosixLocale.cpp）。
 #include "Lang.h"
 
-#include <cwctype>
 #include <map>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "LangData.h"
+#include "core/TextCoding.h"
 
 namespace ecapture {
 namespace {
 
-// resources/ecapture.rc 里的资源名：一份语言一个名字（rc.exe 的 LANGUAGE 子句不接受
-// 文件名形式的数据，CMake 的 RC 规则又会吞掉 rc 的 /l 开关，所以靠名字区分）
-const wchar_t* ResourceName(Language lang) {
+// 语言 -> 嵌入名。这张表只在这里写一次，生成脚本与判据都按同一组名字对账。
+const char* BlobName(Language lang) {
     switch (lang) {
-        case Language::kZhCn: return L"ECP_TEXT_ZH_CN";
-        case Language::kZhTw: return L"ECP_TEXT_ZH_TW";
-        case Language::kJa:   return L"ECP_TEXT_JA";
-        case Language::kEn:   return L"ECP_TEXT_EN";
+        case Language::kZhCn: return "ECP_TEXT_ZH_CN";
+        case Language::kZhTw: return "ECP_TEXT_ZH_TW";
+        case Language::kJa:   return "ECP_TEXT_JA";
+        case Language::kEn:   return "ECP_TEXT_EN";
     }
-    return L"ECP_TEXT_EN";
-}
-
-std::wstring FromUtf8(const char* data, size_t size) {
-    if (size == 0) return std::wstring();
-    const int need = MultiByteToWideChar(CP_UTF8, 0, data, static_cast<int>(size), nullptr, 0);
-    if (need <= 0) return std::wstring();
-    std::wstring out(static_cast<size_t>(need), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, data, static_cast<int>(size), out.data(), need);
-    return out;
+    return "ECP_TEXT_EN";
 }
 
 // 一行一条：key<TAB>文案；# 开头是注释，空行忽略。文案里不允许出现 TAB/换行，
@@ -56,21 +47,15 @@ std::map<std::wstring, std::wstring> ParseTable(const std::wstring& blob) {
 }
 
 std::map<std::wstring, std::wstring> LoadTable(Language lang) {
-    const HMODULE module = GetModuleHandleW(nullptr);
-    if (!module) return {};
-
-    HRSRC found = FindResourceW(module, ResourceName(lang), RT_RCDATA);
-    if (!found && lang != Language::kEn) {
+    const LangBlob* blob = FindLangBlob(BlobName(lang));
+    if (!blob && lang != Language::kEn) {
         // 该语言整份缺失时退回英语，至少输出的是能读的句子
-        found = FindResourceW(module, ResourceName(Language::kEn), RT_RCDATA);
+        blob = FindLangBlob(BlobName(Language::kEn));
     }
-    if (!found) return {};
-
-    const HGLOBAL loaded = LoadResource(module, found);
-    const DWORD size = SizeofResource(module, found);
-    const void* data = loaded ? LockResource(loaded) : nullptr;
-    if (!data || size == 0) return {};
-    return ParseTable(FromUtf8(static_cast<const char*>(data), size));
+    if (!blob || !blob->bytes || blob->size == 0) return {};
+    // 严格解码：源文件坏了也只会看见 U+FFFD，不会丢句子。合法性由离线判据
+    // （ecapture-cli-text-tests）逐份查，那里把"嵌入物里有非法 UTF-8"当成构建失败。
+    return ParseTable(DecodeUtf8(blob->bytes, blob->size).text);
 }
 
 struct Cache {
@@ -162,11 +147,13 @@ const wchar_t* LanguageTag(Language lang) {
 }
 
 std::optional<Language> LanguageFromTag(const std::wstring& tag) {
+    // 标签本体恒为 ASCII（BCP 47 的字母与 - _ 分隔符），所以折叠只看 ASCII：
+    // 不跟系统语言、也不跟 C 运行期 locale 走（那是 towlower 会连带改掉非 ASCII 字符的来源）。
     std::wstring t;
     t.reserve(tag.size());
     for (wchar_t ch : tag) {
         if (ch == L'_' || ch == L' ') ch = L'-';
-        t.push_back(static_cast<wchar_t>(std::towlower(ch)));
+        t.push_back(AsciiLowerChar(ch));
     }
     while (!t.empty() && t.back() == L'-') t.pop_back();
     if (t.empty()) return std::nullopt;
@@ -187,18 +174,6 @@ std::optional<Language> LanguageFromTag(const std::wstring& tag) {
         return traditional ? Language::kZhTw : Language::kZhCn;
     }
     return std::nullopt;
-}
-
-Language DetectSystemLanguage() {
-    // 「系统语言」取 Windows 显示语言（设置里那一项，LCID 如 0x0804）。
-    // 不用 GetUserPreferredUILanguages 的首选语言列表：那是给应用做 MUI 回退用的，
-    // 和用户在显示器上看到的界面语言可以不一样；.NET 的 CurrentUICulture 更不可靠
-    // （实测一台显示语言为 zh-CN 的机器上它是 en-US）。
-    wchar_t name[LOCALE_NAME_MAX_LENGTH]{};
-    if (LCIDToLocaleName(GetUserDefaultUILanguage(), name, LOCALE_NAME_MAX_LENGTH, 0) > 0) {
-        if (const auto lang = LanguageFromTag(name)) return *lang;
-    }
-    return Language::kEn;
 }
 
 }  // namespace ecapture

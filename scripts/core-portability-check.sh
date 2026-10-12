@@ -43,8 +43,20 @@ mkdir -p "$OUT_DIR"
 #    判之前先去掉行注释（// 之后的一切）：这些头文件在注释里大量讨论 HWND / HRESULT 这些名字，
 #    那是说明边界，不是渗进边界。这一关是 lint，真正的证明在第 3 关的编译。
 # ---------------------------------------------------------------------------
+# 2026-10（迁移命令行文本处理与多语言资源）新加进来的那一组：文本编码、命令行参数表、
+# 文案嵌入接口，以及四个平台服务的**声明**头（HostPath / HostFile / OutputStream / CliArgs）。
+# 声明头在清单里，实现在平台层里 —— 这正是这一步要的形状。
 NEUTRAL_HEADERS=(
     core/Platform.h
+    core/TextCoding.h
+    core/CliTokens.h
+    CliArgs.h
+    Config.h
+    Lang.h
+    LangData.h
+    HostPath.h
+    HostFile.h
+    OutputStream.h
     core/Geometry.h
     core/Error.h
     core/Status.h
@@ -52,6 +64,7 @@ NEUTRAL_HEADERS=(
     core/Target.h
     core/Authorization.h
     core/Capability.h
+    Main.h
     Capture.h
     CaptureScope.h
     CliOptions.h
@@ -112,7 +125,13 @@ done
 echo "== 2) 平台层归属标记 =="
 for h in CaptureCommon.h CaptureWgc.h CaptureDwm.h CapturePrintWindow.h CaptureBitBlt.h \
          CaptureDuplication.h D3dDevice.h WinrtApartment.h Worker.h WorkerIo.h \
-         WorkerProtocol.h WorkerTiming.h NotificationToast.cpp Lang.cpp SystemCompat.cpp; do
+         WorkerProtocol.h WorkerTiming.h NotificationToast.cpp SystemCompat.cpp \
+         platform/windows/WinCliArgs.cpp platform/windows/WinLocale.cpp \
+         platform/windows/WinHostPath.cpp platform/windows/WinHostFile.cpp \
+         platform/windows/WinOutputStream.cpp \
+         platform/linux/PosixCliArgs.cpp platform/linux/PosixLocale.cpp \
+         platform/linux/PosixHostPath.cpp platform/linux/PosixHostFile.cpp \
+         platform/linux/PosixOutputStream.cpp; do
     f="$SRC/$h"
     if [ -f "$f" ] && ! grep -q '【平台层' "$f"; then
         echo '  TODO  src/'"$h"' 还没有"我属于平台层"那一句归属说明'
@@ -136,14 +155,76 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3b) 命令行文本这一层：不经 CMake 目标，自己生成嵌入文案再编再跑。
+#     为什么单跑一份：CMake 那条目标把生成物与依赖关系都管好了，但"改完文案要不要重编"
+#     这件事要在不信任构建系统的那一层也能被证明 —— 这里直接调那条生成脚本，
+#     再用 g++ 把共用 CLI 层与本平台的服务编成一个判据程序跑一遍。
+#     它同时是"共用 CLI 层真的不含平台头"的第二份机器证明（编译不过 = 渗进了 Windows 类型）。
+# ---------------------------------------------------------------------------
+echo "== 3b) 生成嵌入文案并编译命令行文本判据 =="
+GEN="$OUT_DIR/ec_lang_data.cpp"
+if ! cmake -DECP_RESOURCES_DIR="$ROOT/resources" -DECP_OUTPUT="$GEN" \
+        -P "$ROOT/scripts/gen-lang-data.cmake" >"$OUT_DIR/gen.log" 2>&1; then
+    echo "  FAIL  文案嵌入生成失败："
+    sed 's/^/          /' "$OUT_DIR/gen.log" | tail -20
+    fail=1
+fi
+if [ "$fail" -eq 0 ]; then
+    grep -c 'static const char' "$GEN" >/dev/null 2>&1 || true
+    echo "  ok    嵌入物已生成：$GEN ($(wc -c <"$GEN") 字节)"
+    CLI_BIN="$OUT_DIR/cli_text_tests"
+    # 数组形式，绝不拼成空格分隔的字符串：仓库路径本身可能含空格（实测中文 + 空格目录），
+    # 拼字符串会在空格处劈开，把一份源文件拆成两个不存在的参数。
+    PLATFORM_SRC=(
+        "$SRC/platform/linux/PosixCliArgs.cpp"
+        "$SRC/platform/linux/PosixLocale.cpp"
+        "$SRC/platform/linux/PosixHostPath.cpp"
+        "$SRC/platform/linux/PosixHostFile.cpp"
+        "$SRC/platform/linux/PosixOutputStream.cpp"
+    )
+    if ! "$CXX" -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -I"$SRC" "$ROOT/tests/cli_text_state.cpp" \
+            "$ROOT/tests/platform/cli_text_posix_checks.cpp" \
+            "$SRC/CliOptions.cpp" "$SRC/Config.cpp" "$SRC/Lang.cpp" "$SRC/CliText.cpp" \
+            "$SRC/Json.cpp" "$SRC/CaptureScope.cpp" "$SRC/core/TextCoding.cpp" "$GEN" \
+            "${PLATFORM_SRC[@]}" -o "$CLI_BIN" 2>"$OUT_DIR/cli_compile.log"; then
+        echo "  FAIL  命令行文本层在 Linux 上编不过（说明共用源文件仍然渗着平台类型）："
+        sed 's/^/          /' "$OUT_DIR/cli_compile.log" | head -40
+        fail=1
+    else
+        echo "  ok    编译通过：$CLI_BIN"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4) 跑判据
 # ---------------------------------------------------------------------------
-if [ "$fail" -eq 0 ] && [ "$BUILD_ONLY" -eq 0 ]; then
-    echo "== 4) 运行核心边界判据 =="
-    if ! "$BIN"; then
-        echo "  FAIL  判据没过（见上面那几条 [FAIL]）"
+# 两份判据程序各自写"N 条通过，M 条失败"；这里汇总成一行放在最后，
+# 因为 ./test-all.sh 取的是日志里**最后**那句汇总 —— 各份的原始行也照旧留在日志里可查。
+ec_total_pass=0
+ec_total_fail=0
+ec_run_state() {
+    local label="$1" bin="$2" out rc
+    out="$("$bin" 2>&1)"; rc=$?
+    printf '%s\n' "$out"
+    local p f
+    p="$(printf '%s' "$out" | sed -n 's/.*:[[:space:]]*\([0-9]\+\)[[:space:]]*条通过.*/\1/p' | tail -1)"
+    f="$(printf '%s' "$out" | sed -n 's/.*，[[:space:]]*\([0-9]\+\)[[:space:]]*条失败.*/\1/p' | tail -1)"
+    ec_total_pass=$((ec_total_pass + ${p:-0}))
+    ec_total_fail=$((ec_total_fail + ${f:-0}))
+    if [ "$rc" -ne 0 ]; then
+        echo "  FAIL  $label 退出码 $rc（见上面那几条 FAIL）"
         fail=1
     fi
+}
+
+if [ "$fail" -eq 0 ] && [ "$BUILD_ONLY" -eq 0 ]; then
+    echo "== 4) 运行核心边界判据 =="
+    ec_run_state "核心边界" "$BIN"
+    echo "== 4b) 运行命令行文本判据 =="
+    ec_run_state "命令行文本" "$OUT_DIR/cli_text_tests"
+    echo "core-portability: $ec_total_pass 条通过，$ec_total_fail 条失败"
+    if [ "$ec_total_fail" -ne 0 ]; then fail=1; fi
 fi
 
 if [ "$fail" -ne 0 ]; then

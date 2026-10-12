@@ -1681,8 +1681,11 @@ INI の `format = auto` は拡張子からの推論を**オフにしない**。�
 
 **人に見せる文字だけが言語に追随する**：診断項目の `message` / `hint`、`--help` の全文である。
 `code`、JSON のキー名、値の列挙、`0x…` のハンドル、`HRESULT` の数値は一切変わらないので、呼び出し側は `code` で
-分岐すればよい。メッセージは exe 自身の組み込みリソース（`resources/strings-<言語>.txt` を言語ごとに 4 本の
-`RCDATA` としてコンパイル）なので、オフラインでも言語を切り替えられる。
+分岐すればよい。メッセージはプログラムに同梱される：ビルド時に
+`scripts/gen-lang-data.cmake` が `resources/strings-<言語>.txt` 4 本をバイト単位で C++ ソース 1 本に生成し、
+それをコンパイルする（Windows では従来 `RCDATA` で、これは `rc.exe` にしかない道で、共用の言語層が Win32
+リソースに依存しなければならなかった。今は両プラットフォームが同じ埋め込み物をコンパイルし、文言を直すと
+ビルド依存によって確実に再コンパイルされる）。したがってオフラインでも言語を切り替えられる。
 
 ## 境界と未検証の項目
 
@@ -1969,7 +1972,7 @@ Skill を入れるのは「何ができるか」をツールに伝えるだけ�
 | `.\tests\build-path.ps1`    | CJK の文字・空白・括弧・`%` を含むディレクトリからのビルド（`%TEMP%` を CJK のディレクトリにした場合も含む）と、一時バッチの本文が ASCII のままなこと                                                                                                                                                                                      |
 | `.\tests\streams.ps1`       | ストリームと結果の信頼性：単一ターゲットの stdout 出力、複数ターゲットへ解決した一括分をダイアログ前に拒否すること、判定が実際のターゲット数に基づくこと、一括の途中で失敗しても先に撮れた画像が `images` に残ること、取り決めたストリームへ届かない結果が終了コード `8` になること、`--out` 省略と `--out -` の等価                       |
 | `.\tests\window_shot.bat`   | 人が回す手順：自作ウィンドウで全チャネルを撮り、ダイアログは人がクリックし、最後にモニタ全体                                                                                                                                                                                                                                               |
-| `.\scripts\check-lang.ps1`  | 4 か国語のメッセージの key / プレースホルダの対応チェック。exe に本当に 4 本のリソースがコンパイル済みかも確かめる                                                                                                                                                                                                                         |
+| `.\scripts\check-lang.ps1`  | 4 か国語のメッセージの key / プレースホルダの対応チェック。ビルド時に生成された埋め込み物（`build\generated\ec_lang_data.cpp`）が 4 本の `.txt` とそのまま一致しているかを照合し、「文言を直したのに再ビルドしなかった」状態を防ぐ                                                                                                                                                                                                                         |
 | `.\scripts\mkreadme.ps1`    | 各言語の `--help` の出力で 4 本の README のヘルプ節を再生成する。`-Check` は書き替えずに失敗するので、古いブロックが残っていない検査になる                                                                                                                                                                                                 |
 
 どの実機テストも対象は自前のウィンドウです：`tests\helper\ec_window.cs` をその回の一時フォルダに
@@ -2005,6 +2008,72 @@ Git Bash で手でテストするときは、まず `export MSYS2_ARG_CONV_EXCL=
 - **終了コード**：`0` = 計画内の全スイートが実行され通過（スイート自身の SKIP は未検証であって失敗ではない）；`1` = 少なくとも一つが FAIL / TIMEOUT / NO EXIT / NO START、**または計画が名指ししたスイートがそもそも起動しなかった**（スクリプト欠落、ソース解析失敗、オフラインメタデータ不一致）；`2` = 前提不成立（ビルド失敗、成果物が無い、未知のオプション、絞り込み後に対象ゼロ、スイッチの衝突、別の実行がロック保持中）。ビルド失敗は終了コード 2 で終わり、古い成果物を決して使わない。
 - **集計は実結果だけを数える**：「結果を出した」は終態を実際に返したスイートのみを指し、NO START / NO EXIT は含めない。三種の「未実行 / 未検証」は別々に書き、一つの数にまとめない：`-Quick` / `-Only` / `-Except` / `-Offline` で意図的に外した分、`-StopOnFail` で止めた残り、そして予期せず起動しなかった分（最後の種類だけが終了コード 1 にする）。スイート自身の SKIP は環境と安全の境界であり、失敗にも通過にも昇格しない。
 - **ログ**は `build\test-logs\<タイムスタンプ>\` に出る（スイートごと 1 ファイルと結合版）。`build\` は `.gitignore` 済み。
+
+### Linux 側の開発エントリ：`build.sh` / `run.sh` / `debug.sh` / `test-all.sh`
+
+Linux は GCC / Clang でビルドし、ビルドディレクトリは常にリポジトリ直下の
+`build-linux/<コンパイラ>-<設定>` です。Windows の `build\` とは別々の `CMakeCache.txt` を持つので、
+**キャッシュを共有することはありません** —— これがインストーラーとパッケージ検証がこれまでどおり
+`build\ECAPTURE.EXE` を見つけられる前提にもなっています。4 つのスクリプトはいずれも自分自身の場所から
+リポジトリを特定するので、**どの作業ディレクトリからでも呼び出せ**、パスに空白や日本語／中国語が
+入ってもそのまま動きます。共通部分は `scripts/dev-common.sh` にまとめました。いずれも依存関係を
+インストールせず、`sudo` も使わず、ユーザーのデスクトップやディスプレイ設定も変更しません。
+
+| コマンド | やること |
+| ------- | -------- |
+| `./build.sh` | 設定 + ビルド（既定は `Release`、コンパイラは `$CXX`、無ければ PATH 上の g++ / clang++）。`--config Debug`、`--compiler clang`、`--target wgc-tests`、`--clean`、`--gui`、`--list-targets`、`--` 以降は `cmake --build` へ渡します |
+| `./run.sh` | このプラットフォームで**実際にビルドできる**実行ファイルを起動（既定は `core-tests`、`--target` / `--exe` で指定）。生成物が見つからなければ「前提条件が成立しない」として終了し、**他所の古いバイナリに黙ってフォールバックすることはありません**。`ecapture` を指名すると、ビルドできない理由をそのまま返します（黙って別のものを起動はしません） |
+| `./debug.sh` | GDB / LLDB デバッグセッション。既定は `Debug`（`-g` 付き）で、生成物が無ければ先にビルドします（`--rebuild` で強制、`--no-build` は既存のみ）。`--eval "break main"` はデバッガのコマンドを**1 つの argv として**渡します（空白で分割すると gdb は実行ファイルを読み込む前にブレークポイントを置こうとして失敗します）。`--script <ファイル>` はスクリプト、`--batch` は非対話 |
+| `./test-all.sh` | テスト総実行：まずビルドし、その後**逐次**走らせます。`--list` は計画表示のみ。層は `--layer offline`（既定）/ `isolated`（グラフィックセッションが必要。`xvfb-run` があれば仮想ディスプレイを使い、無ければ現在のセッションを使うと明言します）/ `manual`（実機で人が行う検証、スクリプトは代行しません）/ `all`。`--only` / `--except` でスイートを選ぶほか、`--stop-on-fail` は最初の失敗で打ち切ります |
+
+終了コードは一律です：`0` = 計画内のスイートがすべて走り合格；`1` = 少なくとも 1 つが不合格、
+**または計画内のスイートが前提条件の欠如でまったく起動しなかった**（`NOT RUN(前提条件欠如)` と理由を
+1 件ずつ記録し、合格扱いにも「スキップ」扱いにもしません）；`2` = 全体の前提が成立しない
+（cmake / コンパイラが無い、ビルド段階が失敗、ビルドディレクトリが本プロジェクト由来ではない）；
+`3` = 引数が不正、または選別後に実行対象が無い。ビルドが失敗したらそこで止まり、古い生成物を実行しません。
+
+プリセットもスクリプトと同じディレクトリを使うので、手で打っても同じです：
+
+```bash
+cmake --preset gcc-debug && cmake --build --preset gcc-debug
+```
+
+Linux で今ビルドできるのは `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
+そして（wxWidgets を入れた上で）`ecapture-gui-probe` だけです。完全な CLI と、取得チャネルを必要とする十数本の
+テスト実行ファイルは依然 `CMakeLists.txt` の【プラットフォーム層 · Windows】節にあり、設定ログに一覧として
+出力されます。ビルドディレクトリには `ecapture-buildable-targets.txt` も残り、スクリプトがこれを照合します ——
+Linux のビルド成功を見せるために機能を削除することはしません。
+
+### wxWidgets の依存配線（この段階は配線のみ。ダイアログは一切書き換えていません）
+
+- **選択したバージョン**：wxWidgets 3.2.x（上流の安定系列）。Linux ではディストリビューションの
+  パッケージを使い、Debian / Ubuntu では `libwxgtk3.2-dev` です。
+- **検出方法**：CMake の MODULE モード `FindwxWidgets`。`wx-config` にバージョン・cflags・libs を
+  訪ねる方式なので、ディストロが実際に入れたものに追従し、インストールパスをハードコードしません。
+  複数バージョンが共存する場合は `-DECAPTURE_WX_CONFIG=/絶対パス/wx-config`（スクリプト側は
+  `./build.sh --wx-config ...`）で指定し、下限は `-DECAPTURE_WX_MIN_VERSION=3.2.0` で示せます。
+- **コンポーネントとリンク方針**：`core` と `base` の 2 つだけ —— `core` が自前のツールキット
+  （wxGTK）の依存を既に運んでいるので、GTK のバージョン番号は本プロジェクト側では書きません。
+  共有ライブラリとしてリンクします。ヘッダ・マクロ・追加コンパイルオプション・ライブラリの 4 種は
+  ターゲットに個別に付与し、`include(${wxWidgets_USE_FILE})` は使いません（あれはディレクトリ
+  全体の作用域に設定を撒いてしまいます）。
+- **ターゲット分割**：`ecapture-gui-probe`（`src/gui/WxGuiProbe.cpp`）は**独立**ターゲットで、
+  依存が本当に配線されていることと `wxApp` がグラフィックセッションで初期化を完了することを
+  証明するだけです。ウィンドウを作らず、ダイアログも出さず、画素も取りません。オフライン判定の
+  2 本は wxWidgets を**リンクしない**ので、導入有無にかかわらずビルドできます —— GUI とコアの
+  テストは互いをブロックしません。これがこの段階の狙いです。
+- **スイッチ**：`ECAPTURE_ENABLE_GUI` は Linux で既定 `ON`（wx が無ければ対象をスキップして理由を出力）、
+  Windows では既定 `OFF`（既存の Windows ビルド入口とインストーラーのペイロード一覧に影響を与えない。
+  たまたま wx が入っているからといってターゲットが増えません）。`ECAPTURE_REQUIRE_WX=ON`
+  （スクリプト側では `./build.sh --gui`）で、依存欠落を設定段階の硬いエラーにします。
+- **ライセンス**：wxWidgets は LGPL 2.1 with an exception（動的リンクなら追加義務はありません）。
+- **このマシンの状態**：この Linux 開発機には wxWidgets が**入っていない**ため、GUI ターゲットの
+  コンパイルと実行は**未検証**です。実際に検証したのは「依存が無いときに正確な診断を出す」ことだけ
+  （`./build.sh --gui` は終了コード `2` で終わり、入れ方と指定方法を列挙します）。
+
+確認ダイアログ（`Consent.cpp`）とキャプチャ後の通知（`NotificationToast.cpp`）はこの段階では**変更していません**。
+それらの wxWidgets 実装は後続ステップです。`--yes` の適用範囲と画素範囲の判定は、従来どおり
+`CaptureScope` と `src/core/Authorization.h` の 1 か所にだけあります。
 
 ### インストーラーのビルド：`build-installer.ps1`
 
@@ -2044,6 +2113,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/core/` | プラットフォーム非依存のモデルと判定：`Platform.h` プラットフォーム身分、`Geometry.h` 座標、`Frame.h` 画像フレーム、`Status.h` 停止理由コード、`Target.h` 対象の記述、`Error.h` エラーコードと三値結果、`Authorization.h` ピクセル範囲と認可層、`Capability.h` 機能マトリクス | `windows.h` を 1 つも include せず、HWND / RECT / HANDLE / HRESULT / WinRT も出現しない |
 | `src/` の共通モデル・方針ヘッダ | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 上のと同じ規則。これらは「何を撮り、何が承認され、このフレームがどんな形か」を記述し、どの API で入手したかは扱わない |
 | `src/platform/windows/WinBridge.h` | コアと Win32 の**唯一**の変換点：`RECT ↔ PhysRect`（単体と一括）と `Deadline → 待ちミリ秒` | プラットフォーム層の `.cpp` だけが include できる。変換呼び出しが行になる箇所が、レビュー時に「ここでプラットフォームの境界をまたいだ」と見える行である |
+| `src/gui/` | 全プラットフォームで共通の、このプログラム自身 GUI の唯一の置き場所。wxWidgets で作る。現時点ここにあるのは依存配線用のプローブ `WxGuiProbe.cpp` だけで、**自前 GUI はまだ無い** | wxWidgets を触るのはこの層だけ。`src/core/` と共通モデルはこれを include せず、逆にここで判定を定義もしない。GUI ターゲットとオフライン判定は互いに依存しない |
 | `CaptureCommon.h`、5 つのチャネルヘッダ、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【プラットフォーム層 · Windows】GDI / D3D / WinRT / 名前付きパイプ / 文字列リソースの実使用者 | 各ファイル冒頭でプラットフォーム層であることを明記。共通コアが逆にこれらを include すれば境界の破れ |
 
 **`RECT` の名前替えではありません。** `PhysRect` の 4 つの辺は `int32_t` に固定し、「空矩形」「包含」「測定できない」
@@ -2097,19 +2167,44 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
    憶えていてもアプリ側の確認は省略できません。`RequiredGrantLayers()` がこれを判定式にし、
    `tests\core-boundary.ps1` が「層が 1 つ欠ければ通さない」を 1 項目ずつ固定します。
 
+### 命令列のテキスト処理と多言語リソース（2026-10 移行）
+
+`--help` / `--version` / 引数解析 / 設定読み込み / メッセージこの層は、いま両プラットフォームで同じ実装を
+共有しています。支えているのは次の四つの境界です：
+
+| 境界 | 約束 | 本体 |
+| ---- | ---- | ---- |
+| 内部の文字 | `std::wstring`：Windows では UTF-16 コードユニット、Linux では `wchar_t` 1 個 = 1 コードポイント。外部のバイト列はすべて UTF-8（BOM なし）。符号化の切り替えは 4 つの境界でだけ起きます：コマンドライン入口、埋め込みメッセージの取り出し、ファイル読み書き、標準ストリームの出力 | `src/core/TextCoding.h` |
+| 不正な符号化 | 別のコードページでもう一度試すことも、以降の内容を捨てることもしません：不正な 1 区間を `U+FFFD` 1 個に置き、**件数を正直に数えて** 最初のオフセットも返します。設定ファイルは全体を拒否。コマンドライン引数は 1 本ごとに `cli.invalid_utf8` を報告してその回りを失敗结束し、`U+FFFD` を正当なタイトル / パス / 正規表現として使うことはありません | 同上と `src/core/CliTokens.h` |
+| 引数の入口 | プラットフォーム入口は自システムの argv を `CliTokens` に収めるだけ（Windows は UTF-16 をそのまま、Linux はバイト列を厳密にデコード）。本文 `CliMain` は共用で、Windows 入口は補助プロセスモードの振り分けも担当します。Linux 側の `DecodePosixArgv` は実バイト列で判定済みですが、`main` の 3 行はキャプチャ側が移り終えないとリンクできません | `src/CliArgs.h`、`src/Main.h` |
+| プラットフォームの動作 | パスの形、ファイルの全文読み、標準ストリームへの書き出し、表示言語：宣言は共用ヘッダ、実装は `src/platform/windows/` と `src/platform/linux/` に分かれています。POSIX では `\` はファイル名の中の普通の文字で、`C:shot.png` はカレントディレクトリの正当な相対名です（Windows の形判定を写しません）。大文字小文字と空白の判定は ASCII だけ折にし、実行時の locale に追随しません | `src/HostPath.h`、`src/HostFile.h`、`src/OutputStream.h`、`src/Lang.h` |
+
+Windows 固有の言い方（`--hwnd`、`--class`、`--capture` の Windows キャプチャ経路、および `--monitor` の
+`device:` / `id:` の 2 種類の識別子）は、非 Windows ビルドでは 1 本ごとに `cli.platform_unsupported`
+（終了コード 1）を返します：黙って無視もしなければ、「だいたい等価」な別の引数に翻訳もしません。
+`--help` / `--version` の道筋はまず人が求める出力を渡しに出るので、この判定は行いません。
+
+標準ストリーム分担は従来どおり：画像が stdout を取ったあとは文字すべて stderr に回ります。
+`--help` / `--version` / 条件なしは引き続きプレーンテキスト、それ以外は簡潔な JSON。
+改行は出口の層が決めます（Windows は CRLF に正規化、Linux は `\n`）ので、共用のテキストは `\n` だけを書きます。
+
 ### この層の検証エントリ
 
 | コマンド | 何を判定するか |
 | ------- | -------------- |
 | `.\tests\core-boundary.ps1` | オフライン層：`build\ecapture-core-tests.exe` が共通モデルに対して判定（座標・フレーム・対象・マトリクス・プライバシー）を実行。画素もダイアログも使いません |
 | `scripts/core-portability-check.sh` | Linux 層：同じ `tests/core_boundary_state.cpp` を g++ でビルドして実行し、さらに「これらのヘッダはプラットフォーム型を漏らさない」という静的リストを確認。**ここで通ることが境界が実在する機械的な証明です** |
+| `.\tests\cli-text.ps1` | オフライン層：`build\ecapture-cli-text-tests.exe` が符号化の境界、4 か国語の埋め込みとフォールバック、引数と設定、JSON のエスケープ、標準ストリームの規律を判定。画素もダイアログも使いません |
+| `./test-all.sh` の `cli-text`、および `scripts/core-portability-check.sh` の 3b / 4b | Linux 層：同じ共用ソース群を **CMake 目標を経ずに** メッセージ生成から g++ ビルド・実行まで通します。これは「共用 CLI 層本当にプラットフォームヘッダを含まない」の機械的証明であり、「文言を直して再ビルドし忘れた」を検出す現場でもあります |
+| `./test-all.sh` | Linux 総実行：`offline` 層は上のチェックと、CMake でビルドした `ecapture-core-tests` / `ecapture-wgc-tests` をまとめて順に回します。`isolated` 層は wxWidgets とグラフィックセッションが必要（依存が無ければ `NOT RUN` と記録し、合格にはしません）。`manual` 層は実機で人が検証します |
 
 両エントリは 1 つの同じソースファイルを使っており、それは `windows.h` を 1 も include しません。
 今回のステップで意図的に手を入れなかったもの（後続ステップ）：X11 / Wayland バックエンド、
 `DialogConsentPrompt` と WinRT toast の wxWidgets への置き換え、Portal + PipeWire の接続、
-`std::wstring`（UTF-16）から符号化を明言したテキスト型への移行、ワーカー ワイヤー形式からの
-`RECT` / `HRESULT` の除去、そして `Report.h`（JSON 描画はコア、stdout 書き込みはプラットフォーム サービス層）
-のさらなる分割。
+`std::wstring` そのものを符号化を担った型へ乗り換えること（约定はすでに `src/core/TextCoding.h` 1 所に書いて
+あり、型がまだ追随していません）、ワーカー ワイヤー形式からの `RECT` / `HRESULT` の除去、そして
+`Report.h` の残りの分割（stdout 書き出しはプラットフォーム サービス `src/OutputStream.h` に移りましたが、
+応答の組み立てとデスクトップ照会の描画は依然 Windows 側にあります）。
 
 ## ライセンス
 

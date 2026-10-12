@@ -117,6 +117,9 @@ cli.switch_no_value_hint	%1 (on) or %1=false (off)
 cli.unknown_option	Unknown option
 cli.missing_value	This option requires a value
 cli.unexpected_positional	Extra positional argument: only the first one is the output path, give every other condition as an option
+cli.invalid_utf8	This argument is not valid UTF-8 and was refused as written (detail's byte:offset is the first unusable byte)
+cli.platform_unsupported	This argument names something only Windows has; this build's platform does not
+cli.platform_unsupported_hint	There is no equivalent to substitute on other platforms (window handles, window class names, Windows capture channels, GDI device names and device-interface paths) - drop this option
 cli.conflicting_options	These selection strategies are mutually exclusive; pick one
 cli.conflicting_hint	e.g. keep only --index 2
 cli.query_conflict	Query commands cannot be combined with capture options: --capabilities / --diagnostics only ask about the environment and never capture

@@ -1544,8 +1544,10 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
 `zh-Hans` 走简体，`jp` 走日语；写错在解析期报 `cli.unknown_language`（退出码 1），不退化成默认语言。
 
 **只有给人看的文字随语言变**：诊断项的 `message` / `hint`、`--help` 全文。`code`、JSON 键名、取值枚举、
-`0x…` 句柄、`HRESULT` 数值一律不变，调用方按 `code` 分支即可。文案是 exe 自带的嵌入资源
-（`resources/strings-<语言>.txt` 按语言编成四份 `RCDATA`），所以离线也能切语言。
+`0x…` 句柄、`HRESULT` 数值一律不变，调用方按 `code` 分支即可。文案随程序一起交付：构建期由
+`scripts/gen-lang-data.cmake` 把 `resources/strings-<语言>.txt` 四份按字节生成一份 C++ 源文件编进程序
+（Windows 上过去走 `RCDATA`，那条只有 `rc.exe` 有，共用语言层读文案就得依赖 Win32 资源；现在两个平台
+编译同一份嵌入物，改文案由构建依赖自动触发重编），所以离线也能切语言。
 
 ## 边界与未验证项
 
@@ -1778,7 +1780,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\.agents\skill
 | `.\tests\screens.ps1`       | `--screens` 与 `--monitor=device:` / `id:`：每种身份各稳到哪一层、交回来的选择器真的选到那一块面板，而认不出的标识绝不会悄悄退化成主屏                                                                                                                                                                                                              |
 | `.\tests\capabilities.ps1`  | `--capabilities` / `--diagnostics` 对着一组假探针跑（一块屏都没有、正好低于某条下限、版本问不出来、某个编码器没登记、`--yes` 的适用范围对上登记表、两份查询出自同一批判据）；真机一层判这条查询不会卡在框上、不落地、与 WMI 及 `--dry-run -v` 各自问来的值同源，且全 ASCII 所以 `--lang` 改不动它；这一套的既有契约检查一律显式带 `--no-config`，不受持久偏好影响（安装自检同理，见《安装》）                                                   |
 | `.\tests\streams.ps1`       | 标准流与结构化结果的可靠性：单目标写 stdout 时图与 JSON 各归其位、算出多个目标的整批在弹框之前就被拒、判据用的是实际命中的目标数、批次中途失败时已经截到的图留在 `images`、结果送不到约定那条流就是退出码 `8`，以及省略 `--out` 与显式 `--out -` 在成功 / 无匹配 / 歧义 / 非法参数 / 后端失败 / 被拒绝 / 写入断管七个场景上的对拍（只截自建的窗口） |
-| `.\scripts\check-lang.ps1`  | 四语文案的 key / 占位符对齐检查，并确认 exe 里真编进了四份资源                                                                                                                                                                                                                                                                                      |
+| `.\scripts\check-lang.ps1`  | 四语文案的 key / 占位符对齐检查，并把构建期生成的那份嵌入物（`build\generated\ec_lang_data.cpp`）与四份 `.txt` 逐条对账，挡住"改了文案却没重编"                                                                                                                                                                                                                                                                                      |
 | `.\tests\invoker.ps1`       | 共享的那个测试进程调用器本身：argv 引号规则、两条流同时排空、二进制不被转码、卡死的子进程、每次运行各自的临时目录                                                                                                                                                                                                                                   |
 | `.\tests\orchestration.ps1` | 一键总跑 `test-all.ps1` 本身：筛完是空计划要明说不算验收，计划内套件整套没跑成（脚本不见了、源码解析不干净）会让退出码判失败；刻意筛掉的、`-StopOnFail` 主动停下的剩余与各套件自己记的 SKIP 分开                                                                                                                                                    |
 | `.\tests\build-path.ps1`    | 在含中文、空格、括号与 `%` 的目录里（外加中文 `%TEMP%`）构建，以及临时批处理的正文始终只能是 ASCII                                                                                                                                                                                                                                                  |
@@ -1838,6 +1840,58 @@ PID 与 HWND，因此既不按进程名去找目标、也不按进程名批量�
 - **汇总只计真实结果**：“交出结果”只算真正给出终态的套件，NO START / NO EXIT 不算。三种“没跑/未验证”分开写、不合并成一个数字：被 `-Quick` / `-Only` / `-Except` / `-Offline` 刻意没排的、因 `-StopOnFail` 停下的剩余、以及意外整套没跑成的（只有最后这类判退出码 1）；各套件自己记的 SKIP 属于环境与安全边界，既不升成失败也不当成通过。
 - **日志**写在 `build\test-logs\<时间戳>\`（每套一份，另有一份合并的）；`build\` 已在 `.gitignore` 里。
 
+### Linux 侧开发入口：`build.sh` / `run.sh` / `debug.sh` / `test-all.sh`
+
+Linux 用 GCC / Clang，构建目录固定在仓库根的 `build-linux/<编译器>-<配置>`，与 Windows 的 `build\`
+各有一份 CMakeCache，**不共享缓存** —— 这也是 Windows 安装器与打包判据可以继续按 `build\ECAPTURE.EXE`
+找产物的前提。四个脚本都从自身位置定位仓库，所以**从任意工作目录都能调用**，路径含中文与空格照旧照常；
+共用部分在 `scripts/dev-common.sh`。脚本一律不装依赖、不 `sudo`、不改用户桌面与显示器设置。
+
+| 命令 | 这一条干什么 |
+| ---- | ------------ |
+| `./build.sh` | 配置 + 构建（默认 `Release`，编译器按 `$CXX` 再退到 PATH 上的 g++ / clang++）。可加 `--config Debug`、`--compiler clang`、`--target wgc-tests`、`--clean`、`--gui`、`--list-targets`、`-- -- -j4` |
+| `./run.sh` | 运行本平台**真能构建**的那份可执行文件，默认 `core-tests`；`--target` 或 `--exe` 点名。找不到产物就报「前置不成立」，**绝不退回去跑别处的旧文件**；指名 `ecapture` 会当场得到它暂不可构建的准确原因，不会被静默换成别的东西 |
+| `./debug.sh` | GDB / LLDB 调试会话：默认 `Debug`（带 `-g`），产物不在就先构建（`--rebuild` 强制重建，`--no-build` 只用现成的）；`--eval "break main"` 把一条命令作为一个 argv 递进调试器（按空格劈开会让 gdb 在装载可执行文件之前就下断点，当场下不上），`--script <文件>` 走脚本，`--batch` 非交互 |
+| `./test-all.sh` | 测试总入口：先构建再**串行**跑，`--list` 只看计划不启动。分 `--layer offline`（默认）/ `isolated`（要图形会话，有 `xvfb-run` 就用在虚拟显示上，否则说明用的是当前会话）/ `manual`（真机人工，脚本不代跑）/ `all`；`--only` / `--except` 按套件名筛，`--stop-on-fail` 第一套没过就收 |
+
+退出码一套：`0` = 计划内该跑的套件全部跑到并通过；`1` = 至少一套判据没过，**或计划内的套件因缺前置根本没启动**
+（记 `NOT RUN(缺前置)` 并逐条写原因，不算通过也不算跳过）；`2` = 全局前置不成立（缺 cmake / 编译器、
+构建阶段失败、构建目录不是本项目生成的）；`3` = 参数不合法或筛完没有可执行测试。构建失败一定停在这里，
+一份旧产物都不会被运行。
+
+预设与脚本落的是同一个目录，手敲也可以：
+
+```bash
+cmake --preset gcc-debug && cmake --build --preset gcc-debug
+```
+
+Linux 上当前可构建的目标只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests` 与（装了
+wxWidgets 之后的）`ecapture-gui-probe`。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
+【平台层 · Windows】那一段里，配置日志会逐条列出这份名单，构建目录里也留一份
+`ecapture-buildable-targets.txt` 给脚本核对 —— 不拿"删掉功能"换一次好看的 Linux 构建成功。
+
+### wxWidgets 依赖接线（这一步只接线，没有换掉任何弹窗）
+
+- **选用版本**：wxWidgets 3.2.x（上游稳定分支）。Linux 用发行版包，Debian / Ubuntu 是 `libwxgtk3.2-dev`。
+- **发现方式**：CMake 的 MODULE 模式 `FindwxWidgets`，由它调 `wx-config` 问版本、cflags 与 libs，
+  因此跟着发行版实际装的那份走，不写死安装路径。多版本共存时用 `-DECAPTURE_WX_CONFIG=/全路径/wx-config`
+  点名（脚本侧是 `./build.sh --wx-config ...`），版本下限用 `-DECAPTURE_WX_MIN_VERSION=3.2.0`。
+- **组件与链接策略**：只要 `core` + `base` 两个组件 —— `core` 自己带上工具集（wxGTK）的依赖，
+  本项目不在构建里硬编 GTK 版本号。用共享库链接。头文件、宏、附加编译选项、库这四样分别挂到目标上，
+  不用 `include(${wxWidgets_USE_FILE})`：那一条是把设置泼到整个目录的作用域。
+- **目标划分**：`ecapture-gui-probe`（源码 `src/gui/WxGuiProbe.cpp`）是**独立**目标，只证明依赖真的接上了、
+  `wxApp` 能在图形会话里完成初始化；它不建窗口、不弹框、不取一个像素。两份离线判据**不链** wxWidgets，
+  装与不装都能构建 —— GUI 与核心测试互不阻塞，这正是这一步要的分层。
+- **开关**：`ECAPTURE_ENABLE_GUI` 在 Linux 默认 `ON`（找不到 wx 就跳过该目标并说明原因），Windows 默认 `OFF`
+  （现有 Windows 构建入口与安装包载荷清单不受任何影响，不会因为某台机器恰好装了 wx 就多出一个目标）；
+  `ECAPTURE_REQUIRE_WX=ON`（脚本侧 `./build.sh --gui`）把缺失变成配置阶段的硬错误。
+- **许可证**：wxWidgets 是 LGPL 2.1 with an exception（动态链接下无额外义务）。
+- **本机状态**：这台 Linux 开发机**没装 wxWidgets**，所以 GUI 目标的编译与运行属于**待验证**；
+  实测过的只有"缺依赖时给出准确诊断"这一条（`./build.sh --gui` 以退出码 `2` 结束并列出安装与点名方式）。
+
+确认弹窗（`Consent.cpp`）与截图后通知（`NotificationToast.cpp`）这一步**没有**改动：它们的 wxWidgets 实现是
+后续步骤。`--yes` 的适用范围与像素范围判据照旧只在 `CaptureScope` 与 `src/core/Authorization.h` 那一份里。
+
 ### 构建安装包：`build-installer.ps1`
 
 这个根脚本就是要从任意工作目录按**绝对路径**调用：仓库位置取自脚本自身，不取自当前目录。
@@ -1875,6 +1929,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/core/` | 平台无关的模型与判据：`Platform.h` 平台身份、`Geometry.h` 坐标、`Frame.h` 图像帧、`Status.h` 卡住的原因码、`Target.h` 目标描述、`Error.h` 错误码与三值结果、`Authorization.h` 像素范围与授权层、`Capability.h` 功能矩阵 | 一条都不 include `windows.h`，也不出现 HWND / RECT / HANDLE / HRESULT / WinRT |
 | `src/` 里这几份共用模型与策略头 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 与上面同一条：这些头描述的是"截什么、批准了什么、这一帧长什么样"，与用哪家 API 弄到手无关 |
 | `src/platform/windows/WinBridge.h` | 核心与 Win32 之间**唯一**的转换处：`RECT ↔ PhysRect`（含整批）与 `Deadline → 等待毫秒` | 只允许平台层的 `.cpp` include 它。转换点在代码里出现的那一行，就是审查时看得见"这里跨了一次平台边界"的那一行 |
+| `src/gui/` | 跨平台自有 GUI 的唯一去处，走 wxWidgets。当前这里只有依赖接线用的探针 `WxGuiProbe.cpp`，**还没有**任何自有界面 | 只有这一层碰 wxWidgets；`src/core/` 与共用模型不许 include 它，也不许被它反向定义判据。GUI 目标与离线判据互不依赖 |
 | `CaptureCommon.h`、五条通道头、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【平台层 · Windows】GDI / D3D / WinRT / 命名管道 / 字符串资源的真实使用者 | 每个文件开头写明自己是平台层；共用核心反向 include 它们就是破界 |
 
 **为什么不是把 `RECT` 改个名字**：`PhysRect` 的四条边写死成 `int32_t`，并且"空矩形""包含""量不出来"
@@ -1922,17 +1977,40 @@ Windows 那侧的原生类型，只在通道内部与管道线上格式里出现
    属于桌面服务，本程序不仿制、不替代、不自动批准；反过来 Portal 记住了会话也不能省掉程序那一次确认。
    `RequiredGrantLayers()` 把这一条写成判据，`tests\core_boundary.ps1` 逐条钉住"少一层就不放行"。
 
+### 命令行文本与多语言资源（2026-10 迁移）
+
+`--help` / `--version` / 参数解析 / 配置读取 / 文案这一层现在两个平台共用同一份实现，靠的是四条边界：
+
+| 边界 | 约定 | 本体 |
+| ---- | ---- | ---- |
+| 内部文字 | `std::wstring`：Windows 上是 UTF-16 码元，Linux 上是一个 `wchar_t` 一个码位；对外字节一律 UTF-8（无 BOM）。换码只发生在四个边界：命令行入口、嵌入文案取出、文件读写、标准流出口 | `src/core/TextCoding.h` |
+| 非法编码 | 不换个代码页再试一遍，也不丢后面的内容：一段非法字节换成一个 `U+FFFD` 并**如实计数**，第一处的偏移一并交回。配置文件整份拒；命令行参数逐条报 `cli.invalid_utf8` 并让本次失败，绝不拿 `U+FFFD` 当一次合法的标题 / 路径 / 正则 | 同上与 `src/core/CliTokens.h` |
+| 参数入口 | 平台入口只负责把本系统的 argv 收进 `CliTokens`（Windows 的 UTF-16 原样搬、Linux 的字节严格解码），正文 `CliMain` 是共用的；Windows 入口另外分诊辅助进程模式。Linux 侧 `DecodePosixArgv` 已按真实字节数组判过，`main` 那三行要等取帧那几层迁完才链得起来 | `src/CliArgs.h`、`src/Main.h` |
+| 平台动作 | 路径形状、整份读文件、写标准流、系统显示语言：声明在共用头，实现分两侧（`src/platform/windows/`、`src/platform/linux/`）。POSIX 上 `\` 是文件名里的普通字符、`C:shot.png` 是当前目录下一个合法的相对名，不照抄 Windows 的形状判据；大小写与空白的判定只折 ASCII，不跟运行期 locale 走 | `src/HostPath.h`、`src/HostFile.h`、`src/OutputStream.h`、`src/Lang.h` |
+
+Windows 专属的说法（`--hwnd`、`--class`、`--capture` 的那些 Windows 通道，以及 `--monitor` 的 `device:` /
+`id:` 两种标识）在非 Windows 构建里逐条报 `cli.platform_unsupported`（退出码 1）：既不静默忽略，也不翻译成
+"大概对等"的另一条参数。`--help` / `--version` 那一路先把人要的输出交出去，不在这一条上报。
+
+标准流的分工照旧：图片占用 stdout 之后文字一律改道 stderr；`--help` / `--version` / 未给条件仍是纯文本，
+其余是精简 JSON。行尾交给出口那一层决定（Windows 归一成 CRLF，Linux 用 `\n`），所以共用文本里只写 `\n`。
+
 ### 这一层的验证入口
 
 | 命令 | 判什么 |
 | ---- | ------ |
 | `.\tests\core-boundary.ps1` | 离线一层：`build\ecapture-core-tests.exe` 用共用模型跑判据（坐标、帧、目标、矩阵、隐私），一个像素都不取、不弹框 |
 | `scripts/core-portability-check.sh` | Linux 一层：同一份 `tests/core_boundary_state.cpp` 用 g++ 编译并运行，再加一条"这些头不许渗平台类型"的静态清单。**编得过就是边界成立的机器证明** |
+| `.\tests\cli-text.ps1` | 离线一层：`build\ecapture-cli-text-tests.exe` 判编码边界、四语嵌入与回退、参数与配置、JSON 转义与标准流通道纪律，一个像素都不取、不弹框 |
+| `./test-all.sh` 的 `cli-text` 套件，以及 `scripts/core-portability-check.sh` 的 3b / 4b | Linux 一层：同一批共用源文件**不经 CMake 目标**自己生成嵌入文案再用 g++ 编好跑完。这条同时是"共用 CLI 层真的不含平台头"的机器证明，也是"改完文案不重编就会被查出来"的现场 |
+| `./test-all.sh` | Linux 总跑：`offline` 层把上面那条与 CMake 构建出来的 `ecapture-core-tests`、`ecapture-wgc-tests` 一起串起来判；`isolated` 层要 wxWidgets 与图形会话（缺依赖记 `NOT RUN`，绝不算通过）；`manual` 层留给真机人工验证 |
 
 两条入口用的是同一个源文件——它一条都不 include `windows.h`。这一步没有做的（属于后续步骤）：
-X11 / Wayland 后端、wxWidgets 自有界面替掉 `DialogConsentPrompt` 与 WinRT toast、Portal + PipeWire
-接入、把 `std::wstring`（UTF-16）换成带明确编码约定的文本类型、辅助进程的线上格式去掉 `RECT` / `HRESULT`、
-以及 `Report.h`（JSON 渲染属核心、写标准输出属平台服务）的再拆一分。
+X11 / Wayland 后端、wxWidgets 自有界面替掉 `DialogConsentPrompt` 与 WinRT toast（只把依赖发现与链接接到位，
+另加一个不建窗口的探针目标）、Portal + PipeWire 接入、把 `std::wstring` 本身换成自带编码约定的类型（约定
+已经写在 `src/core/TextCoding.h` 一处，类型还没跟着换）、辅助进程的线上格式去掉 `RECT` / `HRESULT`，
+以及 `Report.h` 剩下的那一拆（写标准输出已经归到平台服务 `src/OutputStream.h`，响应组装与桌面查询的渲染仍在
+Windows 那一侧）。
 
 ## 许可
 

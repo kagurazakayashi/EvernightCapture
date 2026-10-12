@@ -29,6 +29,12 @@ public:
     Json& Value(long long n);
     Json& Value(unsigned long long n);
     Json& Value(int n) { return Value(static_cast<long long>(n)); }
+    // 这两个宽度在两个平台上不是同一回事：Windows(LLP64) 的 long 是 32 位，
+    // Linux(LP64) 的 long 是 64 位 —— 于是 uint64_t / int64_t 在 Linux 上就是 unsigned long /
+    // long，只给 long long 那一对重载会撞上"两个候选都要转换"的二义性。
+    // 各补一条并窄化到上面那两条，两个平台对同一个数值都只有一条出路。
+    Json& Value(long n) { return Value(static_cast<long long>(n)); }
+    Json& Value(unsigned long n) { return Value(static_cast<unsigned long long>(n)); }
     Json& Null();
     Json& Raw(std::wstring literal);  // 预先格式化好的数字等，调用方保证合法
 
@@ -51,5 +57,13 @@ private:
     std::vector<Scope> stack_;
     bool pendingKey_ = false;
 };
+
+// 值非空才写出这一对键值 —— 精简契约里"没内容就整个键不出现"是 everywhere 的同一条规矩
+// （--show-config、input 回显、诊断都靠它）。写一次在 JSON 这一层，比在十几个调用点各判
+// 一遍空更不容易漏，也保证了同一份数据在两条渲染路径上得到同一种省略方式。
+inline Json& OptString(Json& j, const wchar_t* key, const std::wstring& value) {
+    if (value.empty()) return j;
+    return j.Key(key).Value(value);
+}
 
 }  // namespace ecapture

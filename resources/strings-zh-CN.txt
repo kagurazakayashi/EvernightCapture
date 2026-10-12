@@ -123,6 +123,9 @@ cli.switch_no_value_hint	%1（开）或 %1=false（关）
 cli.unknown_option	未知选项
 cli.missing_value	该选项需要一个取值
 cli.unexpected_positional	多余的位置参数：只有第一个位置参数当作输出路径，其余条件请用选项给出
+cli.invalid_utf8	这条参数不是合法的 UTF-8 文本，已按原样拒绝（detail 里的 byte:offset 是第一处不可用字节）
+cli.platform_unsupported	这条参数说的是只有 Windows 才有的东西，本次构建的平台没有它
+cli.platform_unsupported_hint	这类标识没有别的平台上的等价写法可换（窗口句柄、窗口类名、Windows 的取图通道、GDI 设备名与设备接口路径），请删掉这一条
 cli.conflicting_options	这些选择策略互斥，只能选一个
 cli.conflicting_hint	例如只保留 --index 2
 cli.query_conflict	查询命令与截图选项不能同时给出：--capabilities / --diagnostics 只读地问环境，本身不截图
