@@ -63,7 +63,7 @@ EOF
 # ---------------------------------------------------------------------------
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
-SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text gui-probe-init"
+SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths gui-probe-init"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -88,6 +88,12 @@ SUITE_KIND[wgc-geometry]="cmake"
 SUITE_TARGET[wgc-geometry]="ecapture-wgc-tests"
 SUITE_NOTE[wgc-geometry]="WGC 动态尺寸与帧池生命周期判据（纯算术，21 条）"
 SUITE_PREREQ[wgc-geometry]=""
+
+SUITE_LAYER[save-paths]="offline"
+SUITE_KIND[save-paths]="cmake"
+SUITE_TARGET[save-paths]="ecapture-save-tests"
+SUITE_NOTE[save-paths]="跨平台文件 / 目录 / 原子保存 / 历史 / 配置位置判据（正常、不覆盖、并发、权限、中文路径、部分成功、--portable）"
+SUITE_PREREQ[save-paths]=""
 
 SUITE_LAYER[gui-probe-init]="isolated"
 SUITE_KIND[gui-probe-init]="cmake"

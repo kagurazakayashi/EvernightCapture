@@ -1,86 +1,84 @@
 #include "HistoryArchive.h"
 
-#include <cstdio>
-#include <iterator>
+#include <chrono>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "FileSave.h"
+#include "HostDirectory.h"
+#include "HostPath.h"
 #include "Lang.h"
-#include "OutputPlan.h"   // ExtensionFor / SameWindowsPath：扩展名与"是不是同一个文件"各只有一份判据
+#include "OutputPlan.h"   // ExtensionFor：归档扩展名与主输出共用同一份映射
 
 // ---------------------------------------------------------------------------
 // 保证边界（与 FileSave.h 顶部那一段同一读法，别当成万能药）
 //
 // * 提交走的是生产 SaveFileAtomic(path, bytes, overwrite=false)：同目录唯一临时文件 + 一次
-//   "不许替换"的原子改名。目标已存在时那一次改名报 ERROR_FILE_EXISTS，本次临时文件被清掉，
-//   磁盘上原有的那一份历史一个字节都没动过。
-// * 网络共享上的 MOVEFILE 语义由服务端决定（同 FileSave 那条），所以"绝不覆盖"这条在 SMB /
-//   WebDAV 上仍然由那一次改名当场裁决，这里没有"先看一眼在不在"的预检 —— 预检有竞态，
-//   而且会把"问不出"和"没有"混成一种。
-// * 只跟随**真目录**：那一个位置是个文件、或是一个重解析点（junction / 符号链接）时这里停下，
+//   "不许替换"的原子提交。目标已存在时那一次提交返回 EEXIST / ERROR_FILE_EXISTS，本次临时文件
+//   被清掉，磁盘上原有的那一份历史一个字节都没动过。
+// * 网络文件系统上的 rename / link 语义由服务端决定，所以"绝不覆盖"仍由那一次提交当场裁决；
+//   这里没有"先看一眼在不在"的预检 —— 预检有竞态，而且会把"问不出"和"没有"混成一种。
+// * 只跟随**真目录**：那一个位置是个文件、或是一个符号链接 / junction / 重解析点时这里停下，
 //   因为照着它写等于把截图放进谁也没批准过的另一个地方。停下就是如实报一条失败，既不换个目录
-//   再试，也不建自己的重解析点，更不改标签与 ACL。
+//   再试，也不建自己的链接，更不改标签与 ACL。
 // * 目录不存在不是失败信号：ResolveHistoryRoot 只解析，"这一路写不写得下去"由真去建的那一次
-//   CreateDirectoryW 交回错误码回答（没权限、盘满、父路径不合在这里各说各的）。
+//   目录调用交回错误码回答（没权限、盘满、父路径不合在这里各说各的）。
 // ---------------------------------------------------------------------------
 
 namespace ecapture {
-namespace {
 
-// 提交成功之后的那几步必须是真正不分配、不抛的记账（保证见本文件顶部的保证边界）。这一条断言
-// 写在实际使用的那个表达式对应的类型上：`record->file = std::move(path)` 走
-// std::wstring::operator=(std::wstring&&) —— 上一版的 path 声明为 const，std::move 拿到的只是
-// const 引用，那一行实际退化成**拷贝赋值**、可以在副本已经落到磁盘之后抛 bad_alloc，把真实
-// 成功的历史副本从结果里抹掉。以后谁把这里的交接改回可分配的形状，这一条先编译不过。
+// 提交成功之后的那几步必须是真正不分配、不抛的记账（保证见本文件顶部的保证边界）。
 static_assert(std::is_nothrow_move_assignable_v<std::wstring>,
               "提交后的路径交接用 wstring 搬移赋值：它一旦可能抛，已提交的历史副本就会从结果里消失");
 static_assert(std::is_nothrow_default_constructible_v<HistoryRecord>,
               "HistoryRecord 默认构造排在那一次提交之前；它一旦可能抛，成功提交后的记账链就断了");
 
+namespace {
+
 // 撞名就换下一个序号再试。次数是有界的：反复撞名说明有别的东西在按同一条规则起名字，
 // 那是"这一份不该由我提交"的信号，不是"再多试几次"的理由。
 constexpr int kHistoryAttempts = 4;
 
-// 与 OutputPlan 同一道数字宽度写法（这里自己排一次，因为归档名要的是定宽可排序，
-// 而 --out 模板那一份是给人看的）。
+// 定宽可排序的数字（归档名要的是这个，而 --out 模板那一份是给人看的）。
 std::wstring Padded(int value, int width) {
-    wchar_t buf[24];
-    swprintf(buf, 24, L"%0*d", width, value);
-    return buf;
+    std::wstring s = std::to_wstring(value);
+    while (static_cast<int>(s.size()) < width) s.insert(s.begin(), L'0');
+    return s;
+}
+
+std::wstring Hex32(uint32_t value) {
+    static const wchar_t kHex[] = L"0123456789abcdef";
+    std::wstring out(8, L'0');
+    for (int i = 0; i < 8; ++i) {
+        out[static_cast<size_t>(7 - i)] = kHex[(value >> (4 * i)) & 0xF];
+    }
+    return out;
 }
 
 std::wstring AbsoluteNormalized(const std::wstring& path) {
-    const DWORD cap = 8 * MAX_PATH;
-    std::vector<wchar_t> buffer(cap);
-    const DWORD n = GetFullPathNameW(path.c_str(), cap, buffer.data(), nullptr);
-    if (n == 0 || n >= cap) return path;   // 问不出来就原样交回：比较那一步自己会说不合
-    return std::wstring(buffer.data());
+    std::wstring absolute;
+    if (!NormalizeAbsolutePath(path, &absolute)) return path;   // 问不出来就原样交回：比较那一步自己会说不合
+    return absolute;
 }
 
-// 本进程的抗冲突标识：8 个十六进制位，混的是 PID、启动时刻、QPC 与一个栈变量的地址。
-// 它**不是**随机数也不是安全凭证，作用只有一个 —— PID 被回收之后（进程退出、号发给下一个）
-// 同一秒里的归档名仍然大概率不同，配合独占改名把"绝不覆盖既有历史"钉死。
+// 本进程的抗冲突标识：8 个十六进制位，混的是 PID、单调时钟、系统时钟与一个栈变量的地址。
+// 它**不是**随机数也不是安全凭证，作用只有一个 —— PID 被回收之后同一秒里的归档名仍然大概率
+// 不同，配合独占提交把"绝不覆盖既有历史"钉死。
 std::wstring ProcessNonce() {
     static const std::wstring nonce = [] {
-        LARGE_INTEGER qpc{};
-        QueryPerformanceCounter(&qpc);
+        const auto steady = static_cast<unsigned long long>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        const auto wall = static_cast<unsigned long long>(
+            std::chrono::system_clock::now().time_since_epoch().count());
         const unsigned long long stackMark =
-            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&qpc));
-        unsigned long long mixed = static_cast<unsigned long long>(GetCurrentProcessId()) * 0x9E3779B9ull;
-        mixed ^= static_cast<unsigned long long>(GetTickCount64()) << 17;
-        mixed ^= static_cast<unsigned long long>(qpc.LowPart) + (static_cast<unsigned long long>(qpc.HighPart) << 32);
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(&steady));
+        unsigned long long mixed = static_cast<unsigned long long>(CurrentProcessId()) * 0x9E3779B9ull;
+        mixed ^= steady << 17;
+        mixed ^= wall + (wall >> 32);
         mixed ^= stackMark << 7;
-        wchar_t buf[16];
-        swprintf(buf, 16, L"%08llx", mixed);
-        return std::wstring(buf);
+        return Hex32(static_cast<uint32_t>(mixed ^ (mixed >> 32)));
     }();
     return nonce;
 }
@@ -98,7 +96,7 @@ Diagnostic Unavailable(const std::wstring& dir, const wchar_t* message_key,
     return d;
 }
 
-// 那一次目录创建 / 改名自己交回来的原因：码换成历史这一族的、stage 换成 history，
+// 那一次目录创建 / 提交自己交回来的原因：码换成历史这一族的、stage 换成 history，
 // 并且**不保留** --out 那一个 option —— 这一条与用户写的那条输出路径无关，留着它会把人
 // 引向"改改 --out 再来一次"这种根本不起作用的下一步（主输出那条路有它自己的一条记录）。
 Diagnostic ToHistoryError(Diagnostic err) {
@@ -114,19 +112,6 @@ Diagnostic ToHistoryError(Diagnostic err) {
     return err;
 }
 
-// 那一个位置此刻是不是一个"跟着走下去不安全"的占用者。这里只问属性，不创建、不试写，也不
-// "顺手改它的标签/权限/名字"。问不出来（还没建、父层不让看、路径名不合到问不出）一律算 kNone：
-// 那一路的下场由真去建目录 / 真去改名那一次调用交回错误码回答，这里不替它猜一个结论 ——
-// 尤其不会把"没问到"写成"没问题"或"有问题"。
-enum class Blocker { kNone, kFile, kReparse };
-
-Blocker ProbeBlocker(const std::wstring& path) {
-    const DWORD attrs = GetFileAttributesW(path.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES) return Blocker::kNone;
-    if (attrs & FILE_ATTRIBUTE_REPARSE_POINT) return Blocker::kReparse;
-    return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? Blocker::kNone : Blocker::kFile;
-}
-
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -134,15 +119,15 @@ Blocker ProbeBlocker(const std::wstring& path) {
 // ---------------------------------------------------------------------------
 
 HistoryInstant LocalHistoryInstant() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
+    LocalDateTime local{};
+    LocalDateTimeNow(&local);
     HistoryInstant when;
-    when.year = st.wYear;
-    when.month = st.wMonth;
-    when.day = st.wDay;
-    when.hour = st.wHour;
-    when.minute = st.wMinute;
-    when.second = st.wSecond;
+    when.year = local.year;
+    when.month = local.month;
+    when.day = local.day;
+    when.hour = local.hour;
+    when.minute = local.minute;
+    when.second = local.second;
     return when;
 }
 
@@ -162,41 +147,34 @@ std::wstring HistoryFileName(const HistoryInstant& when, uint32_t pid, const std
 // 归档根
 // ---------------------------------------------------------------------------
 
-HistoryRoot ResolveHistoryRoot() {
+HistoryRoot ResolveHistoryRoot(bool portable) {
     HistoryRoot root;
 
-    wchar_t buffer[8 * MAX_PATH];
-    const DWORD n = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
-    if (n == 0 || n >= std::size(buffer)) {
-        // 问不出自己在哪里，就**不猜**"那大概就是这个当前目录 / 那个默认安装位置"。
-        // 猜错一次的后果是把截图存进一个谁也没找得到的地方，而它看上去像"归档成功了"。
+    AppPaths paths;
+    if (!ResolveAppPaths(portable, &paths) || paths.stateDir.empty()) {
+        // 问不出自己在哪里 / 用户目录基准不可用，就**不猜**"那大概就是这个当前目录"。
+        // 猜错一次的后果是把截图存进一个谁也没找到的地方，而它看上去像"归档成功了"。
         root.usable = false;
-        root.failure = Unavailable(std::wstring(), L"history.unavailable_reason", L"module_path_unavailable");
+        root.failure = Unavailable(std::wstring(), L"history.unavailable_reason",
+                                   L"module_path_unavailable");
         return root;
     }
-
-    std::wstring module_path(buffer, n);
-    const size_t slash = module_path.find_last_of(L"\\/");
-    if (slash == std::wstring::npos) {
-        root.usable = false;
-        root.failure = Unavailable(std::wstring(), L"history.unavailable_reason", L"module_path_unavailable");
-        return root;
-    }
-    root.dir = AbsoluteNormalized(module_path.substr(0, slash + 1) + L"history");
+    root.dir = AbsoluteNormalized(JoinDirAndFile(paths.stateDir, L"history"));
+    root.createDirs = paths.stateCreateChain;
 
     // 那一个位置此刻是什么：只问属性，不创建、不试写。只有两种现场现在就能确定"这一路说不通"：
-    // 那个名字被一个文件占着、或者它是一个重解析点（跟着写等于写进谁也没批准过的别处）。
+    // 那个名字被一个文件占着、或者它是一个符号链接 / 重解析点（跟着写等于写进谁也没批准过的别处）。
     // "还没建出来"与"这一问本身没答案"都不在这里下结论 —— 前者本来就是正常起点，后者的下场由
     // 真去建目录那一次调用交回错误码回答（这里任何一条都不预测"这一次一定写得出去"）。
-    switch (ProbeBlocker(root.dir)) {
-        case Blocker::kFile:
+    switch (QueryPathKind(root.dir)) {
+        case PathKind::kFile:
             root.failure = Unavailable(root.dir, L"history.unavailable_reason", L"root_is_a_file");
             return root;
-        case Blocker::kReparse:
+        case PathKind::kSymlink:
             root.failure = Unavailable(root.dir, L"history.unavailable_reason",
                                        L"root_is_reparse_point");
             return root;
-        case Blocker::kNone:
+        default:
             break;
     }
     root.usable = true;
@@ -207,8 +185,8 @@ HistoryRoot ResolveHistoryRoot() {
 // 归档那一步
 // ---------------------------------------------------------------------------
 
-HistoryArchive::HistoryArchive() : root_(ResolveHistoryRoot()), clock_(LocalHistoryInstant),
-                                   nonce_(ProcessNonce()) {}
+HistoryArchive::HistoryArchive(bool portable)
+    : root_(ResolveHistoryRoot(portable)), clock_(LocalHistoryInstant), nonce_(ProcessNonce()) {}
 
 HistoryArchive::HistoryArchive(HistoryRoot root, HistoryClockFn clock, std::wstring nonce,
                                uint64_t first_seq, HistoryCommitFn commit)
@@ -218,53 +196,52 @@ HistoryArchive::HistoryArchive(HistoryRoot root, HistoryClockFn clock, std::wstr
 
 bool HistoryArchive::EnsureDateDirectory(const HistoryInstant& when, std::wstring* dir,
                                          Diagnostic* err) {
-    const std::wstring date_dir = root_.dir + L"\\" + HistoryDirectoryName(when);
+    const std::wstring date_dir = JoinDirAndFile(root_.dir, HistoryDirectoryName(when));
     *dir = date_dir;
 
-    // 根与日期目录各建一次：CreateDirectoryW 不建中间层，所以少一层都不算"已经备好"。
-    const std::wstring steps[] = {root_.dir, date_dir};
+    // EnsureDirectory 不建中间层：先把数据位置明确给出的父层按顺序补齐（Linux 首次运行时的
+    // ~/.local/state/evernightcapture），再建根与日期目录。Windows / 便携模式的父层为空。
+    std::vector<std::wstring> steps = root_.createDirs;
+    steps.push_back(root_.dir);
+    steps.push_back(date_dir);
     for (const std::wstring& step : steps) {
-        if (CreateDirectoryW(step.c_str(), nullptr)) continue;
-        const DWORD gle = GetLastError();   // 先取走：下面那一问属性会覆盖它
-
-        switch (ProbeBlocker(step)) {
-            case Blocker::kFile:
+        const HostDirectoryResult created = EnsureDirectory(step);
+        switch (created.outcome) {
+            case DirectoryOutcome::kCreated:
+            case DirectoryOutcome::kAlreadyExists:
+                continue;   // 已经有一个真目录在那里（别的进程先建好了同一个日期目录）不算失败
+            case DirectoryOutcome::kBlockedFile:
                 // 那个名字被一个文件占着。不删它、不改它，也不"那就换个地方存"。
                 if (err) {
                     *err = Unavailable(step, L"history.unavailable_reason",
                                        L"path_component_is_a_file");
-                    err->win32 = gle;
+                    err->win32 = created.native;
                 }
                 return false;
-            case Blocker::kReparse:
-                // junction / 符号链接：照着它写下去，图落在哪儿就不是这个程序目录了。
+            case DirectoryOutcome::kBlockedSymlink:
+                // 符号链接 / junction：照着它写下去，图落在哪儿就不是这个数据目录了。
                 if (err) {
                     *err = Unavailable(step, L"history.unavailable_reason",
                                        L"path_component_is_reparse_point");
-                    err->win32 = gle;
+                    err->win32 = created.native;
                 }
                 return false;
-            case Blocker::kNone:
-            default:
-                break;
+            case DirectoryOutcome::kFailed:
+                // 没权限、盘满、父路径不存在、路径里有非法字符 —— 都照那一次创建自己交回的码报，
+                // 不换个目录再试一次，也不悄悄塞进临时目录。
+                if (err) {
+                    Diagnostic d;
+                    d.code = codes::kHistoryWriteFailed;
+                    d.message = Msgf(L"history.dir_failed_reason",
+                                     static_cast<unsigned long long>(created.native));
+                    d.value = step;
+                    d.hint = Msg(L"history.write_failed_hint");
+                    d.stage = stages::kHistory;
+                    d.win32 = static_cast<uint32_t>(created.native);
+                    *err = std::move(d);
+                }
+                return false;
         }
-
-        // 已经有一个真目录在那里（别的进程先建好了同一个日期目录）：这不算失败，走下去。
-        if (gle == ERROR_ALREADY_EXISTS) continue;
-
-        // 没权限、盘满、父路径不存在、路径里有非法字符 —— 都照那一次创建自己交回的码报，
-        // 不换个目录再试一次，也不悄悄塞进临时目录。
-        if (err) {
-            Diagnostic d;
-            d.code = codes::kHistoryWriteFailed;
-            d.message = Msgf(L"history.dir_failed_reason", gle);
-            d.value = step;
-            d.hint = Msg(L"history.write_failed_hint");
-            d.stage = stages::kHistory;
-            d.win32 = gle;
-            *err = std::move(d);
-        }
-        return false;
     }
     return true;
 }
@@ -273,21 +250,22 @@ bool HistoryArchive::CommitCopy(const std::wstring& dir, const HistoryInstant& w
                                 ImageFormat format, const std::vector<uint8_t>& bytes,
                                 const std::wstring& primaryPath, HistoryRecord* record,
                                 Diagnostic* detail) {
-    const uint32_t pid = GetCurrentProcessId();
-    // 主输出走标准输出时没有路径可比；文件名同不同源都由同一条 AbsoluteNormalized 折一次，
-    // 免得 "\\.\" 前缀、8.3 短名以外那些 . / .. 与盘符写法在两边各算一套。
+    const uint32_t pid = CurrentProcessId();
+    // 主输出走标准输出时没有路径可比；两边都由同一条字面归一折一次，
+    // 免得 . / .. 那类写法在两边各算一套。平台自己的比较规则在 SamePath 里。
     const std::wstring normalized_primary =
-        (primaryPath.empty() || primaryPath == L"-") ? std::wstring() : AbsoluteNormalized(primaryPath);
+        (primaryPath.empty() || primaryPath == L"-") ? std::wstring()
+                                                     : AbsoluteNormalized(primaryPath);
 
     Diagnostic last_err;
     for (int attempt = 0; attempt < kHistoryAttempts; ++attempt) {
         const uint64_t seq = next_seq_++;   // 本次决策用掉一个序号：同一进程连截多张也各有各的名
         // 不是 const：提交成功之后那一次路径交接要**真的搬移**（见文件顶部的编译期断言）。
-        std::wstring path = dir + L"\\" + HistoryFileName(when, pid, nonce_, seq, format);
+        std::wstring path = JoinDirAndFile(dir, HistoryFileName(when, pid, nonce_, seq, format));
 
         // 主输出恰好算在这棵 history 树里、而且名字与这一次要用的归档名相同：那就**不写副本**。
         // 写下去是把刚交出去的那一张自己盖掉，而"另存一份独立副本"说的从来不是这一件事。
-        if (!normalized_primary.empty() && SameWindowsPath(path, normalized_primary)) {
+        if (!normalized_primary.empty() && SamePath(path, normalized_primary)) {
             record->state = HistoryRecord::State::kSkipped;
             record->code = codes::kHistorySameFile;
             if (detail) {

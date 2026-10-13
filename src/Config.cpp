@@ -527,13 +527,13 @@ const std::wstring& ConfigSnapshot::ValueOf(const std::wstring& fieldId) const {
     return (s && s->present) ? s->value : kEmpty;
 }
 
-std::wstring DefaultConfigPath() {
-    // "程序同目录那份 ECAPTURE.ini"里的**程序同目录**是平台的事：Windows 问模块路径，
-    // Linux 读 /proc/self/exe。问不出来就交回空串，由调用方报 config.read_failed ——
-    // 不猜当前目录、不猜源码树、也不猜安装位置。
-    std::wstring dir;
-    if (!ExeDirectory(&dir)) return std::wstring();
-    return JoinDirAndFile(dir, L"ECAPTURE.ini");
+std::wstring DefaultConfigPath(bool portable) {
+    // 默认位置是平台的事：Windows 问模块路径并用程序同目录（既有行为）；
+    // Linux 用户模式按 XDG 目录，--portable 才回到 exe 旁。问不出来就交回空串，
+    // 由调用方报 config.read_failed —— 不猜当前目录、不猜源码树、也不猜安装位置。
+    AppPaths paths;
+    if (!ResolveAppPaths(portable, &paths) || paths.configDir.empty()) return std::wstring();
+    return JoinDirAndFile(paths.configDir, L"ECAPTURE.ini");
 }
 
 namespace {

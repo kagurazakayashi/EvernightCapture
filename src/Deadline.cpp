@@ -4,33 +4,10 @@
 #include <climits>
 #include <string>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>   // LARGE_INTEGER / QueryPerformanceCounter：本文件是截止时间的 Windows 时钟实现
+#include "HostPath.h"   // MonotonicClockMs：Windows = QPC，Linux = CLOCK_MONOTONIC
 
 namespace ecapture {
 namespace {
-
-// QPC 的频率整机恒定，取一次缓存起来即可；拿不到（极老的虚拟化环境）时按 1000 处理，
-// 于是换算退化成"每个计数就是一毫秒"，宁可不准确也不返回一个负数预算。
-int64_t PerfFrequency() {
-    static const int64_t freq = [] {
-        LARGE_INTEGER li{};
-        if (!QueryPerformanceFrequency(&li) || li.QuadPart <= 0) return static_cast<int64_t>(1000);
-        return li.QuadPart;
-    }();
-    return freq;
-}
-
-// 生产单调时钟：QPC 换算成毫秒。先除后乘拆开，避免 ticks*1000 溢出。
-int64_t QpcNowMs() {
-    LARGE_INTEGER li{};
-    if (!QueryPerformanceCounter(&li)) return 0;
-    const int64_t f = PerfFrequency();
-    const int64_t t = li.QuadPart > 0 ? li.QuadPart : 0;
-    return (t / f) * 1000 + ((t % f) * 1000) / f;
-}
 
 int64_t ClampTotalMs(uint64_t totalMs) {
     return totalMs > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(totalMs);
@@ -38,13 +15,13 @@ int64_t ClampTotalMs(uint64_t totalMs) {
 
 }  // namespace
 
-Deadline Deadline::FromTotalMs(uint64_t totalMs) { return FromTotalMs(totalMs, QpcNowMs); }
+Deadline Deadline::FromTotalMs(uint64_t totalMs) { return FromTotalMs(totalMs, MonotonicClockMs); }
 
 Deadline Deadline::FromTotalMs(uint64_t totalMs, MonotonicNowMs now) {
     Deadline dl;
     if (totalMs == 0) return dl;   // 0 = 不限
     auto state = std::make_shared<State>();
-    state->now = now ? std::move(now) : MonotonicNowMs(QpcNowMs);
+    state->now = now ? std::move(now) : MonotonicNowMs(MonotonicClockMs);
     state->totalMs = ClampTotalMs(totalMs);   // 换算会溢出：按"实际上永远不会耗尽"处理
     state->start = state->now();
     dl.state_ = std::move(state);

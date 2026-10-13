@@ -40,7 +40,7 @@ grp.consent	Capture authorization (a real capture asks first; --yes skips window
 grp.timeout	Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
 grp.output	Output
 grp.behavior	Miscellaneous
-grp.config	User preference configuration (reads ECAPTURE.ini next to the running program; nothing else is searched)
+grp.config	User preference configuration (Windows: ECAPTURE.ini next to the running program; Linux: the user configuration directory; nothing else is searched)
 grp.query	Capability queries (read-only: no capture, no dialog, no file)
 opt.monitor	Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images; to name a specific monitor use an identifier from --screens: device:<name> (this desktop attach) or id:<monitor device path> (the cross-session one) - a number can point at a different screen after a replug or a mode change
 opt.hwnd	Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
@@ -189,7 +189,7 @@ io.write_interrupted	Write to file interrupted
 io.stdout_failed	Failed to write to stdout
 io.stdout_partial	Stdout write interrupted: %1 of %2 bytes were emitted, so this image was not delivered - the pipe holds a truncated stream
 history.unavailable_reason	The history copy has nowhere to go on this route (%1)
-history.unavailable_hint	The primary image was delivered as usual; only that extra copy was not written. Check whether this process may create the directory and files next to the executable - no other directory is substituted and no elevation happens
+history.unavailable_hint	The primary image was delivered as usual; only that extra copy was not written. Check whether this process may create the directory and files at the configured data location (the executable directory on Windows, the per-user state directory on Linux unless --portable) - no other directory is substituted and no elevation happens
 history.dir_failed_reason	Cannot create the history directory (error %1)
 history.write_failed_hint	The primary image is on disk; this entry is only about the copy that did not land. History never overwrites an existing file and is never quietly relocated elsewhere
 history.file_exists_hint	Run it again on another image; when a history name collides with an existing file this reports a failure instead of overwriting what is already saved
@@ -498,6 +498,7 @@ note.hdr_channel_skipped	%1 in the auto chain cannot deliver the %2 HDR request 
 # ---------------------------------------------------------------------------
 opt.config	read this INI instead (a relative path is made absolute against the current directory); a missing or unreadable file is an error, it does not fall back to the default one
 opt.no-config	ignore the configuration file completely for this run and use built-in defaults plus this command line; the isolation entry for debugging and self-checks, it neither deletes nor rewrites the configuration
+opt.portable	use data files beside the executable instead of the per-user configuration and state directories (Linux); Windows always uses the directory of the executable that is running
 opt.show-config	read-only view of this run's configuration: which file was read, whether it was read, and which source each effective setting came from (no window selection, no pixels, no dialog, no directories created)
 opt.history	whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
 opt.integrity-hints	whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission

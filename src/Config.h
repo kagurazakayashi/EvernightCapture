@@ -180,9 +180,12 @@ struct ConfigSnapshot {
 // 取文件与判定：生产入口
 // ---------------------------------------------------------------------------
 
-// 实际运行的 ECAPTURE.EXE 所在目录里的 ECAPTURE.ini。问不出模块位置时 path 为空、
-// state=kFailed 并带一条 config.read_failed —— 不猜当前目录、不猜源码树、不猜安装位置。
-std::wstring DefaultConfigPath();
+// 默认配置位置。Windows 保持既有行为：实际运行的 ECAPTURE.EXE 所在目录里的 ECAPTURE.ini。
+// Linux 用户模式：$XDG_CONFIG_HOME/evernightcapture/ECAPTURE.ini（未设置时
+// $HOME/.config/evernightcapture/ECAPTURE.ini）；portable=true（--portable）才回到 exe 旁。
+// 问不出程序位置或用户目录基准时返回空串、state=kFailed 并带一条 config.read_failed ——
+// 不猜当前目录、不猜源码树、不猜安装位置，也不因为安装目录碰巧可写就自动换档。
+std::wstring DefaultConfigPath(bool portable = false);
 
 // 读并判定一个配置文件。这一步只有读与判，没有任何写入：
 //   - 文件不存在：默认位置 = kAbsent（正常）；显式 --config = kFailed + config.not_found。

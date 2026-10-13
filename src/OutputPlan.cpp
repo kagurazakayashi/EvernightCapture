@@ -1,53 +1,19 @@
 #include "OutputPlan.h"
 
 #include <algorithm>
-#include <cwctype>
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "HostPath.h"
+#include "Lang.h"
 
 namespace ecapture {
 namespace {
 
-// %n 的长度上限：按 UTF-16 码元算，沿用旧实现的 80（改这个数字会让老调用方的文件名变样）
-constexpr size_t kMaxNameChars = 80;
-
-std::wstring ToLowerLocal(std::wstring s) {
-    for (auto& ch : s) ch = static_cast<wchar_t>(std::towlower(ch));
+std::wstring TwoDigits(int v) {
+    std::wstring s = std::to_wstring(v);
+    if (s.size() < 2) s.insert(s.begin(), L'0');
     return s;
-}
-
-bool IsHighSurrogate(wchar_t c) { return c >= 0xD800 && c <= 0xDBFF; }
-bool IsLowSurrogate(wchar_t c) { return c >= 0xDC00 && c <= 0xDFFF; }
-
-bool IllegalNameChar(wchar_t c) {
-    return c < 32 || c == L'<' || c == L'>' || c == L':' || c == L'"' || c == L'/' || c == L'\\' ||
-           c == L'|' || c == L'?' || c == L'*';
-}
-
-// Windows 在普通路径里把这些名字当设备而不是文件（连 CON.png 一起拦），
-// 所以 %n 正好落成其中之一时必须改掉，否则后面无论哪条通道都会撞开不出文件。
-bool IsReservedDeviceName(const std::wstring& name) {
-    static const wchar_t* const kNames[] = {
-        L"con", L"prn", L"aux", L"nul",
-        L"com1", L"com2", L"com3", L"com4", L"com5", L"com6", L"com7", L"com8", L"com9",
-        L"lpt1", L"lpt2", L"lpt3", L"lpt4", L"lpt5", L"lpt6", L"lpt7", L"lpt8", L"lpt9",
-        nullptr};
-    const std::wstring lower = ToLowerLocal(name);
-    const size_t stemEnd = lower.find(L'.');  // 扩展名前那一段才是设备名
-    const std::wstring stem = lower.substr(0, stemEnd);
-    for (const wchar_t* const* p = kNames; *p; ++p) {
-        if (stem == *p) return true;
-    }
-    return false;
-}
-
-void TrimTrailingDotsAndSpaces(std::wstring* s) {
-    while (!s->empty() && (s->back() == L' ' || s->back() == L'.')) s->pop_back();
 }
 
 std::wstring FourDigits(int v) {
@@ -56,45 +22,37 @@ std::wstring FourDigits(int v) {
     return s;
 }
 
-std::wstring TwoDigits(int v) {
-    std::wstring s = std::to_wstring(v);
-    if (s.size() < 2) s.insert(s.begin(), L'0');
-    return s;
-}
-
 // 一个批次的日期与时间：整批只取一次。分开取的话，跨午夜的批次会把同一次截图劈成两天的名字，
-// 也让 %d-%t 这种"看时间戳找同一批"的用法失效。
+// 也让 %d-%t 这种"看时间戳找同一批"的用法失效。本地时间由平台服务给（与历史归档同一把尺）。
 struct BatchClock {
     std::wstring date;  // YYYYMMDD
     std::wstring time;  // HHMMSS
 };
 
 BatchClock MakeBatchClock() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
+    LocalDateTime local{};
+    if (!LocalDateTimeNow(&local)) return BatchClock{};
     BatchClock clock;
-    clock.date = FourDigits(st.wYear) + TwoDigits(st.wMonth) + TwoDigits(st.wDay);
-    clock.time = TwoDigits(st.wHour) + TwoDigits(st.wMinute) + TwoDigits(st.wSecond);
+    clock.date = FourDigits(local.year) + TwoDigits(local.month) + TwoDigits(local.day);
+    clock.time = TwoDigits(local.hour) + TwoDigits(local.minute) + TwoDigits(local.second);
     return clock;
 }
 
 bool HasExtension(const std::wstring& path) {
-    const size_t slash = path.find_last_of(L"\\/");
+    const size_t slash = path.find_last_of(PathSeparatorSet());
     const size_t dot = path.find_last_of(L'.');
     return dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash);
 }
 
 std::wstring AbsoluteOfOrRaw(const std::wstring& path) {
-    const DWORD cap = 8 * MAX_PATH;
-    std::vector<wchar_t> buffer(cap);
-    const DWORD n = GetFullPathNameW(path.c_str(), cap, buffer.data(), nullptr);
-    if (n == 0 || n >= cap) return path;  // 路径过长时原样留着，交给开文件那一步报错
-    return std::wstring(buffer.data());
+    std::wstring absolute;
+    if (!NormalizeAbsolutePath(path, &absolute)) return path;   // 说不通就原样交回，由开文件那一步报错
+    return absolute;
 }
 
 // 没有占位符时，把序号插在扩展名前面
 std::wstring AppendOrdinal(std::wstring path, size_t ordinal) {
-    const size_t slash = path.find_last_of(L"\\/");
+    const size_t slash = path.find_last_of(PathSeparatorSet());
     const size_t dot = path.find_last_of(L'.');
     const std::wstring suffix =
         (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash))
@@ -105,15 +63,26 @@ std::wstring AppendOrdinal(std::wstring path, size_t ordinal) {
     return path;
 }
 
+// 句柄写成定宽十六进制。用平台无关的数字拼接，不为了一个 %08X 把这一层绑到某一家 C 运行期。
+std::wstring HandleText(uint64_t hwnd) {
+    static const wchar_t kHex[] = L"0123456789ABCDEF";
+    std::wstring out(10, L'0');
+    out[0] = L'0';
+    out[1] = L'x';
+    for (int i = 0; i < 8; ++i) {
+        out[static_cast<size_t>(9 - i)] =
+            kHex[static_cast<size_t>((hwnd >> (4 * i)) & 0xF)];
+    }
+    return out;
+}
+
 // 占位符展开。窗口目标给句柄 / 进程 / 标题；屏幕目标没有前两者（取到 0），
-// %n 用去掉 "\\.\\" 前缀的设备名，这样 shot_%n.png 每块屏一个文件。
+// %n 用去掉 "\\.\" 前缀的设备名，这样 shot_%n.png 每块屏一个文件。
 // 未知的 %x 原样留两个字符（现有约定），但留下的照样是两个目标共用的名字，
 // 所以碰撞检测一视同仁。
 std::wstring Expand(const std::wstring& pattern, const OutputTarget& target, size_t ordinal,
                     const BatchClock& clock) {
     std::wstring out;
-    wchar_t hwndBuf[24];
-    swprintf(hwndBuf, 24, L"0x%08X", static_cast<unsigned>(target.hwnd));
     for (size_t i = 0; i < pattern.size(); ++i) {
         if (pattern[i] != L'%' || i + 1 >= pattern.size()) {
             out.push_back(pattern[i]);
@@ -123,7 +92,7 @@ std::wstring Expand(const std::wstring& pattern, const OutputTarget& target, siz
         switch (token) {
             case L'd': out += clock.date; break;
             case L't': out += clock.time; break;
-            case L'h': out += hwndBuf; break;
+            case L'h': out += HandleText(target.hwnd); break;
             case L'p': out += std::to_wstring(target.pid); break;
             case L'i': out += std::to_wstring(ordinal); break;
             case L'n': out += SafeFileNamePart(target.name); break;
@@ -149,33 +118,8 @@ std::wstring ExtensionFor(ImageFormat fmt) {
     }
 }
 
-// 路径比较：不区分大小写（Windows 文件系统默认如此），并且刻意不走区域敏感规则 ——
-// culture 比较会把某些看似不同的名字判成相等，Ordinal 只按码位简单折叠大小写。
-// 除了整批输出名的碰撞预检，历史归档那一步也用同一个比较判"这一次要写的名字是不是就是主输出"
-// （判据只有一份，声明见 OutputPlan.h）。
-bool SameWindowsPath(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(),
-                                static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
-}
-
 std::wstring SafeFileNamePart(const std::wstring& raw) {
-    std::wstring s;
-    s.reserve(raw.size());
-    for (wchar_t c : raw) s.push_back(IllegalNameChar(c) ? L'_' : c);
-    TrimTrailingDotsAndSpaces(&s);
-
-    if (s.size() > kMaxNameChars) {
-        size_t cut = kMaxNameChars;
-        // cut 是截断后的长度：切点上的低代理属于前一个高代理时，退一格，别把一个字劈成两半
-        if (cut > 0 && IsLowSurrogate(s[cut]) && IsHighSurrogate(s[cut - 1])) --cut;
-        s.resize(cut);
-        while (!s.empty() && IsHighSurrogate(s.back())) s.pop_back();  // 落单的高代理同样非法
-        TrimTrailingDotsAndSpaces(&s);  // 截断之后可能又露出尾部的点或空格
-    }
-
-    if (s.empty()) return L"_";
-    if (IsReservedDeviceName(s)) s.insert(s.begin(), L'_');
-    return s;
+    return SanitizeFileNamePart(raw);
 }
 
 bool PlanOutputPaths(const Options& opt, const std::vector<OutputTarget>& targets,
@@ -206,7 +150,8 @@ bool PlanOutputPaths(const Options& opt, const std::vector<OutputTarget>& target
         const std::wstring absolute = AbsoluteOfOrRaw(name);
 
         for (size_t k = 0; k < paths->size(); ++k) {
-            if (!SameWindowsPath(paths->at(k), absolute)) continue;
+            // 平台自己的"同一个文件"判据：Windows 不区分大小写，POSIX 区分。
+            if (!SamePath(paths->at(k), absolute)) continue;
             // 第 k+1 张与第 i+1 张要写到同一个名字。改名字等于替调用方做决定（他给的模板就是这样），
             // 所以这里只报错：整批还没取帧，一张也不会落地。
             if (err) {

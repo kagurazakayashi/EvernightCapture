@@ -406,10 +406,14 @@ struct Options {
     std::wstring configPath;   // 实际读取（或尝试读取）的绝对路径；本次没读时为空
     std::wstring configState;  // "not_read" / "absent" / "loaded" / "failed"（ASCII 机器名）
     // 这一份是**怎么**定下来的（--show-config 里与文件位置并排报出）：
-    //   default   程序同目录那份 ECAPTURE.ini
+    //   default   默认位置那份 ECAPTURE.ini（Windows = 程序同目录；Linux = 用户配置目录）
     //   explicit  --config 点名的一份（相对调用方 CWD 定绝对路径）
     //   none      --no-config，或 --help / --version 那一路（本次一条都不读）
     std::wstring configSelection;
+    // --portable：明确要求配置与历史使用 exe 旁的位置，而不是 Linux 的用户配置 / 状态目录。
+    // Windows 两种模式的位置本来就相同；这里只如实记下用户选的是哪一种。
+    // 绝不由"安装目录碰巧可写"自动推断出来。
+    bool portable = false;
 
     bool HasAnyCondition() const { return !match.IsEmpty(); }
     // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面

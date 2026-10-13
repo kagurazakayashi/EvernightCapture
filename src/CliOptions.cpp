@@ -518,6 +518,10 @@ constexpr OptionSpec kOptions[] = {
     // 都不写文件也不修文件：--no-config 是排障与测试的隔离入口，不是"把配置删掉"。
     {L"config", L"", true, L"config", L"<path>", nullptr, L"opt.config"},
     {L"no-config", L"", false, L"config", L"", nullptr, L"opt.no-config"},
+    // --portable 只决定"配置与历史放在哪一档"，不进配置文件（它本身就是选择哪一份配置的事）。
+    // Linux 上默认是用户配置 / 状态目录；显式给出这一条才使用 exe 旁的位置。Windows 上两种模式
+    // 的位置本来就相同（始终随实际运行的 exe），这条开关不改变任何落点。
+    {L"portable", L"", false, L"config", L"", nullptr, L"opt.portable"},
     // ---- 只读查询 ----
     // 这两条既不截图也不弹框，也不写文件，问的是"这台机器现在能让哪几条路线走"。
     // 与截图意图那一整套选项互斥（cli.query_conflict）：它们对流与输出的约定都不一样，
@@ -1625,6 +1629,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
     // `--no-config=false` 不关掉配置读取，`--help=false` / `--version=false` 不开启帮助与版本，
     // 而写坏的布尔值（--help=bogus）既不算启用也不算"这次是排障入口"，它由重放那一路报用法错。
     bool noConfigEnabled = false;
+    bool portableEnabled = false;
     bool helpEnabled = false;
     bool versionEnabled = false;
     ScanArgv(tokens, [&](const ScannedItem& it) {
@@ -1635,12 +1640,14 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             configGiven = true;
             configRaw = it.option.value;
             configValueMissing = it.option.missingValue;
-        } else if (bare == L"no-config" || bare == L"help" || bare == L"version") {
+        } else if (bare == L"no-config" || bare == L"portable" || bare == L"help" ||
+                   bare == L"version") {
             const SwitchDecision sw = ResolveSwitch(*it.option.spec, it.option);
-            // 三条都是普通正向开关：落地与肯定含义成立是同一件事，两条都判是为了
+            // 四条都是普通正向开关：落地与肯定含义成立是同一件事，两条都判是为了
             // 不再依赖这一点（反向开关若将来出现在这条线上，含义就得分开判）。
             if (sw.fate != SwitchFate::kGiven || !sw.asserted) return;
             if (bare == L"no-config") noConfigEnabled = true;
+            else if (bare == L"portable") portableEnabled = true;
             else if (bare == L"help") helpEnabled = true;
             else versionEnabled = true;
         }
@@ -1690,7 +1697,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
                 loadIt = false;
             }
         } else {
-            path = DefaultConfigPath();
+            path = DefaultConfigPath(portableEnabled);
             if (path.empty()) {
                 // 问不出实际运行的程序在哪个目录：默认位置本身就说不通，不猜 CWD 也不猜安装位置。
                 Err(codes::kConfigReadFailed, Msg(L"config.read_failed"), L"", L"",
@@ -1712,6 +1719,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
     opt.configPath = snap.path;
     opt.configState = ConfigStateName(snap.state);
     opt.configSelection = configSelection;
+    opt.portable = portableEnabled;
 
     // 配置里的语言只在整份文件读得通时才参与，而且**排在 CLI 之后**：解析期的报错文案要先定下来，
     // 而"这次到底用哪种语言说"本来就是 CLI > INI > 内置那一条优先级的一部分。
@@ -1787,7 +1795,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // --config / --no-config 与"问的是环境"这件事 orthogonal：它只决定这次看哪一份偏好，
         // 不改这份查询问的是什么，也不取任何像素。自检里那一条"契约检查显式带 --no-config"
         // 靠的就是这一行 —— 否则用户偏好会把既有判据改得飘忽，而那正是排障入口要排除的东西。
-        if (name == L"config" || name == L"no-config") return true;
+        if (name == L"config" || name == L"no-config" || name == L"portable") return true;
         return name == L"lang" || name == L"verbose" || name == L"quiet" ||
                name == L"capabilities" || name == L"diagnostics" || name == L"screens";
     };
@@ -1813,7 +1821,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // --yes 是截图授权那一级的事（只免掉窗口内容路径的确认框），对一次不取像素的查询
         // 没有任何作用，所以写了它不算用法错 —— 但结果必须一模一样，包括"哪些字段读得到"。
         // 判这条的地方是 authorization.yesAffectsResult: false 与 tests\windows.ps1 第 1 节。
-        if (name == L"config" || name == L"no-config") return true;
+        if (name == L"config" || name == L"no-config" || name == L"portable") return true;
         return name == L"yes";
     };
     // 只读的配置视图（--show-config）。它与环境查询同族而允许清单更宽：**它的用途正是观察偏好**，
@@ -1822,7 +1830,9 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
     // "多个里挑哪个"（选择策略）、"要不要人批准"（--yes / --dry-run）与别的查询命令都不成立。
     // 与截图混跑同样是冲突：一次只交一份文档，不替用户猜这次到底要看配置还是要出图。
     const auto AllowedWithConfigView = [](const std::wstring& name) {
-        if (name == L"config" || name == L"no-config" || name == L"show-config") return true;
+        if (name == L"config" || name == L"no-config" || name == L"portable" ||
+            name == L"show-config")
+            return true;
         // 文案与详略
         if (name == L"lang" || name == L"verbose" || name == L"quiet") return true;
         // 输出那一组（路径 / 格式 / 质量 / 覆盖）—— 它们都是可观察的偏好
@@ -2226,6 +2236,8 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // 读哪一份、读不读，都在解析函数开头那一段判完（那一段排在任何诊断之前）。
         // 这里只把这两条认下来，让它们不落到"这个选项没处理"那一条兜底里去。
         if (name == L"config" || name == L"no-config") return;
+        // --portable 的位置选择已在开头判完（它要先于"读哪一份配置"成立），这里同样只认下来。
+        if (name == L"portable") { opt.portable = true; return; }
         // 四条 on/off 偏好的本次覆盖入口：off 覆盖配置里的 true，on 覆盖配置里的 false。
         // 认不了就整条不认，不退化成"那就算开启" —— 那会把一次写错的开关变成一个没人要的决定。
         if (name == L"history" || name == L"integrity-hints" || name == L"notify" ||

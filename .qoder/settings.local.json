@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(CXX=clang++ scripts/core-portability-check.sh 2>&1 | tail -12)",
+      "Bash(grep -n \"上传\\\\|安裝路徑\\\\|安装路径\\\\|建置工具\" README.zh-CN.md README.zh-TW.md | head -20)"
+    ]
+  }
+}

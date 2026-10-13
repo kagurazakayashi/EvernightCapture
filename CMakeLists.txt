@@ -117,7 +117,8 @@ add_custom_command(
 # 共用层（解析、配置、文案、JSON、文本出口）声明判据，动作在各平台的源文件里。两套实现
 # 提供的是同一组函数名，所以**换平台就是换这几行文件名**，共用源文件一条都不改。
 #   * 语言探测（DetectSystemLanguage）跟着文案走：要读文案的目标必须同时链上它。
-#   * 路径 / 文件 / 标准流三个服务跟着 Config.cpp 走：读配置与写输出都靠它们。
+#   * 路径 / 文件 / 目录 / 原子保存 / 标准流这几个服务跟着 Config.cpp 与交付那一路走：
+#     读配置、建历史目录与写输出都靠它们。平台换一份实现，共用调用点一行都不改。
 # ---------------------------------------------------------------------------
 if(WIN32)
   set(ECAPTURE_LOCALE_SOURCE src/platform/windows/WinLocale.cpp)
@@ -125,14 +126,18 @@ if(WIN32)
     src/Config.cpp
     src/platform/windows/WinHostPath.cpp
     src/platform/windows/WinHostFile.cpp
-    src/platform/windows/WinOutputStream.cpp)
+    src/platform/windows/WinHostDirectory.cpp
+    src/platform/windows/WinOutputStream.cpp
+    src/platform/windows/WinFileSave.cpp)
 else()
   set(ECAPTURE_LOCALE_SOURCE src/platform/linux/PosixLocale.cpp)
   set(ECAPTURE_HOST_SOURCES
     src/Config.cpp
     src/platform/linux/PosixHostPath.cpp
     src/platform/linux/PosixHostFile.cpp
-    src/platform/linux/PosixOutputStream.cpp)
+    src/platform/linux/PosixHostDirectory.cpp
+    src/platform/linux/PosixOutputStream.cpp
+    src/platform/linux/PosixFileSave.cpp)
 endif()
 
 set(ECAPTURE_LANG_SOURCES
@@ -183,7 +188,6 @@ add_executable(ecapture
   src/WorkerTiming.cpp
   src/WinrtApartment.cpp
   src/OutputPlan.cpp
-  src/FileSave.cpp
   src/Delivery.cpp
   src/HistoryArchive.cpp
   # 截图后的桌面通知。两个源文件分开是责任边界：Notification.cpp 只管"这条通知写什么"（纯函数，
@@ -749,7 +753,8 @@ set_property(TARGET ecapture-hdr-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # "图已经收不回来了而记账要用的内存刚好不够"—— 时间点与故障都排在一次真实写入的两端，真机上
 # 要么安排不出来（本机没有一块能被测试变慢的盘，也不许为了造慢盘去改用户的存储设置；真把内存
 # 抽干更是整机级故障），要么根本要拿别人的应用当管道对面。所以把交付那一步的编排本体
-#（src/Delivery.cpp 的 DeliverImage / OutcomeExitCode）连同**生产的原子写**（src/FileSave.cpp）
+#（src/Delivery.cpp 的 DeliverImage / OutcomeExitCode）连同**生产的原子写**
+#（src/platform/<平台>/*FileSave.cpp，经 src/FileSave.h 的同一份声明）
 # 一起链进来，出口、时钟与一道分配闸门（测试里替换全局 operator new）从测试注入：文件走真磁盘
 #（于是"磁盘上到底有没有这张图、多少字节、旧文件有没有被破坏"是现场量出来的，不是判据里抄的），
 # 标准输出走内存管道（半段流就是半段）。
@@ -760,7 +765,6 @@ add_executable(ecapture-delivery-tests
   src/HdrColor.cpp
   src/Deadline.cpp
   src/Delivery.cpp
-  src/FileSave.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
@@ -788,7 +792,7 @@ set_property(TARGET ecapture-delivery-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # 截图历史归档（主交付之外那一份独立副本）的离线判据：tests/history_state.cpp。
 # 判的是生产那三份本体：src/HistoryArchive.cpp（归档根解析、本地日期目录、命名、独占提交与失败
 # 归类）+ src/Delivery.cpp（交付那一步把它排在主交付之后、期限核对之前，以及三种下场怎么入账）
-# + src/FileSave.cpp（与主输出共用的那一次"不许替换"的原子改名）。落点、本地时钟与抗冲突标识从
+# + src/platform/<平台>/*FileSave.cpp（与主输出共用的那一次"不许替换"的原子提交）。落点、本地时钟与抗冲突标识从
 # 测试注入（生产的 HistoryArchive 也照样真用，那些"副本字节与主交付相同""同名不覆盖"判的都是真
 # 磁盘上的文件），于是"同刻两张""时钟回拨""跨午夜""那个位置是个文件""名字已被占满"这些现场
 # 排得出来 —— 真机上它们要么要改用户的存储设置/ACL/完整性标签，要么根本等不到那一刻。
@@ -798,7 +802,6 @@ add_executable(ecapture-history-tests
   tests/history_state.cpp
   src/HistoryArchive.cpp
   src/Delivery.cpp
-  src/FileSave.cpp
   src/OutputPlan.cpp
   src/Deadline.cpp
   src/CliOptions.cpp
@@ -993,6 +996,32 @@ if(WIN32)
   target_link_libraries(ecapture-cli-text-tests PRIVATE kernel32.lib user32.lib advapi32.lib)
 endif()
 
+# ecapture-save-tests —— 跨平台文件 / 目录 / 原子保存 / 历史 / 配置位置的离线判据。
+#
+# 这一步把 OutputPlan / FileSave / HistoryArchive / Delivery 从"只在 Windows 头文件下编得过"
+# 变成共用层：它们的平台动作已经拆到 HostPath / HostFile / HostDirectory / *FileSave 两套实现里。
+# 所以这一份判据在 Linux 上链生产本体，逐条判真实磁盘现场：正常保存、不覆盖、并发同名、
+# 权限失败、符号链接、中文路径、历史部分成功、配置位置与 --portable。判据只用本次自建的
+# 临时目录与合成字节，不碰用户历史，也不取一个像素。
+find_package(Threads REQUIRED)
+add_executable(ecapture-save-tests
+  tests/save_state.cpp
+  src/CliOptions.cpp
+  ${ECAPTURE_HOST_SOURCES}
+  ${ECAPTURE_LANG_SOURCES}
+  src/OutputPlan.cpp
+  src/HistoryArchive.cpp
+  src/Delivery.cpp
+  src/Deadline.cpp
+  src/CaptureScope.cpp
+  src/core/TextCoding.cpp)
+ecapture_apply_common(ecapture-save-tests)
+target_link_libraries(ecapture-save-tests PRIVATE Threads::Threads)
+if(WIN32)
+  target_link_libraries(ecapture-save-tests PRIVATE kernel32.lib user32.lib advapi32.lib)
+endif()
+set_target_properties(ecapture-save-tests PROPERTIES OUTPUT_NAME "ecapture-save-tests")
+
 # ---- 只在 Windows 定义的那批目标：Linux 上如实报告，不静默消失 ----
 #
 # 这份名单由 Windows 分支自己复核（下面 get_property 那一条）：名单与真实定义对不上，
@@ -1107,12 +1136,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-gui-probe)
+  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-gui-probe)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

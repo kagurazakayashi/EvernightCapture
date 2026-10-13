@@ -49,7 +49,7 @@ z 序，而拿到的畫面與 `bitblt` 等價。這段依據記在 `src/CliOptio
 - **四語文案**：`zh-CN` / `zh-TW` / `en` / `ja`，預設跟隨系統顯示語言，全部編在 exe 的資源裡
 - **偏好可留檔**：語言、詳略、通道、滑鼠指標與 HDR 要求、輸出模板與格式、裁剪與縮放、兩條期限、歷史開關、完整性解釋與查詢預設頁數，讀自**實際執行的那一個 exe 同目錄**的 `ECAPTURE.ini`；恆為「本次命令列顯式值 > 設定檔顯式值 > 內建預設」，`--show-config` 唯讀看實際讀到什麼，`--no-config` 讓本次完全不碰設定。缺檔是常態；壞檔在彈框與取像素之前明確失敗。完整規則見下文《設定檔（ECAPTURE.ini）》
 - **機器讀的 JSON**：只裝擷取結果與錯誤，不含工具名、版本、schema、參數回顯之類的元資訊
-- **每張成功的圖另存一份歷史副本**：預設開啟，寫在**實際執行的那個 exe 旁邊**的 `history\本地日期\` 裡，用的是
+- **每張成功的圖另存一份歷史副本**：預設開啟，Windows 寫在**實際執行的那個 exe 旁邊**的 `history\本地日期\`，Linux 預設寫在使用者狀態目錄 `~/.local/state/evernightcapture/history/本地日期/`（`--portable` 才回到 exe 旁），用的是
   主交付那一份已經編碼的位元組（不重拍、不重新編碼、不去讀主輸出檔案、也不建硬連結），獨佔提交從不覆蓋既有歷史。
   主圖已交付而副本沒落地時是部分成功（退出碼 `7`，`images[].history` 說清是哪一種），不自動輪轉也不自動刪除，
   清理由使用者自己顯式做；`history.enabled=false`（設定檔）或 `--history off`（本次）可以明確關閉——關閉時報
@@ -160,9 +160,10 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
   --quality <1-100>                           JPEG 品質，十進位 1..100，預設 100
   --no-overwrite                              目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 
-使用者偏好設定（預設讀程式同目錄的 ECAPTURE.ini；不搜目前目錄與別處）
+使用者偏好設定（Windows 預設讀程式同目錄的 ECAPTURE.ini；Linux 預設讀使用者設定目錄；不搜目前目錄與別處）
   --config <path>                             本次改用指定的那份 INI（相對路徑按目前目錄定絕對路徑）；檔案不在或讀不出就報錯，不回退到預設那份
   --no-config                                 本次完全忽略設定檔，只用內建預設與本次命令列；排障與自檢的隔離入口，不刪除也不改寫設定
+  --portable                                  設定與歷史使用程式旁目錄，而不是 Linux 的使用者設定／狀態目錄；Windows 本來就跟著實際執行的 exe
 
 查詢（唯讀：不截圖、不彈框、不寫檔案）
   --capabilities                              輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
@@ -194,7 +195,7 @@ EvernightCapture (ECAPTURE.EXE) —— 按條件視窗截圖，基於 Windows.Gr
       --help / --version 以及不給條件時是文字
 退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
         6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
-目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
+目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到 history 下（Windows 跟 exe，Linux 預設跟使用者狀態目錄，`--portable` 跟 exe；不會自動清理）
 執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
 
 示例:
@@ -720,7 +721,7 @@ ECAPTURE.EXE --capabilities -v           # 另加 probes 段：每一問的原�
 | `cursor`                              | `--cursor` 這一條的故事：`default`（不給這條選項時的下場）、三種取值、那唯一一條開關寫成 `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine`，然後每條已登記的內部路徑一行（`capability` 是 `settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`，加 `reason` 與 `include` / `exclude` 各三值 `yes` / `no` / `unknown`），末尾 `pointerShapeCompositing: "never"` 與 `pixelRetouching: "never"`。duplication 那兩條是 `capability: pointer_state_unverified`、`include` 與 `exclude` 都是 `no`——桌面那一影格可能已經把指標畫在裡面，而本工具從不合成指標形狀，這證明不了影格裡沒有指標。沒登記的路徑讀 `unknown` 而不是猜一個答案                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `color`                               | `--hdr` 這一條的故事：`default`（不給這條選項時的下場）、三種取值（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 說的是「這個建置帶不帶得回廣色域影格 + 怎麼對映」，**不**去問那塊螢幕此刻是不是 HDR 模式（reason 是 `hdr_display_mode_not_probed`）；`verifiedOnThisMachine` 恆為 `no`（本專案沒有 HDR 螢幕，不宣稱色彩驗收通過）。每條已登記的內部路徑一行，`capability` 分三檔：`wide_gamut_capable`（只有 `wgc` / `screen.wgc`）、`wide_gamut_unverified`（`duplication.frame` / `screen.duplication`：那塊桌面影格確實可能以 FP16 或 10 位元回來，但本建置在 `DuplicateOutput` 之前從不問顯示器的色彩空間，所以既證明不了拿到的是什麼、也就兌現不了策略）、`sdr_source_only`（凡是讀 8 位元 DC 的那幾條），另有 `unregistered`；再加上 `honorsExplicitPolicy`——只有那兩條 `wgc` 是 `true`，也就是「本建置裡兌現得了 `tonemap` / `refuse` 的只有 wgc」這句話的機器可讀版本。最後是 `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR 一律對映成 8 位元 SDR 交付，不出 HDR 原生圖）                              |
 | `autoChainWindow` / `autoChainScreen` | 本機現在能試的 `auto` 鏈。與截圖那次 `-v` 回顯的 `input.captureChain` 由**同一個** `GateChannels` 算出，`tests\capabilities.ps1` 逐條比對這兩處                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `history`                             | 截圖歷史歸檔的**規則**自述（預設開啟）：`supported: true`（這個建置有這一步）、`enabledByDefault: true`（出廠預設開著）、`configKey: history.enabled` 與 `configOverride: "--history on\|off"`（哪一層留檔、哪一條本次覆蓋，見《設定檔（ECAPTURE.ini）》）、`relativeTo: "executable-directory"`（跟著實際執行的那一個 exe，不是工作目錄也不是 `--out` 的目錄）、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`（副本用主交付那一份已編碼的位元組：不重拍、不重新編碼、不去讀主輸出檔案、不建硬連結）、`commit: "exclusive-create"`（獨佔提交，從不覆蓋既有歷史檔案）、`created: "after-first-delivered-image"`（只讀查詢與失敗的那些次一個目錄都不建）、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`，再加副本失敗時那一種部分成功的退出碼 `partialSuccessExit: 7`。這一段沒有一個欄位是「這一次寫成功了」那種斷言——那一句在截圖結果的 `images[].history` 裡，這裡連「那裡寫不寫得動」都沒去試（`caveats` 裡恆帶 `history_root_writability_not_probed`），本輪實際的開／關狀態也不在這份文件裡（`history_run_state_not_reported`；要看 `--show-config` 與截圖結果的 `history` 那一格），而且全段是相對程式目錄的寫法，不含任何絕對路徑 |
+| `history`                             | 截圖歷史歸檔的**規則**自述（預設開啟）：`supported: true`（這個建置有這一步）、`enabledByDefault: true`（出廠預設開著）、`configKey: history.enabled` 與 `configOverride: "--history on\|off"`（哪一層留檔、哪一條本次覆蓋，見《設定檔（ECAPTURE.ini）》）、`relativeTo: "executable-directory"`（這個 Windows 建置仍跟著實際執行的那一個 exe；Linux 會報使用者狀態目錄或 `--portable` 的 exe 旁目錄，都不是工作目錄也不是 `--out` 的目錄）、`location: "history/YYYY-MM-DD/"`、`naming: "YYYYMMDD-HHMMSS-<pid>-<token>-<seq>.<ext>"`、`source: "same-encoded-bytes"`（副本用主交付那一份已編碼的位元組：不重拍、不重新編碼、不去讀主輸出檔案、不建硬連結）、`commit: "exclusive-create"`（獨佔提交，從不覆蓋既有歷史檔案）、`created: "after-first-delivered-image"`（只讀查詢與失敗的那些次一個目錄都不建）、`retention: "never-pruned-automatically"`、`uploads: false`、`backgroundPruning: false`、`writabilityProbed: false`，再加副本失敗時那一種部分成功的退出碼 `partialSuccessExit: 7`。這一段沒有一個欄位是「這一次寫成功了」那種斷言——那一句在截圖結果的 `images[].history` 裡，這裡連「那裡寫不寫得動」都沒去試（`caveats` 裡恆帶 `history_root_writability_not_probed`），本輪實際的開／關狀態也不在這份文件裡（`history_run_state_not_reported`；要看 `--show-config` 與截圖結果的 `history` 那一格），而且全段是相對平台資料位置的寫法（Windows 是程式目錄，Linux 是使用者狀態目錄或 `--portable` 的 exe 旁目錄），不含任何絕對路徑 |
 | `limits`                              | 單邊像素上限、整影格位元組上限、`--timeout-ms` 上限、隔離開呼叫內建上限、WGC 影格池重建次數、編號與 PID 上限、`stdoutTargetsMax: 1`、JPEG 品質區間                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `privacy`                             | 自述這份查詢沒做的事：不擷取畫面、不彈框、不上傳、不列舉使用者檔案、不讀環境變數、不含使用者名、不含路徑                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `caveats`                             | 穩定的 ASCII token，列「這份報告沒有斷言什麼」：`available_is_not_a_guarantee`、`no_capture_performed`、`no_consent_dialog_shown`、`encoder_state_not_probed`、`device_capability_not_predicted`、`consent_dialog_state_inferred_not_probed`、`subsystem_version_is_linker_default`，以及依本機情況追加的 `os_version_unavailable` / `display_topology_absent` / `display_topology_unavailable` / `remote_session_observed` / `desktop_paths_need_answerable_dialog` / `unelevated_process_may_miss_elevated_targets` / `process_integrity_below_medium` / `build_identity_unavailable` / `this_environment_not_tested` / `tested_environment_unknown`，以及恆有的 `cursor_effective_is_a_setting_not_a_pixel_check` + `pointer_shape_never_composited_nor_erased`（滑鼠指標那幾個欄位只說得到設定與來源那一層，說不到「這一個圖裡看得見或看不見指標」），以及恆有的 `hdr_tone_mapping_not_verified_on_hdr_display` + `hdr_output_is_tone_mapped_to_sdr_bgra8` + `hdr_explicit_policy_only_fulfilled_by_wgc`（HDR 的對映數學離線判過但沒有 HDR 螢幕實測、HDR 一律被對映成 8 位元 SDR 交付，而明確寫出的 `tonemap` / `refuse` 要求只有那兩條 `wgc` 路徑兌現得了），以及恆有的 `history_root_writability_not_probed`（`history` 那一段說的是歸檔規則，這份查詢沒去試過寫那個位置，也不預測某一次落盤必然成功）與 `history_run_state_not_reported`（本輪實際的歷史開／關狀態不在這份文件裡——那看 `--show-config` 與截圖結果的 `images[].history`） |
@@ -1224,10 +1225,18 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 ## 截圖歷史歸檔（預設開啟）
 
-每張**完成主交付**的圖，除了使用者寫的那條輸出之外，還會在**實際執行的那一個 `ECAPTURE.EXE` 所在目錄**下的
-`history\YYYY-MM-DD\`（依本地日期分目錄）裡另存一份獨立副本。開發版就躺在 `build\` 裡，所以開發時截的圖
-歷史在 `build\history\`；裝在自訂目錄時，歷史就在那個目錄裡——它跟著程式自己，不跟著工作目錄、
-不跟著 `--out` 的目錄，也不跟著某個固定的預設安裝位置。
+每張**完成主交付**的圖，除了使用者寫的那條輸出之外，還會在 `history/YYYY-MM-DD/`（依本地日期分目錄）裡另存
+一份獨立副本。歸檔根由**明確的目錄模式**決定，不跟工作目錄，也不跟 `--out` 的目錄：
+
+- **Windows**：實際執行的 `ECAPTURE.EXE` 所在目錄下的 `history\YYYY-MM-DD\`——既有行為不變。開發版在
+  `build\`，所以開發時的歷史在 `build\history\`；裝在自訂目錄時就落在該目錄。
+- **Linux 安裝版（預設）**：`$XDG_STATE_HOME/evernightcapture/history/YYYY-MM-DD/`；未設定
+  `XDG_STATE_HOME` 時用 `~/.local/state/evernightcapture/history/YYYY-MM-DD/`。系統安裝目錄通常不屬於使用者，
+  使用者資料不往那裡寫。
+- **Linux 便攜模式（`--portable`）**：exe 旁的 `history/YYYY-MM-DD/`，與 Windows 相同。
+
+模式必須明確給出：工具不會因為程式目錄碰巧可寫就自動切換，也不會從一種模式悄悄退回另一種。
+`--portable` 同時把預設的 `ECAPTURE.ini` 查找位置移到 exe 旁。
 
 | 項目 | 行為 |
 | ---- | ---- |
@@ -1331,7 +1340,12 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 ### 位置判據與兩種下場
 
-預設只讀**實際運行的那一個 `ECAPTURE.EXE` 同目錄**的 `ECAPTURE.ini`（安裝版、便攜版、`build\` 開發版共用同一條規則）。不搜工作目錄、不搜 `PATH`、不搜原始碼樹、不搜註冊表，也不搜使用者目錄的其他位置——「讀哪一份」是一條判據，不是一場搜尋。
+預設位置按平台與模式明確區分：**Windows** 只讀**實際運行的那一個 `ECAPTURE.EXE` 同目錄**的 `ECAPTURE.ini`
+（安裝版、便攜版、`build\` 開發版共用同一條規則）；**Linux（預設使用者模式）**讀
+`$XDG_CONFIG_HOME/evernightcapture/ECAPTURE.ini`，未設定時用 `~/.config/evernightcapture/ECAPTURE.ini`
+（相對的 `XDG_CONFIG_HOME` 視同未設定），只是讀取，不為了讀它而建目錄；**Linux 便攜模式（`--portable`）**
+讀 exe 旁的 `ECAPTURE.ini`，這個模式必須由命令列明確給出。不搜工作目錄、不搜 `PATH`、不搜原始碼樹、
+不搜註冊表，也不搜使用者目錄的其他位置——「讀哪一份」是一條判據，不是一場搜尋。
 
 兩種下場各自說清：
 
@@ -1384,7 +1398,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 | `diagnostics` | `integrity_hints` | `true` | 只認 `true` / `false` | `--integrity-hints on\|off` |
 | `query` | `window_list_limit` | `50` | 1..8192；只是 `--list` 未給 `--limit` 時的預設分頁大小 | `--limit` |
 
-**不進設定檔的那些東西**不是遺漏，是邊界：每次的目標選擇（`HWND` / PID / 映像檔案名 / 標題 / 類名那些篩選條件、`--monitor` 目標，以及 `all` / `--index` / `--topmost-match` 這類本次選擇策略）；授權邊界（`--yes`、「預設同意桌面」、自動點確認框、偽造請求來源——設定檔裡寫不出任何能跳過確認框的東西）；本次動作（help / version / 各查詢 / `--dry-run`）；提權、改 ACL、關隱私保護；worker 協定、記憶體與影格數的安全上限、取消排乾寬限這類實現安全限制；以及上傳、自動刪歷史、安裝路徑與建置工具參數。留的是偏好，不是意圖，更不是授權。
+**不進設定檔的那些東西**不是遺漏，是邊界：每次的目標選擇（`HWND` / PID / 映像檔案名 / 標題 / 類名那些篩選條件、`--monitor` 目標，以及 `all` / `--index` / `--topmost-match` 這類本次選擇策略）；授權邊界（`--yes`、「預設同意桌面」、自動點確認框、偽造請求來源——設定檔裡寫不出任何能跳過確認框的東西）；本次動作（help / version / 各查詢 / `--dry-run`）；提權、改 ACL、關隱私保護；worker 協定、記憶體與影格數的安全上限、取消排乾寬限這類實現安全限制；以及上傳、自動刪歷史、安裝路徑與建置工具參數；還有**資料位置模式**——設定與歷史放在使用者目錄（Linux 預設）還是 exe 旁（便攜版）由 `--portable` 與平台規則決定，設定檔裡沒有這樣一個鍵。工具也不會把建立、改寫或「修復」INI 當成副作用。留的是偏好，不是意圖，更不是授權。
 
 ### 優先級、來源，與輸出格式那一條鏈
 

@@ -56,6 +56,7 @@ NEUTRAL_HEADERS=(
     LangData.h
     HostPath.h
     HostFile.h
+    HostDirectory.h
     OutputStream.h
     core/Geometry.h
     core/Error.h
@@ -128,9 +129,11 @@ for h in CaptureCommon.h CaptureWgc.h CaptureDwm.h CapturePrintWindow.h CaptureB
          WorkerProtocol.h WorkerTiming.h NotificationToast.cpp SystemCompat.cpp \
          platform/windows/WinCliArgs.cpp platform/windows/WinLocale.cpp \
          platform/windows/WinHostPath.cpp platform/windows/WinHostFile.cpp \
+         platform/windows/WinHostDirectory.cpp platform/windows/WinFileSave.cpp \
          platform/windows/WinOutputStream.cpp \
          platform/linux/PosixCliArgs.cpp platform/linux/PosixLocale.cpp \
          platform/linux/PosixHostPath.cpp platform/linux/PosixHostFile.cpp \
+         platform/linux/PosixHostDirectory.cpp platform/linux/PosixFileSave.cpp \
          platform/linux/PosixOutputStream.cpp; do
     f="$SRC/$h"
     if [ -f "$f" ] && ! grep -q '【平台层' "$f"; then
@@ -197,6 +200,35 @@ if [ "$fail" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3c) 文件 / 目录 / 保存 / 历史这一层：不经 CMake，直接编译生产本体并在本次临时目录里跑。
+#     它证明这几份源文件真的不含 Windows 类型，同时把"正常保存、不覆盖、并发、权限失败、
+#     符号链接、中文路径、历史部分成功、XDG / 便携目录"逐条落成真实磁盘现场。
+# ---------------------------------------------------------------------------
+if [ "$fail" -eq 0 ]; then
+    echo "== 3c) 编译并运行文件 / 保存 / 历史判据 =="
+    SAVE_BIN="$OUT_DIR/save_tests"
+    SAVE_PLATFORM_SRC=(
+        "$SRC/platform/linux/PosixHostPath.cpp"
+        "$SRC/platform/linux/PosixHostFile.cpp"
+        "$SRC/platform/linux/PosixHostDirectory.cpp"
+        "$SRC/platform/linux/PosixFileSave.cpp"
+        "$SRC/platform/linux/PosixLocale.cpp"
+    )
+    if ! "$CXX" -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -I"$SRC" "$ROOT/tests/save_state.cpp" \
+            "$SRC/CliOptions.cpp" "$SRC/Config.cpp" "$SRC/Lang.cpp" "$SRC/OutputPlan.cpp" \
+            "$SRC/HistoryArchive.cpp" "$SRC/Delivery.cpp" "$SRC/Deadline.cpp" \
+            "$SRC/CaptureScope.cpp" "$SRC/core/TextCoding.cpp" "$GEN" \
+            "${SAVE_PLATFORM_SRC[@]}" -pthread -o "$SAVE_BIN" 2>"$OUT_DIR/save_compile.log"; then
+        echo "  FAIL  文件 / 保存 / 历史层在 Linux 上编不过："
+        sed 's/^/          /' "$OUT_DIR/save_compile.log" | head -40
+        fail=1
+    else
+        echo "  ok    编译通过：$SAVE_BIN"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4) 跑判据
 # ---------------------------------------------------------------------------
 # 两份判据程序各自写"N 条通过，M 条失败"；这里汇总成一行放在最后，
@@ -223,6 +255,8 @@ if [ "$fail" -eq 0 ] && [ "$BUILD_ONLY" -eq 0 ]; then
     ec_run_state "核心边界" "$BIN"
     echo "== 4b) 运行命令行文本判据 =="
     ec_run_state "命令行文本" "$OUT_DIR/cli_text_tests"
+    echo "== 4c) 运行文件 / 保存 / 历史判据 =="
+    ec_run_state "文件与保存" "$OUT_DIR/save_tests"
     echo "core-portability: $ec_total_pass 条通过，$ec_total_fail 条失败"
     if [ "$ec_total_fail" -ne 0 ]; then fail=1; fi
 fi

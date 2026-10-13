@@ -7,9 +7,12 @@
 // 不在渲染时判第二次。
 //
 // 四条规矩（与 Delivery.h 那一份分开记账的口径连起来读）：
-//   1. **根目录跟着实际运行的那一个 ECAPTURE.EXE。** 由模块位置算出 <程序目录>\history\，
-//      不读当前工作目录、不用用户给的主输出路径、不认源码树或某个默认安装位置。安装目录可以
-//      自定义、开发版就躺在 build\ 里，这两种现场都只有"问模块自己"才答得对。
+//   1. **根目录跟着明确的数据位置规则，不跟当前工作目录。** Windows 保持既有行为：
+//      <实际运行的 ECAPTURE.EXE 所在目录>\history\。Linux 用户模式用
+//      $XDG_STATE_HOME/evernightcapture/history（未设置时
+//      $HOME/.local/state/evernightcapture/history），因为安装目录通常不属于用户；
+//      --portable 的便携模式才回到 exe 旁的 history\。两种模式都由 ResolveAppPaths 明确回答，
+//      不拿"当前目录碰巧可写"偷偷换档。
 //   2. **副本用的是那一份已经编好的字节**：不重拍、不重编码、不去读主输出文件（它可能正被别的
 //      程序改），也不建硬链接冒充两份。于是删掉或覆盖主输出不会动到历史里那一张。
 //   3. **只在主交付完成之后开始。** 主图没落地就没有副本可读；写了一半的标准输出也不算交付。
@@ -59,15 +62,20 @@ HistoryInstant LocalHistoryInstant();
 // 因此不会因为"想看看那里能不能写"就多出一个目录来，而"这一次究竟写不写得下去"留给真正的
 // 提交那一步回答（这里任何一条都不预测落盘结果）。
 struct HistoryRoot {
-    std::wstring dir;       // <实际运行的程序所在目录>\history，已绝对化；说不通时可能仍留有值
+    std::wstring dir;       // 已绝对化的 history 根；说不通时可能仍留有值
+    // 首次归档时按顺序补齐的父目录（最外层在前，不含 dir 自己与日期层）。Windows / 便携模式为空；
+    // Linux 用户模式包含 ~/.local、~/.local/state 与 ~/.local/state/evernightcapture 中缺失的层。
+    // 由 ResolveAppPaths 明确给出，解析本身不创建任何目录。
+    std::vector<std::wstring> createDirs;
     bool usable = false;    // 这一路能不能安全地往下走（false 时 failure 就是那一条原因）
     Diagnostic failure;     // 仅 usable=false：history.unavailable + ASCII 原因 token 在 message 末尾
 };
 
-// 从模块位置解析归档根。问不出程序在哪、那个位置被一个文件占着、或者是一个不可安全跟随的
-// 重解析点（junction / 符号链接：照着它写就可能写进谁也没批准过的别处）时 usable=false。
+// 从明确的数据位置解析归档根（portable = 显式便携模式）。问不出程序在哪、用户目录基准
+// 不可用、那个位置被一个文件占着、或者是一个不可安全跟随的符号链接 / 重解析点
+//（照着它写就可能写进谁也没批准过的别处）时 usable=false。
 // 其它问答不出来的情况（例如属性那一步本身失败）**不**在这里下结论，交给提交那一步如实报错。
-HistoryRoot ResolveHistoryRoot();
+HistoryRoot ResolveHistoryRoot(bool portable = false);
 
 // 副本落盘的那一次"文件提交接口"：生产直接走与主输出同一份的 SaveFileAtomic（overwrite=false，
 // 即历史"不许替换"的独占改名语义）。离线判据需要能把分配闸门开在"这一次提交刚刚返回成功"那一刻，
@@ -97,7 +105,8 @@ public:
 // 记一条 history.unavailable，主交付不受影响）。
 class HistoryArchive final : public HistoryArchiver {
 public:
-    HistoryArchive();
+    // portable = 显式便携模式（--portable）：Linux 上历史回到 exe 旁；Windows 位置不变。
+    explicit HistoryArchive(bool portable = false);
 
     // 离线判据用的构造：给定根目录、本地时钟、固定的抗冲突标识与起始序号，于是归档名可以被
     // 现场算出来（判据要的是"提前摆好一个同名文件"这种确凿现场）；commit 用来把分配闸门开在

@@ -792,7 +792,7 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 都不去解析，于是一个目录都不建、也不读任何已有历史。用 optional 而不是先建好再判，
     // 是因为那个构造本身就会去解析归档根 —— 关闭的意思就是"这一步没有开始"。
     std::optional<HistoryArchive> historyArchive;
-    if (opt.historyEnabled) historyArchive.emplace();
+    if (opt.historyEnabled) historyArchive.emplace(opt.portable);
 
     DialogConsentPrompt prompt(opt.consentTimeoutMs);
     GateConfig gateCfg;
