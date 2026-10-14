@@ -63,7 +63,7 @@ EOF
 # ---------------------------------------------------------------------------
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
-SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths gui-probe-init"
+SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths worker-ipc gui-probe-init"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -94,6 +94,12 @@ SUITE_KIND[save-paths]="cmake"
 SUITE_TARGET[save-paths]="ecapture-save-tests"
 SUITE_NOTE[save-paths]="跨平台文件 / 目录 / 原子保存 / 历史 / 配置位置判据（正常、不覆盖、并发、权限、中文路径、部分成功、--portable）"
 SUITE_PREREQ[save-paths]=""
+
+SUITE_LAYER[worker-ipc]="offline"
+SUITE_KIND[worker-ipc]="cmake"
+SUITE_TARGET[worker-ipc]="ecapture-ipc-tests"
+SUITE_NOTE[worker-ipc]="跨平台辅助进程通信与超时取消判据（真父子进程：协议错误、双向通信、阻塞、超时、取消、异常退出、端点防伪、并行排干、收尾与泄漏记账，120 条）"
+SUITE_PREREQ[worker-ipc]=""
 
 SUITE_LAYER[gui-probe-init]="isolated"
 SUITE_KIND[gui-probe-init]="cmake"

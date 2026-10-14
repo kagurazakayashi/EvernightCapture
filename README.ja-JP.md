@@ -2046,7 +2046,7 @@ cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
 Linux で今ビルドできるのは `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
-そして（wxWidgets を入れた上で）`ecapture-gui-probe` だけです。完全な CLI と、取得チャネルを必要とする十数本の
+`ecapture-save-tests`、`ecapture-ipc-tests`、そして（wxWidgets を入れた上で）`ecapture-gui-probe` だけです。完全な CLI と、取得チャネルを必要とする十数本の
 テスト実行ファイルは依然 `CMakeLists.txt` の【プラットフォーム層 · Windows】節にあり、設定ログに一覧として
 出力されます。ビルドディレクトリには `ecapture-buildable-targets.txt` も残り、スクリプトがこれを照合します ——
 Linux のビルド成功を見せるために機能を削除することはしません。
@@ -2194,6 +2194,31 @@ Windows 固有の言い方（`--hwnd`、`--class`、`--capture` の Windows キ�
 標準ストリーム分担は従来どおり：画像が stdout を取ったあとは文字すべて stderr に回ります。
 `--help` / `--version` / 条件なしは引き続きプレーンテキスト、それ以外は簡潔な JSON。
 改行は出口の層が決めます（Windows は CRLF に正規化、Linux は `\n`）ので、共用のテキストは `\n` だけを書きます。
+
+### クロスプラットフォームのヘルププロセス通信とタイムアウト取消（2026-10、Linux に実装）
+
+「親プロセスを停止させ、中断点がない」呼び出しは以前として本ツール自身のヘルププロセスへ委ねる。
+今回の手順は、この仕組みの**判定層と OS 動作**を両プラットフォームで共有できる形に切り分けた：
+
+| 層 | 何を判定 / 何をする | 本体 |
+| ---- | ---- | ---- |
+| ヘッダ框と上限 | 24 バイトのヘッダ（magic / version / kind / payloadLen / 予約 / nonce）とサイズ上限、リトルエンディアンのバイト原語。バイト配置は既存の線上形式と**逐語同一**、プロトコル版数は引き続き 4 | `src/core/WorkerFraming.h` |
+| 三段期限の算式 | タスク待機段・実行段・返却段の各上限がどこから換算されるか。親が渡すのは**残り時長**（budgetMs）で、両プロセスは各自の単調時計でその時長を数え、いずれ側の絶対読み値もプロセス間で引き算しない。人手確認は自動予算を消費しない（Deadline の一時停止スコープ） | `src/core/HelperTiming.h` |
+| プロセスと IPC のプラットフォームサービス | 直接プロセス作成（Windows：suspend → ジョブへ → resume；Linux：fork + execve、引数は位置どおり手渡す。shell は一切経由しない）。信頼できるエンドポイントは名前ではなくカーネルが「誰が繋いだか」を答える（Windows：FIRST_PIPE_INSTANCE 名前付きパイプ + GetNamedPipeClientProcessId；Linux：abstract socket + SO_PEERCRED で、今起動した PID と同一 uid を照合）。期限付きの読み書き。待機と終了は**今回作成した後始末文脈**だけを打つ（Windows：KILL_ON_JOB_CLOSE ジョブ；Linux：専用プロセスグループ + PDEATHSIG） | 宣言 `src/HostProcess.h`、実装 `src/platform/windows/WinHostProcess.cpp` と `src/platform/linux/PosixHostProcess.cpp` |
+| ヘルププロセスの規律 | ヘルプモードは公開入口ではない：エンドポイント権限トークンの形状、親の生存、同一セッション、同一イメージ、直接親の一致、後始末文脈の装備——どれか一つでも不成立なら実行を拒否し、1 バイトも書かない。ペイロードの線上形式（`RECT` / `DWORD` / `HRESULT`）は依然として**明示した過渡ブリッジ**として各プラットフォームの符号化に残す。Linux の本番ペイロードは、プロトコルから平台型を除く手順で初めて実装される | `src/WorkerProtocol.h` と `src/Worker.cpp`（Windows のオーケストレーション） |
+
+三つの結末は個別に記録し、いずれも遺留を残さない：起動失敗はその場で失敗（名前を変えて試さない）；
+ヘルププロセスがハングすれば親は予算の時点で諦め、取消は今回起動したプロセスと専用手順（グループ / ジョブ）
+だけを打ち、終了コードは「回収」欄に記録；親が先に死ねば、ヘルププロセス自身の見張りが「渡された予算 +
+返却猶予」で自死し、その終了コードは親が打ったものと区別される。stdout/stderr の並行排出は Linux 側に実装
+（単一の poll ループで 2 本のストリーム同時に見るため、片方が詰まってももう片方は止まらない。保存上限を
+超えた分も排出だけはし、保存はしない）。Windows のヘルププロセスは入口で標準ストリームを NUL に差し替える
+ので、元々「もう 1 本読めるストリーム」が存在しない。検証入口：`./test-all.sh --layer all` の `worker-ipc`
+スイート（CMake ターゲット `ecapture-ipc-tests`）と `scripts/core-portability-check.sh` の 3d / 4d——本物の
+親子プロセスで、プロトコルエラー、双方向通信、ブロッキング、タイムアウト、取消、異常終了、エンドポイント
+偽装の拒否、並行排出、fd とゾンビの記録を判定する。Windows 側の本機入口は引き続き `.\tests\timeout.ps1` と
+`.\tests\isolation.ps1`。どちらもユーザーのウィンドウやデスクトップ内容には触れない：ヘルププロセスは
+テスト実行ファイル自身で、ブロッキングは合成動作である。
 
 ### この層の検証エントリ
 

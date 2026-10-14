@@ -8,43 +8,12 @@ namespace ecapture {
 namespace worker {
 namespace {
 
-// 一律显式小端：同一台机器上两边字节序本来一致，但把字节序写死在编码里，
-// 解码就不需要"猜这台机器的对齐和字节序"，也方便离线判据直接按字节构造畸形消息。
-void PutU16(std::vector<uint8_t>* b, uint16_t v) {
-    b->push_back(static_cast<uint8_t>(v & 0xFF));
-    b->push_back(static_cast<uint8_t>((v >> 8) & 0xFF));
-}
-void PutU32(std::vector<uint8_t>* b, uint32_t v) {
-    for (int i = 0; i < 4; ++i) b->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
-}
-void PutU64(std::vector<uint8_t>* b, uint64_t v) {
-    for (int i = 0; i < 8; ++i) b->push_back(static_cast<uint8_t>((v >> (i * 8)) & 0xFF));
-}
-
-bool TakeU16(const uint8_t** p, size_t* left, uint16_t* out) {
-    if (*left < 2) return false;
-    *out = static_cast<uint16_t>((*p)[0]) | static_cast<uint16_t>((*p)[1] << 8);
-    *p += 2; *left -= 2;
-    return true;
-}
-bool TakeU32(const uint8_t** p, size_t* left, uint32_t* out) {
-    if (*left < 4) return false;
-    uint32_t v = 0;
-    for (int i = 0; i < 4; ++i) v |= static_cast<uint32_t>((*p)[i]) << (i * 8);
-    *out = v;
-    *p += 4; *left -= 4;
-    return true;
-}
-bool TakeU64(const uint8_t** p, size_t* left, uint64_t* out) {
-    if (*left < 8) return false;
-    uint64_t v = 0;
-    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>((*p)[i]) << (i * 8);
-    *out = v;
-    *p += 8; *left -= 8;
-    return true;
-}
+// 小端字节原语（PutU16/PutU32/PutU64/TakeU16/TakeU32/TakeU64/PutI32/TakeI32）在
+// core/WorkerFraming.cpp —— 两个平台写同一份，载荷这一层只是按平台语义把它们接着用。
 
 // 字符串：长度按 UTF-16 码元数记，超过上限就是整条消息作废（而不是截断后继续用）。
+// 载荷按 sizeof(wchar_t) 的原生码元直接序列化，这是**明确保留的过渡桥接**（见文件头与
+// MEMORY.md）：Linux 侧的载荷编解码要等协议去平台类型那一步再落，不在这条路上蒙混。
 void PutString(std::vector<uint8_t>* b, const std::wstring& s) {
     PutU32(b, static_cast<uint32_t>(s.size()));
     if (!s.empty()) {
@@ -61,14 +30,6 @@ bool TakeString(const uint8_t** p, size_t* left, std::wstring* out) {
     if (*left < bytes) return false;
     out->assign(reinterpret_cast<const wchar_t*>(*p), units);
     *p += bytes; *left -= bytes;
-    return true;
-}
-
-void PutI32(std::vector<uint8_t>* b, int32_t v) { PutU32(b, static_cast<uint32_t>(v)); }
-bool TakeI32(const uint8_t** p, size_t* left, int32_t* out) {
-    uint32_t v = 0;
-    if (!TakeU32(p, left, &v)) return false;
-    *out = static_cast<int32_t>(v);
     return true;
 }
 
@@ -179,40 +140,8 @@ bool TakeNumberList(const uint8_t** p, size_t* left, std::vector<T>* out) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// 报头
+// 报头编解码在 core/WorkerFraming.cpp（同一 namespace，调用点不变）；这里只编解码载荷。
 // ---------------------------------------------------------------------------
-
-bool EncodeHeader(const Header& h, std::vector<uint8_t>* out) {
-    if (h.payloadLen > kMaxReplyPayload) return false;
-    out->clear();
-    out->reserve(kHeaderSize);
-    PutU32(out, h.magic);
-    PutU16(out, h.version);
-    PutU16(out, h.kind);
-    PutU32(out, h.payloadLen);
-    PutU32(out, 0);   // 保留段：写 0，读的时候必须也是 0
-    PutU64(out, h.nonce);
-    return out->size() == kHeaderSize;
-}
-
-bool DecodeHeader(const uint8_t* data, size_t size, Header* out) {
-    if (!data || size < kHeaderSize) return false;
-    const uint8_t* p = data;
-    size_t left = size;
-    Header h;
-    uint32_t reserved = 0;
-    if (!TakeU32(&p, &left, &h.magic)) return false;
-    if (!TakeU16(&p, &left, &h.version)) return false;
-    if (!TakeU16(&p, &left, &h.kind)) return false;
-    if (!TakeU32(&p, &left, &h.payloadLen)) return false;
-    if (!TakeU32(&p, &left, &reserved) || reserved != 0) return false;
-    if (!TakeU64(&p, &left, &h.nonce)) return false;
-    if (h.magic != kMagic) return false;
-    if (h.version != kProtocolVersion) return false;
-    if (h.payloadLen > kMaxReplyPayload) return false;
-    *out = h;
-    return true;
-}
 
 // ---------------------------------------------------------------------------
 // 任务（父 -> 子）

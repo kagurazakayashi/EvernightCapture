@@ -119,16 +119,18 @@ ec_select_target() {
         wgc-tests|ecapture-wgc-tests) EC_TARGET_CMAKE="ecapture-wgc-tests" ;;
         cli-text-tests|ecapture-cli-text-tests) EC_TARGET_CMAKE="ecapture-cli-text-tests" ;;
         save-tests|ecapture-save-tests) EC_TARGET_CMAKE="ecapture-save-tests" ;;
+        ipc-tests|ecapture-ipc-tests) EC_TARGET_CMAKE="ecapture-ipc-tests" ;;
         gui-probe|ecapture-gui-probe) EC_TARGET_CMAKE="ecapture-gui-probe" ;;
         ecapture|ecapture.exe|ECAPTURE.EXE)
             ec_die_precondition "完整 CLI（ecapture / ECAPTURE.EXE）在 Linux 上暂不可构建。
 命令行文本这一层已经跨平台了（参数解析、配置、四语文案、路径与文件、标准流都在共用源文件里），
+辅助进程通信这一层的 Linux 平台服务也已经落地（PosixHostProcess，判据在 ipc-tests），
 还缺的是这几段：src/Report.cpp 里响应组装要调的窗口/屏幕枚举与取帧通道、EnvReport 的 Windows
-探测、NotificationToast 的 WinRT 通知、Consent 的确认框，以及 Worker* 那套辅助进程管道。
-现在能跑的：core-tests、wgc-tests、cli-text-tests、save-tests（都一个像素都不取），以及 gui-probe。"
+探测、NotificationToast 的 WinRT 通知、Consent 的确认框，以及 Linux 截图后端本体。
+现在能跑的：core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests（都一个像素都不取），以及 gui-probe。"
             ;;
-        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：core-tests wgc-tests cli-text-tests save-tests gui-probe）" ;;
-        *) ec_die_args "不认识的目标 '$want'（可选：core-tests wgc-tests cli-text-tests save-tests gui-probe；ecapture 会如实告知暂不可构建）" ;;
+        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests gui-probe）" ;;
+        *) ec_die_args "不认识的目标 '$want'（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests gui-probe；ecapture 会如实告知暂不可构建）" ;;
     esac
     case "$EC_TARGET_CMAKE" in
         ecapture-gui-probe) EC_TARGET_LAYER="gui" ;;

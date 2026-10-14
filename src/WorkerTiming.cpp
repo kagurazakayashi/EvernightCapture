@@ -4,23 +4,9 @@
 #include <cstdint>
 
 namespace ecapture {
-namespace {
 
-uint64_t SaturatingAdd(uint64_t a, uint64_t b) {
-    return a > UINT64_MAX - b ? UINT64_MAX : a + b;
-}
-
-// 本段还剩多久：bound - elapsed，负数一律按 0 处理（那是"已经到点"，不是绕回成一个巨大的数）。
-uint64_t RemainingIn(uint64_t boundMs, uint64_t elapsedMs) {
-    return elapsedMs >= boundMs ? 0 : boundMs - elapsedMs;
-}
-
-// 下一次复查之前睡多久：绝不超过本段的剩余，也绝不超过 kWatchdogPollMs。
-uint32_t PollSlice(uint64_t remainingMs) {
-    return remainingMs > kWatchdogPollMs ? kWatchdogPollMs : static_cast<uint32_t>(remainingMs);
-}
-
-}  // namespace
+// 辅助进程自己的三段期限算式（JudgeHelperWatchdog 与 SaturatingAdd 那组帮手）已经搬到
+// core/HelperTiming.cpp —— 两个平台接的就是同一个函数本体，这里不再重复一份。
 
 Deadline IsolatedWaitFor(const Deadline& run) {
     // 给了 --timeout-ms 就照剩余预算等（用户明确要多少就给他多少，这里不再另加一道内置上限）；
@@ -51,42 +37,6 @@ uint32_t TaskBudgetMs(const Deadline& wait) {
     if (left == 0) return 1;   // 协议里 0 不合法；这一笔在连管那一步就会判成期限耗尽
     if (left > worker::kMaxWorkerBudgetMs) return worker::kMaxWorkerBudgetMs;
     return static_cast<uint32_t>(left);
-}
-
-HelperVerdict JudgeHelperWatchdog(HelperPhase phase, const HelperLimits& limits,
-                                  uint64_t elapsedInPhaseMs) {
-    HelperVerdict v;
-    switch (phase) {
-        case HelperPhase::kAwaitTask: {
-            const uint64_t left = RemainingIn(limits.handshakeMs, elapsedInPhaseMs);
-            if (left == 0) {
-                v.exitNow = true;
-                v.exitCode = kHelperExitNoTask;
-            } else {
-                v.pollMs = PollSlice(left);
-            }
-            return v;
-        }
-        case HelperPhase::kRunning: {
-            // 执行段的期限 = 父进程交出这条任务时还剩的预算 + 交回宽限。
-            // 这一段与第 1 类时钟（父进程总预算）不是竞争关系：辅助进程从"收到任务"才开始数，
-            // 而那个数取的是更早一刻的剩余，所以它只会晚于父进程自己放弃的那一刻。
-            const uint64_t bound = SaturatingAdd(limits.taskBudgetMs, limits.deliverGraceMs);
-            const uint64_t left = RemainingIn(bound, elapsedInPhaseMs);
-            if (left == 0) {
-                v.exitNow = true;
-                v.exitCode = kHelperExitOverBudget;
-            } else {
-                v.pollMs = PollSlice(left);
-            }
-            return v;
-        }
-        case HelperPhase::kDelivered:
-        default:
-            // 应答已经交出去：进程正在自己退出，这里不再挂着第四个"迟早要把谁杀掉"的时钟。
-            // pollMs 留 0，调用方据此收线程（见 Worker.cpp 的看门狗循环）。
-            return v;
-    }
 }
 
 }  // namespace ecapture

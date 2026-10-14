@@ -1,4 +1,3 @@
-#define _CRT_RAND_S   // 必须在 <stdlib.h> 之前定义，rand_s 才会被声明
 #include "Worker.h"
 
 #include <algorithm>
@@ -12,17 +11,15 @@
 #include <utility>
 #include <vector>
 
-#include <tlhelp32.h>
-
 #include <winrt/base.h>   // 辅助任务里也可能抛出 hresult_error，要换成 ASCII 细节交回
 
 #include "CaptureDwm.h"
 #include "CapturePrintWindow.h"
+#include "HostProcess.h"
 #include "ImageOps.h"
 #include "Lang.h"
-#include "WorkerIo.h"
 #include "WorkerProtocol.h"
-#include "platform/windows/WinBridge.h"   // WaitTimeout：截止时间到 Win32 等待参数的换算在平台侧
+#include "WorkerTiming.h"
 
 namespace ecapture {
 namespace {
@@ -33,20 +30,13 @@ using namespace worker;
 // 正常命令行解析遇到它会报 cli.unknown_option，只有 wmain 最前面那一次判断才认它。
 constexpr const wchar_t* kWorkerSwitch = L"/ecapture-worker";
 
-// 管道名的固定前缀：辅助进程按名字形状 + nonce + 是谁起的我，三重核对。
-constexpr const wchar_t* kPipePrefix = L"\\\\.\\pipe\\ecapture-worker-";
-
-constexpr uint32_t kPipeBufferBytes = 64u * 1024u;
 constexpr uint32_t kReapGraceMs = 2000u;    // 交回结果后给辅助进程的收尾时间
-// 请求取消之后，愿意多等一次"确认终态"的宽限（毫秒）。它**不占**自动处理预算：
-// 预算在那次超时上已经花掉了，这一段纯粹是把 CancelIoEx 的"已排入取消"兑现成
-// "操作确实结束"，否则 OVERLAPPED/事件/缓冲就成了悬空引用。有这条上限，
-// 就不许有人把它说成"无限等待"；也不许有人拿"预算到点"当理由跳过它。
-constexpr uint32_t kCancelDrainGraceMs = 2000u;
-// 上面这两段是"父进程愿意多等一会儿"的收尾宽限，不是期限；四类期限本身
-// （总预算 / 默认隔离上限 / 启动握手段 / 辅助进程执行段）的分工与换算都在 WorkerTiming.h。
-// 辅助进程自己那两段的等待上限用 GetTickCount64 数：它不受显示语言、时区与校时影响，
-// 而执行段那一截本来就带 kDeliverGraceMs 抵消与父进程 QPC 时钟之间的粒度差。
+//（取消排干宽限在 HostProcess.h 一处定义；进程/管道/作业这些 OS 动作全部封装在
+//  hostproc 平台服务里 —— Windows 实现见 platform/windows/WinHostProcess.cpp，
+//  Linux 实现见 platform/linux/PosixHostProcess.cpp，本文件只做交易编排与诊断映射。）
+// 上面这段收尾宽限是"父进程愿意多等一会儿"，不是期限；四类期限本身
+// （总预算 / 默认隔离上限 / 启动握手段 / 辅助进程执行段）的分工与换算都在 WorkerTiming.h
+// 与 core/HelperTiming.h。
 
 // 一次隔离调用的结局。五类失败给五条不同的诊断：调用方要能分清
 // "辅助进程没起来"、"起来了却没在握手段之内接上管道"、"接上了而中途断掉"、
@@ -54,21 +44,6 @@ constexpr uint32_t kCancelDrainGraceMs = 2000u;
 // capture.worker_failed），最后一条才是期限真的烧光（match.timeout / capture.timeout）
 // —— 把前者说成后者，就是教调用方去加大一个根本不解这个问题的数字。
 enum class Call { kDone, kTimedOut, kSpawnFailed, kHandshakeFailed, kChannelFailed, kProtocolFailed };
-
-uint64_t MakeNonce() {
-    // rand_s 是加密质量的随机数；拿不到时用 QPC + PID + 栈地址兜底（同一次运行里仍唯一，
-    // 只是不再"猜不到"，所以那条兜底只用于把管道名区分开，不作为安全边界）。
-    uint32_t a = 0, b = 0;
-    if (rand_s(&a) != 0) return 0;
-    if (rand_s(&b) != 0) return 0;
-    LARGE_INTEGER tick{};
-    QueryPerformanceCounter(&tick);
-    uint64_t n = (static_cast<uint64_t>(a) << 32) | b;
-    n ^= static_cast<uint64_t>(tick.QuadPart);
-    n ^= (static_cast<uint64_t>(GetCurrentProcessId()) << 16);
-    n ^= static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&a));
-    return n;
-}
 
 std::wstring HexOf(uint64_t v) {
     wchar_t buf[24];
@@ -89,26 +64,8 @@ bool HexToValue(const std::wstring& text, uint64_t* out) {
     return true;
 }
 
-// Windows argv 的引号规则（与 tests\harness.psm1 的 Format-EcWindowsArgv 同一套）：
-// 只在真的需要时加引号，引号前的反斜杠加倍，结尾的反斜杠也加倍。
-// 这里递出去的三条取值（管道名、十六进制 nonce、十进制 PID）都不含空格，
-// 但可执行文件路径可能含空格与中文，所以这条规则照样要写对。
-std::wstring QuoteArg(const std::wstring& arg) {
-    if (!arg.empty() && arg.find_first_of(L" \t\"") == std::wstring::npos) return arg;
-    std::wstring out = L"\"";
-    size_t slashes = 0;
-    for (wchar_t c : arg) {
-        if (c == L'\\') { ++slashes; continue; }
-        if (c == L'"') { out.append(slashes * 2 + 1, L'\\'); out.push_back(L'"'); }
-        else out.append(slashes, L'\\');
-        slashes = 0;
-        out.push_back(c);
-    }
-    out.append(slashes * 2, L'\\');
-    out.push_back(L'"');
-    return out;
-}
-
+// Windows argv 的引号规则已随命令行进服务实现（WinHostProcess.cpp 的 QuoteArg）；
+// 这里剩下的两处文本换算是交易编排与诊断映射自己要用的。
 std::string AsciiFromWide(const std::wstring& w) {
     std::string out;
     out.reserve(w.size());
@@ -128,96 +85,9 @@ std::wstring WideFromAscii(const std::string& s) {
 }
 
 // ---------------------------------------------------------------------------
-// 句柄的小包装：每条失败路径都要把它们关掉，尤其是作业句柄 ——
-// 辅助进程的"父进程一退就一起结束"是靠关闭这个句柄实现的。
-// ---------------------------------------------------------------------------
-class OwnedHandle {
-public:
-    OwnedHandle() = default;
-    ~OwnedHandle() { Close(); }
-    OwnedHandle(const OwnedHandle&) = delete;
-    OwnedHandle& operator=(const OwnedHandle&) = delete;
-    void Reset(HANDLE h) { Close(); h_ = h; }
-    void Close() { if (h_) { CloseHandle(h_); h_ = nullptr; } }
-    // 放弃所有权、把句柄原样交出去：只用于"仍有未决异步 I/O 挂在它上面，提前关闭
-    // 是文档不保证的行为"的收尾场景（见 Transaction::Finish 的注释）。
-    HANDLE Release() { const HANDLE h = h_; h_ = nullptr; return h; }
-    HANDLE get() const { return h_; }
-    explicit operator bool() const { return h_ != nullptr && h_ != INVALID_HANDLE_VALUE; }
-
-private:
-    HANDLE h_ = nullptr;
-};
-
-// ---------------------------------------------------------------------------
-// 带期限的管道 I/O
-// ---------------------------------------------------------------------------
-// 状态机本体在 WorkerIo.{h,cpp}：那里保证"确认 I/O 进入终态之后才释放 OVERLAPPED、
-// 事件与内核触碰的缓冲"，本层只把它翻成交易用的结局。
-// 实际搬运的字节数只能取 GetOverlappedResult 的那份（由状态机负责）：
-// ReadFile/WriteFile 的"写了几个字节"出参在异步完成路径上不作承诺
-// （按它判断会把"读完了"误认成"对方关了管道"，实测就是这个坑）。
-using Step = workerio::IoStep;
-
-// ReadFile/WriteFile/ConnectNamedPipe 的 BOOL + GetLastError 约定 -> 发起阶段结局：
-// 映射本体在 WorkerIo（StartOf / ConnectStartOf），生产与判据共用的就是这四态的判据。
-// 重叠调用返回非 0 是"同步完成"，此时事件已由系统置起，后续等待会立即返回。
-
-Step WriteAll(HANDLE pipe, const uint8_t* data, size_t size, const Deadline& dl) {
-    size_t offset = 0;
-    while (offset < size) {
-        const uint32_t chunk =
-            static_cast<uint32_t>(std::min<size_t>(size - offset, kPipeBufferBytes));
-        const uint8_t* at = data + offset;
-        // 内核只从操作对象自有的缓冲里读：调用方的 framed 缓冲区在任何超时路径上
-        // 都可以安全失效，不会因为一次没赶上的写请求而变成悬空引用。
-        const Step s = workerio::RunOverlappedOp(
-            workerio::Win32Backend(), pipe, chunk, WaitTimeout(dl), kCancelDrainGraceMs,
-            [&](OVERLAPPED& ov, uint8_t* buf, uint32_t cap) {
-                std::memcpy(buf, at, chunk);
-                return workerio::StartOf(WriteFile(pipe, buf, cap, nullptr, &ov));
-            },
-            nullptr);
-        if (!s.done) return s;
-        offset += s.transferred;
-    }
-    Step ok;
-    ok.done = true;
-    return ok;
-}
-
-Step ReadExact(HANDLE pipe, uint8_t* buf, size_t size, const Deadline& dl) {
-    size_t offset = 0;
-    while (offset < size) {
-        const uint32_t chunk =
-            static_cast<uint32_t>(std::min<size_t>(size - offset, kPipeBufferBytes));
-        // 读取同样落进操作对象的缓冲，确认终态后才复制回调用方内存：
-        // 一次超时的挂起读不会再往调用方已经释放的堆块里写像素。
-        std::vector<uint8_t> got;
-        const Step s = workerio::RunOverlappedOp(
-            workerio::Win32Backend(), pipe, chunk, WaitTimeout(dl), kCancelDrainGraceMs,
-            [&](OVERLAPPED& ov, uint8_t* dst, uint32_t cap) {
-                return workerio::StartOf(ReadFile(pipe, dst, cap, nullptr, &ov));
-            },
-            &got);
-        if (!s.done) return s;
-        if (s.transferred == 0) {
-            // 0 字节 = 对方已经把写完的那一段交回并关了管道：这次调用拿不到应答
-            Step broken;
-            broken.gle = ERROR_BROKEN_PIPE;
-            return broken;
-        }
-        std::memcpy(buf + offset, got.data(), s.transferred);
-        offset += s.transferred;
-    }
-    Step ok;
-    ok.done = true;
-    ok.transferred = offset;
-    return ok;
-}
-
-// ---------------------------------------------------------------------------
-// 一次交易：建管道 -> 建作业 -> 起辅助进程 -> 交任务 -> 收应答 -> 收尸
+// 一次交易：建端点 -> 起辅助进程 -> 连上并核对身份 -> 交任务 -> 收应答 -> 收尸
+// 进程创建、句柄、管道 I/O、等待与终止全部走 hostproc 平台服务；这里只编排交易，
+// 并把服务的结局翻成五种调用级失败（下面 Call 那五条）。
 // ---------------------------------------------------------------------------
 class Transaction {
 public:
@@ -236,140 +106,76 @@ public:
 
     // 辅助进程最后的退出码（拿不到时给 -1）。管道断了的时候，这个数比
     // "ERROR_BROKEN_PIPE" 有用得多：它说的是"它自己拒绝执行、崩了、还是被人结束了"。
-    // 值是在 Finish() 里等过之后取走的，所以调用方必须先收尸再问（见 Transact 里的大括号）。
+    // 值是在收尸等过之后取走的，所以调用方必须先收尸再问（见 Transact 里的大括号）。
     int ChildExit() const { return childExit_; }
 
 private:
     void Finish();
 
-    std::wstring pipeName_;
     uint64_t nonce_ = 0;
     uint16_t kind_ = 0;
-    OwnedHandle pipe_;
-    OwnedHandle job_;
-    OwnedHandle process_;
-    OwnedHandle thread_;
-    DWORD childPid_ = 0;
+    hostproc::IpcEndpoint endpoint_;
+    hostproc::ChildProcess child_;
+    hostproc::IpcChannel channel_;
     DWORD gle_ = 0;
     int childExit_ = -1;
+    bool finished_ = false;
 };
 
 Call Transaction::Start(uint16_t kind, const std::vector<uint8_t>& task, const Deadline& dl) {
     kind_ = kind;
-    nonce_ = MakeNonce();
-    if (nonce_ == 0) {
+    NativeErrorCode e = kNativeErrorNone;
+    if (!hostproc::MakeNonce(&nonce_)) {
         gle_ = ERROR_NO_TOKEN;   // 拿不到随机数就没法把这次交易与别的区分开：不起进程
         return Call::kSpawnFailed;
     }
-    pipeName_ = std::wstring(kPipePrefix) + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                HexOf(nonce_);
-
-    // 只开一份实例，且带 FILE_FLAG_FIRST_PIPE_INSTANCE：同名已经存在就直接失败，
-    // 不去接一个别人提前建好、"等着我交任务"的服务端。
-    HANDLE pipe = CreateNamedPipeW(pipeName_.c_str(),
-                                   PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED |
-                                       FILE_FLAG_FIRST_PIPE_INSTANCE,
-                                   PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-                                   1, kPipeBufferBytes, kPipeBufferBytes, NMPWAIT_USE_DEFAULT_WAIT,
-                                   nullptr);
-    if (pipe == INVALID_HANDLE_VALUE) {
-        gle_ = GetLastError();
+    if (!hostproc::CreateEndpoint(nonce_, &endpoint_, &e)) {
+        gle_ = e;
         return Call::kSpawnFailed;
     }
-    pipe_.Reset(pipe);
-
-    // 作业带 KILL_ON_JOB_CLOSE：父进程不管是正常退出还是被人结束，句柄一关，
-    // 内核就把辅助进程一起带走。"辅助进程长期遗留"这件事因此不依赖我们自己记得收尾。
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
-    if (!job) {
-        gle_ = GetLastError();
-        return Call::kSpawnFailed;
-    }
-    job_.Reset(job);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    // KILL_ON_CLOSE 是"不遗留"的机制；ACTIVE_PROCESS=1 与不许 breakaway 是"辅助进程里
-    // 不会再长出一个不受这份作业管的进程"。BREAKAWAY_OK / SILENT_BREAKAWAY_OK 都不给，
-    // 所以它自己也没法逃出这份作业。
-    limits.BasicLimitInformation.LimitFlags =
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
-    limits.BasicLimitInformation.ActiveProcessLimit = 1;
-    if (!SetInformationJobObject(job_.get(), JobObjectExtendedLimitInformation, &limits,
-                                 sizeof(limits))) {
-        gle_ = GetLastError();
-        return Call::kSpawnFailed;
-    }
-
-    wchar_t self[MAX_PATH * 4] = {};
-    const DWORD n = GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
-    if (n == 0 || n >= std::size(self)) {
+    std::wstring self;
+    if (!hostproc::SelfImagePath(&self) || self.empty()) {
         gle_ = GetLastError();
         return Call::kSpawnFailed;
     }
     // 任务本体走管道，命令行只带"从哪儿取任务"的坐标：
-    // 辅助进程能读到的参数里没有输出路径，也没有任何能被执行的文字。
-    std::wstring cmd = QuoteArg(std::wstring(self, n)) + L" " + kWorkerSwitch + L" " + pipeName_ +
-                       L" " + HexOf(nonce_) + L" " + std::to_wstring(GetCurrentProcessId());
-    std::vector<wchar_t> mutableCmd(cmd.begin(), cmd.end());
-    mutableCmd.push_back(L'\0');
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    // 先挂起再进作业：否则辅助进程有几微秒不属于任何作业，
-    // 那条"父进程退了我就没电"的保证就有窗口期能漏掉。
-    if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
-                        CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        gle_ = GetLastError();
+    // 辅助进程能读到的参数里没有输出路径，也没有任何能被执行的文字。参数按位置直接
+    // 交给 CreateProcessW（引号规则在服务实现里），全程不拼接、不经过 shell。
+    hostproc::SpawnOptions opts;
+    opts.exePath = self;
+    opts.args = {std::wstring(kWorkerSwitch), endpoint_.Token(), HexOf(nonce_),
+                 std::to_wstring(GetCurrentProcessId())};
+    if (!hostproc::SpawnChild(opts, &endpoint_, &child_, &e)) {
+        gle_ = e;
         return Call::kSpawnFailed;
     }
-    process_.Reset(pi.hProcess);
-    thread_.Reset(pi.hThread);
-    childPid_ = pi.dwProcessId;
 
-    if (!AssignProcessToJobObject(job_.get(), process_.get())) {
-        gle_ = GetLastError();
-        // 挂不进作业就绝不放它跑：那条"父进程退了我就没电"的保证对它不成立，只能当场收回。
-        TerminateProcess(process_.get(), static_cast<uint32_t>(kHelperExitReaped));
-        return Call::kSpawnFailed;
-    }
-    ResumeThread(thread_.get());
-
-    // 把管道交出去之前先确认"连上来的是我刚起的那个进程"：
-    // 名字里带了本次的 PID 与 nonce，但"是谁连的"要由内核回答，不能靠名字。
-    // 连接有四类结局，逐类分开判（见 workerio::ConnectStartOf）：
-    //   * 已连接（ERROR_PIPE_CONNECTED）：辅助进程赶在 ConnectNamedPipe 之前就连上了。
-    //     这是一次成立且没有挂起 I/O —— 状态机就地进完成态，直接往下走任务交换，
-    //     绝不等那个不会由系统置起的事件（等它就是"抢先连接被误报成超时"）；
-    //   * 同步成功：事件已由系统置起，等待立即返回；
-    //   * ERROR_IO_PENDING：确有挂起操作，按剩余预算等，到点按 F02 的机制安全取消；
-    //   * 其他错误：如实上报通道故障，不做免检。
-    // 连接成功与否都不重新领一份预算：这一段花掉的仍然是那一份总预算里的毫秒。
-    // 连管这一步只肯等"启动/握手"那一段（HandshakeWaitMs 已经把它压进这一笔交易的剩余预算之内）。
-    // 把整份剩余预算压在连管上有两个错：一个根本没起来的辅助进程会烧光用户的期限，
-    // 而且报出来的还是"期限耗尽"——调用方照这个码只会去加大 --timeout-ms，而加大它不解这件事。
-    const Step connect = workerio::RunOverlappedOp(
-        workerio::Win32Backend(), pipe_.get(), 0, HandshakeWaitMs(dl), kCancelDrainGraceMs,
-        [&](OVERLAPPED& ov, uint8_t*, uint32_t) {
-            return workerio::ConnectStartOf(ConnectNamedPipe(pipe_.get(), &ov));
-        },
-        nullptr);
-    if (connect.timedOut) {
-        // 同一次"没等到连接"分两种下场，各归各的类：预算真的花完了才算期限耗尽，
-        // 否则算"辅助进程没接上来"这条机制故障。
-        if (ClassifyHandshakeTimeout(dl) == HandshakeFault::kBudgetSpent) return Call::kTimedOut;
-        gle_ = ERROR_TIMEOUT;   // 握手段到点，预算还剩着：下面翻成 handshake_failed 那条诊断
-        return Call::kHandshakeFailed;
-    }
-    if (!connect.done) { gle_ = connect.gle; return Call::kChannelFailed; }
-
-    DWORD peerPid = 0;
-    if (!GetNamedPipeClientProcessId(pipe_.get(), &peerPid)) {
-        gle_ = GetLastError();
-        return Call::kProtocolFailed;
-    }
-    if (peerPid != childPid_) {
-        gle_ = ERROR_INVALID_WINDOW_HANDLE;   // 连上来的不是我起的那个：任务一个字节都不交
-        return Call::kProtocolFailed;
+    // 把管道交出去之前先确认"连上来的是我刚起的那个进程"（名字里带了本次的 PID 与 nonce，
+    // 但"是谁连的"由内核回答，不能靠名字）：连接的四种结局与"抢先连接不算超时"的判据
+    // 都在服务实现里（WinHostProcess.cpp 的 AcceptChannel / Linux 的 SO_PEERCRED 核对），
+    // 逐条语义与原 Worker.cpp 一致。
+    // 连管这一步只肯等"启动/握手"那一段（HandshakeWaitMs 已经把它压进这一笔交易的剩余预算
+    // 之内）；把整份剩余预算压在连管上，会让一个根本没起来的辅助进程把用户的期限烧光，
+    // 还能报成"期限耗尽"。连接成功与否都不重新领一份预算：这一段花掉的仍然是那一份总预算里的毫秒。
+    const Deadline hsWait = Deadline::FromTotalMs(HandshakeWaitMs(dl));
+    hostproc::AcceptFault fault = hostproc::AcceptFault::kChannel;
+    if (!hostproc::AcceptChannel(&endpoint_, child_.Pid(), hsWait, &fault, &channel_, &e)) {
+        gle_ = e;
+        switch (fault) {
+            case hostproc::AcceptFault::kTimeout:
+                // 同一次"没等到连接"分两种下场，各归各的类：预算真的花完了才算期限耗尽，
+                // 否则算"辅助进程没接上来"这条机制故障。
+                if (ClassifyHandshakeTimeout(dl) == HandshakeFault::kBudgetSpent) return Call::kTimedOut;
+                return Call::kHandshakeFailed;   // 握手段到点，预算还剩着
+            case hostproc::AcceptFault::kPeerUnknown:
+            case hostproc::AcceptFault::kPeerMismatch:
+                // 内核答不出"是谁连的"、或连上来的不是我起的那个：都是身份核对不过，
+                // 归协议族（与原 Worker.cpp 的分类一致）。
+                return Call::kProtocolFailed;
+            case hostproc::AcceptFault::kChannel:
+            default:
+                return Call::kChannelFailed;
+        }
     }
 
     Header h{kMagic, kProtocolVersion, kind, static_cast<uint32_t>(task.size()), nonce_};
@@ -377,17 +183,17 @@ Call Transaction::Start(uint16_t kind, const std::vector<uint8_t>& task, const D
     if (!EncodeHeader(h, &framed)) { gle_ = ERROR_BAD_FORMAT; return Call::kProtocolFailed; }
     framed.insert(framed.end(), task.begin(), task.end());
 
-    const Step w = WriteAll(pipe_.get(), framed.data(), framed.size(), dl);
+    const hostproc::ChannelIo w = hostproc::WriteAll(&channel_, framed.data(), framed.size(), dl);
     if (w.timedOut) return Call::kTimedOut;
-    if (!w.done) { gle_ = w.gle; return Call::kChannelFailed; }
+    if (!w.ok) { gle_ = w.code; return Call::kChannelFailed; }
     return Call::kDone;
 }
 
 Call Transaction::ReadReply(Reply* out, uint16_t expectKind, const Deadline& dl) {
     std::vector<uint8_t> header(kHeaderSize);
-    const Step hs = ReadExact(pipe_.get(), header.data(), header.size(), dl);
+    const hostproc::ChannelIo hs = hostproc::ReadExact(&channel_, header.data(), header.size(), dl);
     if (hs.timedOut) return Call::kTimedOut;
-    if (!hs.done) { gle_ = hs.gle; return Call::kChannelFailed; }
+    if (!hs.ok) { gle_ = hs.code; return Call::kChannelFailed; }
 
     Header h{};
     if (!DecodeHeader(header.data(), header.size(), &h)) {
@@ -403,9 +209,10 @@ Call Transaction::ReadReply(Reply* out, uint16_t expectKind, const Deadline& dl)
 
     std::vector<uint8_t> payload(h.payloadLen);
     if (!payload.empty()) {
-        const Step ps = ReadExact(pipe_.get(), payload.data(), payload.size(), dl);
+        const hostproc::ChannelIo ps =
+            hostproc::ReadExact(&channel_, payload.data(), payload.size(), dl);
         if (ps.timedOut) return Call::kTimedOut;
-        if (!ps.done) { gle_ = ps.gle; return Call::kChannelFailed; }
+        if (!ps.ok) { gle_ = ps.code; return Call::kChannelFailed; }
     }
     if (!DecodeReply(payload.data(), payload.size(), out)) {
         gle_ = ERROR_BAD_FORMAT;
@@ -415,45 +222,12 @@ Call Transaction::ReadReply(Reply* out, uint16_t expectKind, const Deadline& dl)
 }
 
 void Transaction::Finish() {
-    // 顺序是固定的：先收尾辅助进程，再关作业句柄。
-    // 关作业句柄会触发 KILL_ON_JOB_CLOSE，那是"我没能好好收尸"时的兜底，不是常规手段。
-    //
-    // 管道句柄什么时候能关，取决于登记表里有没有挂着它的未决异步操作：
-    //   * 没有（一切成功路径，外加绝大多数超时/取消 —— 状态机在返回前就已排干）：
-    //     照旧先关管道、提示辅助进程退出，不多等一次；
-    //   * 有（取消已受理但宽限内等不到完成，属于驱动级卡死的病理场景）：带着未决 I/O
-    //     关句柄是文档不保证的行为，所以先收尸 —— 对面进程一没，飞行中的管道 I/O
-    //     基本立刻能进终态 —— 再让登记表确认一次。确认得了就关；确认不了就把这个
-    //     句柄连同它的 OVERLAPPED/事件/缓冲一起交给登记表收养，随进程退出由系统回收。
-    //     代价是一份有界缓冲与一个句柄的遗留，换来的是不再有"内核往已释放内存写"。
-    if (pipe_ && !workerio::HasPendingOps(pipe_.get())) {
-        pipe_.Close();
-    }
-    if (process_) {
-        if (WaitForSingleObject(process_.get(), kReapGraceMs) != WAIT_OBJECT_0) {
-            // 只结束我自己起的这一个进程；退出码写成"父进程收尸"这一档，
-            // 好让 hint 里的数与辅助进程自己的判断分得开。
-            TerminateProcess(process_.get(), static_cast<uint32_t>(kHelperExitReaped));
-            WaitForSingleObject(process_.get(), 1000);
-        }
-    }
-    DWORD code = 0;
-    childExit_ = (process_ && GetExitCodeProcess(process_.get(), &code)) ? static_cast<int>(code) : -1;
-    process_.Close();
-    thread_.Close();
-    if (pipe_) {
-        if (workerio::DrainPendingOps(pipe_.get(), kCancelDrainGraceMs) == 0) {
-            pipe_.Close();
-        } else {
-            // 收养成不成功都要把关闭责任交出去：这条句柄上还挂着没确认终态的操作，
-            // 由 Transaction 自己关它仍然是文档不保证的行为。收养没记下来（登记表的节点
-            // 分配不出来）时就让它随进程遗留 —— 代价是一个句柄值，换掉的是一次未定义行为。
-            // 这三个入口都不抛出（见 WorkerIo.h），这条收尾路径不会把异常带进析构函数。
-            static_cast<void>(workerio::AdoptHandle(pipe_.get()));
-            pipe_.Release();   // 关闭责任移交登记表（登记表在操作全数终态后替它关）
-        }
-    }
-    job_.Close();
+    if (finished_) return;
+    finished_ = true;
+    // 固定次序（关管道 -> 收尸 -> 排干/收养 -> 关作业）整个搬进服务实现，见
+    // hostproc::FinishTransaction 与 WinHostProcess.cpp 里那份逐字保留的正文。
+    hostproc::FinishTransaction(&child_, &channel_, kReapGraceMs, hostproc::kCancelDrainGraceMs);
+    childExit_ = hostproc::ChildExitCode(child_);
 }
 
 // ---------------------------------------------------------------------------
@@ -722,85 +496,9 @@ bool IsolatedMatch(const MatchOptions& match, const std::vector<RECT>& onScreens
 
 namespace {
 
-std::wstring ModulePathOf(DWORD pid) {
-    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!proc) return std::wstring();
-    wchar_t buffer[8192] = {};
-    DWORD size = static_cast<DWORD>(std::size(buffer));
-    std::wstring result;
-    if (QueryFullProcessImageNameW(proc, 0, buffer, &size)) result.assign(buffer, size);
-    CloseHandle(proc);
-    return result;
-}
-
-std::wstring SelfPath() {
-    wchar_t buffer[8192] = {};
-    const DWORD n = GetModuleFileNameW(nullptr, buffer, static_cast<DWORD>(std::size(buffer)));
-    if (n == 0 || n >= std::size(buffer)) return std::wstring();
-    return std::wstring(buffer, n);
-}
-
-bool ProcessAlive(DWORD pid) {
-    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!proc) return false;
-    DWORD code = 0;
-    const bool alive = GetExitCodeProcess(proc, &code) && code == STILL_ACTIVE;
-    CloseHandle(proc);
-    return alive;
-}
-
-bool SameSession(DWORD pid) {
-    DWORD mine = 0, theirs = 0;
-    if (!ProcessIdToSessionId(GetCurrentProcessId(), &mine)) return false;
-    if (!ProcessIdToSessionId(pid, &theirs)) return false;
-    return mine == theirs;
-}
-
-// 我的直接父进程是谁：这条判断和"父进程说它是谁"是两个独立来源，两者要一致。
-// 只对 CreateToolhelp32Snapshot 的整张表负责，拿不到就当作不成立（宁可拒绝执行）。
-DWORD ImmediateParentPid() {
-    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    DWORD parent = 0;
-    if (Process32FirstW(snap, &entry)) {
-        do {
-            if (entry.th32ProcessID == GetCurrentProcessId()) {
-                parent = entry.th32ParentProcessID;
-                break;
-            }
-        } while (Process32NextW(snap, &entry));
-    }
-    CloseHandle(snap);
-    return parent;
-}
-
-// "我在一个'父进程一关作业就一起结束'的作业里" —— 这条既是"不会长期遗留"的机制本身，
-// 也是辅助进程肯干活的前提之一：正常shell里直接跑辅助模式时通常没有这么一份作业。
-bool InKillOnCloseJob() {
-    BOOL inJob = FALSE;
-    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &inJob) || !inJob) return false;
-    JOBOBJECT_BASIC_LIMIT_INFORMATION basic{};
-    if (!QueryInformationJobObject(nullptr, JobObjectBasicLimitInformation, &basic, sizeof(basic),
-                                   nullptr)) {
-        return false;
-    }
-    return (basic.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) != 0;
-}
-
-bool PipeNameLooksOurs(const std::wstring& name) {
-    const std::wstring prefix(kPipePrefix);
-    if (name.size() <= prefix.size() || name.compare(0, prefix.size(), prefix) != 0) return false;
-    const std::wstring tail = name.substr(prefix.size());
-    if (tail.size() > 40) return false;
-    bool dash = false;
-    for (const wchar_t c : tail) {
-        if (c == L'-') { if (dash) return false; dash = true; continue; }
-        if (!iswdigit(c) && !std::iswalpha(c)) return false;
-    }
-    return dash;
-}
+// 绑定校验的原料（"谁起的我 / 我还活着吗 / 同一会话吗 / 直接父进程是谁 /
+// '父进程一关作业我就一起结束'装上了没有"）全部走 hostproc 平台服务的身份问答；
+// 任何一条问不出来都按"不成立"处理（宁可拒绝执行，不猜）。
 
 struct WorkerArgs {
     std::wstring pipe;
@@ -826,18 +524,19 @@ bool ParseWorkerArgs(int argc, wchar_t* const* argv, WorkerArgs* out) {
 // 返回值是给排障用的内部编号（0 = 通过）。辅助模式的退出码不是对外契约的一部分，
 // 所以这里把"哪一条不成立"编进退出码里（60 起步），而不是一条笼统的"拒绝"。
 int BindingFailureStep(const WorkerArgs& a) {
-    if (!PipeNameLooksOurs(a.pipe)) return 1;
+    if (!hostproc::EndpointTokenLooksOurs(a.pipe)) return 1;
     const DWORD myPid = GetCurrentProcessId();
     if (a.parentPid == 0 || a.parentPid == myPid) return 2;
-    if (!ProcessAlive(a.parentPid)) return 3;
-    if (!SameSession(a.parentPid)) return 4;
+    if (!hostproc::ProcessAlive(a.parentPid)) return 3;
+    if (!hostproc::SameLoginSession(a.parentPid)) return 4;
     // 起我的必须是同一个 ECAPTURE.EXE —— 这条把"任何人都能直接跑辅助模式"挡在门外
-    const std::wstring parent = ModulePathOf(a.parentPid);
-    const std::wstring self = SelfPath();
+    std::wstring parent;
+    std::wstring self;
+    if (!hostproc::ImagePathOf(a.parentPid, &parent) || !hostproc::SelfImagePath(&self)) return 5;
     if (parent.empty() || self.empty()) return 5;
     if (_wcsicmp(parent.c_str(), self.c_str()) != 0) return 6;
-    if (ImmediateParentPid() != a.parentPid) return 7;
-    if (!InKillOnCloseJob()) return 8;
+    if (hostproc::ImmediateParentPid() != a.parentPid) return 7;
+    if (!hostproc::ParentCleanupArmed()) return 8;
     return 0;
 }
 
@@ -853,26 +552,17 @@ void SetInternalFailure(Reply* reply) {
     reply->iconic.clear();
 }
 
-bool ReadAllBlocking(HANDLE pipe, uint8_t* buf, size_t size) {
-    size_t got = 0;
-    while (got < size) {
-        DWORD one = 0;
-        if (!ReadFile(pipe, buf + got, static_cast<DWORD>(size - got), &one, nullptr)) return false;
-        if (one == 0) return false;   // 管道断了：父进程已经走了，没有任务可等
-        got += one;
-    }
-    return true;
-}
-
-bool ReadTaskBlocking(HANDLE pipe, uint64_t nonce, Task* task, uint16_t* kind) {
+bool ReadTaskBlocking(hostproc::IpcChannel* channel, uint64_t nonce, Task* task,
+                      uint16_t* kind) {
     uint8_t header[kHeaderSize] = {};
-    if (!ReadAllBlocking(pipe, header, sizeof(header))) return false;
+    if (!hostproc::ReadExactBlocking(channel, header, sizeof(header)).ok) return false;
     Header h{};
     if (!DecodeHeader(header, sizeof(header), &h)) return false;
     if (h.nonce != nonce) return false;   // 不是交给我这次的
     if (h.payloadLen > kMaxTaskPayload) return false;
     std::vector<uint8_t> payload(h.payloadLen);
-    if (!payload.empty() && !ReadAllBlocking(pipe, payload.data(), payload.size())) return false;
+    if (!payload.empty() &&
+        !hostproc::ReadExactBlocking(channel, payload.data(), payload.size()).ok) return false;
     if (!DecodeTask(payload.data(), payload.size(), task)) return false;
     if (task->kind != h.kind) return false;   // 报头说一套、任务里写一套
     *kind = h.kind;
@@ -1040,14 +730,14 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
     const int bindingStep = BindingFailureStep(args);
     if (bindingStep != 0) return 60 + bindingStep;
 
-    HANDLE pipe = CreateFileW(args.pipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
-                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (pipe == INVALID_HANDLE_VALUE) ExitWithoutReply();
+    // 连回父进程走平台服务（命名管道句柄只活在 hostproc 实现以内）。
+    hostproc::IpcChannel channel;
+    NativeErrorCode channelErr = kNativeErrorNone;
+    if (!hostproc::ConnectToParent(args.pipe, &channel, &channelErr)) ExitWithoutReply();
 
     Task task;
     uint16_t kind = 0;
-    if (!ReadTaskBlocking(pipe, args.nonce, &task, &kind)) {
-        CloseHandle(pipe);
+    if (!ReadTaskBlocking(&channel, args.nonce, &task, &kind)) {
         ExitWithoutReply();
     }
 
@@ -1077,7 +767,6 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
         Reply tiny;
         tiny.status = BlockedStatus::kBadTask;
         if (!EncodeReply(tiny, &payload)) {
-            CloseHandle(pipe);
             return kHelperExitProtocol;
         }
     }
@@ -1085,16 +774,15 @@ int RunWorkerMode(int argc, wchar_t* const* argv) {
                    args.nonce};
     std::vector<uint8_t> framed;
     if (!EncodeHeader(h, &framed)) {
-        CloseHandle(pipe);
         return kHelperExitProtocol;
     }
     framed.insert(framed.end(), payload.begin(), payload.end());
 
-    DWORD written = 0;
-    const BOOL ok = WriteFile(pipe, framed.data(), static_cast<DWORD>(framed.size()), &written,
-                              nullptr);
-    CloseHandle(pipe);
-    return (ok && written == framed.size()) ? 0 : kHelperExitProtocol;
+    // 阻塞写回（辅助进程没有第二份预算；父进程断开时如实写不进去）。
+    // 通道句柄随作用域结束关闭，与原先在出口处 CloseHandle(pipe) 同一效果。
+    return hostproc::WriteAllBlocking(&channel, framed.data(), framed.size()).ok
+               ? 0
+               : kHelperExitProtocol;
 }
 
 }  // namespace ecapture

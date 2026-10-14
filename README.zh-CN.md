@@ -1881,8 +1881,8 @@ Linux 用 GCC / Clang，构建目录固定在仓库根的 `build-linux/<编译�
 cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
-Linux 上当前可构建的目标只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests` 与（装了
-wxWidgets 之后的）`ecapture-gui-probe`。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
+Linux 上当前可构建的目标只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
+`ecapture-save-tests`、`ecapture-ipc-tests` 与（装了 wxWidgets 之后的）`ecapture-gui-probe`。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
 【平台层 · Windows】那一段里，配置日志会逐条列出这份名单，构建目录里也留一份
 `ecapture-buildable-targets.txt` 给脚本核对 —— 不拿"删掉功能"换一次好看的 Linux 构建成功。
 
@@ -2010,6 +2010,25 @@ Windows 专属的说法（`--hwnd`、`--class`、`--capture` 的那些 Windows �
 
 标准流的分工照旧：图片占用 stdout 之后文字一律改道 stderr；`--help` / `--version` / 未给条件仍是纯文本，
 其余是精简 JSON。行尾交给出口那一层决定（Windows 归一成 CRLF，Linux 用 `\n`），所以共用文本里只写 `\n`。
+
+### 跨平台辅助进程通信与超时取消（2026-10 Linux 落地）
+
+"会把父进程卡死、又没有中断点"的那几个调用照旧交给本工具自己的辅助进程；这一步把这套机制的
+**判据层与 OS 动作**拆成了两个平台共用的形状：
+
+| 层 | 判什么 / 干什么 | 本体 |
+| ---- | ---- | ---- |
+| 报头与判界 | 24 字节报头（magic / version / kind / payloadLen / 保留 / nonce）与尺寸上限、小端字节原语。字节布局与既有线上格式**逐字相同**，协议版本仍是 4 | `src/core/WorkerFraming.h` |
+| 三段期限算式 | 等任务段、执行段、交回段各自的上限从哪儿换算。父进程交下去的是**剩余时长**（budgetMs），两个进程各在自己的单调时钟上数这段时长，任何一方的绝对读数都不跨进程相减；人工确认不占自动预算（Deadline 的暂停作用域） | `src/core/HelperTiming.h` |
+| 进程与 IPC 平台服务 | 直接进程创建（Windows：挂起创建→进作业→恢复；Linux：fork + execve，参数按位置交付，全程不拼接、不经过 shell）；可信端点由内核回答"是谁连的"（Windows：FIRST_PIPE_INSTANCE 命名管道 + GetNamedPipeClientProcessId；Linux：abstract socket + SO_PEERCRED 核对刚起的 PID 与同 uid）；带期限读写；等待与终止只打本次创建的收尾上下文（Windows：KILL_ON_JOB_CLOSE 作业；Linux：专属进程组 + PDEATHSIG） | 声明 `src/HostProcess.h`；实现 `src/platform/windows/WinHostProcess.cpp`、`src/platform/linux/PosixHostProcess.cpp` |
+| 辅助进程纪律 | 辅助模式不是公共入口：端点令牌形状、父进程存活、同一会话、同一个映像、直接父进程一致、收尾上下文已装上——任一条不成立就拒绝执行且不写一个字节。载荷的线上格式（含 `RECT` / `DWORD` / `HRESULT`）仍是**明确标注的过渡桥接**，留在各平台编解码里；Linux 的生产载荷要等协议去平台类型那一步才落 | `src/WorkerProtocol.h` 与 `src/Worker.cpp`（Windows 编排） |
+
+三种下场分开记账、都不留遗留：起不来就当场失败、不换名字重试；辅助进程卡住 -> 父进程按预算到点、取消只打本次创建的进程和为它建的那个组/作业，退出码记"收尸"档；父进程先没了 -> 辅助进程自己的看门狗按"随任务交下来的预算 + 交回宽限"自尽，退出码与父进程打的分开。stdout/stderr 的并行排干在 Linux 侧实现（单 poll 循环同时看两条流，一条堵不住另一条，超出留档上限照排不误存）；Windows 的辅助进程在入口把三条标准流换成 NUL，本来就不存在第二份可读的流。
+
+验证入口：`./test-all.sh --layer all` 的 `worker-ipc` 套件（CMake 目标 `ecapture-ipc-tests`）与
+`scripts/core-portability-check.sh` 的 3d / 4d——真父子进程现场：协议错误、双向通信、阻塞、超时、取消、
+异常退出、端点防伪、并行排干、描述符与僵尸记账。Windows 对应的真机入口仍是 `.\tests\timeout.ps1` 与
+`.\tests\isolation.ps1`。两边都不碰任何用户窗口与桌面内容：辅助进程是测试可执行文件自己，阻塞用合成动作。
 
 ### 这一层的验证入口
 

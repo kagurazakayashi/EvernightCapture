@@ -31,30 +31,17 @@
 #include "CaptureCommon.h"
 #include "CliOptions.h"
 #include "WindowMatch.h"
+#include "core/WorkerFraming.h"   // 报头编解码、尺寸上限、预算上限与小端字节原语（跨平台共用）
 
 namespace ecapture {
 namespace worker {
 
-inline constexpr uint32_t kMagic = 0x31434557u;   // "WEC1" 的字节序写法，只做一眼能认的标记
-// 2：WindowInfo 多了枚举那一刻的进程创建时间（身份复核的基线，见 WindowIdentity.h）。
-// 3：WindowInfo 多了三条跨进程问句各自的下场（映像路径 / 进程创建时间 / 窗口矩形）。
-//    结构化窗口查询（--list / --inspect）要靠它们把"这一项问不出来"与"这一项是空的"分开写，
-//    而这些问答发生在辅助进程里，父进程事后补问已经不是同一个时刻的答案了。
-// 4：任务里 waitMs 后面那个保留段改成 budgetMs —— 父进程把"这一笔交易我还肯等多久"随任务交下来
-//    （见 WorkerTiming.h）。辅助进程自己的执行段期限从这里取，不再用一个和预算无关的固定秒数，
-//    否则用户显式接受的 60 秒会被辅助进程自己的时钟在第 30 秒掐掉。
-// 这份格式不是对外契约，父进程与辅助进程是同一个 exe，所以演进只要两边一起改 + 这里加一。
-inline constexpr uint16_t kProtocolVersion = 4;
-// 报头固定 24 字节：magic(4) + version(2) + kind(2) + payloadLen(4) + 保留(4) + nonce(8)。
-// 保留那段必须写 0、读时校验是 0 —— 将来要加字段就先占在这里，两边对不上就是整条作废，
-// 不允许"多出来的字节当没看见"。
-inline constexpr uint32_t kHeaderSize = 24u;
+// 报头（kMagic / kProtocolVersion / kHeaderSize / Encode|DecodeHeader）与载荷无关的上限
+// （kMaxTaskPayload / kMaxReplyPayload / kMaxFrameSide / kMaxFrameBytes / kMaxWorkerBudgetMs）
+// 都在 core/WorkerFraming.h —— 那一层没有平台类型，Linux 的辅助进程链同一份本体，
+// "纯协议判据链生产解析逻辑"靠的就是这一份。这一头只留**载荷编解码**与载荷里的判界常量。
 
-// 一条任务最多能带多少字节（条件里的字符串总量）。一条应答最多能带多少字节（帧像素）。
-inline constexpr uint32_t kMaxTaskPayload = 64u * 1024u;
-inline constexpr uint32_t kMaxReplyPayload = 64u * 1024u * 1024u;
-inline constexpr uint32_t kMaxFrameSide = 16384u;             // 与 Dib::Create 同一条上限
-inline constexpr uint64_t kMaxFrameBytes = 64ull * 1024ull * 1024ull;
+// 一条任务最多能带几个条件取值 / 一条应答最多能回传几个窗口条目 / 单条字符串多长。
 inline constexpr uint32_t kMaxListItems = 1024u;              // 每个条件组最多几个取值
 inline constexpr uint32_t kMaxWindowEntries = 8192u;          // 回传的窗口条数上限
 inline constexpr uint32_t kMaxStringUnits = 4096u;            // 单条字符串上限（UTF-16 码元）
@@ -65,10 +52,6 @@ inline constexpr uint32_t kMaxWireStatus = 13u;
 // 任务里的"泵消息等多久"的上限。子进程照这个值等，所以父进程（哪怕被改成坏的）
 // 也没法用它把辅助进程按在原地不放。
 inline constexpr uint32_t kMaxTaskWaitMs = 15000u;
-// 任务里"这一笔隔离交易还能活多久"的上限，就是 --timeout-ms 自己的上限（见 CliOptions.h）。
-// 这条不是另立一套常量：它是公开选项能接受的最大值，父进程不可能交出比这更大的一笔预算，
-// 而辅助进程拿它当"最晚也要自己退出"的那道兜底。0 不合法（那等于无限），所以区间是 [1, 上限]。
-inline constexpr uint32_t kMaxWorkerBudgetMs = static_cast<uint32_t>(cli_limits::kMaxTimeoutMs);
 
 // 任务种类。只有这三条，全都是"读某个窗口自己的画面"或"把窗口列一遍"，
 // 没有任何一条会去读桌面像素 —— 桌面那几条路径留在父进程里，由授权判定器把关。
@@ -81,13 +64,7 @@ enum TaskKind : uint16_t {
 
 // 失败原因是哪一步：直接用 CaptureCommon.h 的 BlockedStatus（它的数值就是线上格式）。
 
-struct Header {
-    uint32_t magic = 0;
-    uint16_t version = 0;
-    uint16_t kind = 0;
-    uint32_t payloadLen = 0;
-    uint64_t nonce = 0;
-};
+// Header 本体与报头编解码在 core/WorkerFraming.h（同一 namespace ecapture::worker，调用点不变）。
 
 // 一条任务（父 -> 子）。kind 决定哪些字段有意义，其余字段照旧序列化，解码方按 kind 取用。
 struct Task {
@@ -123,10 +100,8 @@ struct Reply {
 // ---------------------------------------------------------------------------
 // 编解码：任何一处长度、条数、上限不合就返回 false，调用方整条消息作废。
 // 不做"尽力而为的解析"，也不对越界数据做截断后继续用。
+// 报头一层（EncodeHeader / DecodeHeader）在 core/WorkerFraming.h，这里只编解码载荷。
 // ---------------------------------------------------------------------------
-bool EncodeHeader(const Header& h, std::vector<uint8_t>* out);
-bool DecodeHeader(const uint8_t* data, size_t size, Header* out);
-
 bool EncodeTask(const Task& task, std::vector<uint8_t>* out);
 bool DecodeTask(const uint8_t* data, size_t size, Task* out);
 

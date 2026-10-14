@@ -57,12 +57,15 @@ NEUTRAL_HEADERS=(
     HostPath.h
     HostFile.h
     HostDirectory.h
+    HostProcess.h
     OutputStream.h
     core/Geometry.h
     core/Error.h
     core/Status.h
     core/Frame.h
     core/Target.h
+    core/WorkerFraming.h
+    core/HelperTiming.h
     core/Authorization.h
     core/Capability.h
     Main.h
@@ -229,6 +232,37 @@ if [ "$fail" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3d) 辅助进程通信这一层：不经 CMake，直接 g++ 编生产本体并真跑父子进程判据。
+#     证明 PosixHostProcess / WorkerFraming / HelperTiming 不含平台渗漏，
+#     同时把协议错误、双向通信、超时、取消、异常退出落成真实进程现场。
+# ---------------------------------------------------------------------------
+if [ "$fail" -eq 0 ]; then
+    echo "== 3d) 编译并链接跨平台辅助进程判据 =="
+    IPC_BIN="$OUT_DIR/worker_ipc_tests"
+    IPC_PLATFORM_SRC=(
+        "$SRC/platform/linux/PosixHostProcess.cpp"
+        "$SRC/platform/linux/PosixHostPath.cpp"
+        "$SRC/platform/linux/PosixHostFile.cpp"
+        "$SRC/platform/linux/PosixHostDirectory.cpp"
+        "$SRC/platform/linux/PosixFileSave.cpp"
+        "$SRC/platform/linux/PosixLocale.cpp"
+    )
+    if ! "$CXX" -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -I"$SRC" "$ROOT/tests/worker_ipc_state.cpp" \
+            "$SRC/core/WorkerFraming.cpp" "$SRC/core/HelperTiming.cpp" \
+            "$SRC/Deadline.cpp" "$SRC/ImageOps.cpp" \
+            "$SRC/CliOptions.cpp" "$SRC/Config.cpp" "$SRC/Lang.cpp" \
+            "$SRC/core/TextCoding.cpp" "$GEN" "${IPC_PLATFORM_SRC[@]}" \
+            -pthread -o "$IPC_BIN" 2>"$OUT_DIR/ipc_compile.log"; then
+        echo "  FAIL  辅助进程通信层在 Linux 上编不过："
+        sed 's/^/          /' "$OUT_DIR/ipc_compile.log" | head -40
+        fail=1
+    else
+        echo "  ok    编译通过：$IPC_BIN"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4) 跑判据
 # ---------------------------------------------------------------------------
 # 两份判据程序各自写"N 条通过，M 条失败"；这里汇总成一行放在最后，
@@ -257,6 +291,8 @@ if [ "$fail" -eq 0 ] && [ "$BUILD_ONLY" -eq 0 ]; then
     ec_run_state "命令行文本" "$OUT_DIR/cli_text_tests"
     echo "== 4c) 运行文件 / 保存 / 历史判据 =="
     ec_run_state "文件与保存" "$OUT_DIR/save_tests"
+    echo "== 4d) 运行辅助进程通信判据 =="
+    ec_run_state "辅助进程通信" "$OUT_DIR/worker_ipc_tests"
     echo "core-portability: $ec_total_pass 条通过，$ec_total_fail 条失败"
     if [ "$ec_total_fail" -ne 0 ]; then fail=1; fi
 fi

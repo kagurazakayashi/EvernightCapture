@@ -1,5 +1,8 @@
 #pragma once
-// 【平台层 · Windows】隔离执行（辅助进程）的对外声明：底下是命名管道，见 WorkerProtocol.h / WorkerIo.h。
+// 【平台层 · Windows】隔离执行（辅助进程）的对外声明：进程创建、可信端点、带期限通信与终止
+// 都走 hostproc 平台服务（src/HostProcess.h；Windows 实现 WinHostProcess.cpp + WorkerIo.cpp，
+// Linux 实现 PosixHostProcess.cpp）。报头与尺寸判界在 core/WorkerFraming.h，
+// 三段期限算式在 core/HelperTiming.h —— 两个平台链的是同一份本体。
 // 隔离执行：把"会卡在别的进程里、又没有被设计成可中断"的那几个调用，交给本工具自己的
 // 辅助进程去做，父进程只等一段有期限的时间；到点拿不到结果就结束**自己的**辅助进程。
 //

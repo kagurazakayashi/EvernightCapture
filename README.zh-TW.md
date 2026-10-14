@@ -1754,8 +1754,8 @@ CMakeCache，**不共用快取** —— 這也是 Windows 安裝器與打包判�
 cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
-Linux 目前可建置的目標只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`
-與（裝了 wxWidgets 之後的）`ecapture-gui-probe`。完整 CLI 與那十幾份要取圖通道的測試程式仍在 `CMakeLists.txt` 的
+Linux 目前可建置的目標只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
+`ecapture-save-tests`、`ecapture-ipc-tests` 與（裝了 wxWidgets 之後的）`ecapture-gui-probe`。完整 CLI 與那十幾份要取圖通道的測試程式仍在 `CMakeLists.txt` 的
 【平台層 · Windows】那一段裡；設定日誌會逐條列出這份名單，建置目錄裡也留一份
 `ecapture-buildable-targets.txt` 給腳本核對 —— 不拿「刪掉功能」換一次好看的 Linux 建置成功。
 
@@ -1883,6 +1883,25 @@ Windows 專屬的說法（`--hwnd`、`--class`、`--capture` 的那些 Windows �
 
 標準流的分工照舊：影格佔用 stdout 之後文字一律改道 stderr；`--help` / `--version` / 未給條件仍是純文字，
 其餘是精簡 JSON。行尾交給出口那一層決定（Windows 歸一成 CRLF，Linux 用 `\n`），所以共用文字裡只寫 `\n`。
+
+### 跨平台輔助行程通訊與逾時取消（2026-10 Linux 落地）
+
+「會把父行程卡死、又沒有中斷點」的那幾個呼叫照舊交給本工具自己的輔助行程；這一步把這套機制的
+**判據層與 OS 動作**拆成兩個平台共用的形狀：
+
+| 層 | 判什麼 / 幹什麼 | 本體 |
+| ---- | ---- | ---- |
+| 報頭與判界 | 24 位元組報頭（magic / version / kind / payloadLen / 保留 / nonce）與尺寸上限、小端位元組原語。位元組佈局與既有线上格式**逐字相同**，協議版本仍是 4 | `src/core/WorkerFraming.h` |
+| 三段期限算式 | 等任務段、執行段、交回段各自的上限從哪儿換算。父行程交下去的是**剩餘時長**（budgetMs），兩個行程各在自己的單調時鐘上數這段時長，任何一方的絕對讀數都不跨行程相減；人工確認不佔自動預算（Deadline 的暫停作用域） | `src/core/HelperTiming.h` |
+| 行程與 IPC 平台服務 | 直接行程建立（Windows：掛起建立→進工作→恢復；Linux：fork + execve，參數按位置交付，全程不拼接、不經過 shell）；可信端點由內核回答「是誰連的」（Windows：FIRST_PIPE_INSTANCE 命名管道 + GetNamedPipeClientProcessId；Linux：abstract socket + SO_PEERCRED 核對剛起的 PID 與同 uid）；带期限讀寫；等待與終止只打本次建立的收尾上下文（Windows：KILL_ON_JOB_CLOSE 工作；Linux：專屬行程群 + PDEATHSIG） | 宣告 `src/HostProcess.h`；實作 `src/platform/windows/WinHostProcess.cpp`、`src/platform/linux/PosixHostProcess.cpp` |
+| 輔助行程紀律 | 輔助模式不是公共入口：端點權杖形狀、父行程存活、同一工作階段、同一個映像、直接父行程一致、收尾上下文已裝上——任一條不成立就拒絕執行且不寫一個位元組。負載的線上格式（含 `RECT` / `DWORD` / `HRESULT`）仍是**明確標註的過渡橋接**，留在各平台編解碼裡；Linux 的生產負載要等協議去平台型型那一步才落 | `src/WorkerProtocol.h` 與 `src/Worker.cpp`（Windows 編排） |
+
+三種下場分開記帳、都不留遺留：起不來就當場失敗、不換名字重試；輔助行程卡住 -> 父行程按預算到點、取消只打本次建立的行程和為它建的那個群/工作，退出碼記「收屍」檔；父行程先沒了 -> 輔助行程自己的看門狗按「隨任務交下來的預算 + 交回寬限」自盡，退出碼與父行程打的分開。stdout/stderr 的並行排乾在 Linux 側實作（單 poll 迴圈同時看兩條流，一條堵不住另一條，超出留檔上限照排不誤存）；Windows 的輔助行程在入口把三條標準流換成 NUL，本來就不存在第二份可讀的流。
+
+驗證入口：`./test-all.sh --layer all` 的 `worker-ipc` 套件（CMake 目標 `ecapture-ipc-tests`）與
+`scripts/core-portability-check.sh` 的 3d / 4d——真父子行程現場：協議錯誤、雙向通訊、阻塞、逾時、取消、
+異常退出、端點防偽、並行排乾、描述符與殭屍記帳。Windows 對應的真機入口仍是 `.\tests\timeout.ps1` 與
+`.\tests\isolation.ps1`。兩邊都不碰任何使用者視窗與桌面內容：輔助行程是測試可執行檔自己，阻塞用合成動作。
 
 ### 這一層的驗證入口
 

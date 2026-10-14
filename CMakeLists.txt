@@ -186,6 +186,9 @@ add_executable(ecapture
   src/WorkerIo.cpp
   src/WorkerProtocol.cpp
   src/WorkerTiming.cpp
+  src/core/WorkerFraming.cpp
+  src/core/HelperTiming.cpp
+  src/platform/windows/WinHostProcess.cpp
   src/WinrtApartment.cpp
   src/OutputPlan.cpp
   src/Delivery.cpp
@@ -341,6 +344,8 @@ add_executable(ecapture-worker-tests
   src/WorkerIo.cpp
   src/WorkerProtocol.cpp
   src/WorkerTiming.cpp
+  src/core/WorkerFraming.cpp
+  src/core/HelperTiming.cpp
   src/Deadline.cpp
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
@@ -928,6 +933,9 @@ endif()   # 【平台层 · Windows】以上目标只在 Windows 定义
 #     CaptureCommon.h 的中立部分继续搬进 src/core/，属于独立步骤。
 #   * Lang.cpp/.rc（四语文案）与 CliOptions/Config 仍然要 Win32 资源，所以凡是要读文案的
 #     测试程序都留在 Windows 分支。
+#   * 2026-10（跨平台辅助进程通信与超时取消）实测追加：src/platform/linux/PosixHostProcess.cpp、
+#     src/core/WorkerFraming.cpp、src/core/HelperTiming.cpp、src/ImageOps.cpp 在 Linux 编得过，
+#     ecapture-ipc-tests 就是按这一事实开出来的判据目标（见下面那段说明）。
 # ===========================================================================
 
 # ---- 共用：两个平台同一条定义，同一份判据 ----
@@ -1021,6 +1029,36 @@ if(WIN32)
   target_link_libraries(ecapture-save-tests PRIVATE kernel32.lib user32.lib advapi32.lib)
 endif()
 set_target_properties(ecapture-save-tests PROPERTIES OUTPUT_NAME "ecapture-save-tests")
+
+# ecapture-ipc-tests —— 跨平台辅助进程通信与超时取消的 Linux 判据（只在非 Windows 定义）。
+#
+# 为什么单独一个可执行文件、又为什么**只在 Linux**：这一批判据判的是"真父子进程现场"——
+# fork/execve 直启、abstract socket 端点的 SO_PEERCRED 核验、PDEATHSIG 与本次创建的进程组收尾、
+# 单调预算的传递、stdout/stderr 并行排干、畸形消息整条作废。这些内核行为在 Windows 上由
+# 另一套机制兑现（命名管道 + 作业 + OVERLAPPED 终态状态机），对应的真机判据早已在
+# tests\timeout.ps1 / isolation.ps1 用 ecapture-worker-tests.exe 与 ECAPTURE.EXE 跑；
+# 两个平台各判各的现场，不互相冒充。
+# 链的是生产本体：PosixHostProcess.cpp（平台服务）、core/WorkerFraming.cpp（报头与判界）、
+# core/HelperTiming.cpp（三段期限算式）、Deadline / ImageOps / TextCoding / HostPath ——
+# 不是测试里抄的一份规则。辅助进程模式（--worker）编在同一个可执行文件里：
+# 与 Windows"父进程与辅助进程是同一个 exe"同形，也满足"起我的必须是同一个映像"这条绑定。
+if(NOT WIN32)
+  add_executable(ecapture-ipc-tests
+    tests/worker_ipc_state.cpp
+    src/platform/linux/PosixHostProcess.cpp
+    src/core/WorkerFraming.cpp
+    src/core/HelperTiming.cpp
+    src/Deadline.cpp
+    src/ImageOps.cpp
+    src/CliOptions.cpp
+    src/Config.cpp
+    ${ECAPTURE_HOST_SOURCES}
+    ${ECAPTURE_LANG_SOURCES}
+    src/core/TextCoding.cpp)
+  ecapture_apply_common(ecapture-ipc-tests)
+  target_link_libraries(ecapture-ipc-tests PRIVATE Threads::Threads)
+  set_target_properties(ecapture-ipc-tests PROPERTIES OUTPUT_NAME "ecapture-ipc-tests")
+endif()
 
 # ---- 只在 Windows 定义的那批目标：Linux 上如实报告，不静默消失 ----
 #
@@ -1136,12 +1174,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-gui-probe)
+  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-gui-probe)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

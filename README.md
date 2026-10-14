@@ -2346,8 +2346,8 @@ Presets land in the same directories the scripts use, so driving cmake by hand i
 cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
-Only `ecapture-core-tests`, `ecapture-wgc-tests`, `ecapture-cli-text-tests` and (once wxWidgets is installed)
-`ecapture-gui-probe` are buildable on Linux today. The full CLI and the dozen-plus test executables that need a capture
+Only `ecapture-core-tests`, `ecapture-wgc-tests`, `ecapture-cli-text-tests`, `ecapture-save-tests`,
+`ecapture-ipc-tests` and (once wxWidgets is installed) `ecapture-gui-probe` are buildable on Linux today. The full CLI and the dozen-plus test executables that need a capture
 channel still live in the 【平台层 · Windows】 region of `CMakeLists.txt`; the configure log lists them one by one and
 the build directory keeps `ecapture-buildable-targets.txt` so scripts can check it. Features are never deleted to buy
 a good-looking Linux build.
@@ -2514,6 +2514,31 @@ argument. The `--help` / `--version` paths hand over what the caller asked for f
 The stream split is unchanged: once an image claims stdout, every text write goes to stderr, `--help` /
 `--version` / no-condition stay plain text and everything else is the compact JSON. Line endings belong to the
 output layer (Windows normalizes to CRLF, Linux writes `\n`), so the shared text only ever writes `\n`.
+
+### Cross-platform helper-process IPC and timeout cancellation (2026-10, landed on Linux)
+
+Calls that can hang the parent with no interruption point still run in this tool's own helper process.
+This step split the mechanism into shapes both platforms share:
+
+| Layer | What it decides / does | Where |
+| ---- | ---- | ---- |
+| Header framing and limits | The 24-byte header (magic / version / kind / payloadLen / reserved / nonce), size ceilings, little-endian byte primitives. Byte layout is **identical** to the existing wire format; protocol version stays 4 | `src/core/WorkerFraming.h` |
+| Three-phase deadline math | Which ceiling bounds the awaiting-task, running and delivery phases, and where each comes from. The parent hands down a **remaining duration** (budgetMs); each process counts it on its own monotonic clock, and no absolute reading is ever subtracted across processes. Human-confirmation waits do not spend the automatic budget (Deadline pause scopes) | `src/core/HelperTiming.h` |
+| Process and IPC platform service | Direct process creation (Windows: suspended, into a job, resumed; Linux: fork + execve with positional argv, never a shell). The trusted endpoint is answered by the kernel, not by names (Windows: FIRST_PIPE_INSTANCE named pipe + GetNamedPipeClientProcessId; Linux: abstract socket + SO_PEERCRED matched against the PID just spawned, same uid). Deadline-bounded reads and writes. Waiting and termination touch only the cleanup context created for this very child (Windows: KILL_ON_JOB_CLOSE job; Linux: a process group created for it + PDEATHSIG) | Declared `src/HostProcess.h`; implemented in `src/platform/windows/WinHostProcess.cpp` and `src/platform/linux/PosixHostProcess.cpp` |
+| Helper-process discipline | Worker mode is not a public entry: endpoint token shape, parent alive, same session, same image, immediate-parent agreement, cleanup context armed - any failure refuses to work and writes nothing. The payload wire format (`RECT` / `DWORD` / `HRESULT`) remains a **clearly marked transitional bridge** inside each platform's codec; Linux's production payload codec waits for the protocol de-platforming step | `src/WorkerProtocol.h` and `src/Worker.cpp` (Windows orchestration) |
+
+The three outcomes are accounted separately and leave nothing behind: a failed spawn fails on the spot without
+trying another name; a hung helper times out against the parent's budget, and the cancel kills only this spawned
+process plus the group/job created for it, recorded as the "reaped" exit code; if the parent dies first, the
+helper's own watchdog exits on "budget handed down + delivery grace" with a distinct code. Parallel stdout/stderr
+draining is implemented on Linux (one poll loop watching both streams; data past the retention cap is drained but
+not stored); the Windows helper replaces its three standard handles with NUL at entry, so a second readable
+stream never exists there. Verification: the `worker-ipc` suite of `./test-all.sh --layer all`
+(target `ecapture-ipc-tests`) plus gates 3d / 4d of `scripts/core-portability-check.sh` - real parent/child
+processes covering protocol errors, bidirectional traffic, blocking, timeouts, cancellation, abnormal exits,
+endpoint forgery, parallel draining, and fd/zombie accounting. Windows keeps its real-machine entries
+`.\tests\timeout.ps1` and `.\tests\isolation.ps1`. Neither touches user windows or desktop content: the
+helper is the test executable itself and the blocking is synthetic.
 
 ### Verification entry points for this layer
 
