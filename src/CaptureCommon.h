@@ -20,6 +20,7 @@
 
 #include "CliOptions.h"
 #include "Consent.h"
+#include "CaptureDiag.h"   // 共用骨架（下面那条 CaptureError 在它之后追加原生码）
 #include "HdrColor.h"   // FrameColorSpace：一帧的来源色彩空间（GPU 交回来、转换之前那一份事实）
 #include "core/Frame.h"  // CapturedFrame 本体与帧的内存上限（跨平台共用；本文件只放 Windows 取帧件）
 
@@ -59,10 +60,10 @@ void DetailFromCurrentException(std::string* detail);
 std::wstring Win32ErrorText(DWORD gle);
 std::wstring HResultText(HRESULT hr);
 
-// 统一的取帧诊断：option = --capture，value 与 backend 都是这条通道的名字。
-// code 默认 capture.failed；帧超时与窗口消失各有自己的稳定码（调用方处理方式不同：
-// 前者等一会儿还能重试，后者要重新枚举窗口）。stage 在这里定为 capture，
-// target 由流水线补（只有它知道当前处理的是哪个目标）。
+// 统一的取帧诊断（Windows 这一份）：骨架与取值组合走共用层 CaptureDiag.h 那一份，
+// 这里只在它之后**追加**两个平台字段——GetLastError 的原值与一次 COM/WinRT 调用的返回值。
+// 那两个默认参数保持"0 / S_OK 就不写"的既有规矩（见实现里的注释）；跨平台那三件
+//（稳定码、--capture 那一对、通道名与 stage）不在这里判第二遍。
 void CaptureError(Diagnostic* err, const wchar_t* channel, const std::wstring& message,
                   const std::wstring& hint, const wchar_t* code = codes::kCaptureFailed,
                   DWORD gle = 0, HRESULT hr = S_OK);

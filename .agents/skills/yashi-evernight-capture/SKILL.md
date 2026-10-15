@@ -495,7 +495,10 @@ including `limitSource` and the effective `defaultLimit`, per-field
 **用户偏好配置** (the beside-the-exe location rule, absent-is-normal vs broken-fails-before-any-pixel, the full
 section / key / factory-default / allowed-range / matching-CLI-option table, what is deliberately *not* a preference
 and why, the CLI > INI > built-in chain plus "not written vs an explicit false / 0 / none / unset", the one
-output-format precedence and its `formatBasis` values, the two relative-path origins and the `%` template boundary,
+output-format precedence and its `formatBasis` values, which formats the encoder linked into **this** build
+can actually write (one table, `png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif`, and the two very different
+"not supported" answers: no writer on this codec path vs. the library not linked into this build), the
+alpha and HDR boundaries of the encoding step, the two relative-path origins and the `%` template boundary,
 whole-group crop / scale replacement and the two cancel switches, verbosity as one group, INI-written cursor / HDR as
 real requirements, the syntax rules with the 256 KiB / 4096 bounds, the whole `config.*` table with its exit-code
 attribution and the new `line` / `detail` fields, the complete `configview` contract, and the three-step

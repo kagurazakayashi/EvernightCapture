@@ -372,6 +372,7 @@ note.crop_mapping_unavailable_hint	The crop itself is certain (cropRect only nee
 enc.available	currently available: %1
 enc.detail	%1 (%2)
 enc.size_zero	Frame has size 0, cannot encode
+enc.format_unsupported	This build's encoder has no writer for the requested format; pick one from the list below
 enc.failed	Encoding failed
 enc.exception	Unexpected exception while encoding
 enc.empty	The encoder returned 0 bytes

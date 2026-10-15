@@ -64,6 +64,7 @@ NEUTRAL_HEADERS=(
     core/Status.h
     core/Frame.h
     core/Target.h
+    core/CodecCapability.h
     core/WorkerFraming.h
     core/HelperTiming.h
     core/Authorization.h
@@ -75,6 +76,8 @@ NEUTRAL_HEADERS=(
     Config.h
     Consent.h
     CropGeometry.h
+    CaptureDiag.h
+    Encoder.h
     CursorControl.h
     Deadline.h
     Delivery.h
@@ -137,7 +140,9 @@ for h in CaptureCommon.h CaptureWgc.h CaptureDwm.h CapturePrintWindow.h CaptureB
          platform/linux/PosixCliArgs.cpp platform/linux/PosixLocale.cpp \
          platform/linux/PosixHostPath.cpp platform/linux/PosixHostFile.cpp \
          platform/linux/PosixHostDirectory.cpp platform/linux/PosixFileSave.cpp \
-         platform/linux/PosixOutputStream.cpp; do
+         platform/linux/PosixOutputStream.cpp \
+         platform/windows/WinEncoder.cpp platform/windows/WinHdrColor.cpp \
+         platform/linux/PosixEncoder.cpp; do
     f="$SRC/$h"
     if [ -f "$f" ] && ! grep -q '【平台层' "$f"; then
         echo '  TODO  src/'"$h"' 还没有"我属于平台层"那一句归属说明'
@@ -263,6 +268,82 @@ if [ "$fail" -eq 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 3e) 图像处理与编码这一层：不经 CMake，直接编译共用判据本体 + 本平台那份编码器。
+#     它同时证明两件事：ImageOps / CropGeometry / HdrColor / Encoder 这四份共用源文件
+#     在没有 Windows SDK 的机器上编得过，而 Linux 那份编码实现（libpng + libjpeg + 自写 BMP）
+#     与判据链的是同一份本体。缺 libpng / libjpeg 时如实跳过（不算通过、也不算失败），
+#     与 ./build.sh --codec 那句诊断同源；缺依赖绝不用条件编译蒙过去。
+# ---------------------------------------------------------------------------
+ENCODE_SKIPPED=0
+PNG_OK=0
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libpng libjpeg; then PNG_OK=1; fi
+if [ "$fail" -eq 0 ] && [ "$PNG_OK" -eq 1 ]; then
+    echo "== 3e) 编译并运行图像处理与编码判据 =="
+    IMAGE_BIN="$OUT_DIR/image_tests"
+    CROP_BIN="$OUT_DIR/crop_tests"
+    ENCODE_BIN="$OUT_DIR/encode_tests"
+    CODEC_CFLAGS=()
+    CODEC_LIBS=(-lpng -ljpeg)
+    if command -v pkg-config >/dev/null 2>&1; then
+        read -r -a PNG_CFLAGS <<<"$(pkg-config --cflags libpng)"
+        CODEC_CFLAGS=("${PNG_CFLAGS[@]}")
+    fi
+    HOST_PLATFORM_SRC=(
+        "$SRC/platform/linux/PosixHostPath.cpp"
+        "$SRC/platform/linux/PosixHostFile.cpp"
+        "$SRC/platform/linux/PosixHostDirectory.cpp"
+        "$SRC/platform/linux/PosixFileSave.cpp"
+        "$SRC/platform/linux/PosixOutputStream.cpp"
+        "$SRC/platform/linux/PosixLocale.cpp"
+    )
+    CODEC_PLATFORM_SRC=("$SRC/platform/linux/PosixEncoder.cpp" "${HOST_PLATFORM_SRC[@]}")
+    COMMON_MODEL_SRC=(
+        "$SRC/CliOptions.cpp" "$SRC/Config.cpp" "$SRC/Lang.cpp"
+        "$SRC/core/TextCoding.cpp" "$GEN"
+    )
+    IMAGE_SRC_LIST=(
+        "$SRC/CaptureDiag.cpp" "$SRC/CaptureScope.cpp" "$SRC/CropGeometry.cpp"
+        "$SRC/Deadline.cpp" "$SRC/HdrColor.cpp" "$SRC/ImageOps.cpp"
+    )
+    if ! "$CXX" -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -I"$SRC" "${CODEC_CFLAGS[@]}" -DECAPTURE_HAVE_PNG -DECAPTURE_HAVE_JPEG \
+            "$ROOT/tests/encode_state.cpp" "$SRC/Encoder.cpp" "${IMAGE_SRC_LIST[@]}" \
+            "$SRC/OutputPlan.cpp" "$SRC/HistoryArchive.cpp" "$SRC/Delivery.cpp" "$SRC/Json.cpp" \
+            "${COMMON_MODEL_SRC[@]}" "${CODEC_PLATFORM_SRC[@]}" \
+            -pthread "${CODEC_LIBS[@]}" -o "$ENCODE_BIN" 2>"$OUT_DIR/encode_compile.log"; then
+        echo "  FAIL  图像处理与编码层在 Linux 上编不过："
+        sed 's/^/          /' "$OUT_DIR/encode_compile.log" | head -40
+        fail=1
+    else
+        echo "  ok    编译通过：$ENCODE_BIN"
+    fi
+    if ! "$CXX" -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -I"$SRC" "$ROOT/tests/image_state.cpp" "${IMAGE_SRC_LIST[@]}" \
+            "${COMMON_MODEL_SRC[@]}" "${HOST_PLATFORM_SRC[@]}" \
+            -pthread -o "$IMAGE_BIN" 2>"$OUT_DIR/image_compile.log"; then
+        echo "  FAIL  像素操作层在 Linux 上编不过："
+        sed 's/^/          /' "$OUT_DIR/image_compile.log" | head -40
+        fail=1
+    else
+        echo "  ok    编译通过：$IMAGE_BIN"
+    fi
+    if ! "$CXX" -std=c++20 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+            -I"$SRC" "$ROOT/tests/crop_state.cpp" "$SRC/CropGeometry.cpp" \
+            -o "$CROP_BIN" 2>"$OUT_DIR/crop_compile.log"; then
+        echo "  FAIL  裁剪判据层在 Linux 上编不过："
+        sed 's/^/          /' "$OUT_DIR/crop_compile.log" | head -40
+        fail=1
+    else
+        echo "  ok    编译通过：$CROP_BIN"
+    fi
+elif [ "$fail" -eq 0 ]; then
+    ENCODE_SKIPPED=1
+    echo "== 3e) 图像处理与编码判据：NOT RUN（缺 libpng 或 libjpeg，pkg-config 没命中）=="
+    echo "     本脚本不装依赖（AGENTS.md）：apt install libpng-dev libjpeg-dev 后重跑。"
+    echo "     这一条记 NOT RUN，不算通过，也不把共用层改成条件编译蒙过去。"
+fi
+
+# ---------------------------------------------------------------------------
 # 4) 跑判据
 # ---------------------------------------------------------------------------
 # 两份判据程序各自写"N 条通过，M 条失败"；这里汇总成一行放在最后，
@@ -293,6 +374,14 @@ if [ "$fail" -eq 0 ] && [ "$BUILD_ONLY" -eq 0 ]; then
     ec_run_state "文件与保存" "$OUT_DIR/save_tests"
     echo "== 4d) 运行辅助进程通信判据 =="
     ec_run_state "辅助进程通信" "$OUT_DIR/worker_ipc_tests"
+    if [ "$ENCODE_SKIPPED" -eq 0 ]; then
+        echo "== 4e) 运行图像处理与编码判据 =="
+        ec_run_state "图像处理与编码" "$OUT_DIR/encode_tests"
+        echo "== 4f) 运行像素操作判据 =="
+        ec_run_state "像素操作" "$OUT_DIR/image_tests"
+        echo "== 4g) 运行窗口内部裁剪判据 =="
+        ec_run_state "窗口内部裁剪" "$OUT_DIR/crop_tests"
+    fi
     echo "core-portability: $ec_total_pass 条通过，$ec_total_fail 条失败"
     if [ "$ec_total_fail" -ne 0 ]; then fail=1; fi
 fi

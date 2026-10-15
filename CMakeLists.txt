@@ -145,6 +145,70 @@ set(ECAPTURE_LANG_SOURCES
   "${ECAPTURE_LANG_DATA}"
   ${ECAPTURE_LOCALE_SOURCE})
 
+# ---------------------------------------------------------------------------
+# 图像处理与编码：一处登记，各目标同样不再各抄一份文件名
+#   （2026-10：实现跨平台图像处理与编码）
+#
+# 共用那一半（src/Encoder.cpp 与各条像素/色彩判据）在两个平台是同一份本体；真正写字节的
+# 那一段按平台分派：Windows 走 WinRT 的 BitmapEncoder，Linux 走 libpng + libjpeg + 自写 BMP。
+# Linux 那两个库属可选依赖，发现方式与 wxWidgets 同一套规矩：找到就把源文件与链接项挂上并
+# 定义 ECAPTURE_HAVE_*，找不到就硬失败或如实报告，**不**因为缺库而删功能、也不在代码里
+# 拿"大概装得上"当已经装上。缺库时编码器如实交回 enc.format_unsupported + 一句"这个构建
+# 没链上 libpng/libjpeg"，能力表与实际请求同一句答复（判据逐格式核对）。
+# ---------------------------------------------------------------------------
+# HdrColor.cpp 的通道链闸门要问"这条通道落到哪条内部路径"，所以那张登记表（CaptureScope.cpp）
+# 是这一段自己的依赖，一并登记；它本身也是共用源文件，两个平台链同一份本体。
+set(ECAPTURE_IMAGE_SOURCES
+  src/CaptureDiag.cpp
+  src/CaptureScope.cpp
+  src/CropGeometry.cpp
+  src/Deadline.cpp
+  src/HdrColor.cpp
+  src/ImageOps.cpp)
+
+option(ECAPTURE_ENABLE_CODEC "Linux 上构建图片编码路径（libpng + libjpeg）" ON)
+option(ECAPTURE_REQUIRE_CODEC "找不到 libpng / libjpeg 就报错退出（把缺依赖变成硬错误）" OFF)
+
+set(ECAPTURE_ENCODER_IMPL "")
+set(ECAPTURE_ENCODER_LIBS "")
+set(_ec_codec_note "")
+if(WIN32)
+  # WinRT 的 BitmapEncoder 与 WGC 同一个 windowsapp.lib，不引入新的第三方依赖；
+  # 那一路的编码器一定链得上，所以 ECAPTURE_HAVE_* 两条在 Windows 上不需要。
+  set(ECAPTURE_ENCODER_IMPL src/platform/windows/WinEncoder.cpp)
+  set(ECAPTURE_ENCODER_LIBS windowsapp.lib ole32.lib)
+  set(_ec_codec_note "编码路径：winrt.bitmapencoder（与 WGC 同一套依赖，五种格式全支持）")
+elseif(ECAPTURE_ENABLE_CODEC)
+  find_package(PNG QUIET)
+  find_package(JPEG QUIET)
+  if(PNG_FOUND AND JPEG_FOUND)
+    # 版本在这里记账（写进构建日志与 ecapture-buildable-targets.txt，许可证材料在
+    # THIRD-PARTY-NOTICES.md）：PNG_LIBRARY_VERSION / JPEG_LIBRARY_VERSION 由那两个
+    # Find 模块交回，本机实测 libpng 1.6.48 与 libjpeg-turbo 2.1.5（提供 IJG 兼容接口）。
+    set(ECAPTURE_ENCODER_IMPL src/platform/linux/PosixEncoder.cpp)
+    set(ECAPTURE_ENCODER_LIBS PNG::PNG JPEG::JPEG)
+    # 这两条按"整个目录都看得见"的方式登记，而不是只挂某一个目标：编码器源文件将来要进
+    # Linux 那份生产可执行文件，届时它必须与今天判据里链的是同一份编译形状 ——
+    # 只在测试目标上定义会造出"判据里有 PNG 而产品里没有"的两种真相。
+    add_compile_definitions(ECAPTURE_HAVE_PNG ECAPTURE_HAVE_JPEG)
+    set(_ec_codec_note "编码路径：posix.libcodecs，libpng ${PNG_LIBRARY_VERSION} + libjpeg ${JPEG_LIBRARY_VERSION}（png/jpg/bmp 支持；tiff/gif 明确不带）")
+    message(STATUS "${_ec_codec_note}")
+  elseif(ECAPTURE_REQUIRE_CODEC)
+    message(FATAL_ERROR
+      "ECAPTURE_REQUIRE_CODEC=ON 但编码依赖没找全（PNG_FOUND=${PNG_FOUND}，JPEG_FOUND=${JPEG_FOUND}）。\n"
+      "  * 本项目不自动装依赖（AGENTS.md）：Debian/Ubuntu apt install libpng-dev libjpeg-dev，"
+      "Fedora dnf install libpng-devel libjpeg-turbo-devel\n"
+      "  * 只想跑其余离线判据：去掉 --codec（默认允许缺库，编码器会如实报这一格式编不出来）\n"
+      "  * 已经装了而头文件在非常见前缀：-DCMAKE_PREFIX_PATH=/usr/local 再配置一次")
+  else()
+    set(_ec_codec_note "编码路径：posix.libcodecs 未接线（缺 libpng 或 libjpeg），PNG 与 JPEG 会如实报不支持，只有自写的 BMP 可编")
+    message(STATUS "${_ec_codec_note}（依赖缺失不阻塞其余判据：apt install libpng-dev libjpeg-dev 后重跑 ./build.sh --codec）")
+  endif()
+else()
+  set(_ec_codec_note "编码路径：ECAPTURE_ENABLE_CODEC=OFF，Linux 上不构建编码器")
+  message(STATUS "${_ec_codec_note}")
+endif()
+
 # ===========================================================================
 # 【平台层 · Windows】以下整段只在 Windows 定义
 #
@@ -180,6 +244,8 @@ add_executable(ecapture
   src/CropGeometry.cpp
   src/CursorControl.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/HdrDetect.cpp
   src/Deadline.cpp
   src/Worker.cpp
@@ -209,6 +275,7 @@ add_executable(ecapture
   src/CaptureBitBlt.cpp
   src/CaptureDuplication.cpp
   src/Encoder.cpp
+  src/platform/windows/WinEncoder.cpp
   resources/ecapture.rc
 )
 
@@ -295,6 +362,8 @@ endif()
 add_executable(ecapture-consent-tests
   tests/consent_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -341,6 +410,8 @@ add_executable(ecapture-worker-tests
   tests/worker_io_state.cpp
   tests/worker_connect_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/WorkerIo.cpp
   src/WorkerProtocol.cpp
   src/WorkerTiming.cpp
@@ -372,39 +443,17 @@ set_property(TARGET ecapture-worker-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
-# 帧内存形状与单色判定的离线判据（由 tests\image.ps1 编译并运行）。
+# 帧内存形状与单色判定的离线判据（Windows 由 tests\image.ps1 运行，Linux 由 ./test-all.sh 跑同一份）。
 #
 # 为什么单独一个可执行文件：这两件事的判据都要**手工摆出特定的像素排布**（竖条纹、棋盘、
 # 只在某个采样点之外变化、行末带填充、缓冲区短一个字节……），真机截图造不出这些形状，
 # 而"另在测试里抄一份算法当判据"正是这次要修的错 —— 所以直接测生产函数本体（ImageOps.cpp，
-# 连同它调用的 CaptureCommon.cpp 那套诊断）。这里不碰 D3D 取帧，链接项里一个图形库都不需要。
+# 连同它那套诊断的骨架）。
+# 这一份的定义已经搬到文件末尾《Linux 与共用目标》那一段（2026-10：实现跨平台图像处理与编码）：
+# 它只需要纯算术的 ImageOps 与共用诊断骨架，一个像素都不取、一个 GDI 对象都不碰，
+# 所以两个平台共用同一条定义 —— 原来挂在 CaptureCommon.cpp / Consent.cpp / .rc 上那几份依赖
+# 是历史包袱，判据本体不需要它们。本段不再重复一份，避免两边各改一处。
 # ---------------------------------------------------------------------------
-add_executable(ecapture-image-tests
-  tests/image_state.cpp
-  src/HdrColor.cpp
-  src/Deadline.cpp
-  src/ImageOps.cpp
-  src/CaptureCommon.cpp
-  src/CaptureScope.cpp
-  src/Consent.cpp
-  src/CliOptions.cpp
-  ${ECAPTURE_HOST_SOURCES}
-  ${ECAPTURE_LANG_SOURCES}
-  src/ScreenMatch.cpp
-  src/ScreenIdentity.cpp
-  src/WindowMatch.cpp
-  resources/ecapture.rc)
-
-target_include_directories(ecapture-image-tests PRIVATE resources src)
-target_compile_features(ecapture-image-tests PRIVATE cxx_std_20)
-set_target_properties(ecapture-image-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
-target_compile_options(ecapture-image-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
-target_compile_definitions(ecapture-image-tests PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(ecapture-image-tests PRIVATE
-  kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
-set_target_properties(ecapture-image-tests PROPERTIES OUTPUT_NAME "ecapture-image-tests")
-set_property(TARGET ecapture-image-tests PROPERTY MSVC_RUNTIME_LIBRARY
-               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
 # WGC 动态尺寸与帧池生命周期的离线判据（由 tests\wgc.ps1 编译并运行）。
@@ -428,6 +477,8 @@ set_property(TARGET ecapture-image-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-identity-tests
   tests/identity_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/WindowIdentity.cpp
   src/WindowMatch.cpp
@@ -466,6 +517,8 @@ set_property(TARGET ecapture-identity-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-dup-tests
   tests/dup_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/DupGeometry.cpp
   src/ImageOps.cpp
@@ -566,6 +619,8 @@ set_property(TARGET ecapture-capabilities-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-windows-tests
   tests/windows_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/WindowQuery.cpp
   src/WindowIdentity.cpp
@@ -609,6 +664,8 @@ set_property(TARGET ecapture-windows-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-screens-tests
   tests/screens_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/ScreenIdentity.cpp
   src/ScreenQuery.cpp
@@ -638,7 +695,8 @@ set_property(TARGET ecapture-screens-tests PROPERTY MSVC_RUNTIME_LIBRARY
                "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
-# 窗口内部裁剪（--roi / --client-area）的离线判据（由 tests\crop.ps1 编译并运行）。
+# 窗口内部裁剪（--roi / --client-area）的离线判据（Windows 由 tests\crop.ps1 运行，
+# Linux 由 ./test-all.sh 跑同一份）。
 #
 # 为什么单独一个可执行文件：这一批判据要的现场是"一张比请求小的交付图像"与"客户区落在图像之外"
 # —— 真机上要么得把窗口正好改到某个尺寸、要么得把窗口挂出屏幕边缘某条线上，而且都要在
@@ -647,19 +705,9 @@ set_property(TARGET ecapture-screens-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # 测试程序，交付图像的尺寸、它的屏幕矩形问没问到、客户区那块矩形问没问到，全部注入进来逐条判：
 # 负值、相加绕回、越界一条边、零尺寸、图像原点核实不出来、复制模式下客户区整块在外面。
 # 纯算术，不链任何图形库，也不链 Lang（这一层不产生文案）。
+# 定义同样搬到下面的《Linux 与共用目标》那一段：它本来就只 include 共用模型，
+# 原来那句 kFrameMaxSide 从 CaptureCommon.h 取是顺手抄来的平台依赖，已经改从 core/Frame.h 取。
 # ---------------------------------------------------------------------------
-add_executable(ecapture-crop-tests
-  tests/crop_state.cpp
-  src/CropGeometry.cpp)
-
-target_include_directories(ecapture-crop-tests PRIVATE src)
-target_compile_features(ecapture-crop-tests PRIVATE cxx_std_20)
-set_target_properties(ecapture-crop-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
-target_compile_options(ecapture-crop-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
-target_compile_definitions(ecapture-crop-tests PRIVATE UNICODE _UNICODE NOMINMAX)
-set_target_properties(ecapture-crop-tests PROPERTIES OUTPUT_NAME "ecapture-crop-tests")
-set_property(TARGET ecapture-crop-tests PROPERTY MSVC_RUNTIME_LIBRARY
-               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
 # 光标包含与排除（--cursor）的离线判据（由 tests\cursor.ps1 编译并运行）。
@@ -678,6 +726,8 @@ add_executable(ecapture-cursor-tests
   tests/cursor_state.cpp
   src/CursorControl.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/Deadline.cpp
@@ -724,6 +774,8 @@ set_property(TARGET ecapture-cursor-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-hdr-tests
   tests/hdr_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/CursorControl.cpp
   src/SystemCompat.cpp
   src/Deadline.cpp
@@ -768,6 +820,8 @@ set_property(TARGET ecapture-hdr-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-delivery-tests
   tests/delivery_state.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/Delivery.cpp
   src/CaptureCommon.cpp
@@ -841,6 +895,8 @@ add_executable(ecapture-notification-tests
   tests/notification_state.cpp
   src/Notification.cpp
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -882,6 +938,8 @@ add_executable(ecapture-config-tests
   tests/config_state.cpp
   ${ECAPTURE_HOST_SOURCES}
   src/HdrColor.cpp
+  src/CaptureDiag.cpp
+  src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -1060,6 +1118,107 @@ if(NOT WIN32)
   set_target_properties(ecapture-ipc-tests PROPERTIES OUTPUT_NAME "ecapture-ipc-tests")
 endif()
 
+# ecapture-crop-tests —— 窗口内部裁剪（--roi / --client-area）的离线判据（两个平台同一条定义）。
+#
+# 这一份原来只在 Windows 分支定义，而它链的只有 tests/crop_state.cpp + src/CropGeometry.cpp
+# 两份纯算术：判据本体早就没有平台类型，是那份判据自己顺手 include 了 CaptureCommon.h
+# （只为问一句 kFrameMaxSide）。现在改从 core/Frame.h 取，于是"裁剪判据在 Linux 上真跑得起来"
+# 是编译与运行两条都实测过的事实，不是纸面推断 —— 越界请求在两个平台上按同一份规矩拒绝，
+# 不因适配 Linux 而自动裁掉任何一块。
+add_executable(ecapture-crop-tests
+  tests/crop_state.cpp
+  src/CropGeometry.cpp)
+ecapture_apply_common(ecapture-crop-tests)
+set_target_properties(ecapture-crop-tests PROPERTIES OUTPUT_NAME "ecapture-crop-tests")
+
+# ecapture-image-tests —— 帧内存形状、单色判定、旋转裁取、等比缩小的离线判据（两个平台同一条定义）。
+#
+# 这一批判据测的是 src/ImageOps.cpp 的本体（CheckFrameShape / CropFrame / RotateCropFrame /
+# PackTight / ResolveScale / ScaleFrame / FrameIsUniform）与那条"分配之前先把乘加与上限判完"
+# 的边界。原来它挂在 CaptureCommon.cpp / Consent.cpp / .rc 上是从前的链接习惯，判据本体一条
+# GDI 与 WinRT 都不碰；搬共用后 Linux 也编得过、也真跑得起来，两个平台判的是同一份算式。
+# 诊断那一段要文案（cap.frame_invalid 那一族），所以带上 Lang 与平台服务；取帧诊断的骨架
+# 已经搬到 src/CaptureDiag.cpp，不再拖平台头。
+add_executable(ecapture-image-tests
+  tests/image_state.cpp
+  ${ECAPTURE_IMAGE_SOURCES}
+  src/CliOptions.cpp
+  src/core/TextCoding.cpp
+  ${ECAPTURE_HOST_SOURCES}
+  ${ECAPTURE_LANG_SOURCES})
+ecapture_apply_common(ecapture-image-tests)
+set_target_properties(ecapture-image-tests PROPERTIES OUTPUT_NAME "ecapture-image-tests")
+if(WIN32)
+  target_link_libraries(ecapture-image-tests PRIVATE kernel32.lib user32.lib advapi32.lib)
+endif()
+
+# ecapture-encode-tests —— 图像处理与编码那一条链的跨平台离线判据（两个平台同一条定义）。
+#
+# 判的是什么（tests/encode_state.cpp，全部合成数据，一个像素都不从屏幕上取）：
+#   * 棋盘 / 边界色块 / 透明像素 / 带行末填充的行距 —— 先裁剪再缩放再编码，逐条核对画面内容
+#     与通道顺序（B,G,R,A 有没有在编码路上被换错位）。
+#   * 编码产物**独立**验一遍：PNG 与 BMP 由判据自己按格式规范解析块与头（不借编码器那家库），
+#     所以"库自己写的东西库自己读回来"不构成自证；JPEG 另外用 libjpeg / WinRT 解码核对像素，
+#     容差写明是多少（有损格式不许按逐字节相等下结论）。
+#   * 错误路径：坏形状、零尺寸、行距短一个字节、超过单边上限、HDR 帧没过映射、
+#     预算已经用尽、这条路径没有编码器的格式 —— 每一种都要失败、不交出半个字节、且稳定码对得上。
+#   * **能力与实际请求一致**：逐格式核对"登记表说支持""AvailableFormats() 里有它"
+#     "真编一次拿回非空字节"三件事同进同出。
+#   * 编码不依赖 GUI：判据不调任何窗口/弹框/显示服务器；整套判据另外在 env -u DISPLAY 下再跑一遍。
+#   * 同一份编码字节供主交付与历史留档：注入的出口与归档各自记下拿到的字节，判两者逐字节相同、
+#     且归档那一路没有再编一次。
+#
+# 两个平台链的是**自己那一份**编码实现（Windows 走 WinRT BitmapEncoder 本体，Linux 走
+# libpng + libjpeg + 自写 BMP），所以这里判的是真实行为而不是测试里的抄本；Windows 上还需要
+# WinRT 套间（WinrtApartment.cpp）与 windowsapp.lib —— 本机构建没有 MSVC，那一条只能记为未验证。
+if(ECAPTURE_ENCODER_IMPL)
+  # 这一批判据链的是**本平台那一份真编码器**，所以这条编码路径没接线时它根本不定义
+  #（Linux 上缺 libpng / libjpeg、或 ECAPTURE_ENABLE_CODEC=OFF 那两种情况）：
+  # 与其建一个"链不上"或"只判了一半"的目标，不如让 ./test-all.sh 把 codec-encode 记成
+  # NOT RUN 并说清缺什么 —— 缺依赖不算通过，也不算跳过。
+  if(WIN32)
+    set(ECAPTURE_APARTMENT_SOURCE src/WinrtApartment.cpp)
+  else()
+    set(ECAPTURE_APARTMENT_SOURCE "")
+  endif()
+  add_executable(ecapture-encode-tests
+    tests/encode_state.cpp
+    src/Encoder.cpp
+    ${ECAPTURE_ENCODER_IMPL}
+    ${ECAPTURE_APARTMENT_SOURCE}
+    ${ECAPTURE_IMAGE_SOURCES}
+    src/CliOptions.cpp
+    src/OutputPlan.cpp
+    src/HistoryArchive.cpp
+    src/Delivery.cpp
+    src/Json.cpp
+    src/core/TextCoding.cpp
+    ${ECAPTURE_HOST_SOURCES}
+    ${ECAPTURE_LANG_SOURCES})
+  ecapture_apply_common(ecapture-encode-tests)
+  if(ECAPTURE_ENCODER_IMPL)
+    target_link_libraries(ecapture-encode-tests PRIVATE ${ECAPTURE_ENCODER_LIBS})
+  endif()
+  target_link_libraries(ecapture-encode-tests PRIVATE Threads::Threads)
+  if(WIN32)
+    target_link_libraries(ecapture-encode-tests PRIVATE
+      kernel32.lib user32.lib advapi32.lib gdi32.lib dwmapi.lib)
+  endif()
+  set_target_properties(ecapture-encode-tests PROPERTIES OUTPUT_NAME "ecapture-encode-tests")
+  if(ECAPTURE_ENCODER_IMPL)
+    set(_ec_encode_target_note ", ecapture-encode-tests")
+  else()
+    set(_ec_encode_target_note "")
+  endif()
+  if(WIN32)
+    # 平台层那份编码实现的编译开关与主程序一致（WinRT 异常需要 /EHsc）。
+    target_compile_definitions(ecapture-encode-tests PRIVATE WINRT_LEAN_AND_MEAN)
+  endif()
+  set(_ec_encode_target_note ", ecapture-encode-tests")
+else()
+  set(_ec_encode_target_note "")
+endif()
+
 # ---- 只在 Windows 定义的那批目标：Linux 上如实报告，不静默消失 ----
 #
 # 这份名单由 Windows 分支自己复核（下面 get_property 那一条）：名单与真实定义对不上，
@@ -1069,14 +1228,12 @@ set(ECAPTURE_WINDOWS_ONLY_TARGETS
   ecapture-example-ini
   ecapture-consent-tests
   ecapture-worker-tests
-  ecapture-image-tests
   ecapture-identity-tests
   ecapture-dup-tests
   ecapture-compat-tests
   ecapture-capabilities-tests
   ecapture-windows-tests
   ecapture-screens-tests
-  ecapture-crop-tests
   ecapture-cursor-tests
   ecapture-hdr-tests
   ecapture-delivery-tests
@@ -1174,16 +1331,20 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-gui-probe)
+  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-gui-probe)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()
   endforeach()
+  if(NOT ECAPTURE_ENCODER_IMPL)
+    message(STATUS "Linux 的编码路径未接线（${_ec_codec_note}）：ecapture-encode-tests 因此不定义，"
+                   "test-all.sh 会把 encode 那一层记 NOT RUN，不算通过。")
+  endif()
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS "," _ec_win_only_semi)
   string(APPEND _ec_buildable_report "windows-only=${_ec_win_only_semi}\n")
   file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/ecapture-buildable-targets.txt" CONTENT

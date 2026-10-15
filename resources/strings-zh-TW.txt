@@ -371,6 +371,7 @@ note.crop_mapping_unavailable_hint	裁剪本身沒有不確定（cropRect 只需
 enc.available	目前可用：%1
 enc.detail	%1（%2）
 enc.size_zero	影格尺寸為 0，無法編碼
+enc.format_unsupported	這個建構的編碼器沒有要求格式的寫出器，請從下列格式中選一種
 enc.failed	編碼失敗
 enc.exception	編碼時發生未預期的異常
 enc.empty	編碼器傳回 0 位元組

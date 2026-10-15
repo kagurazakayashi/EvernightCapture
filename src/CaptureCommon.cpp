@@ -294,8 +294,7 @@ std::wstring HResultText(HRESULT hr) {
 void CaptureError(Diagnostic* err, const wchar_t* channel, const std::wstring& message,
                   const std::wstring& hint, const wchar_t* code, DWORD gle, HRESULT hr) {
     if (!err) return;
-    *err = Diagnostic{code, message, L"--capture", channel, hint, std::wstring(), channel,
-                      stages::kCapture};
+    CaptureDiag(err, channel, message, hint, code);
     // 错误码只在"当时真拿到了"的时候才写：0 与 S_OK 都意味着"这一步不是靠 Win32 错误码
     // 失败的"，填个 0 进去反而让调用方以为有个叫 0 的故障。
     err->win32 = gle;

@@ -579,6 +579,29 @@ schema）；离线判据 `tests\config_state.cpp`，集成判据 `tests\config.p
 - `formatBasis` 就是这条链的落点，机器读：`cli-format` / `cli-output-extension` / `config-format` /
   `config-output-extension` / `stdout-default-png` / `default-png`（后两条走到的是 png）。
 
+### 哪一种格式真编得出来（按编码路径，不按平台名）
+
+`--format` 的取值空间在两个平台是同一份（`png` / `jpg` / `jpeg` / `bmp` / `tiff` / `gif`），**能不能写出来**
+则由这个构建实际链上的编码器决定，登记表只有一份：`src/core/CodecCapability.h`。同一张表喂
+`AvailableFormats()`、`--capabilities` 的 `compiled` 与真正的编码请求，所以"能力说支持"与"实请求成功"
+不会漂（判据逐格式核对两边同进同出）。
+
+- Windows（`winrt.bitmapencoder`）：五种全支持，都走同一个 `BitmapEncoder` 调用、只换 encoder id。
+- Linux（`posix.libcodecs`）：`png`（libpng）/ `jpg`（libjpeg）/ `bmp`（自写 32 位 BI_RGB）三种支持；
+  `tiff` 与 `gif` 登记为**这条路径没有编码器**——本机没有 libtiff，而 GIF 只能写 256 色调色板，
+  把真彩截图硬压成调色板是一条会静默改变画面的降级，不拿"能写出一个文件"冒充支持。
+  撞上这两条时是 `capture.encoder_unavailable`（退出码 7，`stage=encode`），`message` 说的是
+  "这个构建的编码器没有这一格式的写出器"，`hint` 里跟着 `currently available:` 那一句实际清单——
+  **照 hint 换格式**，不要重试同一种、也不要以为加大 `--timeout-ms` 会有用。
+- 依赖缺失（Linux 上没装 libpng / libjpeg）不会伪装成"本工具不支持这一格式"：那一条报的是
+  这个构建没链上那家库，下一步是装依赖后重新配置，而不是换格式。两种下场在登记表里是
+  `no_encoder` 与 `library_not_linked` 两个词。
+- 透明像素：PNG 与 BMP 保留帧里的 alpha 字节（不合成、不做 unpremultiply 的猜测）；JPEG 没有 alpha
+  通道，因此**只写三个颜色分量**——这不等于"这一帧本来就不透明"。
+- HDR：来源确凿是广色域（FP16 scRGB / PQ / HLG）而这一帧没过 tone mapping 时，编码当场拒绝
+  （`capture.hdr_unverifiable`），不会把广色域像素硬按 8 位 SDR 写出一张发白的图。
+  两条编码路径都只产 8 位 SDR 图片，要 HDR 画面就先用 `--hdr tonemap`。
+
 ### 两个相对路径原点，与模板的边界
 
 - `--out` 的相对路径**继续相对调用方当前目录**；INI 的 `output.path` **相对那一份 INI 所在的目录**。

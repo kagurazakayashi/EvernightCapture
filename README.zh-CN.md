@@ -398,6 +398,10 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    扩展名的名字绝不会被改写，所以 `--out shot.png --format jpeg` 就是把 JPEG 字节原样写进 `shot.png`。
    `webp` 与 `ico` 不接受（`cli.invalid_format`）：本 SDK 没有它们的编码器，`--capabilities` 于是把它们报成
    `compiled: false`，而不是让调用方自己猜。
+   上面那套取值在每个平台都相同，但**这个构建真写得出来哪几种**只由一张表决定（`src/core/CodecCapability.h`）：
+   Windows 上五种都走 WinRT 的 `BitmapEncoder`；Linux 那条编码路径写 PNG / JPEG / BMP，`tiff` 与 `gif` 会以
+   `capture.encoder_unavailable` 拒绝并附上 `currently available:` 的实际清单。`--capabilities` 的 `compiled`、
+   那句提示与真正的编码请求读的是同一张表。
 8. 每一步的失败诊断还带着它自己的坐标，只在这一步真拿到了值时才出现：`target`（哪个目标，窗口是
    `0x…` 句柄、屏幕是 `DISPLAY1` 这样的设备名）、`backend`（哪条通道）、`stage`（`parse` / `match` / `plan` /
    `consent` / `capture` / `encode` / `write` / `stdout` / `report` 九取其一，和 code 一样只追加不改名：`match.*`
@@ -735,7 +739,7 @@ ECAPTURE.EXE --capabilities -v           # 再加一段 probes：每一问的原
 | `session`                             | 是否接在控制台会话上、是否远程桌面、有没有可用的屏幕拓扑与有几块屏、本进程是否被提升过、本进程那一档强制完整性级别（ASCII token `integrityLevel`）、`consentDialogExpected`（推出来的，`consentDialogProbed: false` 明说没真去弹框）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `authorization`                       | `yesSkips: "window-content"`、`desktopPixelsAlwaysAsk: true`、未登记路径按 `desktop` 处理，外加整份内部路径登记表（每条带 `scope` 与 `consentWithoutYes` / `consentWithYes`）——就是《截图授权与 --yes》那张表的机器可读版本                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `backends`                            | 每条路线：`compiled` / `status` / `reason` / `minBuild` / `verifiedOnThisMachine`，以及它在窗口目标与屏幕目标上各走哪条内部路径（`dwm` 那条屏幕退路也在，所以 `--yes` 的适用范围不会被人读大）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `formats`                             | 每种格式：`compiled` / `status` / `reason` / `minBuild` / `registered`，`png` / `jpeg` / `bmp` / `tiff` / `gif` 各一行（五种都已编进这个构建，而且全都走同一个 WinRT `BitmapEncoder` 调用，只是 encoder id 不同）。`registered` 恒为 `unknown`，因为这一层不去实测编码器（实测就是"用一次编码来探测能力"，与"不靠截屏探测"是同一条理由）；曾经列过但没有编码器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里，好让调用方拿到确定答案                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `formats`                             | 每种格式：`compiled` / `status` / `reason` / `minBuild` / `registered`，`png` / `jpeg` / `bmp` / `tiff` / `gif` 各一行（五种都已编进这个构建，而且全都走同一个 WinRT `BitmapEncoder` 调用，只是 encoder id 不同；这里的 `compiled` 与 `AvailableFormats()`、与实际 `--format` 请求读的是同一张表 `src/core/CodecCapability.h`，所以「能力报支持」与「真能编出来」不会各说一套）。`registered` 恒为 `unknown`，因为这一层不去实测编码器（实测就是"用一次编码来探测能力"，与"不靠截屏探测"是同一条理由）；曾经列过但没有编码器的 `webp` / `ico` 以 `compiled: false` + `reason: "not_compiled"` 留在这里，好让调用方拿到确定答案                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `cursor`                              | `--cursor` 这一条的故事：`default`（不给这条选项时的下场）、三种取值、那唯一一条开关写成 `compiled` / `status` / `reason` / `minBuild`（19041）/ `verifiedOnThisMachine`，然后每条已登记的内部路径一行（`capability` 是 `settable` / `excludes_cursor` / `pointer_state_unverified` / `unregistered`，加 `reason` 与 `include` / `exclude` 各三值 `yes` / `no` / `unknown`），末尾 `pointerShapeCompositing: "never"` 与 `pixelRetouching: "never"`。duplication 那两条是 `capability: pointer_state_unverified`、`include` 与 `exclude` 都是 `no`——桌面那一帧可能已经把指针画在里面，而本工具从不合成指针形状，这证明不了帧里没有指针。没登记的路径读 `unknown` 而不是猜一个答案                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `color`                               | `--hdr` 这一条的故事：`default`（不给这条选项时的下场）、三种取值（`auto` / `tonemap` / `refuse`）、`compiled` / `status` / `reason` / `verifiedOnThisMachine`。`status` 说的是"这个构建带不带得回广色域帧 + 映射怎么做"，**不**去问那块屏此刻是不是 HDR 模式（reason 是 `hdr_display_mode_not_probed`）；`verifiedOnThisMachine` 恒为 `no`（本项目没有 HDR 屏，不宣称色彩验收通过）。每条已登记的内部路径一行，`capability` 是 `wide_gamut_capable`（只有 `wgc` / `screen.wgc`）/ `wide_gamut_unverified`（`duplication.frame` / `screen.duplication`：那块桌面纹理**可能**回来 FP16 或 10 位，但本构建在 `DuplicateOutput` 之前从不问显示器的色彩空间，所以既证明不了拿到的是什么，也兑现不了任何策略）/ `sdr_source_only`（其余只能带回 8 位 DC 的那几条）/ `unregistered`；另外逐行给 `honorsExplicitPolicy`——只有那两条 `wgc` 是 `true`，这正是"本构建只有 `wgc` 兑现得了 `tonemap` / `refuse"` 的机器可读写法。外加 `toneMapping` / `floatIntermediateFrame: "per_pixel_registers"` / `encoderOutput: "sdr_bgra8"`（HDR 一律映射成 8 位 SDR 交付，不出 HDR 原生图）                                                     |
 | `autoChainWindow` / `autoChainScreen` | 本机现在能试的 `auto` 链。与截图那次 `-v` 回显的 `input.captureChain` 由**同一个** `GateChannels` 算出，`tests\capabilities.ps1` 逐条比对这两处                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -1607,6 +1611,7 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
 | 像素级"这张图里看得见/看不见指针"；低于内部版本 19041 的机器                                    | SDK 给不出像素级的答案，而这台机器比 19041 更新（`tests\cursor.ps1`）                                                   |
 | 19045 以外的 Windows 版本 · ARM64 · Server · 远程桌面 · 没有可交互桌面的会话 · 真的缺某个编码器 | 这里安排不出第二套操作系统；这些判据改用注入的假版本在离线层判（`tests\compat.ps1`、`tests\capabilities.ps1`）          |
 | `tiff` 与 `gif` 在 `--scale` 下的下场，以及其他只与编码器有关的行为                             | `tests\scale.ps1` 判的是 `png` / `bmp` / `jpeg`；那两种共用编码调用却没被这条判据覆盖                                   |
+| 同一帧在两个平台编码后逐字节是否相同（以及各自的 PNG 怎么处理透明像素） | 这台机器只能构建一个平台：Linux 那一路是解码回读后逐像素判的（`tests/encode_state.cpp`），Windows 那一路只有容器结构核对，没链解码器，`tests\encode.ps1` 把解码回读如实记成 Skip。两边都不把对面的通过算成自己的通过 |
 | `--capabilities` 用"真的产出一张图"来探测能力，以及确认框真的被显示出来过                       | 这两种探测就等于去动手做它只想报告的那件事（`encoder_state_not_probed`、`consent_dialog_state_inferred_not_probed`）    |
 | 历史副本遇到"真盘满""真没权限"那两种现场                                                          | 造这两样要改这台机器的存储设置或 ACL，而本任务不许；离线层判的是**归类**（那一次调用交回的 win32 与稳定码原样进 `errors`，不被折成别的原因，也不被随后看见的超时覆盖），真机一层用"那个位置是个文件"与"是个重解析点"两种能诚实造出来的现场（`tests\history.ps1`） |
 | 真人在确认框上答"否"那一次不建历史                                                                | 判据不弹真实确认框、也不替任何人答它。"主交付没成功就不发布副本"由离线层判（半段标准输出与写失败那两种都断言归档一次都没被调用），目录确实没多出来的那一条由 `tests\consent.ps1` 与 `tests\history.ps1` 第 7 节各自负责 |
@@ -1865,7 +1870,7 @@ Linux 用 GCC / Clang，构建目录固定在仓库根的 `build-linux/<编译�
 
 | 命令 | 这一条干什么 |
 | ---- | ------------ |
-| `./build.sh` | 配置 + 构建（默认 `Release`，编译器按 `$CXX` 再退到 PATH 上的 g++ / clang++）。可加 `--config Debug`、`--compiler clang`、`--target wgc-tests`、`--clean`、`--gui`、`--list-targets`、`-- -- -j4` |
+| `./build.sh` | 配置 + 构建（默认 `Release`，编译器按 `$CXX` 再退到 PATH 上的 g++ / clang++）。可加 `--config Debug`、`--compiler clang`、`--target wgc-tests`、`--clean`、`--gui`、`--codec` / `--no-codec`、`--list-targets`、`-- -- -j4` |
 | `./run.sh` | 运行本平台**真能构建**的那份可执行文件，默认 `core-tests`；`--target` 或 `--exe` 点名。找不到产物就报「前置不成立」，**绝不退回去跑别处的旧文件**；指名 `ecapture` 会当场得到它暂不可构建的准确原因，不会被静默换成别的东西 |
 | `./debug.sh` | GDB / LLDB 调试会话：默认 `Debug`（带 `-g`），产物不在就先构建（`--rebuild` 强制重建，`--no-build` 只用现成的）；`--eval "break main"` 把一条命令作为一个 argv 递进调试器（按空格劈开会让 gdb 在装载可执行文件之前就下断点，当场下不上），`--script <文件>` 走脚本，`--batch` 非交互 |
 | `./test-all.sh` | 测试总入口：先构建再**串行**跑，`--list` 只看计划不启动。分 `--layer offline`（默认）/ `isolated`（要图形会话，有 `xvfb-run` 就用在虚拟显示上，否则说明用的是当前会话）/ `manual`（真机人工，脚本不代跑）/ `all`；`--only` / `--except` 按套件名筛，`--stop-on-fail` 第一套没过就收 |
@@ -1882,7 +1887,7 @@ cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
 Linux 上当前可构建的目标只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
-`ecapture-save-tests`、`ecapture-ipc-tests` 与（装了 wxWidgets 之后的）`ecapture-gui-probe`。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
+`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（只在找得到 libpng 与 libjpeg 时）与（装了 wxWidgets 之后的）`ecapture-gui-probe`。缺编码依赖时 `ecapture-encode-tests` **不定义**（不摆一个只建了一半的目标）：`./test-all.sh` 把 `codec-encode` 记成 `NOT RUN` 并给出安装提示，`./build.sh --codec` 则把这一条缺失变成配置阶段硬失败。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
 【平台层 · Windows】那一段里，配置日志会逐条列出这份名单，构建目录里也留一份
 `ecapture-buildable-targets.txt` 给脚本核对 —— 不拿"删掉功能"换一次好看的 Linux 构建成功。
 
@@ -2030,6 +2035,26 @@ Windows 专属的说法（`--hwnd`、`--class`、`--capture` 的那些 Windows �
 异常退出、端点防伪、并行排干、描述符与僵尸记账。Windows 对应的真机入口仍是 `.\tests\timeout.ps1` 与
 `.\tests\isolation.ps1`。两边都不碰任何用户窗口与桌面内容：辅助进程是测试可执行文件自己，阻塞用合成动作。
 
+### 跨平台图像处理与编码（2026-10，Linux 编码路径落地）
+
+帧就是帧，与它从哪条通道来无关。像素处理与编码按这套工具一贯的方式分层——判据共用，系统动作各平台一份：
+
+| 层 | 判什么 / 做什么 | 在哪里 |
+| ---- | ---- | ---- |
+| 帧的形状与所有权 | `CapturedFrame` 自己持有那份 `std::vector<uint8_t>`：BGRA8、自上而下、行距 = `stride` 字节，不借后端任何句柄，方向在交付之前就做完。上限是能说清楚的数（单边 16384、整帧 1 GiB），所有乘加在**分配之前**用 64 位判完——外部交回来的尺寸声明换不来一次无界分配。行距必须落在 `[width*4, 2*width*4]` | `src/core/Frame.h`、`src/ImageOps.h` 的 `CheckFrameShape` |
+| 裁剪 / 缩放 / 旋转 / 紧凑化 | 越界与空矩形只能拒绝，绝不裁到边上为止；`--roi` 与客户区落在**这张图像自己的像素坐标**里（物理像素，不是桌面坐标、也不是逻辑坐标）；缩放先裁再缩、比例只减不增；行末填充不参与 | `src/CropGeometry.cpp`、`src/ImageOps.cpp` |
+| 色彩与 HDR | 来源色彩空间、"这一帧有没有过映射"、"这块屏当时怎么答"是三件独立事实。广色域帧在下游看到之前已经被映射回 8 位 BGRA；说不出来源色彩空间的一帧被拒绝，而不是硬按 sRGB 解释 | `src/HdrColor.cpp`（纯算术），DXGI 编号那两张表在 `src/platform/windows/WinHdrColor.cpp` |
+| 编码前置判据 | 两个平台共用一份实现：零尺寸、坏形状、32 位长度上限、"不是 8 位 sRGB 又没过 tone mapping"、"这条编码路径没有这一格式的写出器"、"预算已经用尽"——然后才搬紧凑行。失败时调用方那份缓冲是空的：绝不把半张图交给交付那一步 | `src/Encoder.cpp`（`CheckEncodeInput`、`EncodeFrame`） |
+| 格式支持矩阵 | 哪条编码路径写得出哪一种格式，写成数据，每一格带一句恒 ASCII 的理由。`AvailableFormats()`、调用方实际拿到的那句提示、`--capabilities` 里的 `compiled` 都读这一张表 | `src/core/CodecCapability.h` |
+| Windows 编码器 | `Windows.Graphics.Imaging.BitmapEncoder`（与 WGC 同一套依赖，JPEG 质量接口明确）：png / jpeg / bmp / tiff / gif。每个异步等待点只按剩余预算等，到点请求 `IAsyncInfo::Cancel`（合作式取消——照实说明，不假装已经强制停下） | `src/platform/windows/WinEncoder.cpp` |
+| Linux 编码器 | PNG 用 libpng（8 位 RGBA，alpha 原样带上）、JPEG 用 libjpeg（基线，一次喂三个颜色分量）、BMP 是自己写的 32 位 BI_RGB。预算摆在库交还给我们的那些点上（逐行喂数据 + 写出回调），产出增长有上限，中止就清掉那半段字节。TIFF 与 GIF 这一路**不提供**：本机没有 libtiff，而 GIF 的 256 色调色板会把截图静默压成调色板 | `src/platform/linux/PosixEncoder.cpp` |
+
+编码不需要 GUI，也不连显示服务器：它一个窗口工具集都不初始化。Linux 判据里两条现场核对这件事——一轮编码之后进程地址映射里没有 `libX11` / `libgtk` / `libwx` / wayland 的任何一份库，而库自己的抱怨一次都没落到 stderr。编码产物一次生成就供主输出与历史副本共用（不重拍、不重编码、不读回主文件）。
+
+alpha 从不靠猜：PNG 与 BMP 原样保留帧里的 alpha 字节（不合成、不做 unpremultiply），而 JPEG 根本没有 alpha 通道——这与 Windows 那一路用 `BitmapAlphaMode::Ignore` 说的是同一句"这一格式不表示透明"，而不是"这一帧是全不透明的"。
+
+Linux 编码路径的依赖与许可证（本机实测版本、许可名称与原文位置）记在 **`THIRD-PARTY-NOTICES.md`**：仓库里不复制任何上游源码，也不自动装依赖——CMake 发现 `PNG::PNG` / `JPEG::JPEG`，缺了就如实报缺口。
+
 ### 这一层的验证入口
 
 | 命令 | 判什么 |
@@ -2038,6 +2063,8 @@ Windows 专属的说法（`--hwnd`、`--class`、`--capture` 的那些 Windows �
 | `scripts/core-portability-check.sh` | Linux 一层：同一份 `tests/core_boundary_state.cpp` 用 g++ 编译并运行，再加一条"这些头不许渗平台类型"的静态清单。**编得过就是边界成立的机器证明** |
 | `.\tests\cli-text.ps1` | 离线一层：`build\ecapture-cli-text-tests.exe` 判编码边界、四语嵌入与回退、参数与配置、JSON 转义与标准流通道纪律，一个像素都不取、不弹框 |
 | `./test-all.sh` 的 `cli-text` 套件，以及 `scripts/core-portability-check.sh` 的 3b / 4b | Linux 一层：同一批共用源文件**不经 CMake 目标**自己生成嵌入文案再用 g++ 编好跑完。这条同时是"共用 CLI 层真的不含平台头"的机器证明，也是"改完文案不重编就会被查出来"的现场 |
+| `.\tests\encode.ps1` | 离线一层：`build\ecapture-encode-tests.exe` 对着**真的 WinRT 编码器**跑图像与编码判据（容器结构、通道顺序与 alpha、HDR 直通拒绝、能力与实请求一致、预算、主交付与历史共用同一份字节）。像素级解码回读只在 Linux 实测，Windows 这侧如实记 Skip，不拿结构核对冒充像素核对 |
+| `./test-all.sh` 的 `image-ops` / `crop-geometry` / `codec-encode` 套件，以及 `scripts/core-portability-check.sh` 的 3e / 4e-4g | Linux 一层：同一批判据源文件链 `PosixEncoder.cpp`（libpng + libjpeg + 自写 BMP）编译并运行——编码 121 条、像素操作 186 条、窗口内部裁剪 63 条，全部用合成帧，一个像素都不从屏幕取。缺 libpng / libjpeg 时目标不定义，记 `NOT RUN` 并给出安装提示 |
 | `./test-all.sh` | Linux 总跑：`offline` 层把上面那条与 CMake 构建出来的 `ecapture-core-tests`、`ecapture-wgc-tests` 一起串起来判；`isolated` 层要 wxWidgets 与图形会话（缺依赖记 `NOT RUN`，绝不算通过）；`manual` 层留给真机人工验证 |
 
 两条入口用的是同一个源文件——它一条都不 include `windows.h`。这一步没有做的（属于后续步骤）：
@@ -2051,6 +2078,7 @@ Windows 那一侧）。
 
 EvernightCapture 采用 [木兰宽松许可证第 2 版（Mulan PSL v2）](http://license.coscl.org.cn/MulanPSL2)，
 中英双语全文见 [LICENSE](LICENSE)。
+第三方依赖及其许可证（Windows 侧的 SDK / C++/WinRT 那一路，Linux 侧的 libpng、zlib 与 libjpeg，以及 GUI 那一步的 wxWidgets）记在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
 ```
 Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi)

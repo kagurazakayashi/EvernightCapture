@@ -321,6 +321,7 @@ $suites = @(
     [pscustomobject]@{ Name = 'core-boundary'; Real = 'none';   OfflineLayer = '';            Note = '跨平台核心边界：共用模型不渗平台类型、功能矩阵与隐私判据（一个像素都不取）' },
     [pscustomobject]@{ Name = 'cli-text'; Real = 'none';        OfflineLayer = '';            Note = '命令行文本与多语言资源：UTF-8 编解码边界、四语嵌入与回退、参数/配置/JSON/标准流通道（一个像素都不取）' },
     [pscustomobject]@{ Name = 'compat';       Real = 'none';    OfflineLayer = '';            Note = '版本下限闸门与发布产物的 API set 导入（只读探测，不拍像素）' },
+    [pscustomobject]@{ Name = 'encode';       Real = 'none';    OfflineLayer = '';            Note = '跨平台图像处理与编码：合成帧裁剪缩放后编真格式、容器结构核对、HDR 直通拒绝、能力与实请求一致、同一份字节供主交付与历史（一个像素都不取）' },
     [pscustomobject]@{ Name = 'cursor';       Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--cursor 逐路径登记表与结果三键' },
     [pscustomobject]@{ Name = 'hdr';          Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '--hdr 色彩事实分层与 tone mapping 数学' },
     [pscustomobject]@{ Name = 'delivery';     Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '交付事实与期限合规分开记' },

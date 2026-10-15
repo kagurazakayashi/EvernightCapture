@@ -1,5 +1,7 @@
+/docs
 /.w*
 /A*.md
+/M*.md
 /build
 # Linux 的构建目录与 Windows 的 build\ 完全分开：两边各有一份 CMakeCache、生成器与产物，
 # 共用同一份缓存会互相写坏编译器设置与安装器路径约定。子目录名 <编译器>-<配置>

@@ -371,6 +371,7 @@ note.crop_mapping_unavailable_hint	切り抜きそのものに不確定はあり
 enc.available	現在利用可能：%1
 enc.detail	%1（%2）
 enc.size_zero	フレームサイズが 0 のためエンコードできません
+enc.format_unsupported	このビルドのエンコーダーには要求された形式の書き出し器がありません。下記の一覧から形式を選んでください
 enc.failed	エンコードに失敗しました
 enc.exception	エンコード中に予期しない例外が発生しました
 enc.empty	エンコーダーが 0 バイトを返しました

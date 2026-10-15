@@ -119,6 +119,9 @@ ec_select_target() {
         wgc-tests|ecapture-wgc-tests) EC_TARGET_CMAKE="ecapture-wgc-tests" ;;
         cli-text-tests|ecapture-cli-text-tests) EC_TARGET_CMAKE="ecapture-cli-text-tests" ;;
         save-tests|ecapture-save-tests) EC_TARGET_CMAKE="ecapture-save-tests" ;;
+        crop-tests|ecapture-crop-tests) EC_TARGET_CMAKE="ecapture-crop-tests" ;;
+        image-tests|ecapture-image-tests) EC_TARGET_CMAKE="ecapture-image-tests" ;;
+        encode-tests|ecapture-encode-tests) EC_TARGET_CMAKE="ecapture-encode-tests" ;;
         ipc-tests|ecapture-ipc-tests) EC_TARGET_CMAKE="ecapture-ipc-tests" ;;
         gui-probe|ecapture-gui-probe) EC_TARGET_CMAKE="ecapture-gui-probe" ;;
         ecapture|ecapture.exe|ECAPTURE.EXE)
@@ -127,10 +130,12 @@ ec_select_target() {
 辅助进程通信这一层的 Linux 平台服务也已经落地（PosixHostProcess，判据在 ipc-tests），
 还缺的是这几段：src/Report.cpp 里响应组装要调的窗口/屏幕枚举与取帧通道、EnvReport 的 Windows
 探测、NotificationToast 的 WinRT 通知、Consent 的确认框，以及 Linux 截图后端本体。
-现在能跑的：core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests（都一个像素都不取），以及 gui-probe。"
+图像处理与编码那一段已经跨平台（crop-tests / image-tests / encode-tests 三条判据都在 Linux 真跑）。
+现在能跑的：core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests、crop-tests、
+image-tests、encode-tests（都一个像素都不从屏幕取），以及 gui-probe。"
             ;;
-        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests gui-probe）" ;;
-        *) ec_die_args "不认识的目标 '$want'（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests gui-probe；ecapture 会如实告知暂不可构建）" ;;
+        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests gui-probe）" ;;
+        *) ec_die_args "不认识的目标 '$want'（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests gui-probe；ecapture 会如实告知暂不可构建）" ;;
     esac
     case "$EC_TARGET_CMAKE" in
         ecapture-gui-probe) EC_TARGET_LAYER="gui" ;;

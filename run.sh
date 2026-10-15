@@ -21,7 +21,8 @@ usage() {
     cat <<'EOF'
 用法：./run.sh [选项] [-- 传给被运行程序的参数]
 
-  --target core-tests|wgc-tests|cli-text-tests|gui-probe   要运行哪个目标，默认 core-tests
+  --target core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|crop-tests|
+           image-tests|encode-tests|gui-probe      要运行哪个目标，默认 core-tests
   --exe <路径>                               直接点名一个可执行文件（跳过 --target 的解析）
   --config Debug|Release|RelWithDebInfo      从哪一份构建目录里取产物，默认 Release
   --compiler gcc|clang|<路径>                 同上（决定构建目录名），默认按 CXX / PATH 挑

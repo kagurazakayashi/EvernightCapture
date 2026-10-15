@@ -1,4 +1,6 @@
-// 图像帧校验与质量判断的离线判据（由 tests\image.ps1 运行 build\ecapture-image-tests.exe）。
+// 图像帧校验与质量判断的离线判据。Windows 由 tests\image.ps1 运行
+// build\ecapture-image-tests.exe，Linux 由 ./test-all.sh 跑同一份判据 —— 这里判的是
+// src/ImageOps.cpp 的本体与那条"分配之前先把乘加与上限判完"的边界，一个像素都不从屏幕取。
 //
 // 为什么在这一层测：这一批判据全是"一帧像素的内存形状说不说得通"与"整幅到底是不是一个颜色"，
 // 两者都要**手工摆出特定的像素排布**才判得出来 —— 竖条纹、棋盘、只在一列或一处变化的图，
@@ -13,12 +15,9 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
-#include "../src/CaptureCommon.h"
+// 一帧像素的内存形状与上限都在 core/Frame.h（跨平台共用形状）：这份判据从来不需要平台头，
+// 从前从 CaptureCommon.h 取那两条常数是顺手抄的依赖，跨平台图像处理与编码这一步把它改直。
+#include "../src/core/Frame.h"
 #include "../src/CliOptions.h"
 #include "../src/ImageOps.h"
 #include "../src/Lang.h"
@@ -566,7 +565,7 @@ void TestLimits() {
     // 上限之内最大的一帧（行距 = 行长）正好落在整幅上限上，不多不少：判据不会把自己卡死
     Check(static_cast<uint64_t>(kFrameMaxSide) * 4ull * kFrameMaxSide == kFrameMaxBytes,
           "16384x16384 的紧凑帧正好等于整幅上限");
-    // GDI 那条 Dib::Create 用的就是同一个常数（源码里没有第二份 16384 的字面量），
+    // GDI 那条 Dib::Create 用的就是同一个常数（Windows 平台层里没有第二份 16384 的字面量），
     // 这里只能判"形状检查接受正好等于上限的边长"，真机分配留给 smoke / channels。
     Check(InspectFrameShape(FrameOf(kFrameMaxSide, 1)) == FrameShape::kOk,
           "边长取到上限时形状检查放行");

@@ -1,5 +1,6 @@
-// 窗口内部裁剪（--roi / --client-area）的离线判据（由 tests\crop.ps1 运行
-// build\ecapture-crop-tests.exe）。
+// 窗口内部裁剪（--roi / --client-area）的离线判据。Windows 由 tests\crop.ps1 运行
+// build\ecapture-crop-tests.exe，Linux 由 ./test-all.sh 跑 build-linux/<编译器>-<配置>/
+// ecapture-crop-tests —— 同一份判据、同一份判据本体，两个平台各判各的现场。
 //
 // 测的是 src/CropGeometry.cpp 那三个纯函数本身，而不是在测试里另抄一份算式：真机上
 // "一张比请求小的交付图像""客户区正好挂在屏幕边缘之外""窗口在选定之后改了尺寸"这几种现场
@@ -19,7 +20,11 @@
 #include <cstring>
 #include <limits>
 
-#include "../src/CaptureCommon.h"   // 只要 kFrameMaxSide 那一条资源上限（用来核对它没跟解析层漂移）
+// 只要 kFrameMaxSide / kFrameMaxBytes 那两条资源上限（用来核对它没跟解析层漂移）。
+// 从前这一句从 CaptureCommon.h 取，于是这份纯算术判据被拖进了【平台层 · Windows】的头，
+// Linux 上链不起来；跨平台图像处理与编码这一步把它改从 core/Frame.h 取 —— 那两个数本来就
+// 定义在那儿，一个 GDI 对象都不需要。
+#include "../src/core/Frame.h"
 #include "../src/CropGeometry.h"
 
 using namespace ecapture;

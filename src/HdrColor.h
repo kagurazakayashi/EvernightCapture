@@ -123,7 +123,8 @@ inline bool FrameColorSpaceIsHdr(FrameColorSpace cs) {
 
 // 一个 DXGI_FORMAT 的原值 → 本工具叫得出名字的来源色彩空间。签名收 uint32_t 是为了让这份
 // 头文件不必 include DXGI 头（解析层与只链纯算术的离线判据目标都被拖进去就麻烦了），而实现
-// 写在 src/HdrColor.cpp：那一份 include <dxgi.h>，switch 里用的是 SDK 的枚举符号本身，
+// 写在平台层 src/platform/windows/WinHdrColor.cpp（跨平台图像处理与编码这一步搬的）：那一份 include
+// <dxgi.h>，switch 里用的是 SDK 的枚举符号本身，
 // 所以这里**没有**手抄的格式编号可以抄错（历史上这一条被手抄错过：R10G10B10A2_UNORM 是 24，
 // 61 是 R8_UNORM，而那份表把 61 当成了 10 位包并按 PQ 去解 —— 每像素字节数与映射双双错位）。
 // 除 8 位 BGRA 与 FP16 scRGB 那两条之外，一律不叫出色彩空间的名字：认不出布局是 kUnknown，
@@ -448,7 +449,8 @@ inline HdrReport MakeHdrReport(const HdrRequest& request, const std::wstring& pa
 // DisplayHdrState 那几个取值声明在上面（报告合成那一节之前，那里要看得到它）。
 
 // 一个 DXGI 输出的 color space 原值（DXGI_COLOR_SPACE_TYPE）→ 是不是 HDR。写成收 uint32_t 让
-// 这份头文件不 include DXGI 头；实现写在 src/HdrColor.cpp，那一份 include <dxgi.h>，switch 里
+// 这份头文件不 include DXGI 头；实现写在平台层 src/platform/windows/WinHdrColor.cpp，那一份
+// include <dxgi.h>，switch 里
 // 用 SDK 的枚举符号，所以这里也**没有**手抄的编号可抄错，而离线判据照样能逐条注入数字。
 // 判据只有两条：带 ST.2084(PQ) 或 HLG 那一条传递函数的是 HDR；SDK 里有名字的其余显示色彩空间
 // （G22 / G10 / G24，含 BT.2020 原色那种宽色域 SDR）不是 HDR；RESERVED、CUSTOM 与表外值

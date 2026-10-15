@@ -16,6 +16,7 @@
 #include "CursorControl.h"   // 光标能力登记表（cursor.paths 那一段逐条写它，不另判一次）
 #include "HdrColor.h"        // HDR 能力登记表（color.paths 那一段逐条写它，不另判一次）
 #include "Deadline.h"        // kIsolatedCallMs
+#include "core/CodecCapability.h"   // 格式支持矩阵（formats 那一段与实请求同源）
 #include "Json.h"
 #include "WgcGeometry.h"     // kMaxWgcRecreates
 
@@ -524,10 +525,15 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     // 六条通道共用同一个 BitmapEncoder，所以整工具那一道下限（AssessRuntime）就是格式的
     // 版本判据；再叠上"某个编码器确实没登记"这一问（真机上没去实测，所以是 unknown）。
     const Capability runtime = AssessRuntime(probe.os);
+    // "这个构建带不带得回这一格式"问的是 core/CodecCapability.h 那张表 —— 它同时是
+    // AvailableFormats() 与实际 --format 请求的答复来源（判据 tests/encode_state.cpp 逐格式核对
+    // 两边一致）。这里不再点一遍"五种全支持"，否则同一句能力就有两处说法。
+    // Windows 这一路五种全登记为支持，所以这一句算出来的 compiled 与原来写死的 true 逐格相同。
+    const CodecPath codecPath = BuildCodecPath();
     for (const ImageFormat format : kImplementedFormats) {
         FormatReport f;
         f.name = FormatName(format);
-        f.compiled = true;
+        f.compiled = CodecSupportFor(codecPath, format) == CodecSupport::kSupported;
         f.minBuild = runtime.minBuild;
         f.status = StatusOfSupport(runtime.support, &f.reason);
         f.registered = probe.EncoderRegistered(format);

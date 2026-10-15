@@ -63,7 +63,8 @@ EOF
 # ---------------------------------------------------------------------------
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
-SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths worker-ipc gui-probe-init"
+SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths worker-ipc image-ops \
+ crop-geometry codec-encode gui-probe-init"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -100,6 +101,24 @@ SUITE_KIND[worker-ipc]="cmake"
 SUITE_TARGET[worker-ipc]="ecapture-ipc-tests"
 SUITE_NOTE[worker-ipc]="跨平台辅助进程通信与超时取消判据（真父子进程：协议错误、双向通信、阻塞、超时、取消、异常退出、端点防伪、并行排干、收尾与泄漏记账，120 条）"
 SUITE_PREREQ[worker-ipc]=""
+
+SUITE_LAYER[image-ops]="offline"
+SUITE_KIND[image-ops]="cmake"
+SUITE_TARGET[image-ops]="ecapture-image-tests"
+SUITE_NOTE[image-ops]="帧内存形状与像素操作判据（合成棋盘/条纹/行末填充/短缓冲、裁剪、旋转裁取、等比缩放、单色判定、上限与文案 key）"
+SUITE_PREREQ[image-ops]=""
+
+SUITE_LAYER[crop-geometry]="offline"
+SUITE_KIND[crop-geometry]="cmake"
+SUITE_TARGET[crop-geometry]="ecapture-crop-tests"
+SUITE_NOTE[crop-geometry]="窗口内部裁剪判据（--roi / --client-area：越界拒绝不自动裁短、问不出来与放不下分两档、相加绕回在 64 位里判）"
+SUITE_PREREQ[crop-geometry]=""
+
+SUITE_LAYER[codec-encode]="offline"
+SUITE_KIND[codec-encode]="cmake"
+SUITE_TARGET[codec-encode]="ecapture-encode-tests"
+SUITE_NOTE[codec-encode]="跨平台图像处理与编码判据（裁剪→缩放→编码一条链：容器结构独立核对、通道顺序与 alpha、HDR 直通拒绝、预算与产出上限、能力与实请求一致、同一份字节供主交付与历史、不连显示服务器）"
+SUITE_PREREQ[codec-encode]=""
 
 SUITE_LAYER[gui-probe-init]="isolated"
 SUITE_KIND[gui-probe-init]="cmake"
@@ -291,7 +310,11 @@ for s in "${PLAN[@]}"; do
     fi
     t="${SUITE_TARGET[$s]}"
     if ! ec_target_is_buildable "$t"; then
-        if [ "$t" = "ecapture-gui-probe" ]; then
+        if [ "$t" = "ecapture-encode-tests" ]; then
+            ec_add_gap "$s" "编码判据目标没生成 = 本机没找到 libpng 或 libjpeg（不是截图后端缺失，也不是 Windows-only）。
+      装上再跑（本脚本不自动装）：Debian/Ubuntu apt install libpng-dev libjpeg-dev
+      想让缺依赖变成硬错误：./build.sh --codec"
+        elif [ "$t" = "ecapture-gui-probe" ]; then
             ec_add_gap "$s" "GUI 探针目标没生成 = 本机没找到 wxWidgets。
       装上再跑（本脚本不自动装）：Debian/Ubuntu apt install libwxgtk3.2-dev
       wx-config 不在 PATH 上时：./build.sh --gui --wx-config /全路径/wx-config"

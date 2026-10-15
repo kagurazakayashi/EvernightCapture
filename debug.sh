@@ -25,7 +25,8 @@ usage() {
     cat <<'EOF'
 用法：./debug.sh [选项] [-- 传给被调试程序的参数]
 
-  --target core-tests|wgc-tests|cli-text-tests|gui-probe   要调试哪个目标，默认 core-tests
+  --target core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|crop-tests|
+           image-tests|encode-tests|gui-probe      要调试哪个目标，默认 core-tests
   --exe <路径>                               直接点名要调试的可执行文件
   --debugger gdb|lldb                        调试器，默认自动挑（先 gdb 后 lldb）
   --config Debug|Release|RelWithDebInfo       从哪份构建目录取产物，默认 Debug

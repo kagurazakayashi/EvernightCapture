@@ -26,12 +26,15 @@ usage() {
                                           （RelWithDebInfo 带调试符号，调试时可优先选它）
   --compiler gcc|clang|<编译器路径>        指定编译器；留空则用 $CXX，再退到 PATH 上的 g++/clang++
   --target <名字>                          只构建某个目标，可重复给
-                                          可选：core-tests wgc-tests cli-text-tests save-tests gui-probe
+                                          可选：core-tests wgc-tests cli-text-tests save-tests
+                                                ipc-tests crop-tests image-tests encode-tests gui-probe
                                           （ecapture 会如实告知它在 Linux 上暂不可构建）
   --list-targets                          打印当前平台可构建与暂不可构建的目标清单，不构建
   --clean                                 先删掉这一份构建目录再重新配置（只删 build-linux 下那一个）
   --gui                                   wxWidgets 缺失时直接失败（默认找到了才建 GUI 目标）
   --no-gui                                完全不配置 GUI 目标
+  --codec                                 libpng / libjpeg 缺失时直接失败（编码判据要它们）
+  --no-codec                              完全不配置 Linux 编码路径（encode 判据记 NOT RUN）
   --wx-config <路径>                       多版本共存时点名 wx-config
   --verbose                               构建时打印完整编译命令
   -h, --help                              本帮助
@@ -52,6 +55,7 @@ COMPILER_REQ=""
 TARGETS=()
 DO_CLEAN=0
 GUI_MODE="optional"      # optional | required | off
+CODEC_MODE="optional"     # optional | required | off
 WX_CONFIG_PATH=""
 VERBOSE=0
 LIST_ONLY=0
@@ -66,6 +70,8 @@ while [ $# -gt 0 ]; do
         --clean) DO_CLEAN=1; shift ;;
         --gui) GUI_MODE="required"; shift ;;
         --no-gui) GUI_MODE="off"; shift ;;
+        --codec) CODEC_MODE="required"; shift ;;
+        --no-codec) CODEC_MODE="off"; shift ;;
         --wx-config) [ $# -ge 2 ] || ec_die_args "--wx-config 需要一个路径"; WX_CONFIG_PATH="$2"; shift 2 ;;
         --verbose) VERBOSE=1; shift ;;
         --list-targets) LIST_ONLY=1; shift ;;
@@ -163,6 +169,12 @@ case "$GUI_MODE" in
     off) CFG_ARGS+=(-DECAPTURE_ENABLE_GUI=OFF -DECAPTURE_REQUIRE_WX=OFF) ;;
     *) CFG_ARGS+=(-DECAPTURE_ENABLE_GUI=ON -DECAPTURE_REQUIRE_WX=OFF) ;;
 esac
+# 编码依赖那两个开关同样每次显式传值（理由与上面 wx 那两条一样：缓存会留着上一次的选择）
+case "$CODEC_MODE" in
+    required) CFG_ARGS+=(-DECAPTURE_ENABLE_CODEC=ON -DECAPTURE_REQUIRE_CODEC=ON) ;;
+    off) CFG_ARGS+=(-DECAPTURE_ENABLE_CODEC=OFF -DECAPTURE_REQUIRE_CODEC=OFF) ;;
+    *) CFG_ARGS+=(-DECAPTURE_ENABLE_CODEC=ON -DECAPTURE_REQUIRE_CODEC=OFF) ;;
+esac
 if [ -n "$WX_CONFIG_PATH" ]; then
     if ! ec_have "$WX_CONFIG_PATH"; then
         [ -x "$WX_CONFIG_PATH" ] || ec_die_args "--wx-config 给的路径不可执行：$WX_CONFIG_PATH"
@@ -175,11 +187,17 @@ fi
 
 ec_note "编译器：$EC_CXX    配置：$EC_CONFIG    构建目录：$EC_BUILD_DIR"
 ec_note "wxWidgets：$([ "$GUI_MODE" = required ] && echo '必需（缺失即失败）' || { [ "$GUI_MODE" = off ] && echo '不参与' || echo '可选'; })"
+ec_note "编码依赖（libpng / libjpeg）：$([ "$CODEC_MODE" = required ] && echo '必需（缺失即失败）' || { [ "$CODEC_MODE" = off ] && echo '不参与' || echo '可选'; })"
 
 if ! cmake "${CFG_ARGS[@]}"; then
     if [ "$GUI_MODE" = "required" ]; then
         ec_die_precondition "配置阶段失败。带 --gui 时 wxWidgets 缺失会让这一步硬失败：\
 按上面的诊断装 libwxgtk3.2-dev（或给出 --wx-config），装好后重跑；只要离线判据就去掉 --gui。"
+    fi
+    if [ "$CODEC_MODE" = "required" ]; then
+        ec_die_precondition "配置阶段失败。带 --codec 时 libpng / libjpeg 缺失会让这一步硬失败：\
+按上面的诊断装 libpng-dev 与 libjpeg-dev（或给出 -DCMAKE_PREFIX_PATH），装好后重跑；\
+只要其余离线判据就去掉 --codec（编码那一层会被记 NOT RUN，不算通过）。"
     fi
     ec_die_failed "cmake 配置阶段失败（见上面 cmake 的输出）"
 fi
