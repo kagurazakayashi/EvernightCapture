@@ -1,6 +1,6 @@
 // 【平台层 · Linux】编码实现：libpng（PNG）+ libjpeg（JPEG）+ 自写的 32 位 BMP。
 //
-// 依赖选择（记进 THIRD-PARTY-NOTICES.md 与 README《图片编码》那一节）：
+// 依赖选择（记进 README 的《许可》一节与《图片编码》那一节）：
 //   * libpng —— PNG 的参考实现，1.6.x 分支，许可证是自带那份 BSD 风格的《libpng License》；
 //     zlib 由它自己依赖（zlib 许可证）。PNG 的 deflate 与 CRC 不自己写：那两处一旦写错，
 //     症状是"某些查看器读不出"，而不是本机报错。

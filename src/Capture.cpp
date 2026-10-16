@@ -818,7 +818,9 @@ CaptureOutcome RunCapture(const Options& opt) {
     for (const std::wstring& p : plannedPaths) {
         gateCfg.outputs.push_back(p == L"-" ? Msg(L"consent.output_stdout") : p);
     }
-    ConsentGate gate(std::move(gateCfg), prompt);
+    // 屏幕拓扑由这一侧显式交给授权判定器：Consent.cpp 不认识任何平台的屏幕枚举，
+    // 测试目标注入假布局，真机传本平台的 EnumScreens。
+    ConsentGate gate(std::move(gateCfg), prompt, EnumScreens);
 
     // 到这里结果 JSON 去哪条流就已经定死了（图片占 stdout => JSON 走 stderr）。
     // 提前声明归属，后面的应急路径与正常路径才不会各说一套：哪怕中途抛异常、

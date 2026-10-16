@@ -403,7 +403,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    命令列的解析期錯誤根本不帶這個欄位）、`hresult`（`0x80070005` 這樣的原值）、`win32`（`GetLastError` 的原值）。
    `config.*` 那一族的診斷項在問得到時另外帶 `line`（設定檔來源行號，1 起）與 `detail`（不隨 `--lang` 變的
    ASCII 原因 token，見《設定檔（ECAPTURE.ini）》）。
-   `message` 隨 `--lang` 變，這幾個不變。授權這一關的錯自成一類：`capture.access_denied` 是回答不是「是」（這個 `MB_YESNO` 框上，人能給出的唯一拒絕就是答「否」，而工具把任何非「是」的結果都當成拒絕），`capture.consent_unavailable` 是這台機器根本沒有可互動的桌面、框彈不出來——兩者都是
+   `message` 隨 `--lang` 變，這幾個不變。授權這一關的錯自成一類：`capture.access_denied` 是回答不是「是」（答「不允許」、關窗與 `Esc` 都是拒絕，工具把任何非「是」的結果都當成拒絕），`capture.consent_unavailable` 是這台機器根本沒有可互動的桌面、框彈不出來——兩者都是
    退出碼 `6`，都帶 `stage=consent`、`target`、`backend`（通道）與 `value`（那條路徑），也都不是技術性的存取被拒
    （`capture.failed` 帶 `hresult=0x80070005`），這樣才分得開。確認之後目標挪了位置或變了大小給
    `capture.consent_stale`，`stage=capture`、退出碼 `7`，重新選目標再截就會再問一次。後端回傳的 HRESULT / Win32
@@ -1108,10 +1108,10 @@ HDR 色彩這件事不改變授權：整個處理排在取影之後、編碼之�
   而它要複核兩次——簽發之前一次（框開著的時候拓撲變了就重新問一次，不是把舊答案拿來用），以及每一步真要取樣像素
   之前一次（那一塊必須還在人批准過的範圍裡）。授權絕不跨請求快取，也不會擴大到框上沒列出的目標，「同意截視窗畫面」
   更不等於「同意截桌面」：`--capture auto` 配 `--yes` 可以不打擾人地走完視窗那幾條，可一旦進入桌面路徑就必須再問一次。
-- 這是一個只有「是 / 否」兩個按鈕、預設焦點落在「否」上的 `MB_YESNO` 框：只有明確點「是」才算同意，其餘一切結果都算拒絕。要拒絕就點「否」。別指望 `X` 或 `Esc`——`MB_YESNO` 下標題列的 `X` 雖然顯示但被停用、也沒有可讓 `Esc` 觸發的 Cancel 按鈕，所以兩者都不是可靠的「否」操作，這個框終究得有人來答；而工具本來就把任何非「是」的結果一律當拒絕處理。除此之外，`--consent-timeout-ms` 之內沒人回答，本身就是一次獨立的拒絕（`capture.consent_timeout`）。有人答「否」、超時沒人回答、或根本沒有可互動的桌面——這幾種結局都會停掉本次請求剩下的部分：`auto` 回退鏈上剩下的每一條通道一起停，不只是剩下的 `--all` 目標；不換後端、不重試、不再問第二遍，已經完成的圖全部留在 `images` 裡。人的回答是一道邊界，不是「再換一條路試到誰點頭」的提示。
+- 這是一個程式自有的 wxWidgets 確認框：兩個按鈕「允許 / 不允許」，預設焦點與預設按鈕都落在「不允許」上。只有明確點「允許」才算同意，其餘一切結果都算拒絕。要拒絕可以點「不允許」、按視窗的 `X` 或按 `Esc`——三者都是拒絕，不是同意。除此之外，`--consent-timeout-ms` 之內沒人回答，本身就是一次獨立的拒絕（`capture.consent_timeout`）。有人答「否」、超時沒人回答、或根本沒有可互動的桌面——這幾種結局都會停掉本次請求剩下的部分：`auto` 回退鏈上剩下的每一條通道一起停，不只是剩下的 `--all` 目標；不換後端、不重試、不再問第二遍，已經完成的圖全部留在 `images` 裡。人的回答是一道邊界，不是「再換一條路試到誰點頭」的提示。
 - 目標區域挪動過、或者螢幕拓撲變了，覆蓋它的授權當場作廢並重新問一次；已經綁在舊區域上的那一影格給
   `capture.consent_stale`（退出碼 `7`，重新選目標再截）。
-- 確認框的預設焦點在「否」上，內容列出目標及其區域、將要走的那條路徑、每張圖展開後的絕對路徑（或「標準輸出」）、
+- 確認框的預設焦點在「不允許」上，內容列出目標及其區域、將要走的那條路徑、每張圖展開後的絕對路徑（或「標準輸出」）、
   以及畫面裡會不會混進別的視窗；這條路徑會拍到桌面時，框上還明寫著「你給的 `--yes` 對它不生效」。框在取影格之前
   就已經關閉，所以不會出現在圖中；點「是」之後工具仍要等約 1 秒，因為關閉動畫還留在 DWM 的畫面上。
 - 沒有可互動桌面時（服務工作階段、排程工作、鎖屏），帶 `--yes` 的視窗內容截圖照舊正常完成，而桌面路徑只能被拒絕——
@@ -1121,7 +1121,7 @@ HDR 色彩這件事不改變授權：整個處理排在取影之後、編碼之�
   省略 `--out` 就等於 `--out -`，授權結果不因它而變，見《不給輸出路徑（相容性說明）》。
 - 多張螢幕 + 寫 stdout（`--monitor all --out -`）在任何彈框之前就被拒：一次確認換不來「每張螢幕一張圖擠進同一條串流」。
   只有一張螢幕時 `--monitor all` 是一個目標，那條路仍然按單張走 stdout。
-- 說清楚邊界：這就是一個 `MessageBox`。它是給合作式自動化（人或 AI）準備的誤點防護，既證明不了按下按鈕的是人，
+- 說清楚邊界：這是程式自有的 wxWidgets 確認框，不是作業系統的安全邊界。它是給合作式自動化（人或 AI）準備的誤點防護，既證明不了按下按鈕的是人，
   也擋不住同一個權限等級裡存心要繞過的處理程序。它能保證的是：照這套規矩跑的呼叫端，一定會被問上這一次。
 
 `--monitor`（省略取值）與 `--monitor primary` 是主螢幕，`--monitor 2` 是第 2 張螢幕，`--monitor all` 每張螢幕一張。
@@ -1451,7 +1451,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
 
 **設計邊界，不是缺陷：**
 
-- 那個確認框就是一個 `MessageBox`。它是一份為合作式自動化（人或 AI）準備的協作式防誤點設計：既證明不了按下按鈕的
+- 那個確認框是程式自有的 wxWidgets 對話框，不是作業系統的安全邊界。它是一份為合作式自動化（人或 AI）準備的協作式防誤點設計：既證明不了按下按鈕的
   是人，也不是一道作業系統的安全邊界。它能保證的是：照這套規矩跑的呼叫端，每一條桌面路徑至少會被問上一次。
 - 複核與取圖從來不是同一個原子操作。身份與拓撲的複核把句柄被換掉的那段競態視窗縮小了，並沒有把它關掉——
   Windows 沒有一個可等待的句柄、也沒有「讓一扇視窗不消失」的公開 API 能拿來做這件事。
@@ -1524,7 +1524,7 @@ junction 與符號連結、UNC 與磁碟代號兩種寫法）交給提交那一�
    | `match.no_window`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 4      | 把條件放寬，或者目標被最小化了（最小化的視窗一律截不到）                                                                                                                                                                                                                                        |
    | `match.ambiguous_window`、`match.monitor_ambiguous_id`                                                                                                                                                                                                                                                                                                                                                                                                              | 5      | 有好幾個東西同時命中，而工具不替你挑一個——用 `--index` / `--topmost-match` / `--all` 消歧，或改用 `--screens` 交回的識別                                                                                                                                                                        |
    | `match.monitor_unknown_id`                                                                                                                                                                                                                                                                                                                                                                                                                                          | 4      | 那個識別此刻不在桌面上了；再跑一次 `--screens`，別猜編號                                                                                                                                                                                                                                        |
-   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6      | 這是人那一邊的邊界：回答不是「是」（這個 `MB_YESNO` 框上，人能給出的唯一拒絕就是答「否」）、期限之內沒人回答、或根本沒有可互動的桌面。本次請求剩下的部分沒有被嘗試——再跑一次是一筆新請求，不是重試                                                                                              |
+   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6      | 這是人那一邊的邊界：回答不是「是」（答「不允許」、關窗與 `Esc` 都是拒絕）、期限之內沒人回答、或根本沒有可互動的桌面。本次請求剩下的部分沒有被嘗試——再跑一次是一筆新請求，不是重試                                                                                              |
    | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7      | 先讀 `stage`（`match` / `capture` / `encode`）再決定下一步；通常該重新問一次 `--list` / `--screens`，而不是再換一個 `--capture`                                                                                                                                                                 |
    | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7      | 是**這台機器**給不出你要的東西——見下面那一段                                                                                                                                                                                                                                                    |
    | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8      | 目錄要先存在，或挑一個撞不上的名字；`io.file_exists` 就是 `--no-overwrite` 在盡職；這裡的 `io.timeout` 指的是那一步根本沒開始的寫——如果一張檔案**已經落地**、只是寫完之後的期限複核越了線，那張圖仍留在 `images` 裡、本次按部分成功報告退出碼 `7`（已交付＋出錯），見《執行期限與會阻塞的呼叫》 |
@@ -1759,32 +1759,46 @@ CMakeCache，**不共用快取** —— 這也是 Windows 安裝器與打包判�
 cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
-Linux 目前可建置的目標只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
-`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（只在实际找到 libpng 與 libjpeg 時）與（裝了 wxWidgets 之後的）`ecapture-gui-probe`。缺編碼相依時 `ecapture-encode-tests` **不定義**（不擺一個只建了一半的目標）：`./test-all.sh` 把 `codec-encode` 記成 `NOT RUN` 並給出安裝提示，`./build.sh --codec` 則把這一條缺失變成設定階段硬失敗。完整 CLI 與那十幾份要取圖通道的測試程式仍在 `CMakeLists.txt` 的
+Linux 目前可建置的目標有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
+`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（只在实际找到 libpng 與 libjpeg 時）、`ecapture-consent-tests`，以及裝了 wxWidgets 之後的 `ecapture-gui-probe` 與 `ecapture-gui-tests`。缺編碼相依時 `ecapture-encode-tests` **不定義**（不擺一個只建了一半的目標）：`./test-all.sh` 把 `codec-encode` 記成 `NOT RUN` 並給出安裝提示，`./build.sh --codec` 則把這一條缺失變成設定階段硬失敗。完整 CLI 與那十幾份要取圖通道的測試程式仍在 `CMakeLists.txt` 的
 【平台層 · Windows】那一段裡；設定日誌會逐條列出這份名單，建置目錄裡也留一份
 `ecapture-buildable-targets.txt` 給腳本核對 —— 不拿「刪掉功能」換一次好看的 Linux 建置成功。
 
-### wxWidgets 相依接線（這一步只接線，沒有換掉任何彈窗）
+### wxWidgets GUI 層（確認、權限說明、錯誤提示與通知）
 
-- **選用版本**：wxWidgets 3.2.x（上游穩定分支）。Linux 用發行套件包，Debian / Ubuntu 是 `libwxgtk3.2-dev`。
-- **發現方式**：CMake 的 MODULE 模式 `FindwxWidgets`，由它呼叫 `wx-config` 問版本、cflags 與 libs，
-  所以跟著發行套件實際裝的那份走，不寫死安裝路徑。多版本共存時用 `-DECAPTURE_WX_CONFIG=/全路徑/wx-config`
-  點名（腳本側是 `./build.sh --wx-config ...`），版本下限用 `-DECAPTURE_WX_MIN_VERSION=3.2.0`。
-- **元件與連結策略**：只要 `core` + `base` 兩個元件 —— `core` 自己帶上工具集（wxGTK）的相依，
-  本專案不在建置裡硬編 GTK 版本號。以共用函式庫連結。標頭、巨集、額外編譯選項、函式庫這四樣各自掛到目標上，
-  不用 `include(${wxWidgets_USE_FILE})`：那條是把設定潑到整個目錄的作用域。
-- **目標劃分**：`ecapture-gui-probe`（來源 `src/gui/WxGuiProbe.cpp`）是**獨立**目標，只證明相依真的接上了、
-  `wxApp` 能在圖形工作階段完成初始化；它不建視窗、不彈窗、不取一個畫素。兩份離線判定**不鏈** wxWidgets，
-  裝與不裝都能建置 —— GUI 與核心測試互不阻塞，這正是這一步要的分層。
-- **開關**：`ECAPTURE_ENABLE_GUI` 在 Linux 預設 `ON`（找不到 wx 就跳過該目標並說明原因），Windows 預設 `OFF`
-  （現有 Windows 建置入口與安裝包載荷清單不受任何影響，不會因為某台機器恰好裝了 wx 就多出一個目標）；
-  `ECAPTURE_REQUIRE_WX=ON`（腳本側 `./build.sh --gui`）把缺相依變成設定階段的硬錯誤。
+- **兩個平台同一份實作**：程式自有的確認框、權限說明、必要的錯誤提示與通知入口都在 `src/gui/` 下用
+  wxWidgets 實作。Windows 不再呼叫 `MessageBoxW`，也不存在平行的 GTK / Qt / Win32 自有介面。
+  Wayland 的 XDG Desktop Portal 是**另一層**系統授權介面，本步不改造、也不冒充它。
+- **版本與發現**：wxWidgets 3.2.x。Linux 用發行套件包（Debian / Ubuntu 是 `libwxgtk3.2-dev`）。CMake 的
+  MODULE 模式 `FindwxWidgets` 跟著系統實際裝的那份走，不寫死路徑；`-DECAPTURE_WX_CONFIG=/全路徑/wx-config`
+  與 `-DECAPTURE_WX_MIN_VERSION=3.2.0` 仍可用。元件只要 `core` + `base`；標頭、巨集、編譯選項與函式庫
+  分別掛到目標上，不用 `include(${wxWidgets_USE_FILE})`。
+- **Windows 現在是真相依**：`ecapture` 會連結 wx，所以找不到 wx 或把 `ECAPTURE_ENABLE_GUI` 設為 `OFF`
+  都會在設定階段失敗，而不是靜默產出一個不完整的交付。Windows 交付仍是單檔 + 靜態 CRT（`/MT`），
+  wx 必須與它一致：`ECAPTURE_WX_USE_STATIC=ON` 是預設值，請用靜態 wx（例如 vcpkg 的
+  `x64-windows-static` 三元組，或用 `RUNTIME_LIBS=static` 自行建置）。用 `/MD` 的 wx 會在連結階段報
+  `LNK2038` 執行階段函式庫不匹配；本步不擅自切到動態 CRT，也不新增 DLL 載荷。
+- **Linux 仍是可選相依**：`ECAPTURE_ENABLE_GUI` 預設 `ON`；找不到 wx 時跳過 GUI 目標並說明原因，
+  離線判定照常建置。`ECAPTURE_REQUIRE_WX=ON`（腳本側 `./build.sh --gui`）把缺相依變成設定階段的硬錯誤。
+- **按需、主執行緒**：只有真的要顯示視窗時才建立 GUI 內容；說明、版本、設定與唯讀查詢一次都不初始化 wx。
+  沒有常駐主視窗、托盤或背景服務。對話框在主執行緒上以模態執行；`--consent-timeout-ms` 的看守執行緒只把
+  關閉請求投進 GUI 事件佇列。背景執行緒不碰控制項，也沒有忙等。
+- **結局分得開**：同意、拒絕、關窗（X / Esc）、逾時、初始化失敗、程式取消是六檔；視窗消失永遠不是同意。
+  對話框支援長中文標題與長路徑（可選取、會折行的唯讀文字區）、高 DPI、鍵盤操作（預設按鈕是「否」），
+  對話框與各分區都有無障礙名稱。
+- **通知介面**：`ShowGuiNotification()` 是統一的 wxWidgets 入口。本步只把介面接起來；截圖完成後通知
+  究竟寫什麼、什麼時候送，留給結果通知那一步。既有 WinRT toast 路徑沒有被刪掉。
+- **目標與判定**：`ecapture-gui-probe` 仍負責證明相依接線；`ecapture-gui-tests` 鏈的是生產狀態機與生產
+  wx 對話框，只用編譯期鉤子替換「人怎麼點」（發行版沒有這個符號）。`./test-all.sh --layer isolated` 跑
+  `gui-runtime`：真的建立對話框，判長文字與六檔結局，再用 `GDK_SCALE=2` 跑一遍高 DPI 尺寸，
+  然後去掉 `DISPLAY` / `WAYLAND_DISPLAY` 再跑一次，要求初始化失敗並帶出原因。Windows 側有對應的 `gui` 套件；Windows 真桌面驗證在本機記為未驗證。
 - **授權條款**：wxWidgets 是 LGPL 2.1 with an exception（動態連結下無額外義務）。
-- **本機狀態**：這台 Linux 開發機**沒裝 wxWidgets**，所以 GUI 目標的編譯與執行屬於**待驗證**；
-  實際測過的只有「缺相依時給出準確診斷」這條（`./build.sh --gui` 以退出碼 `2` 結束並列出安裝與點名方式）。
+- **本機狀態**：Linux 開發機已裝 wxWidgets 3.2.8，`gui-probe-init` 與 `gui-runtime` 在目前圖形工作階段都通過，
+  包含無工作階段初始化失敗那一段。Windows GUI 建置與真桌面檢查**沒有**在這台機器上跑過（沒有 MSVC / Windows 桌面）。
 
-確認彈窗（`Consent.cpp`）與截圖後通知（`NotificationToast.cpp`）這一步**沒有**改動：它們的 wxWidgets 實作是
-後續步驟。`--yes` 的適用範圍與畫素範圍判定照舊只有一份出處，在 `CaptureScope` 與 `src/core/Authorization.h`。
+`Consent.cpp` 現在只保留跨平台的授權狀態機；`ConsentPrompt.cpp` 負責渲染在地化問題，
+`src/gui/WxConsentDriver.cpp` 持有 wx 對話框。`--yes` 的適用範圍與畫素範圍判定照舊只有一份出處，
+在 `CaptureScope` 與 `src/core/Authorization.h`。
 
 ### 建置安裝封裝：`build-installer.ps1`
 
@@ -1823,7 +1837,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/core/` | 平台無關的模型與判據：`Platform.h` 平台身分、`Geometry.h` 座標、`Frame.h` 圖像影格、`Status.h` 卡住的原因碼、`Target.h` 目標描述、`Error.h` 錯誤碼與三值結果、`Authorization.h` 像素範圍與授權層、`Capability.h` 功能矩陣 | 一條都不 include `windows.h`，也不出現 HWND / RECT / HANDLE / HRESULT / WinRT |
 | `src/` 裡這幾份共用模型與策略頭 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 與上面同一條：這些頭說的是「截什麼、批准了什麼、這一影格長成什麼樣」，與用哪家 API 弄到手無關 |
 | `src/platform/windows/WinBridge.h` | 核心與 Win32 之間**唯一**的轉換處：`RECT ↔ PhysRect`（單個與整批）與 `Deadline → 等待毫秒` | 只允許平台層的 `.cpp` include 它。轉換呼叫出現的那一行，就是審查看得見「這裡跨了一次平台界線」的那一行 |
-| `src/gui/` | 跨平台自有 GUI 的唯一去處，走 wxWidgets。目前這裡只有相依接線用的探針 `WxGuiProbe.cpp`，**還沒有**任何自有介面 | 只有這一層碰 wxWidgets；`src/core/` 與共用模型不許 include 它，也不許被它反向定義判定。GUI 目標與離線判定互不相依 |
+| `src/gui/` | 跨平台自有 GUI 的唯一去處，走 wxWidgets：公用對話框、按需初始化的 GUI 執行階段、授權驅動與統一通知入口都在這裡；`WxGuiProbe.cpp` 仍保留為相依探針 | 只有這一層碰 wxWidgets；`src/core/`、`Consent.cpp` 與共用模型不許 include 它，也不許被它反向定義授權判定。GUI 目標與離線判定互不相依 |
 | `CaptureCommon.h`、五條通道頭、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【平台層 · Windows】GDI / D3D / WinRT / 命名管道 / 字串資源的真實使用者 | 每個檔案開頭就寫明自己是平台層；共用核心反向 include 它們就是破界 |
 
 **這不是把 `RECT` 換個名字**：`PhysRect` 的四條邊寫死成 `int32_t`，而「空矩形」「包含」「量不出來」
@@ -1926,7 +1940,7 @@ Windows 專屬的說法（`--hwnd`、`--class`、`--capture` 的那些 Windows �
 
 alpha 從不靠猜：PNG 與 BMP 原樣保留影格裡的 alpha 位元組（不合成、不做 unpremultiply），而 JPEG 根本沒有 alpha 通道——這與 Windows 那一路用 `BitmapAlphaMode::Ignore` 說的是同一句"這一份格式不表示透明"，而不是"這一影格是全不透明的"。
 
-Linux 編碼路徑的相依與授權（本機實測版本、授權名稱與原文位置）記在 **`THIRD-PARTY-NOTICES.md`**：倉庫裡不複製任何上游原始碼，也不自動裝相依——CMake 發現 `PNG::PNG` / `JPEG::JPEG`，缺了就如實報缺口。
+Linux 編碼路徑的相依與授權見下文[授權](#授權)一節：倉庫裡不複製任何上游原始碼，也不自動裝相依——CMake 發現 `PNG::PNG` / `JPEG::JPEG`，缺了就如實報缺口。
 
 ### 這一層的驗證入口
 
@@ -1938,11 +1952,12 @@ Linux 編碼路徑的相依與授權（本機實測版本、授權名稱與原�
 | `./test-all.sh` 的 `cli-text` 套件，以及 `scripts/core-portability-check.sh` 的 3b / 4b | Linux 一層：同一批共用來源檔**不经由 CMake 目標**自己產生嵌入文案再用 g++ 編好跑完。這條同時是「共用 CLI 層真的不含平台頭」的機器證明，也是「改完文案不重編就會被查出來」的現場 |
 | `.\tests\encode.ps1` | 離線一層：`build\ecapture-encode-tests.exe` 對著**真的 WinRT 編碼器**跑影像與編碼判據（容器結構、通道順序與 alpha、HDR 直通拒絕、能力與實請求一致、預算、主交付與歷史共用同一份位元組）。像素級解碼讀回只在 Linux 實測，Windows 這側如實記 Skip，不拿結構核對冒充像素核對 |
 | `./test-all.sh` 的 `image-ops` / `crop-geometry` / `codec-encode` 套件，以及 `scripts/core-portability-check.sh` 的 3e / 4e-4g | Linux 一層：同一批判據來源檔鏈 `PosixEncoder.cpp`（libpng + libjpeg + 自寫 BMP）編譯並執行——編碼 121 條、像素操作 186 條、視窗內部裁剪 63 條，全部用合成影格，一個像素都不從螢幕取。缺 libpng / libjpeg 時目標不定義，記 `NOT RUN` 並給出安裝提示 |
-| `./test-all.sh` | Linux 總跑：`offline` 層把上面那條與 CMake 建置出來的 `ecapture-core-tests`、`ecapture-wgc-tests` 串起來判；`isolated` 層需要 wxWidgets 與圖形工作階段（缺相依記 `NOT RUN`，絕不算通過）；`manual` 層留給真機人工驗證 |
+| `./test-all.sh` | Linux 總跑：`offline` 層跑全部離線判定；`isolated` 層需要 wxWidgets 與圖形工作階段，跑 `gui-probe-init` 與 `gui-runtime`（後者真的建立對話框、判長文字與六檔結局，然後去掉 `DISPLAY` / `WAYLAND_DISPLAY` 要求初始化失敗）。缺相依記 `NOT RUN`，絕不算通過；`manual` 層留給真機人工驗證 |
+| `.\tests\gui.ps1` | Windows 桌面層：`build\ecapture-gui-tests.exe` 跑同一套 GUI 生命週期與元件判定。它只開啟程式自己的對話框並自行關閉，不取像素、也不替人回答真實授權視窗。本機沒有 MSVC / Windows 桌面，所以 Windows GUI 判定記為未驗證 |
 
 兩條入口用同一個來源檔——它一條都不 include `windows.h`。這一步刻意沒做的（屬於後續步驟）：
-X11 / Wayland 後端、wxWidgets 取代 `DialogConsentPrompt` 與 WinRT toast（這一步只把相依發現與連結接到位，
-外加一個不建視窗的探針目標）、Portal + PipeWire 接線、
+X11 / Wayland 後端、把統一 wx 通知介面接進「截圖完成後送什麼」的策略（介面已在，但截圖完成路徑仍走既有
+WinRT toast）、Portal + PipeWire 接線、
 把 `std::wstring` 本身換成自帶編碼約定的型別（約定已經寫在 `src/core/TextCoding.h` 一處，型別還沒跟著換）、
 輔助進程線上格式去掉 `RECT` / `HRESULT`，以及 `Report.h` 剩下的那一拆（寫標準輸出已歸到平台服務
 `src/OutputStream.h`，應答組裝與桌面查詢的渲染仍在 Windows 那側）。
@@ -1951,7 +1966,18 @@ X11 / Wayland 後端、wxWidgets 取代 `DialogConsentPrompt` 與 WinRT toast（
 
 EvernightCapture 採用 [Mulan PSL v2（木蘭寬鬆許可證，第2版）](http://license.coscl.org.cn/MulanPSL2)，
 中英雙語全文見 [LICENSE](LICENSE)。
-第三方相依及其授權（Windows 側的 SDK / C++/WinRT 那一路，Linux 側的 libpng、zlib 與 libjpeg，以及 GUI 那一步的 wxWidgets）記在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+第三方元件：
+
+| 元件 | 用途 | 授權 |
+| --- | --- | --- |
+| Windows SDK / C++/WinRT | WGC、DWM、PrintWindow、BitBlt、桌面複製擷取；`BitmapEncoder` 編碼 | MIT（系統元件，不隨包分發） |
+| MSVC 執行階段（`/MT`） | 單檔建置的靜態 CRT | Visual Studio 授權 |
+| Inno Setup | 製作安裝程式（`build-installer.ps1`） | Inno Setup 授權 |
+| libpng | Linux 上的 PNG 編碼 | libpng License |
+| zlib | libpng 的 deflate 相依 | zlib License |
+| libjpeg-turbo | Linux 上的 JPEG 編碼 | BSD-3-Clause / IJG / zlib / MIT |
+| wxWidgets | 程式自有對話框與通知 | LGPL 2.1 with an exception |
 
 ```
 Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi)

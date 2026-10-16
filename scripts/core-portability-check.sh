@@ -101,9 +101,12 @@ NEUTRAL_HEADERS=(
     WindowQuery.h
     WindowQueryRun.h
     WgcGeometry.h
+    gui/Gui.h
+    gui/ConsentGuiDriver.h
 )
 
-LEAK_RE='#include[[:space:]]*<[Ww]indows\.h>|#include[[:space:]]*<(winrt|wrl|d3d11|dxgi|gdi)[/"]|\bHWND\b|\bHDC\b|\bHBITMAP\b|\bHGDIOBJ\b|\bHMONITOR\b|\bHANDLE\b|\bRECT\b|\bMSG\b|\bDWORD\b|\bUINT\b|\bLONG\b|\bBOOL\b|\bHRESULT\b|\bINFINITE\b|\bLARGE_INTEGER\b|Windows::|Microsoft::WRL|winrt::'
+# GUI 的公开头也不许把 wx 头带进共用模型：wx 只允许出现在 src/gui/ 的实现文件里。
+LEAK_RE='#include[[:space:]]*<[Ww]indows\.h>|#include[[:space:]]*<(winrt|wrl|d3d11|dxgi|gdi)[/"]|#include[[:space:]]*<wx/|\bHWND\b|\bHDC\b|\bHBITMAP\b|\bHGDIOBJ\b|\bHMONITOR\b|\bHANDLE\b|\bRECT\b|\bMSG\b|\bDWORD\b|\bUINT\b|\bLONG\b|\bBOOL\b|\bHRESULT\b|\bINFINITE\b|\bLARGE_INTEGER\b|Windows::|Microsoft::WRL|winrt::'
 
 fail=0
 echo "== 1) 共用模型头：不许渗进平台类型 =="
@@ -117,6 +120,19 @@ for h in "${NEUTRAL_HEADERS[@]}"; do
     hits="$(sed 's://.*::' "$f" | grep -nE "$LEAK_RE" || true)"
     if [ -n "$hits" ]; then
         echo "  FAIL  src/$h 的代码里出现了平台类型："
+        printf '%s\n' "$hits" | sed 's/^/          /'
+        fail=1
+    else
+        echo "  ok    src/$h"
+    fi
+done
+
+# 授权状态机与它的文案层也是共用源码：不认识 HWND / 窗口句柄，也不 include wx。
+for h in Consent.cpp ConsentPrompt.cpp; do
+    f="$SRC/$h"
+    hits="$(sed 's://.*::' "$f" | grep -nE "$LEAK_RE" || true)"
+    if [ -n "$hits" ]; then
+        echo "  FAIL  src/$h 的代码里出现了平台类型或 wx 头："
         printf '%s\n' "$hits" | sed 's/^/          /'
         fail=1
     else
@@ -146,6 +162,15 @@ for h in CaptureCommon.h CaptureWgc.h CaptureDwm.h CapturePrintWindow.h CaptureB
     f="$SRC/$h"
     if [ -f "$f" ] && ! grep -q '【平台层' "$f"; then
         echo '  TODO  src/'"$h"' 还没有"我属于平台层"那一句归属说明'
+    fi
+done
+
+# GUI 实现文件同样要自己声明归属：wx 头只允许在这里出现，共用模型与授权判据都不许碰。
+echo "== 2b) GUI 层归属标记 =="
+for h in gui/WxGuiRuntime.cpp gui/WxGuiDialog.cpp gui/WxConsentDriver.cpp gui/WxGuiProbe.cpp; do
+    f="$SRC/$h"
+    if [ -f "$f" ] && ! grep -q '【GUI' "$f"; then
+        echo '  TODO  src/'"$h"' 还没有"我属于 GUI 层"那一句归属说明'
     fi
 done
 

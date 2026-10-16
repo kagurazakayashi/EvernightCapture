@@ -480,8 +480,8 @@ Rules:
    present only when that judgement had them: `line` (the 1-based line inside the configuration file) and `detail`
    (an ASCII reason token that does not follow `--lang`).
    `message` follows `--lang` while these never do. Consent failures are their own branch:
-   `capture.access_denied` means the answer was not Yes (on this `MB_YESNO` box the only refusal a person can give is
-   "No", and the tool treats any non-Yes result as a refusal), `capture.consent_unavailable` means
+   `capture.access_denied` means the answer was not Yes (No, closing the window and Esc are all refusals; the tool
+   treats any non-Yes result as a refusal), `capture.consent_unavailable` means
    the dialog could not be shown at all (no interactive desktop) — both are exit code `6`, both carry
    `stage=consent`, `target`, `backend` (the channel) and `value` (the route), and neither is a technical access
    denial (`capture.failed` carrying `hresult=0x80070005`), which is what makes them tellable apart. A target that
@@ -1412,11 +1412,10 @@ images follow the window rows above.
   what was approved). Consent is never cached across requests, never widened to a target the dialog did not show, and
   approving a window-content capture is never approval of a desktop one: `--capture auto` with `--yes` may run the
   window routes silently, but asks before it enters a desktop route.
-- The dialog is a plain `MB_YESNO` box — two buttons, Yes and No, with default focus on **No**. Only an explicit Yes
-  approves; every other outcome is a refusal. Decline it by clicking **No**. Do not rely on `X` or `Esc`: with
-  `MB_YESNO` the title-bar `X` is shown but disabled and there is no Cancel button for `Esc` to trigger, so neither is
-  a dependable "No" gesture — the box simply has to be answered, and the tool treats any non-Yes result as a refusal
-  anyway. On top of that, nobody answering within `--consent-timeout-ms` is its own refusal (`capture.consent_timeout`).
+- The dialog is a program-owned wxWidgets dialog — two buttons, "Allow" and "Do not allow", with the default focus and
+  default button on **Do not allow**. Only an explicit "Allow" approves; every other outcome is a refusal. Decline by
+  clicking **Do not allow**, closing with `X`, or pressing `Esc`; all three are refusals, never consent. On top of
+  that, nobody answering within `--consent-timeout-ms` is its own refusal (`capture.consent_timeout`).
 - After a refusal ("No"), a timeout (nobody answered within `--consent-timeout-ms`), or an unavailable interactive
   desktop, the rest of that request stops — the remaining links of the `auto` fallback chain too, not just the
   remaining `--all` targets — with no retry and no second ask, while every image already completed stays in `images`.
@@ -1439,9 +1438,10 @@ images follow the window rows above.
 - Several monitors plus stdout (`--monitor all --out -`) is refused before any dialog appears: one confirmation
   cannot buy "one image per monitor squeezed into the same stream". With only one monitor attached, `--monitor all`
   is a single target and that path still delivers one image on stdout.
-- Honest limit: this is a plain `MessageBox`. It is mis-click protection for cooperative automation — it cannot tell
-  whether a human or a script pressed the button, and it does not defend against a same-privilege process that
-  intends to bypass it. What it does guarantee is that a caller following these rules gets asked at least once.
+- Honest limit: this is a program-owned wxWidgets dialog, not an OS security boundary. It is mis-click protection for
+  cooperative automation — it cannot tell whether a human or a script pressed the button, and it does not defend
+  against a same-privilege process that intends to bypass it. What it does guarantee is that a caller following these
+  rules gets asked at least once.
 
 `--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
 `--monitor all` one image per monitor. The number is **the position in this run's `EnumDisplayMonitors` enumeration**,
@@ -1896,9 +1896,9 @@ this list is what an automated caller should treat as a residual risk instead of
 
 **Design boundaries, not defects:**
 
-- The confirmation dialog is a plain `MessageBox`. It is cooperative misuse prevention: it cannot tell a human from a
-  script and it is not an OS security boundary. What it does guarantee is that a caller following these rules gets
-  asked at least once per desktop route.
+- The confirmation dialog is a program-owned wxWidgets dialog. It is cooperative misuse prevention: it cannot tell a
+  human from a script and it is not an OS security boundary. What it does guarantee is that a caller following these
+  rules gets asked at least once per desktop route.
 - Checking and capturing are never one atomic operation. Identity and topology re-checks shrink the window for an
   `HWND` swap, they do not close it; Windows has no waitable-handle or pin-the-window API to do that with.
 - The deadline budget bites at interruptible points and by stopping the helper process. A budget that expires during
@@ -1983,7 +1983,7 @@ repository also ships a skill that teaches an agent to drive it: `.agents/skills
    | `match.no_window`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 4    | widen the conditions, or the window is minimized (minimized windows are never captured)                                                                                                                                                                                                                                                                                                                                         |
    | `match.ambiguous_window`, `match.monitor_ambiguous_id`                                                                                                                                                                                                                                                                                                                                                                                                              | 5    | several things match and the tool will not pick one — disambiguate with `--index` / `--topmost-match` / `--all`, or with a `--screens` identifier                                                                                                                                                                                                                                                                               |
    | `match.monitor_unknown_id`                                                                                                                                                                                                                                                                                                                                                                                                                                          | 4    | that identifier is not on the desktop any more; run `--screens` again                                                                                                                                                                                                                                                                                                                                                           |
-   | `capture.access_denied`, `capture.consent_timeout`, `capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6    | a human boundary: the answer was not Yes (on this `MB_YESNO` box the only refusal a person can give is "No"), nobody answered in time, or no interactive desktop. The rest of the request was not attempted — asking again is a new request, not a retry                                                                                                                                                                        |
+   | `capture.access_denied`, `capture.consent_timeout`, `capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6    | a human boundary: the answer was not Yes (No, closing the dialog and Esc are all refusals), nobody answered in time, or no interactive desktop. The rest of the request was not attempted — asking again is a new request, not a retry                                                                                                                                                                        |
    | `match.timeout`, `capture.worker_failed`, `capture.failed`, `capture.frame_timeout`, `capture.window_gone`, `capture.frame_invalid`, `capture.roi_invalid`, `capture.roi_unmeasurable`, `capture.monitor_changed`, `capture.monitor_unverifiable`, `capture.monitor_id_unverifiable`, `capture.consent_stale`, `capture.timeout`, `capture.hdr_refused`, `capture.hdr_unverifiable`, `capture.target_gone`, `capture.target_changed`, `capture.target_unverifiable` | 7    | read `stage` (`match` / `capture` / `encode`) before deciding; a fresh `--list` / `--screens` is usually the next call, not another `--capture`                                                                                                                                                                                                                                                                                 |
    | `env.os_too_old`, `env.channel_unsupported`, `env.hdr_unsupported`, `env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7    | this **machine** cannot do what was asked — see the paragraph below                                                                                                                                                                                                                                                                                                                                                             |
    | `io.write_failed`, `io.file_exists`, `io.output_collision`, `io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8    | create the directory, or pick a name that cannot collide; `io.file_exists` is `--no-overwrite` doing its job; the `io.timeout` here is the write that never got to start — when a file _did_ land and only the post-write deadline re-check crossed, that image stays in `images` and the run reports exit `7` (delivered + error) instead, see [Deadlines](#deadlines-and-calls-that-block---timeout-ms----consent-timeout-ms) |
@@ -2354,42 +2354,61 @@ cmake --preset gcc-debug && cmake --build --preset gcc-debug
 
 Only `ecapture-core-tests`, `ecapture-wgc-tests`, `ecapture-cli-text-tests`, `ecapture-save-tests`,
 `ecapture-ipc-tests`, `ecapture-crop-tests`, `ecapture-image-tests`, `ecapture-encode-tests`
-(the last one only when libpng and libjpeg are found) and (once wxWidgets is installed) `ecapture-gui-probe`
-are buildable on Linux today. The full CLI and the dozen-plus test executables that need a capture
-channel still live in the 【平台层 · Windows】 region of `CMakeLists.txt`; the configure log lists them one by one and
-the build directory keeps `ecapture-buildable-targets.txt` so scripts can check it. Features are never deleted to buy
-a good-looking Linux build — and when a codec dependency is missing, `ecapture-encode-tests` is **not defined**
-rather than half-built, so `./test-all.sh` books the `codec-encode` suite as `NOT RUN` with the install hint
-(`./build.sh --codec` turns that missing dependency into a hard configure error instead).
+(the last one only when libpng and libjpeg are found), `ecapture-consent-tests` and, once wxWidgets is installed,
+`ecapture-gui-probe` / `ecapture-gui-tests` are buildable on Linux today. The full CLI and the dozen-plus test
+executables that need a capture channel still live in the 【平台层 · Windows】 region of `CMakeLists.txt`; the
+configure log lists them one by one and the build directory keeps `ecapture-buildable-targets.txt` so scripts can
+check it. Features are never deleted to buy a good-looking Linux build — and when a codec dependency is missing,
+`ecapture-encode-tests` is **not defined** rather than half-built, so `./test-all.sh` books the `codec-encode`
+suite as `NOT RUN` with the install hint (`./build.sh --codec` turns that missing dependency into a hard configure
+error instead).
 
-### wxWidgets dependency wiring (this step wires the dependency; no dialog was rewritten)
+### wxWidgets GUI layer (confirmation, permission text, errors and notifications)
 
-- **Version chosen**: wxWidgets 3.2.x (the current upstream stable line). On Linux use the distro package -
-  `libwxgtk3.2-dev` on Debian / Ubuntu.
-- **Discovery**: CMake's MODULE-mode `FindwxWidgets`, which asks `wx-config` for the version, cflags and libraries.
-  So the build follows whatever the distro installed instead of hard-coding an install path. With several wx
-  versions present, name one with `-DECAPTURE_WX_CONFIG=/full/path/to/wx-config` (as `./build.sh --wx-config ...`),
-  and set a floor with `-DECAPTURE_WX_MIN_VERSION=3.2.0`.
-- **Components and link strategy**: only `core` + `base` - `core` already carries its toolkit (wxGTK) dependencies,
-  so no GTK version number is hard-coded here. Linked as shared libraries. Headers, definitions, extra compile flags
-  and libraries are attached to the target individually; `include(${wxWidgets_USE_FILE})` is deliberately not used,
-  because it spreads those settings over the whole directory scope.
-- **Target split**: `ecapture-gui-probe` (`src/gui/WxGuiProbe.cpp`) is a **separate** target that only proves the
-  dependency really is wired and that `wxApp` can finish initializing in a graphics session. It opens no window,
-  shows no dialog and captures no pixel. The two offline suites do **not** link wxWidgets, so they build whether or
-  not wx is installed - GUI and core tests never block each other, which is the layering this step is about.
-- **Switches**: `ECAPTURE_ENABLE_GUI` defaults to `ON` on Linux (the probe target is skipped with a reason when wx is
-  absent) and `OFF` on Windows (the existing Windows entry point and installer payload list stay untouched - a machine
-  that happens to have wx installed does not suddenly gain a target). `ECAPTURE_REQUIRE_WX=ON`
-  (`./build.sh --gui`) turns a missing dependency into a hard configure error.
-- **Licence**: wxWidgets is LGPL 2.1 with an exception (dynamic linking carries no extra obligation).
-- **This machine**: wxWidgets is **not installed** on this Linux development box, so compiling and running the GUI
-  target is **unverified**. What was actually verified is the missing-dependency diagnosis itself
-  (`./build.sh --gui` exits with code `2` and lists the install and the name-a-wx-config options).
+- **One implementation on both platforms.** The program's own confirmation dialog, permission explanation block,
+  necessary error prompts and notification entry point are wxWidgets code under `src/gui/`. Windows no longer calls
+  `MessageBoxW`, and there is no parallel GTK / Qt / Win32 dialog implementation. The operating system's own
+  authorization surface (XDG Desktop Portal on Wayland) is a **different layer** and is left untouched.
+- **Version and discovery.** wxWidgets 3.2.x. On Linux use the distro package (`libwxgtk3.2-dev` on Debian /
+  Ubuntu). CMake uses MODULE-mode `FindwxWidgets`, so the build follows what the system installed instead of
+  hard-coding a path; `-DECAPTURE_WX_CONFIG=/full/path/to/wx-config` and `-DECAPTURE_WX_MIN_VERSION=3.2.0` are
+  available. Components are `core` + `base`; headers, definitions, flags and libraries are attached to each target
+  individually (`include(${wxWidgets_USE_FILE})` is deliberately not used).
+- **Windows is now a real dependency.** `ecapture` links wx, so configuring without wx or with
+  `ECAPTURE_ENABLE_GUI=OFF` is a configure-time failure, not a silently incomplete build. The Windows delivery is
+  still the single executable with the static CRT (`/MT`); wx must match it. `ECAPTURE_WX_USE_STATIC=ON` is the
+  default, so use a static wx build (for example the `x64-windows-static` vcpkg triplet) or build wx with
+  `RUNTIME_LIBS=static`. A `/MD` wx binary produces an `LNK2038` runtime-library mismatch; this step does not switch
+  the delivery to the dynamic CRT or add a new DLL payload.
+- **Linux is still optional.** `ECAPTURE_ENABLE_GUI` defaults to `ON`; when wx is absent the GUI targets are skipped
+  with a reason and the offline suites still build. `ECAPTURE_REQUIRE_WX=ON` (`./build.sh --gui`) makes the missing
+  dependency a hard configure error.
+- **Lazy, main-thread GUI.** The GUI context is created only when a window actually has to be shown; help, version,
+  configuration and read-only queries never initialize wx. There is no resident main window, tray icon or background
+  service. The dialog is modal on the main thread; the `--consent-timeout-ms` watcher runs on a separate thread and
+  only posts a close request into the GUI event queue. No background thread touches a control, and there is no busy
+  wait.
+- **Explicit outcomes.** The GUI layer distinguishes accepted, declined, closed (X / Esc), timed out, initialization
+  failed and program-cancelled. A disappearing window is never consent. The dialog supports long Chinese titles and
+  long paths (selectable, wrapping read-only text area), high DPI, keyboard operation with "No" as the default
+  button and accessible names on the dialog and its sections.
+- **Notification interface.** `ShowGuiNotification()` is the unified wxWidgets entry point. This step wires the
+  interface; what a completed screenshot notification should contain and when it is sent stays with the result
+  notification step. The existing WinRT toast path is not removed.
+- **Targets and tests.** `ecapture-gui-probe` still proves the dependency wiring. `ecapture-gui-tests` compiles the
+  production state machine and the production wx dialog with a test-only compile-time hook (the release binary has no
+  such symbol). `./test-all.sh --layer isolated` runs `gui-runtime`: it opens real dialogs, checks long text and
+  outcomes, re-runs them with `GDK_SCALE=2` to exercise high-DPI sizing, then runs with `DISPLAY` /
+  `WAYLAND_DISPLAY` removed and requires initialization to fail with a reason. The Windows runner has a matching `gui` suite; Windows real-desktop verification is recorded as
+  unverified until someone runs it on a Windows machine.
+- **Licence.** wxWidgets is LGPL 2.1 with an exception (dynamic linking carries no extra obligation).
+- **This machine.** wxWidgets 3.2.8 is installed on the Linux development box: `gui-probe-init` and `gui-runtime`
+  both pass in the current graphics session, including the no-session initialization-failure run. The Windows GUI
+  build and real-desktop checks were **not** run on this machine (no MSVC / no Windows desktop).
 
-`Consent.cpp` (the confirmation dialog) and `NotificationToast.cpp` (the post-capture notification) were **not**
-changed in this step; their wxWidgets implementation is a later step. The scope of `--yes` and the pixel-scope rules
-still have exactly one home, in `CaptureScope` and `src/core/Authorization.h`.
+`Consent.cpp` now contains only the cross-platform authorization state machine; `ConsentPrompt.cpp` renders the
+localized question and `src/gui/WxConsentDriver.cpp` owns the wx dialog. The scope of `--yes` and the pixel-scope
+rules still have exactly one home, in `CaptureScope` and `src/core/Authorization.h`.
 
 ### Building the installer: `build-installer.ps1`
 
@@ -2450,7 +2469,7 @@ line of X11 or Wayland backend is compiled into the build, so every cell in the 
 | `src/core/` | Platform-neutral model and judgements: `Platform.h` platform identity, `Geometry.h` coordinates, `Frame.h` image frame, `Status.h` why a call stopped, `Target.h` target description, `Error.h` error codes and tri-state, `Authorization.h` pixel scope and grant layers, `Capability.h` feature matrix | Never includes `windows.h`; no HWND / RECT / HANDLE / HRESULT / WinRT anywhere |
 | Shared model and policy headers in `src/` | `CliOptions.h`, `Config.h`, `CaptureScope.h`, `Consent.h`, `Capture.h`, `CropGeometry.h`, `ImageOps.h`, `ScreenMatch.h`, `ScreenIdentity.h`, `WindowMatch.h`, `WindowIdentity.h`, `DupGeometry.h`, `EnvReport.h`, `Delivery.h`, `Report.h`, `Notification.h`, `Deadline.h` | Same rule as above: these describe *what* is captured, *what* was approved and *what* the frame looks like, not which API produced it |
 | `src/platform/windows/WinBridge.h` | The **only** place where the core meets Win32: `RECT ↔ PhysRect` (single and batch) and `Deadline → wait milliseconds` | Only platform-layer `.cpp` files may include it. Each conversion call is a visible crossing, reviewable line by line |
-| `src/gui/` | The single place for the program's own GUI on every platform, built on wxWidgets. Today it holds only the dependency-wiring probe `WxGuiProbe.cpp` - there is **no** own interface here yet | Only this layer touches wxWidgets; `src/core/` and the shared models must not include it, and it must not define any judgement. The GUI target and the offline suites are independent of each other |
+| `src/gui/` | The single place for the program's own GUI on every platform, built on wxWidgets: the shared dialog, the lazy GUI runtime, the consent driver and the unified notification entry point. `WxGuiProbe.cpp` remains as the dependency probe | Only this layer touches wxWidgets; `src/core/`, `Consent.cpp` and the shared models must not include it, and it must not define any authorization judgement. The GUI targets and the offline suites are independent of each other |
 | `CaptureCommon.h`, the five channel headers, `Worker*.h`, `D3dDevice.h`, `WinrtApartment.h`, `NotificationToast.cpp`, `Lang.cpp`, `SystemCompat.cpp` | [Platform layer - Windows] the real users of GDI / D3D / WinRT / named pipes / string resources | Each file states up front that it is the platform layer; the shared core including them is a boundary breach |
 
 **This is not a rename of `RECT`.** `PhysRect` pins its four edges to `int32_t`, and "empty", "contains"
@@ -2574,9 +2593,9 @@ Alpha is never guessed: PNG and BMP keep the frame's alpha bytes as they are (no
 while JPEG simply has no alpha channel - the same "this format does not represent transparency" the Windows path
 states with `BitmapAlphaMode::Ignore`. Saying the latter is not a claim that the frame was opaque.
 
-Dependencies and licences for the Linux codec path (versions actually measured on this machine, licence names and
-where to read them) are recorded in **`THIRD-PARTY-NOTICES.md`**; nothing is vendored into the repository and
-nothing is auto-installed - CMake discovers `PNG::PNG` / `JPEG::JPEG` and reports the gap when they are absent.
+Dependencies and licences for the Linux codec path are listed in the [License](#license) section; nothing is
+vendored into the repository and nothing is auto-installed - CMake discovers `PNG::PNG` / `JPEG::JPEG` and
+reports the gap when they are absent.
 
 ### Verification entry points for this layer
 
@@ -2588,21 +2607,33 @@ nothing is auto-installed - CMake discovers `PNG::PNG` / `JPEG::JPEG` and report
 | The `cli-text` suite of `./test-all.sh`, plus steps 3b / 4b of `scripts/core-portability-check.sh` | Linux layer: the same shared sources generated, compiled and run with g++ **without going through a CMake target**. This is both the machine proof that the shared CLI layer carries no platform header and the check that catches "edited the text but never rebuilt" |
 | `.\tests\encode.ps1` | Offline layer: `build\ecapture-encode-tests.exe` runs the shared image/encode judgements against the **real WinRT encoder** (container structure, channel order, HDR refusal, format capability, budget, shared bytes for delivery and history). Pixel-level decode-back is Linux-only and is booked as a skip here, not as a pass |
 | The `image-ops` / `crop-geometry` / `codec-encode` suites of `./test-all.sh`, plus gates 3e / 4e-4g of `scripts/core-portability-check.sh` | Linux layer: the same three judgement sources compiled and run against `PosixEncoder.cpp` (libpng + libjpeg + self-written BMP) - 121 encode checks, 186 pixel-operation checks, 63 crop checks, all on synthetic frames with no pixels captured. Missing codec libraries are recorded as `NOT RUN` with the install hint |
-| `./test-all.sh` | Linux runner: the `offline` layer chains the check above with the CMake-built `ecapture-core-tests` and `ecapture-wgc-tests`; the `isolated` layer needs wxWidgets plus a graphics session (a missing dependency is recorded as `NOT RUN`, never as a pass); the `manual` layer is left to a human at a real desktop |
+| `./test-all.sh` | Linux runner: the `offline` layer chains the check above with the CMake-built offline suites; the `isolated` layer needs wxWidgets plus a graphics session and runs `gui-probe-init` and `gui-runtime` (the latter opens real dialogs, checks long text and all six outcomes, then requires initialization to fail with `DISPLAY` / `WAYLAND_DISPLAY` removed). A missing dependency is recorded as `NOT RUN`, never as a pass; the `manual` layer is left to a human at a real desktop |
+| `.\tests\gui.ps1` | Windows desktop: `build\ecapture-gui-tests.exe` runs the same GUI lifecycle/component judgements. It opens only the program's own dialogs and closes them itself; it captures no pixel and never answers a real authorization window. This machine has no MSVC/Windows desktop, so the Windows GUI checks are recorded as unverified |
 
 Both entries use one and the same source file, which never includes `windows.h`. Deliberately not done in
-this step (later work): the X11 / Wayland backends, wxWidgets replacing `DialogConsentPrompt` and the WinRT
-toast (this step only wires dependency discovery and linking, plus a probe target that opens no window),
-the Portal + PipeWire integration, replacing `std::wstring` itself with a type that carries its encoding (the
-convention is now stated once in `src/core/TextCoding.h`; the type has yet to follow), dropping `RECT` /
-`HRESULT` from the worker wire format, and the rest of splitting `Report.h` (writing to stdout now belongs to the
-platform service `src/OutputStream.h`, while response assembly and the desktop renderers stay on Windows).
+this step (later work): the X11 / Wayland backends, wiring the unified wx notification interface into the
+result-notification policy (the interface exists, but the WinRT toast path is still what the capture-completion
+step uses), the Portal + PipeWire integration, replacing `std::wstring` itself with a type that carries its
+encoding (the convention is now stated once in `src/core/TextCoding.h`; the type has yet to follow), dropping
+`RECT` / `HRESULT` from the worker wire format, and the rest of splitting `Report.h` (writing to stdout now belongs
+to the platform service `src/OutputStream.h`, while response assembly and the desktop renderers stay on Windows).
 
 ## License
 
 EvernightCapture is licensed under the [Mulan Permissive Software License v2 (Mulan PSL v2)](http://license.coscl.org.cn/MulanPSL2).
 The complete bilingual (Chinese and English) text is in [LICENSE](LICENSE).
-第三方依赖与它们的许可证（Windows SDK / C++/WinRT 那一路，Linux 上的 libpng、zlib 与 libjpeg，以及 GUI 那一步的 wxWidgets）记在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+Third-party components:
+
+| Component | Purpose | Licence |
+| --- | --- | --- |
+| Windows SDK / C++/WinRT | WGC, DWM, PrintWindow, BitBlt and Desktop Duplication capture; `BitmapEncoder` | MIT (OS component, not redistributed) |
+| MSVC runtime (`/MT`) | Static CRT for the single-file build | Visual Studio licence |
+| Inno Setup | Installer (`build-installer.ps1`) | Inno Setup licence |
+| libpng | PNG encoding on Linux | libpng licence |
+| zlib | libpng's deflate dependency | zlib licence |
+| libjpeg-turbo | JPEG encoding on Linux | BSD-3-Clause / IJG / zlib / MIT |
+| wxWidgets | Dialogs and notifications | LGPL 2.1 with an exception |
 
 ```
 Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi)

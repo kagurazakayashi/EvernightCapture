@@ -312,12 +312,14 @@ void CheckPrivacy() {
 
     // 授权结果默认值：关框、弹不出来、没人能答，都不许被读成同意
     ConsentReply reply;
-    Check(reply.answer == ConsentAnswer::kUnavailable, "默认是\"没人答过\"，不是\"同意\"");
-    Check(!reply.timedOut, "到点标记默认 false");
-    Check(reply.win32 == kNativeErrorNone, "没失败过就没有系统码");
+    Check(reply.answer == ConsentAnswer::kInitFailed, "默认是\"没弹成\"，不是\"同意\"");
+    Check(reply.nativeError == kNativeErrorNone, "没失败过就没有系统码");
     Check(ConsentAnswer::kAccepted != ConsentAnswer::kDeclined &&
-              ConsentAnswer::kDeclined != ConsentAnswer::kUnavailable,
-          "答否与弹不出框是两种成因，但同为拒绝（调用方据此分别给提示）");
+              ConsentAnswer::kDeclined != ConsentAnswer::kClosed &&
+              ConsentAnswer::kClosed != ConsentAnswer::kTimedOut &&
+              ConsentAnswer::kTimedOut != ConsentAnswer::kCancelled &&
+              ConsentAnswer::kCancelled != ConsentAnswer::kInitFailed,
+          "同意 / 答否 / 关框 / 超时 / 取消 / 弹不出框是六种分开的结局");
 }
 
 // ---------------------------------------------------------------------------

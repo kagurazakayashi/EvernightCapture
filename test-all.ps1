@@ -339,6 +339,7 @@ $suites = @(
     [pscustomobject]@{ Name = 'timeout';      Real = 'desktop'; OfflineLayer = '';            Note = '一份预算与辅助进程自己的时钟（含真等 30 秒以上的两节）' },
     [pscustomobject]@{ Name = 'dup';          Real = 'desktop'; OfflineLayer = 'SkipReal';    Note = '桌面复制几何与那块屏变了那几条' },
     [pscustomobject]@{ Name = 'channels';     Real = 'desktop'; OfflineLayer = '';            Note = '六条通道对自建窗口的成像' },
+    [pscustomobject]@{ Name = 'gui';          Real = 'desktop'; OfflineLayer = '';            Note = 'wxWidgets 公共 GUI 层与确认框：长中文/长路径、默认焦点、同意/拒绝/关框/超时/取消（测试自己的对话框，自动关闭）' },
     [pscustomobject]@{ Name = 'consent';      Real = 'desktop'; OfflineLayer = '';            Note = '授权两级与拒绝传播（会真的弹框，只代答否）' },
     [pscustomobject]@{ Name = 'screen';       Real = 'desktop'; OfflineLayer = '';            Note = '整屏三条桌面路径（要 -SimulateConsent 才跑全）' },
     [pscustomobject]@{ Name = 'smoke';        Real = 'desktop'; OfflineLayer = '';            Note = '端到端出图与像素内容' },

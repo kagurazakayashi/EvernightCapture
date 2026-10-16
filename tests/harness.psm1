@@ -1049,13 +1049,29 @@ function Get-EcOwnedWindowCount {
 # 对话框（整屏确认框）：测试侧按控件 ID 点，与文案语言无关
 # ----------------------------------------------------------------------------
 function Find-EcDialog {
-    <# 只在该进程的窗口里找 #32770，不去碰别人弹出的对话框。 #>
+    <#
+      只在该进程的窗口里找确认框，不去碰别人弹出的对话框。
+      两类都认：
+        * 旧的 #32770（Win32 MessageBox 一类）；
+        * wxWidgets 的顶层对话框 —— 它没有 #32770 这个类名，但"否"按钮的控件 ID 是
+          wxID_NO=5104（"是"是 wxID_YES=5103）。按子控件 ID 找与文案语言无关。
+    #>
     param([Parameter(Mandatory)][int]$ProcessId)
 
     $script:EcFoundDialog = [IntPtr]::Zero
     $callback = [EcHarnessWin+EnumWinProc] {
         param($h, $data)
-        if (((Get-EcClassName -Hwnd $h) -eq '#32770') -and (Test-EcWindowBelongsTo -Hwnd $h -ProcessId $ProcessId)) {
+        if (-not (Test-EcWindowBelongsTo -Hwnd $h -ProcessId $ProcessId)) { return $true }
+        $className = Get-EcClassName -Hwnd $h
+        $isLegacy = $className -eq '#32770'
+        $hasWxNo = [EcHarnessWin]::GetDlgItem($h, 5104) -ne [IntPtr]::Zero
+        $hasWxYes = [EcHarnessWin]::GetDlgItem($h, 5103) -ne [IntPtr]::Zero
+        $hasLegacyNo = [EcHarnessWin]::GetDlgItem($h, 7) -ne [IntPtr]::Zero
+        # 兜底：测试进程用 CreateNoWindow 启动，正常情况下它自己唯一的可见顶层窗口就是确认框。
+        # 排除控制台类，避免把宿主控制台当成对话框；目标窗口属于别的进程，不会被枚举到这里。
+        $isOnlyVisibleWindow = [EcHarnessWin]::IsWindowVisible($h) -and
+                               $className -ne 'ConsoleWindowClass'
+        if ($isLegacy -or $hasWxNo -or $hasWxYes -or $hasLegacyNo -or $isOnlyVisibleWindow) {
             $script:EcFoundDialog = $h
             return $false
         }
@@ -1078,14 +1094,25 @@ function Wait-EcDialog {
 }
 
 function Click-EcDialogButton {
-    <# IDYES=6 / IDNO=7：按钮不存在时返回 $false，让调用方决定这算不算失败。 #>
+    <#
+      测试仍用 IDYES=6 / IDNO=7 表达"是 / 否"；实际控件 ID 先按 Win32 MessageBox 找
+      （6/7），找不到再按 wxWidgets 的 wxID_YES=5103 / wxID_NO=5104 找。
+      按钮不存在时返回 $false，让调用方决定这算不算失败。
+    #>
     param([Parameter(Mandatory)][IntPtr]$Dialog, [Parameter(Mandatory)][int]$ButtonId)
 
     if (-not [EcHarnessWin]::IsWindow($Dialog)) { return $false }
-    $button = [EcHarnessWin]::GetDlgItem($Dialog, $ButtonId)
-    if ($button -eq [IntPtr]::Zero) { return $false }
-    [void][EcHarnessWin]::SendMessage($button, 0xF5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
-    return $true
+    $ids = @($ButtonId)
+    if ($ButtonId -eq 6) { $ids = @(6, 5103) }
+    if ($ButtonId -eq 7) { $ids = @(7, 5104) }
+    foreach ($id in $ids) {
+        $button = [EcHarnessWin]::GetDlgItem($Dialog, [int]$id)
+        if ($button -ne [IntPtr]::Zero) {
+            [void][EcHarnessWin]::SendMessage($button, 0xF5, [IntPtr]::Zero, [IntPtr]::Zero)   # BM_CLICK
+            return $true
+        }
+    }
+    return $false
 }
 
 # ----------------------------------------------------------------------------
@@ -1098,7 +1125,7 @@ function Invoke-EcConsentShot {
     .DESCRIPTION
         截图授权分级之后，真机判据必须能区分三种情况：
           * 压根不该弹框（带 --yes 的窗口内容路径、--dry-run、参数错、无匹配、输出预检失败）
-            —— 用 -ExpectNoDialog：探测一发现 #32770 就算失败，且不再等；
+            —— 用 -ExpectNoDialog：探测一发现确认框（#32770 或 wx 对话框）就算失败，且不再等；
           * 该弹框、人自己点（默认）—— 不带 -Answer，函数只报告"弹过了"，不替人决定；
           * 该弹框、测试代答（只在专门腾出来的无隐私桌面上用 -Answer）——
             IDYES=6 放行、IDNO=7 拒绝。代人点"是"等于替人同意，默认不做。

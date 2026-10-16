@@ -1,8 +1,7 @@
-// 【跨平台 GUI · wxWidgets】依赖接线探针（Windows 与 Linux 同一份源码）
+// 【GUI · wxWidgets】依赖接线探针（Windows 与 Linux 同一份源码）
 //
-// 本步只把 wxWidgets 的依赖发现与链接接到位，不实现任何自有界面：
-// 确认弹窗与通知的 wx 版本是后续步骤（判据仍归 Consent.cpp / CaptureScope 那一侧，
-// 这里不参与任何授权决定，也不取一个像素）。
+// 自有界面已经由同目录的 WxGuiRuntime / WxGuiDialog / WxConsentDriver 实现；这个探针保留下来，
+// 只证明依赖发现与链接仍然成立。它不建窗口、不弹框、不参与任何授权决定，也不取一个像素。
 //
 // 这个程序存在的意义是一条可重复运行的构建事实：wx 的头、宏、编译选项与库四样都真的传给了目标，
 // 而且 wxApp 能在当前桌面会话里完成初始化。OnInit 里不建窗口、不弹框，打印完就 return false，

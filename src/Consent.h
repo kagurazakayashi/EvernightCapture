@@ -26,6 +26,8 @@
 // 这不是安全边界：确认框是合作式自动化（人或 AI）的误操作防护，它分不清点击的是不是人，
 // 也挡不住同一个权限级别里存心绕过的进程。能保证的是"照规矩跑的调用方一定会先问一次"。
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -47,10 +49,10 @@ class Deadline;
 // 授权层与像素范围的语义在 core/Authorization.h（PixelScope、--yes 那条例外、
 // 各平台要求哪几层授权）。本文件是**这次请求的授权状态机**与它问人的那份接口。
 //
-// 【GUI 归属】IConsentPrompt 是程序自有界面的接缝：现在 Windows 的实现在这一头文件里
-// 声明（DialogConsentPrompt -> MessageBoxW），wxWidgets 那一份实现接进来时替换的是它，
-// ConsentGate 与 CaptureScope 那两层判据一行都不用改。Wayland 的系统授权是**另一层**
-// （操作系统自己的来源选择界面），本接缝既不实现它也不替代它。
+// 【GUI 归属】IConsentPrompt 是程序自有界面的接缝。生产实现 DialogConsentPrompt 在
+// src/ConsentPrompt.cpp 里把这一问渲染成 wxWidgets 对话框（Windows 与 Linux 同一份代码，
+// 见 src/gui/）；ConsentGate 与 CaptureScope 那两层判据不认识任何控件。Wayland 的系统授权
+// 是**另一层**（操作系统自己的来源选择界面），本接缝既不实现它也不替代它。
 struct ConsentQuestion {
     PixelScope scope = PixelScope::kWindowContent;
     std::wstring path;                  // 实际要走的那条内部路径（dwm.screen / screen.wgc …）
@@ -63,19 +65,35 @@ struct ConsentQuestion {
     bool historyCopy = false;
 };
 
+// 一次问人的结局。六档各说一件事，谁也不冒充谁：
+//   * 只有 kAccepted 是同意；窗口消失、关框、超时、取消、初始化失败全部不是。
+//   * kDeclined / kClosed / kTimedOut / kCancelled 在诊断上都归到"没有取得同意"，
+//     但状态机与判据能分清人到底做了什么（下一步该换条件、再来一次还是换会话）。
 enum class ConsentAnswer {
-    kAccepted,     // 人点了"是"
-    kDeclined,     // 人点了"否"或关掉对话框
-    kUnavailable,  // 根本没有可交互的桌面，没人能回答"是"
+    kAccepted,    // 人点了"是"
+    kDeclined,    // 人点了"否"
+    kClosed,      // 人按 X 或 Esc 关掉了对话框
+    kTimedOut,    // --consent-timeout-ms 到点，由程序收尾
+    kCancelled,   // 程序主动取消（取消令牌），不是人的回答
+    kInitFailed,  // GUI 初始化失败 / 对话框根本弹不出来
 };
 
 struct ConsentReply {
-    ConsentAnswer answer = ConsentAnswer::kUnavailable;
-    // answer == kUnavailable 时这才是"为什么弹不出来"的 GetLastError 原值；其余为 0。
-    NativeErrorCode win32 = kNativeErrorNone;
-    // 这一条是"期限到点、由本工具把框按'否'关掉"的标记：与"人自己点了否"同为拒绝，
-    // 但调用方要能分清（--consent-timeout-ms 到点 vs 人不同意）。
-    bool timedOut = false;
+    ConsentAnswer answer = ConsentAnswer::kInitFailed;
+    // answer == kInitFailed 时这才是"为什么弹不出来"的系统原值
+    // （Windows 是 GetLastError，Linux 是 errno）；其余为 0。
+    NativeErrorCode nativeError = kNativeErrorNone;
+};
+
+// 程序取消的接缝。后台任务（或将来接进来的信号）只置一个原子标记；真正的关框发生在
+// GUI 主线程，由 RunMonitoredDialog 的看守线程转成一次 RequestClose。一次令牌只取消一次。
+class ConsentCancelToken {
+public:
+    void Cancel() noexcept { cancelled_.store(true); }
+    bool Cancelled() const noexcept { return cancelled_.load(); }
+
+private:
+    std::atomic<bool> cancelled_{false};
 };
 
 // 弹框这一件事的接口。测试里注入假的应答器，就能在没有桌面的情况下把整台状态机跑完。
@@ -85,39 +103,45 @@ public:
     virtual ConsentReply Ask(const ConsentQuestion& question) = 0;
 };
 
-// 真机上那一个：模态 MessageBox（MB_YESNO），默认焦点在"否"上。
+// 真机上那一个：wxWidgets 模态对话框，默认焦点与默认按钮都在"否"上。
 //
-// 确认框跑在一条专门的线程上，本线程只负责等它 —— 因为 MessageBoxW 自己是阻塞的，
-// 而 --consent-timeout-ms 要求"到点没人答就按拒绝处理"，那就必须有一个能主动把框关掉、
-// 并且**任何超时路径都能收尾**的观察者（见下面的 RunMonitoredDialog）。这条线程从不被
-// TerminateThread 抛弃：宽限用尽仍关不掉时，等待方按"拒绝"返回，弹框线程与它引用的
-// 一切由共享生命周期接管（进程退出时一起消失，其间绝不构成同意）。
-// timeoutMs = 0 表示一直等人回答。
+// 对话框在 GUI 主线程上创建、显示、销毁；--consent-timeout-ms 由 RunMonitoredDialog 的
+// 看守线程计时，到点只把"关框"消息投递给 GUI 主线程。CLI 线程阻塞在模态循环里，不忙等，
+// 也不允许后台线程直接碰控件。timeoutMs = 0 表示一直等人回答。
 class DialogConsentPrompt final : public IConsentPrompt {
 public:
-    explicit DialogConsentPrompt(uint64_t timeoutMs = 0) : timeoutMs_(timeoutMs) {}
+    explicit DialogConsentPrompt(uint64_t timeoutMs = 0,
+                                 ConsentCancelToken* cancelToken = nullptr)
+        : timeoutMs_(timeoutMs), cancelToken_(cancelToken) {}
 
     ConsentReply Ask(const ConsentQuestion& question) override;
 
 private:
     uint64_t timeoutMs_ = 0;
+    ConsentCancelToken* cancelToken_ = nullptr;
 };
 
 // ---------------------------------------------------------------------------
 // 弹框生命周期机制
 //
-// "框怎么弹、怎么关"（驱动）与"等多久、到点关不关得掉、线程怎么收尾"（状态机）分开：
-// 状态机才是 F05 的要害 —— 到点必须有一个有界、可信的结束路径，不管框是没弹出来、
-// 关它的话没送到、还是送到了没生效。真机的驱动是 MessageBoxW（ShowConsentDialog）；
-// 测试目标链的是**同一份实现**，只是把驱动换成自己的傀儡，判的是生产那台状态机本身。
-// 这不是发布版后门：ECAPTURE.EXE 里注入点不接线、也不存在任何能选驱动的运行时入口，
-// 傀儡驱动只编译进测试可执行文件。
+// "框怎么弹、怎么关"（驱动）与"等多久、到点关不关得掉"（状态机）分开。状态机本身只认识
+// 一个与 wxWidgets 无关的 DialogDriver；生产驱动在 src/gui/WxConsentDriver.cpp，测试驱动
+// 只编译进独立测试目标。这不是发布版后门：ECAPTURE.EXE 里没有能选驱动的运行时入口。
+//
+// 线程模型：驱动 Show() 在 GUI 主线程上创建并显示模态框，阻塞到窗口销毁；状态机在看守
+// 线程上计时，到点或收到取消令牌时调用 RequestClose()。RequestClose 必须线程安全，并且
+// 只能把消息投递给 GUI 主线程 —— 它**不得**在后台线程直接操作控件。
 // ---------------------------------------------------------------------------
 
-// 驱动在弹框线程上跑完一次的结果。沿用 MessageBoxW 的约定：code 0 = 没弹成。
+// 看守线程要求驱动关闭窗口的理由。
+enum class DialogCloseReason {
+    kTimedOut,
+    kCancelled,
+};
+
 struct DialogResult {
-    int code = 0;
-    NativeErrorCode win32 = kNativeErrorNone;  // code == 0 时这才是失败原值（在弹框那条线程上取的）
+    ConsentAnswer answer = ConsentAnswer::kInitFailed;
+    NativeErrorCode nativeError = kNativeErrorNone;  // 仅 kInitFailed：那一次失败的系统原值
 };
 
 class DialogDriver {
@@ -127,36 +151,31 @@ public:
     DialogDriver(const DialogDriver&) = delete;
     DialogDriver& operator=(const DialogDriver&) = delete;
 
-    // 在专门的弹框线程上被调用：把框弹出来，阻塞到它关闭。
-    // 状态机保证这条线程绝不被终止 —— 它可能在等待方放弃之后才返回，
-    // 那时它引用的状态由它自己持有的那份共享所有权接管，不落空。
+    // 在 GUI 主线程上被调用：把框弹出来，阻塞到它关闭并销毁。
     virtual DialogResult Show() = 0;
 
-    // 期限到点后在**等待线程**上被调用，宽限期内每个轮询切片重试一次：
-    // 试着把框关掉。dialogThreadId 是弹框线程的 id（0 = 那条线程还没跑起来）。
-    // 返回值只表示"关的指令送出去了没有"；生效与否一律由 done 事件 + 宽限期裁决。
-    virtual bool RequestClose(uint32_t dialogThreadId) = 0;
+    // 在看守线程上被调用，宽限期内每个轮询切片重试一次。
+    // 返回值只表示"关的指令送出去了没有"；生效与否由 Show() 返回、窗口销毁之后裁决。
+    // 实现必须把关闭请求投递到 GUI 主线程（wxQueueEvent / 等价机制），不能直接碰控件。
+    virtual bool RequestClose(DialogCloseReason reason) = 0;
+
+    // Show() 之前由状态机给出同一个截止时刻。驱动可以据此让"到点之后才落地的点击"
+    // 仍按超时收尾 —— 与看守线程用的是同一个时刻，不是另算一份期限。
+    virtual void SetDeadline(std::optional<std::chrono::steady_clock::time_point> deadline) {
+        (void)deadline;
+    }
 };
 
-// 看守一次弹框直到拿到一个可信的结束（或放弃这条框）。规则：
-//   * 只有弹框真的关闭、且驱动报回 IDYES、且期限还没到，才是 kAccepted；
+// 看守一次弹框直到拿到一个可信的结束。规则：
+//   * 只有窗口真的关闭、且驱动报回 kAccepted、且期限还没到，才是 kAccepted；
 //     同意之后固定留一段关闭动画缓冲（kDialogSettleMs，见 Consent.cpp），不为赶期限省略。
-//   * 人答"否"、人自己关框 => kDeclined。
-//   * 期限到点 => 先 latch timedOut 再裁决：宽限期内反复 RequestClose；到点仍没人答过，
-//     不管是关不掉、还是"是"在同一瞬间被点下，一律 kDeclined + timedOut，绝不改成同意。
-//     timeoutMs > 0 时本函数在 timeoutMs + 关框宽限 + 一个切片内必定返回。
-//   * 框根本没弹出来、驱动抛异常、或事件/线程创建失败 => kUnavailable（带 win32 原值）。
-//     弹框线程已经交出结果（code 0）之后，即使期限也到了，仍报 kUnavailable ——
-//     "弹都没弹出去"比"没人回答"更具体，两者同为拒绝，隐私上等价。
-ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t timeoutMs);
-
-// 生产入口：用 MessageBoxW 弹一帧（flags 须含 MB_YESNO —— 到点关框的升级链要点那块
-// "否"按钮，见 Consent.cpp 的 MessageBoxDriver），其余规则同上。
-// 【过渡桥接】flags 这一格装的是 Win32 的 MessageBox 位（UINT 的原值），所以这条入口
-// 是 Windows 那一侧的实现；声明留在这里是为了让"弹框生命周期"与"授权状态机"只有一处说法。
-// wxWidgets 接进来后由它自己的确认框入口顶替这一条。
-ConsentReply ShowConsentDialog(const std::wstring& body, const std::wstring& title,
-                               uint32_t flags, uint64_t timeoutMs);
+//   * 人答"否" => kDeclined；人按 X / Esc 关框 => kClosed。
+//   * 期限到点 => 先 latch kTimedOut 再裁决：宽限期内反复 RequestClose；哪怕"是"在同一
+//     瞬间被点下，也一律按 kTimedOut 收尾，绝不改成同意。
+//   * 取消令牌 => 同样的关闭通道，结局是 kCancelled（与人的回答分开）。
+//   * 框根本没弹出来、驱动抛异常 => kInitFailed（带系统原值）；它比"没人回答"更具体。
+ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t timeoutMs,
+                                ConsentCancelToken* cancelToken = nullptr);
 
 // 一次桌面取样的凭证。构造函数私有，唯一的发出者是 ConsentGate，而 GrabScreenRect、
 // duplication、整屏 wgc 都把它做成必需参数 —— 内部退路想绕开授权就拿不到这张凭证，
@@ -225,8 +244,9 @@ using TopologyProvider = std::function<std::vector<ScreenInfo>()>;
 // 一次进程内运行的授权状态机。不做线程共享（本工具单线程跑流水线）。
 class ConsentGate {
 public:
-    explicit ConsentGate(GateConfig config, IConsentPrompt& prompt,
-                         TopologyProvider topology = nullptr);
+    // topology 必须由调用方显式给出：真机传 EnumScreens，测试传假布局。
+    // 不再在这里默认去问系统 —— 授权层不认识任何平台的屏幕枚举。
+    ConsentGate(GateConfig config, IConsentPrompt& prompt, TopologyProvider topology);
 
     // 窗口内容路径（wgc / printwindow / dwm 的缩略图主路径）。
     // 带 --yes 时直接放行；否则整批问一次，之后同批次不再重复打扰。
@@ -272,7 +292,7 @@ private:
     ConsentQuestion MakeQuestion(const wchar_t* path, PixelScope scope,
                                  const ConsentSnapshot& snap) const;
     Diagnostic Denied(const wchar_t* path, const std::wstring& targetKey, PixelScope scope,
-                      bool unavailable, NativeErrorCode gle, bool timedOut) const;
+                      ConsentAnswer answer, NativeErrorCode nativeError) const;
     // 确认基线在弹框期间失效（拓扑变了）：这一问不授权，也不换基线重试
     Diagnostic Stale(const wchar_t* path, const std::wstring& targetKey) const;
     // 人同意、且确认后拓扑复核与快照一致之后：把快照里列出的目标区域冻结成本次桌面授权
@@ -287,10 +307,10 @@ private:
 
     Level windowLevel_ = Level::kNotAsked;
     Level desktopLevel_ = Level::kNotAsked;
-    // 拒绝的原因（人答否 / 弹不出框 / 期限到点）要粘住：后面那些目标不再问第二遍，
-    // 但它们各自的诊断得说清当初是哪一种，而不是统统写成"被拒绝"。
-    bool lastDenyUnavailable_ = false;
-    bool lastDenyTimedOut_ = false;
+    // 拒绝的原因（人答否 / 关框 / 弹不出框 / 期限到点 / 程序取消）要粘住：后面那些目标
+    // 不再问第二遍，但它们各自的诊断得说清当初是哪一种，而不是统统写成"被拒绝"。
+    ConsentAnswer lastDenyAnswer_ = ConsentAnswer::kDeclined;
+    NativeErrorCode lastDenyNativeError_ = kNativeErrorNone;
     std::vector<GateTarget> desktopAreas_;  // 答"是"那一轮弹框前冻结的授权快照清单
     int windowAsks_ = 0;
     int desktopAsks_ = 0;

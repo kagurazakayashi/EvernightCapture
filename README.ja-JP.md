@@ -443,7 +443,7 @@ ECAPTURE.EXE --process notepad.exe --title-contains 报告 D:\shots\r.png
    code は存在せず、両者を分けるのは stage のほうである。コマンドライン解析そのもののエラーには `stage` 自体が
    付かない）、`hresult`（`0x80070005` のような生の値）、`win32`（`GetLastError` の生の値）。`message` は `--lang` に
    追随するがこちらは追随しない。承諾側の失敗は独立した枝で、`capture.access_denied` は答えが「はい」でなかったこと
-   （この `MB_YESNO` の箱で人が出せる拒否は「いいえ」だけで、ツールは「はい」以外の結果をどれも拒否として扱う）、
+   （「いいえ」、ウィンドウを閉じる、`Esc` はどれも拒否で、ツールは「はい」以外の結果をどれも拒否として扱う）、
    `capture.consent_unavailable` はダイアログをそもそも出せなかったこと（対話できる
    デスクトップがない）を意味する。どちらも終了コード `6`、どちらも `stage=consent`、`target`、`backend`（チャネル）、
    `value`（経路名）を運び、そしてどちらも技術的なアクセス拒否（`capture.failed` に `hresult=0x80070005` が付く）では
@@ -1287,11 +1287,10 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
   側の経路は確認なしで走ってよいが、デスクトップの経路へ入る前には必ず聞きます。対象の領域が動いたりモニタ構成が
   変わったりすれば、それを覆う承諾は無効にもう一度聞き直し、古い領域に縛られていたフレームは `capture.consent_stale`
   （終了コード `7`、対象を選び直すと再試行できる）を返します。
-- ダイアログは素朴な `MB_YESNO` の箱です：ボタンは「はい」「いいえ」の 2 つで、既定フォーカスは **「いいえ」**。
-  承認するのは明示的な「はい」だけで、それ以外の結果はすべて拒否として扱います。拒否するには **「いいえ」を
-  クリック**してください。`X` や `Esc` に頼らないでください —— `MB_YESNO` ではタイトルバーの `X` は表示されるが
-  無効化され、`Esc` が押す Cancel ボタンも無いので、どちらも確実な「いいえ」の仕草ではない —— 箱はとにかく
-  答えられる必要があり、ツールは「はい」以外の結果をどれも拒否として扱います。加えて、
+- ダイアログはプログラム自身の wxWidgets ダイアログです：ボタンは「許可する」「許可しない」の 2 つで、
+  既定フォーカスと既定ボタンは **「許可しない」** にあります。承認するのは明示的な「許可する」だけで、
+  それ以外の結果はすべて拒否として扱います。拒否するには「許可しない」をクリックするか、ウィンドウの `X` を
+  押すか、`Esc` を押してください —— どれも拒否であり、同意ではありません。加えて、
   `--consent-timeout-ms` 以内に誰も答えないことはそれ自体がひとつの拒否です（`capture.consent_timeout`）。
 - 「いいえ」と答えた、`--consent-timeout-ms` 以内に誰も応答しなかった、対話できるデスクトップが無い ——
   この 3 つの結末のいずれでも、**そのリクエストの残りは止まります**。`--all` の残り対象だけでなく `auto`
@@ -1299,7 +1298,7 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
   そのまま残ります。人の返答は境界であって、どれかが通るまで経路を試し続けろという合図ではありません。
 - 「はい」と答えた後も約 1 秒待ってからフレームを取ります。ダイアログが閉じるアニメーションが画像に写るのを避ける
   ためで、ダイアログ自体は画像に写りません。
-- ダイアログは「いいえ」に既定フォーカスを置き、対象とその矩形、通ろうとする実際の経路、展開済みの絶対出力パス
+- ダイアログは「許可しない」に既定フォーカスを置き、対象とその矩形、通ろうとする実際の経路、展開済みの絶対出力パス
   （または標準出力）、他のウィンドウが写り込み得るかどうかを列挙します。経路がデスクトップを読むなら、ここで
   `--yes` は効かないと明記します。
 - 対話できるデスクトップが無いとき（サービスセッション、タスクスケジューラ、ロック画面）は、`--yes` を付けた
@@ -1311,7 +1310,7 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
 - 人が断ったことは、そのまま「人が断った」として出ます —— `capture.access_denied`（`stage=consent`）+
   終了コード `6`。出力パスを与えるかどうかとは関係がありません。`--out` を省略するのは `--out -` と同じで、
   承諾の結果はそれで変わりません（《出力パスを省略した場合（互換性の注記）》 参照）。
-- 素朴な `MessageBox` は**協力する自動化の誤操作防止**です。人間がクリックしたことの認証ではなく、同じ権限で
+- プログラム自身の wxWidgets ダイアログは**協力する自動化の誤操作防止**であり、OS のセキュリティ境界ではありません。人間がクリックしたことの認証ではなく、同じ権限で
   回避を狙うプロセスに対する防御でもありません。保証として言えるのは、これらの規則に従う呼び出し側なら少なくとも
   1 回は聞かれる、という点だけです。
 
@@ -1705,7 +1704,7 @@ INI の `format = auto` は拡張子からの推論を**オフにしない**。�
 
 **設計上の境界であって、欠陥ではありません：**
 
-- 確認ダイアログは素朴な `MessageBox` です。協調的な誤クリック防止にすぎず、人間かスクリプトかを区別できず、
+- 確認ダイアログはプログラム自身の wxWidgets ダイアログであり、OS のセキュリティ境界ではありません。協調的な誤クリック防止にすぎず、人間かスクリプトかを区別できず、
   OS のセキュリティ境界でもありません。保証として言えるのは、これらの規則に従う呼び出し側ならデスクトップの
   経路について少なくとも 1 回は聞かれる、という点だけです。
 - 判定と取得は決して 1 つの原子的な操作になりません。身元とトポロジーの再確認は `HWND` の差し替えが起きる時間窓を
@@ -1792,7 +1791,7 @@ INI の `format = auto` は拡張子からの推論を**オフにしない**。�
    | `match.no_window`                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 4          | 条件を広げるか、対象が最小化中かどうかを見る（最小化ウィンドウは取得できない）                                                                                                                                                                                                                                                                                       |
    | `match.ambiguous_window`、`match.monitor_ambiguous_id`                                                                                                                                                                                                                                                                                                                                                                                                              | 5          | 複数当たっていてツールは 1 つを選ばない —— `--index` / `--topmost-match` / `--all`、または `--screens` の識別子で絞り込む                                                                                                                                                                                                                                            |
    | `match.monitor_unknown_id`                                                                                                                                                                                                                                                                                                                                                                                                                                          | 4          | その識別子はもうデスクトップに無い。`--screens` を再び実行する                                                                                                                                                                                                                                                                                                       |
-   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6          | 人の境界：答えが「はい」でなかった（この `MB_YESNO` の箱で人が出せる拒否は「いいえ」だけ）、期限以内に誰も応答しなかった、対話デスクトップが無い。リクエストの残りは試みていません —— 聞き直すのは新しいリクエストであって再試行ではない                                                                                                                             |
+   | `capture.access_denied`、`capture.consent_timeout`、`capture.consent_unavailable`                                                                                                                                                                                                                                                                                                                                                                                   | 6          | 人の境界：答えが「はい」でなかった（「いいえ」、ウィンドウを閉じる、`Esc` はどれも拒否）、期限以内に誰も応答しなかった、対話デスクトップが無い。リクエストの残りは試みていません —— 聞き直すのは新しいリクエストであって再試行ではない                                                                                                                             |
    | `match.timeout`、`capture.worker_failed`、`capture.failed`、`capture.frame_timeout`、`capture.window_gone`、`capture.frame_invalid`、`capture.roi_invalid`、`capture.roi_unmeasurable`、`capture.monitor_changed`、`capture.monitor_unverifiable`、`capture.monitor_id_unverifiable`、`capture.consent_stale`、`capture.timeout`、`capture.hdr_refused`、`capture.hdr_unverifiable`、`capture.target_gone`、`capture.target_changed`、`capture.target_unverifiable` | 7          | 決める前に `stage`（`match` / `capture` / `encode`）を読む。次の一手は新しい `--list` / `--screens` であって、`--capture` を変えることではない                                                                                                                                                                                                                       |
    | `env.os_too_old`、`env.channel_unsupported`、`env.hdr_unsupported`、`env.cursor_unsupported`                                                                                                                                                                                                                                                                                                                                                                        | 7          | この**マシン**が要求に応えられない —— 下の段落を参照                                                                                                                                                                                                                                                                                                                 |
    | `io.write_failed`、`io.file_exists`、`io.output_collision`、`io.timeout`                                                                                                                                                                                                                                                                                                                                                                                            | 8          | ディレクトリを作るか、衝突し得ない名前を選ぶ。`io.file_exists` は `--no-overwrite` が仕事をしただけ。ここに出る `io.timeout` は「書き出しがそもそも開始できなかった」ほうで、ファイルが実際に届いたのに書き込み後の期限再チェックだけが越えた場合は、その画像は `images` に残り、実行は終了コード `7`（納品 + エラー）を返す。《実行期限とブロックする呼び出し》参照 |
@@ -2051,41 +2050,57 @@ cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
 Linux で今ビルドできるのは `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
-`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（libpng と libjpeg が見つかった時だけ）、そして（wxWidgets を入れた上で）`ecapture-gui-probe` だけです。エンコード依存が無いとき `ecapture-encode-tests` は**定義しません**（半分だけ作った目標にしない）—— `./test-all.sh` は `codec-encode` を `NOT RUN` として設定の案内付きで計上し、`./build.sh --codec` はその欠けをハードな設定エラーにします。完全な CLI と、取得チャネルを必要とする十数本の
+`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（libpng と libjpeg が見つかった時だけ）、`ecapture-consent-tests`、そして wxWidgets を入れた上での `ecapture-gui-probe` と `ecapture-gui-tests` です。エンコード依存が無いとき `ecapture-encode-tests` は**定義しません**（半分だけ作った目標にしない）—— `./test-all.sh` は `codec-encode` を `NOT RUN` として設定の案内付きで計上し、`./build.sh --codec` はその欠けをハードな設定エラーにします。完全な CLI と、取得チャネルを必要とする十数本の
 テスト実行ファイルは依然 `CMakeLists.txt` の【プラットフォーム層 · Windows】節にあり、設定ログに一覧として
 出力されます。ビルドディレクトリには `ecapture-buildable-targets.txt` も残り、スクリプトがこれを照合します ——
 Linux のビルド成功を見せるために機能を削除することはしません。
 
-### wxWidgets の依存配線（この段階は配線のみ。ダイアログは一切書き換えていません）
+### wxWidgets GUI 層（確認・権限説明・エラー・通知）
 
-- **選択したバージョン**：wxWidgets 3.2.x（上流の安定系列）。Linux ではディストリビューションの
-  パッケージを使い、Debian / Ubuntu では `libwxgtk3.2-dev` です。
-- **検出方法**：CMake の MODULE モード `FindwxWidgets`。`wx-config` にバージョン・cflags・libs を
-  訪ねる方式なので、ディストロが実際に入れたものに追従し、インストールパスをハードコードしません。
-  複数バージョンが共存する場合は `-DECAPTURE_WX_CONFIG=/絶対パス/wx-config`（スクリプト側は
-  `./build.sh --wx-config ...`）で指定し、下限は `-DECAPTURE_WX_MIN_VERSION=3.2.0` で示せます。
-- **コンポーネントとリンク方針**：`core` と `base` の 2 つだけ —— `core` が自前のツールキット
-  （wxGTK）の依存を既に運んでいるので、GTK のバージョン番号は本プロジェクト側では書きません。
-  共有ライブラリとしてリンクします。ヘッダ・マクロ・追加コンパイルオプション・ライブラリの 4 種は
-  ターゲットに個別に付与し、`include(${wxWidgets_USE_FILE})` は使いません（あれはディレクトリ
-  全体の作用域に設定を撒いてしまいます）。
-- **ターゲット分割**：`ecapture-gui-probe`（`src/gui/WxGuiProbe.cpp`）は**独立**ターゲットで、
-  依存が本当に配線されていることと `wxApp` がグラフィックセッションで初期化を完了することを
-  証明するだけです。ウィンドウを作らず、ダイアログも出さず、画素も取りません。オフライン判定の
-  2 本は wxWidgets を**リンクしない**ので、導入有無にかかわらずビルドできます —— GUI とコアの
-  テストは互いをブロックしません。これがこの段階の狙いです。
-- **スイッチ**：`ECAPTURE_ENABLE_GUI` は Linux で既定 `ON`（wx が無ければ対象をスキップして理由を出力）、
-  Windows では既定 `OFF`（既存の Windows ビルド入口とインストーラーのペイロード一覧に影響を与えない。
-  たまたま wx が入っているからといってターゲットが増えません）。`ECAPTURE_REQUIRE_WX=ON`
-  （スクリプト側では `./build.sh --gui`）で、依存欠落を設定段階の硬いエラーにします。
+- **両プラットフォームで同一実装**：プログラム自身の確認ダイアログ、権限説明、必要なエラー表示、通知入口は
+  すべて `src/gui/` 配下の wxWidgets 実装です。Windows はもう `MessageBoxW` を呼びませんし、GTK / Qt /
+  Win32 の並行した独自 UI もありません。Wayland の XDG Desktop Portal は**別の層**（OS 自身の認可 UI）で、
+  この段階では変更も模倣もしません。
+- **バージョンと検出**：wxWidgets 3.2.x。Linux ではディストロのパッケージ（Debian / Ubuntu は
+  `libwxgtk3.2-dev`）を使います。CMake の MODULE モード `FindwxWidgets` が実際に入っているものに追従し、
+  パスをハードコードしません。`-DECAPTURE_WX_CONFIG=/絶対パス/wx-config` と
+  `-DECAPTURE_WX_MIN_VERSION=3.2.0` も使えます。コンポーネントは `core` + `base` のみ。ヘッダ・マクロ・
+  コンパイルオプション・ライブラリはターゲットごとに付与し、`include(${wxWidgets_USE_FILE})` は使いません。
+- **Windows では本当の依存に**：`ecapture` が wx をリンクするため、wx が見つからない場合や
+  `ECAPTURE_ENABLE_GUI=OFF` は設定段階の失敗になります。不完全な成果物を黙って作ることはしません。
+  Windows の配布は引き続き単一実行ファイル + 静的 CRT（`/MT`）なので、wx も同じ CRT でビルドした
+  静的ライブラリが必要です（既定 `ECAPTURE_WX_USE_STATIC=ON`。vcpkg の `x64-windows-static` など、
+  または `RUNTIME_LIBS=static` で自前ビルド）。`/MD` の wx は `LNK2038` のランタイム不一致になります。
+  この段階では動的 CRT への切り替えや DLL の追加配布は行いません。
+- **Linux では任意依存**：`ECAPTURE_ENABLE_GUI` は既定 `ON`。wx が無い場合は GUI ターゲットを理由付きで
+  スキップし、オフライン判定はそのままビルドできます。`ECAPTURE_REQUIRE_WX=ON`（`./build.sh --gui`）で
+  欠落を設定段階の硬いエラーにします。
+- **必要時だけ、メインスレッドで**：ウィンドウを本当に表示するときだけ GUI コンテキストを作ります。
+  ヘルプ・バージョン・設定・読み取り専用クエリは wx を初期化しません。常駐メインウィンドウ、トレイ、
+  バックグラウンドサービスはありません。ダイアログはメインスレッド上のモーダルで、`--consent-timeout-ms`
+  の監視スレッドは GUI イベントキューに閉じる要求を投げるだけです。バックグラウンドスレッドは
+  コントロールに触れず、ビジーウェイトもありません。
+- **結果を区別**：同意・拒否・閉じる（X / Esc）・タイムアウト・初期化失敗・プログラムによるキャンセルの
+  6 種を区別します。ウィンドウが消えたことは同意ではありません。長い中国語タイトルと長いパス
+  （選択・折り返し可能な読み取り専用テキスト）、高 DPI、キーボード操作（既定ボタンは「いいえ」）、
+  ダイアログと各セクションのアクセシブル名に対応します。
+- **通知インターフェース**：`ShowGuiNotification()` が統一 wxWidgets 入口です。この段階ではインターフェースを
+  配線するだけで、撮影完了通知の内容と送信方針は結果通知の段階に残します。既存の WinRT toast 経路は
+  削除していません。
+- **ターゲットと判定**：`ecapture-gui-probe` は依存配線の証明として残ります。`ecapture-gui-tests` は生産の
+  状態機械と生産の wx ダイアログをリンクし、「人がどう押すか」だけをコンパイル時フックで置き換えます
+  （リリース版にはそのシンボルがありません）。`./test-all.sh --layer isolated` の `gui-runtime` は実際に
+  ダイアログを開き、長文と 6 種の結果を判定し、`GDK_SCALE=2` でも高 DPI のサイズを確認した後、
+  `DISPLAY` / `WAYLAND_DISPLAY` を外して再実行し、初期化が理由付きで失敗することを要求します。Windows 側には対応する `gui` スイートがあります。
+  Windows の実デスクトップ検証はこのマシンでは未検証です。
 - **ライセンス**：wxWidgets は LGPL 2.1 with an exception（動的リンクなら追加義務はありません）。
-- **このマシンの状態**：この Linux 開発機には wxWidgets が**入っていない**ため、GUI ターゲットの
-  コンパイルと実行は**未検証**です。実際に検証したのは「依存が無いときに正確な診断を出す」ことだけ
-  （`./build.sh --gui` は終了コード `2` で終わり、入れ方と指定方法を列挙します）。
+- **このマシンの状態**：Linux 開発機には wxWidgets 3.2.8 が入っており、`gui-probe-init` と `gui-runtime` は
+  現在のグラフィックセッションで合格しています（セッション無しの初期化失敗も含む）。Windows の GUI ビルドと
+  実デスクトップ確認はこのマシンでは**未検証**です（MSVC / Windows デスクトップがありません）。
 
-確認ダイアログ（`Consent.cpp`）とキャプチャ後の通知（`NotificationToast.cpp`）はこの段階では**変更していません**。
-それらの wxWidgets 実装は後続ステップです。`--yes` の適用範囲と画素範囲の判定は、従来どおり
-`CaptureScope` と `src/core/Authorization.h` の 1 か所にだけあります。
+`Consent.cpp` はクロスプラットフォームの認可状態機械だけを持ち、`ConsentPrompt.cpp` がローカライズされた
+質問を描画し、`src/gui/WxConsentDriver.cpp` が wx ダイアログを所有します。`--yes` の適用範囲と画素範囲の
+判定は、従来どおり `CaptureScope` と `src/core/Authorization.h` の 1 か所にだけあります。
 
 ### インストーラーのビルド：`build-installer.ps1`
 
@@ -2125,7 +2140,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/core/` | プラットフォーム非依存のモデルと判定：`Platform.h` プラットフォーム身分、`Geometry.h` 座標、`Frame.h` 画像フレーム、`Status.h` 停止理由コード、`Target.h` 対象の記述、`Error.h` エラーコードと三値結果、`Authorization.h` ピクセル範囲と認可層、`Capability.h` 機能マトリクス | `windows.h` を 1 つも include せず、HWND / RECT / HANDLE / HRESULT / WinRT も出現しない |
 | `src/` の共通モデル・方針ヘッダ | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 上のと同じ規則。これらは「何を撮り、何が承認され、このフレームがどんな形か」を記述し、どの API で入手したかは扱わない |
 | `src/platform/windows/WinBridge.h` | コアと Win32 の**唯一**の変換点：`RECT ↔ PhysRect`（単体と一括）と `Deadline → 待ちミリ秒` | プラットフォーム層の `.cpp` だけが include できる。変換呼び出しが行になる箇所が、レビュー時に「ここでプラットフォームの境界をまたいだ」と見える行である |
-| `src/gui/` | 全プラットフォームで共通の、このプログラム自身 GUI の唯一の置き場所。wxWidgets で作る。現時点ここにあるのは依存配線用のプローブ `WxGuiProbe.cpp` だけで、**自前 GUI はまだ無い** | wxWidgets を触るのはこの層だけ。`src/core/` と共通モデルはこれを include せず、逆にここで判定を定義もしない。GUI ターゲットとオフライン判定は互いに依存しない |
+| `src/gui/` | 全プラットフォームで共通の、このプログラム自身 GUI の唯一の置き場所。wxWidgets で作る。共通ダイアログ、必要時初期化の GUI ランタイム、同意ダイアログのドライバ、統一通知入口がここにあり、`WxGuiProbe.cpp` は依存プローブとして残る | wxWidgets を触るのはこの層だけ。`src/core/`、`Consent.cpp`、共通モデルはこれを include せず、逆にここで認可判定を定義もしない。GUI ターゲットとオフライン判定は互いに依存しない |
 | `CaptureCommon.h`、5 つのチャネルヘッダ、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【プラットフォーム層 · Windows】GDI / D3D / WinRT / 名前付きパイプ / 文字列リソースの実使用者 | 各ファイル冒頭でプラットフォーム層であることを明記。共通コアが逆にこれらを include すれば境界の破れ |
 
 **`RECT` の名前替えではありません。** `PhysRect` の 4 つの辺は `int32_t` に固定し、「空矩形」「包含」「測定できない」
@@ -2243,7 +2258,7 @@ Windows 固有の言い方（`--hwnd`、`--class`、`--capture` の Windows キ�
 
 alpha を推測はしません：PNG と BMP はフレームの alpha バイトをそのまま保持し（合成も unpremultiply もしない）、JPEG にはそもそも alpha チャネルがありません——これは Windows 側の `BitmapAlphaMode::Ignore` と同じく「この形式は透明を表さない」という話で、「このフレームは完全不透明だ」という主張ではありません。
 
-Linux エンコード経路の依存とライセンス（実機で確認したバージョン、名称、原文の場所）は **`THIRD-PARTY-NOTICES.md`** に記録しています。上流ソースをリポジトリに複製せず、自動インストールもしません——CMake が `PNG::PNG` / `JPEG::JPEG` を発見し、欠けていれば欠けていると報告します。
+Linux エンコード経路の依存とライセンスは下の[ライセンス](#ライセンス)節に記載しています。上流ソースをリポジトリに複製せず、自動インストールもしません——CMake が `PNG::PNG` / `JPEG::JPEG` を発見し、欠けていれば欠けていると報告します。
 
 ### この層の検証エントリ
 
@@ -2255,12 +2270,14 @@ Linux エンコード経路の依存とライセンス（実機で確認した�
 | `./test-all.sh` の `cli-text`、および `scripts/core-portability-check.sh` の 3b / 4b | Linux 層：同じ共用ソース群を **CMake 目標を経ずに** メッセージ生成から g++ ビルド・実行まで通します。これは「共用 CLI 層本当にプラットフォームヘッダを含まない」の機械的証明であり、「文言を直して再ビルドし忘れた」を検出す現場でもあります |
 | `.\tests\encode.ps1` | オフライン層：`build\ecapture-encode-tests.exe` が**実物の WinRT エンコーダー**で画像処理とエンコードの判定を通します（コンテナ構造、チャンネル順と alpha、HDR 直通の拒否、能力と実要求の一致、予算、主出力と歴史が同じバイトを共用）。ピクセル単位のデコード読み戻しは Linux でのみ実測しており、Windows 側は正直に Skip として計上します（構造照合をピクセル照合だったとは言い張りません） |
 | `./test-all.sh` の `image-ops` / `crop-geometry` / `codec-encode` スイート、および `scripts/core-portability-check.sh` の 3e / 4e-4g | Linux 層：同じ判定ソースを `PosixEncoder.cpp`（libpng + libjpeg + 自作 BMP）にリンクしてビルド・実行——エンコード 121 件、ピクセル操作 186 件、ウィンドウ内部切り出し 63 件、すべて合成フレームで画面からピクセルを取りません。libpng / libjpeg が無い場合はターゲットを定義せず、設定案内を添えて `NOT RUN` と記録します |
-| `./test-all.sh` | Linux 総実行：`offline` 層は上のチェックと、CMake でビルドした `ecapture-core-tests` / `ecapture-wgc-tests` をまとめて順に回します。`isolated` 層は wxWidgets とグラフィックセッションが必要（依存が無ければ `NOT RUN` と記録し、合格にはしません）。`manual` 層は実機で人が検証します |
+| `./test-all.sh` | Linux 総実行：`offline` 層は全オフライン判定を回します。`isolated` 層は wxWidgets とグラフィックセッションが必要で、`gui-probe-init` と `gui-runtime` を実行します（後者は実際にダイアログを開き、長文と 6 種の結果を判定した後、`DISPLAY` / `WAYLAND_DISPLAY` を外して初期化失敗を要求）。依存が無ければ `NOT RUN` と記録し、合格にはしません。`manual` 層は実機で人が検証します |
+| `.\tests\gui.ps1` | Windows デスクトップ層：`build\ecapture-gui-tests.exe` が同じ GUI ライフサイクル／コンポーネント判定を実行します。プログラム自身のダイアログだけを開いて自分で閉じ、画素も取らず、実際の認可ウィンドウにも答えません。このマシンには MSVC / Windows デスクトップが無いため、Windows GUI 判定は未検証と記録します |
 
 両エントリは 1 つの同じソースファイルを使っており、それは `windows.h` を 1 も include しません。
 今回のステップで意図的に手を入れなかったもの（後続ステップ）：X11 / Wayland バックエンド、
-`DialogConsentPrompt` と WinRT toast の wxWidgets への置き換え、Portal + PipeWire の接続、
-`std::wstring` そのものを符号化を担った型へ乗り換えること（约定はすでに `src/core/TextCoding.h` 1 所に書いて
+統一 wx 通知インターフェースを「撮影完了後に何を送るか」の方針へ接続すること（インターフェースはありますが、
+撮影完了経路は既存の WinRT toast のままです）、Portal + PipeWire の接続、
+`std::wstring` そのものを符号化を担った型へ乗り換えること（約束はすでに `src/core/TextCoding.h` 1 所に書いて
 あり、型がまだ追随していません）、ワーカー ワイヤー形式からの `RECT` / `HRESULT` の除去、そして
 `Report.h` の残りの分割（stdout 書き出しはプラットフォーム サービス `src/OutputStream.h` に移りましたが、
 応答の組み立てとデスクトップ照会の描画は依然 Windows 側にあります）。
@@ -2269,7 +2286,18 @@ Linux エンコード経路の依存とライセンス（実機で確認した�
 
 EvernightCapture は [Mulan Permissive Software License v2（Mulan PSL v2、木蘭寬鬆許可證 第2版）](http://license.coscl.org.cn/MulanPSL2) の下で
 公開している。中国語と英語の全文（同一ファイルに bilingual で収録）は [LICENSE](LICENSE) を参照。
-サードパーティ依存とそのライセンス（Windows 側の SDK / C++/WinRT、Linux 側の libpng・zlib・libjpeg、および GUI 段階の wxWidgets）は [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) に記録しています。
+
+サードパーティコンポーネント：
+
+| コンポーネント | 用途 | ライセンス |
+| --- | --- | --- |
+| Windows SDK / C++/WinRT | WGC・DWM・PrintWindow・BitBlt・デスクトップ複製による取得、`BitmapEncoder` によるエンコード | MIT（OS コンポーネント、同梱しない） |
+| MSVC ランタイム（`/MT`） | 単一ファイル構成の静的 CRT | Visual Studio ライセンス |
+| Inno Setup | インストーラ作成（`build-installer.ps1`） | Inno Setup ライセンス |
+| libpng | Linux での PNG エンコード | libpng License |
+| zlib | libpng の deflate 依存 | zlib License |
+| libjpeg-turbo | Linux での JPEG エンコード | BSD-3-Clause / IJG / zlib / MIT |
+| wxWidgets | プログラム自身のダイアログと通知 | LGPL 2.1 with an exception |
 
 ```
 Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi)

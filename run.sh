@@ -22,7 +22,8 @@ usage() {
 用法：./run.sh [选项] [-- 传给被运行程序的参数]
 
   --target core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|crop-tests|
-           image-tests|encode-tests|gui-probe      要运行哪个目标，默认 core-tests
+           image-tests|encode-tests|consent-tests|gui-probe|gui-tests
+                                                    要运行哪个目标，默认 core-tests
   --exe <路径>                               直接点名一个可执行文件（跳过 --target 的解析）
   --config Debug|Release|RelWithDebInfo      从哪一份构建目录里取产物，默认 Release
   --compiler gcc|clang|<路径>                 同上（决定构建目录名），默认按 CXX / PATH 挑
@@ -30,8 +31,8 @@ usage() {
 
 说明：
   * 想跑完整 CLI（ecapture / ECAPTURE.EXE）会当场得到"暂不可构建"的原因，不会被静默换成别的东西。
-  * gui-probe 需要一个图形会话：有 xvfb-run 时自动跑在虚拟显示上，否则用当前会话并说明。
-    它不建窗口、不弹框、不取像素。
+  * gui-probe / gui-tests 需要一个图形会话：有 xvfb-run 时自动跑在虚拟显示上，否则用当前会话。
+    gui-probe 不建窗口；gui-tests 会短暂创建程序自己的对话框（不碰系统授权窗口、不取像素）。
 
 例子：
   ./run.sh                                   # 跑核心边界判据
@@ -72,7 +73,7 @@ if [ -n "$EXE_PATH" ]; then
     ARTIFACT="$EXE_PATH"
     LAYER="offline"
     case "$ARTIFACT" in
-        *gui-probe*) LAYER="gui" ;;
+        *gui-probe*|*gui-tests*) LAYER="gui" ;;
     esac
 else
     ec_resolve_cxx "$COMPILER_REQ"

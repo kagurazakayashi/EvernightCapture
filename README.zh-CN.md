@@ -1179,12 +1179,12 @@ tone mapping 的数学由离线判据用已知色块与亮度梯度逐点判（`
   真要采样像素之前一次（那块区域必须还在批准过的范围之内）。授权绝不跨请求缓存，也绝不扩大到框上没列出的目标，
   "同意截窗口画面"更不等于"同意截桌面"：`--capture auto` 配 `--yes` 可以不打扰人地走完窗口那几条，
   可一进桌面路径就必须再问一次。
-- 这是一个只有「是 / 否」两个按钮、默认焦点落在「否」上的 `MB_YESNO` 框：只有明确点「是」才算同意，其余一切结果都算拒绝。要拒绝就点「否」。别指望 `X` 或 `Esc`——`MB_YESNO` 下标题栏的 `X` 虽然显示但被禁用、也没有可供 `Esc` 触发的 Cancel 按钮，所以两者都不是可靠的「否」操作，这个框终究得有人来答；而工具本来就把任何非「是」的结果一律当拒绝处理。除此之外，`--consent-timeout-ms` 之内没人回答，本身就是一次独立的拒绝（`capture.consent_timeout`）。有人答「否」、超时没人回答、或者根本没有可交互的桌面——这几种结局都会停掉**同一次请求**剩下的部分：`auto` 回退链剩下的那几条一起停，不只是剩下的 `--all` 目标；不换后端、不重试、不再问第二遍，已经完成的图留在 `images` 里。人的回答是一条边界，不是"再换条路试试，总有一条能问出来"的提示。
+- 这是一个程序自有的 wxWidgets 确认框：两个按钮「允许 / 不允许」，默认焦点与默认按钮都落在「不允许」上。只有明确点「允许」才算同意，其余一切结果都算拒绝。要拒绝可以点「不允许」、按窗口的 `X` 或按 `Esc`——三者都是拒绝，不是同意。除此之外，`--consent-timeout-ms` 之内没人回答，本身就是一次独立的拒绝（`capture.consent_timeout`）。有人答「否」、超时没人回答、或者根本没有可交互的桌面——这几种结局都会停掉**同一次请求**剩下的部分：`auto` 回退链剩下的那几条一起停，不只是剩下的 `--all` 目标；不换后端、不重试、不再问第二遍，已经完成的图留在 `images` 里。人的回答是一条边界，不是"再换条路试试，总有一条能问出来"的提示。
 - 目标区域挪动过、或者屏幕拓扑变了，覆盖它的授权当场作废并重新问一次；已经绑在旧区域上的那一帧给
   `capture.consent_stale`（退出码 `7`，重新选目标再截）。
-- 确认框的默认焦点在"否"上，内容列出目标及其区域、将要走的那条路径、每张图展开后的绝对路径（或"标准输出"）、
+- 确认框的默认焦点在"不允许"上，内容列出目标及其区域、将要走的那条路径、每张图展开后的绝对路径（或"标准输出"）、
   以及画面里会不会混进别的窗口；这条路径会拍到桌面时，框上还明写着"你给的 `--yes` 对它不生效"。框在取帧之前就
-  已经关闭，所以不会出现在图里；点"是"之后工具仍要等约 1 秒，因为关闭动画还在 DWM 的画面上。
+  已经关闭，所以不会出现在图里；点"允许"之后工具仍要等约 1 秒，因为关闭动画还在合成器的画面上。
 - 没有可交互桌面时（服务会话、计划任务、锁屏），带 `--yes` 的窗口内容截图照旧正常完成，而桌面路径只能被拒绝——
   绝不会因为"弹不出框"就放行。答"否"给 `capture.access_denied` + `6`，弹不出框给新的稳定码
   `capture.consent_unavailable` + `6`；两者都带 `stage=consent`、`target`、`backend`，`value` 写的是那条路径。
@@ -1192,7 +1192,7 @@ tone mapping 的数学由离线判据用已知色块与亮度梯度逐点判（`
   省略 `--out` 就等于 `--out -`，授权结果不因它而变，见《不给输出路径（兼容性说明）》。
 - 多块屏 + 写 stdout（`--monitor all --out -`）在任何弹框之前就被拒：一次确认换不来"每块屏一张图挤进同一条流"。
   只有一块屏时 `--monitor all` 是一个目标，那条路仍然按单张走 stdout。
-- 说清楚边界：这就是一个 `MessageBox`。它是给合作式自动化（人或 AI）准备的误点防护，既证明不了按下按钮的是人，
+- 说清楚边界：这是程序自有的 wxWidgets 确认框，不是操作系统的安全边界。它是给合作式自动化（人或 AI）准备的误点防护，既证明不了按下按钮的是人，
   也挡不住同一个权限级别里存心绕过的进程。它能保证的是：照这套规矩跑的调用方，一定会被问上一次。
 
 `--monitor`（省略取值）与 `--monitor primary` 是主屏，`--monitor 2` 是第 2 块屏，`--monitor all` 每块屏一张。
@@ -1576,7 +1576,7 @@ schema 一致），另有 `formatBasis`（本次输出格式由谁定下来）�
 
 **设计边界，不是缺陷：**
 
-- 确认框就是一个普通的 `MessageBox`。它是协作式的误点防护：既分辨不出按下按钮的是人还是脚本，也不是操作系统的
+- 确认框是程序自有的 wxWidgets 对话框，不是操作系统的安全边界。它是协作式的误点防护：既分辨不出按下按钮的是人还是脚本，也不是操作系统的
   安全边界。它保证的是——照这套规矩走的调用方，每条桌面路径至少会被问上一次。
 - 复核与取帧永远不是同一个原子操作。身份与拓扑的复核把 HWND 被换走的那道窗口缩小了，并没有把它关上：Windows
   没有可等待的句柄，也没有"钉住一扇窗口不让它消失"的公开 API。
@@ -1886,32 +1886,46 @@ Linux 用 GCC / Clang，构建目录固定在仓库根的 `build-linux/<编译�
 cmake --preset gcc-debug && cmake --build --preset gcc-debug
 ```
 
-Linux 上当前可构建的目标只有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
-`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（只在找得到 libpng 与 libjpeg 时）与（装了 wxWidgets 之后的）`ecapture-gui-probe`。缺编码依赖时 `ecapture-encode-tests` **不定义**（不摆一个只建了一半的目标）：`./test-all.sh` 把 `codec-encode` 记成 `NOT RUN` 并给出安装提示，`./build.sh --codec` 则把这一条缺失变成配置阶段硬失败。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
+Linux 上当前可构建的目标有 `ecapture-core-tests`、`ecapture-wgc-tests`、`ecapture-cli-text-tests`、
+`ecapture-save-tests`、`ecapture-ipc-tests`、`ecapture-crop-tests`、`ecapture-image-tests`、`ecapture-encode-tests`（只在找得到 libpng 与 libjpeg 时）、`ecapture-consent-tests`，以及装了 wxWidgets 之后的 `ecapture-gui-probe` 与 `ecapture-gui-tests`。缺编码依赖时 `ecapture-encode-tests` **不定义**（不摆一个只建了一半的目标）：`./test-all.sh` 把 `codec-encode` 记成 `NOT RUN` 并给出安装提示，`./build.sh --codec` 则把这一条缺失变成配置阶段硬失败。完整 CLI 与那十几份要取帧通道的测试程序仍在 CMakeLists.txt 的
 【平台层 · Windows】那一段里，配置日志会逐条列出这份名单，构建目录里也留一份
 `ecapture-buildable-targets.txt` 给脚本核对 —— 不拿"删掉功能"换一次好看的 Linux 构建成功。
 
-### wxWidgets 依赖接线（这一步只接线，没有换掉任何弹窗）
+### wxWidgets GUI 层（确认、权限说明、错误提示与通知）
 
-- **选用版本**：wxWidgets 3.2.x（上游稳定分支）。Linux 用发行版包，Debian / Ubuntu 是 `libwxgtk3.2-dev`。
-- **发现方式**：CMake 的 MODULE 模式 `FindwxWidgets`，由它调 `wx-config` 问版本、cflags 与 libs，
-  因此跟着发行版实际装的那份走，不写死安装路径。多版本共存时用 `-DECAPTURE_WX_CONFIG=/全路径/wx-config`
-  点名（脚本侧是 `./build.sh --wx-config ...`），版本下限用 `-DECAPTURE_WX_MIN_VERSION=3.2.0`。
-- **组件与链接策略**：只要 `core` + `base` 两个组件 —— `core` 自己带上工具集（wxGTK）的依赖，
-  本项目不在构建里硬编 GTK 版本号。用共享库链接。头文件、宏、附加编译选项、库这四样分别挂到目标上，
-  不用 `include(${wxWidgets_USE_FILE})`：那一条是把设置泼到整个目录的作用域。
-- **目标划分**：`ecapture-gui-probe`（源码 `src/gui/WxGuiProbe.cpp`）是**独立**目标，只证明依赖真的接上了、
-  `wxApp` 能在图形会话里完成初始化；它不建窗口、不弹框、不取一个像素。两份离线判据**不链** wxWidgets，
-  装与不装都能构建 —— GUI 与核心测试互不阻塞，这正是这一步要的分层。
-- **开关**：`ECAPTURE_ENABLE_GUI` 在 Linux 默认 `ON`（找不到 wx 就跳过该目标并说明原因），Windows 默认 `OFF`
-  （现有 Windows 构建入口与安装包载荷清单不受任何影响，不会因为某台机器恰好装了 wx 就多出一个目标）；
-  `ECAPTURE_REQUIRE_WX=ON`（脚本侧 `./build.sh --gui`）把缺失变成配置阶段的硬错误。
+- **两个平台同一份实现**：程序自有的确认框、权限说明、必要的错误提示与通知入口都在 `src/gui/` 下用
+  wxWidgets 实现。Windows 不再调用 `MessageBoxW`，也不存在平行的 GTK / Qt / Win32 自有界面。
+  Wayland 的 XDG Desktop Portal 是**另一层**系统授权界面，本步不改造、也不冒充它。
+- **版本与发现**：wxWidgets 3.2.x。Linux 用发行版包（Debian / Ubuntu 是 `libwxgtk3.2-dev`）。CMake 的
+  MODULE 模式 `FindwxWidgets` 跟着系统实际装的那份走，不写死路径；`-DECAPTURE_WX_CONFIG=/全路径/wx-config`
+  与 `-DECAPTURE_WX_MIN_VERSION=3.2.0` 仍可用。组件只要 `core` + `base`；头、宏、编译选项与库分别挂到目标上，
+  不用 `include(${wxWidgets_USE_FILE})`。
+- **Windows 现在是真依赖**：`ecapture` 会链接 wx，所以找不到 wx 或把 `ECAPTURE_ENABLE_GUI` 设为 `OFF`
+  都会在配置阶段失败，而不是静默产出一个不完整的交付。Windows 交付仍是单文件 + 静态 CRT（`/MT`），
+  wx 必须与它一致：`ECAPTURE_WX_USE_STATIC=ON` 是默认值，请用静态 wx（例如 vcpkg 的
+  `x64-windows-static` 三元组，或用 `RUNTIME_LIBS=static` 自己构建）。用 `/MD` 的 wx 会在链接阶段报
+  `LNK2038` 运行时库不匹配；本步不擅自切到动态 CRT，也不新增 DLL 载荷。
+- **Linux 仍是可选依赖**：`ECAPTURE_ENABLE_GUI` 默认 `ON`；找不到 wx 时跳过 GUI 目标并说明原因，
+  离线判据照常构建。`ECAPTURE_REQUIRE_WX=ON`（脚本侧 `./build.sh --gui`）把缺失变成配置阶段的硬错误。
+- **按需、主线程**：只有真的要显示窗口时才创建 GUI 上下文；帮助、版本、配置与只读查询一次都不初始化 wx。
+  没有常驻主窗口、托盘或后台服务。对话框在主线程上模态运行；`--consent-timeout-ms` 的看守线程只把关闭
+  请求投进 GUI 事件队列。后台线程不碰控件，也没有忙等。
+- **结局分得开**：同意、拒绝、关框（X / Esc）、超时、初始化失败、程序取消是六档；窗口消失永远不是同意。
+  对话框支持长中文标题与长路径（可选中、会折行的只读文本区）、高 DPI、键盘操作（默认按钮是"否"），
+  对话框与各分区都有可访问名称。
+- **通知接口**：`ShowGuiNotification()` 是统一的 wxWidgets 入口。本步只把接口接起来；截图完成后通知
+  究竟写什么、什么时候发，留给结果通知那一步。既有 WinRT toast 路径没有被删掉。
+- **目标与判据**：`ecapture-gui-probe` 仍负责证明依赖接线；`ecapture-gui-tests` 链的是生产状态机与生产
+  wx 对话框，只用编译期钩子替换"人怎么点"（发布版没有这个符号）。`./test-all.sh --layer isolated` 跑
+  `gui-runtime`：真的创建对话框，判长文本与六档结局，再用 `GDK_SCALE=2` 跑一遍高 DPI 尺寸，
+  然后去掉 `DISPLAY` / `WAYLAND_DISPLAY` 再跑一次，要求初始化失败并带出原因。Windows 侧有对应的 `gui` 套件；Windows 真桌面验证在本机记为未验证。
 - **许可证**：wxWidgets 是 LGPL 2.1 with an exception（动态链接下无额外义务）。
-- **本机状态**：这台 Linux 开发机**没装 wxWidgets**，所以 GUI 目标的编译与运行属于**待验证**；
-  实测过的只有"缺依赖时给出准确诊断"这一条（`./build.sh --gui` 以退出码 `2` 结束并列出安装与点名方式）。
+- **本机状态**：Linux 开发机已装 wxWidgets 3.2.8，`gui-probe-init` 与 `gui-runtime` 在当前图形会话里都通过，
+  包括无会话初始化失败那一段。Windows GUI 构建与真桌面检查**没有**在这台机器上跑过（没有 MSVC / Windows 桌面）。
 
-确认弹窗（`Consent.cpp`）与截图后通知（`NotificationToast.cpp`）这一步**没有**改动：它们的 wxWidgets 实现是
-后续步骤。`--yes` 的适用范围与像素范围判据照旧只在 `CaptureScope` 与 `src/core/Authorization.h` 那一份里。
+`Consent.cpp` 现在只保留跨平台的授权状态机；`ConsentPrompt.cpp` 负责渲染本地化问题，
+`src/gui/WxConsentDriver.cpp` 持有 wx 对话框。`--yes` 的适用范围与像素范围判据照旧只在 `CaptureScope`
+与 `src/core/Authorization.h` 那一份里。
 
 ### 构建安装包：`build-installer.ps1`
 
@@ -1950,7 +1964,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/core/` | 平台无关的模型与判据：`Platform.h` 平台身份、`Geometry.h` 坐标、`Frame.h` 图像帧、`Status.h` 卡住的原因码、`Target.h` 目标描述、`Error.h` 错误码与三值结果、`Authorization.h` 像素范围与授权层、`Capability.h` 功能矩阵 | 一条都不 include `windows.h`，也不出现 HWND / RECT / HANDLE / HRESULT / WinRT |
 | `src/` 里这几份共用模型与策略头 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 与上面同一条：这些头描述的是"截什么、批准了什么、这一帧长什么样"，与用哪家 API 弄到手无关 |
 | `src/platform/windows/WinBridge.h` | 核心与 Win32 之间**唯一**的转换处：`RECT ↔ PhysRect`（含整批）与 `Deadline → 等待毫秒` | 只允许平台层的 `.cpp` include 它。转换点在代码里出现的那一行，就是审查时看得见"这里跨了一次平台边界"的那一行 |
-| `src/gui/` | 跨平台自有 GUI 的唯一去处，走 wxWidgets。当前这里只有依赖接线用的探针 `WxGuiProbe.cpp`，**还没有**任何自有界面 | 只有这一层碰 wxWidgets；`src/core/` 与共用模型不许 include 它，也不许被它反向定义判据。GUI 目标与离线判据互不依赖 |
+| `src/gui/` | 跨平台自有 GUI 的唯一去处，走 wxWidgets：公共对话框、按需初始化的 GUI 运行时、授权驱动与统一通知入口都在这里；`WxGuiProbe.cpp` 仍保留为依赖探针 | 只有这一层碰 wxWidgets；`src/core/`、`Consent.cpp` 与共用模型不许 include 它，也不许被它反向定义授权判据。GUI 目标与离线判据互不依赖 |
 | `CaptureCommon.h`、五条通道头、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【平台层 · Windows】GDI / D3D / WinRT / 命名管道 / 字符串资源的真实使用者 | 每个文件开头写明自己是平台层；共用核心反向 include 它们就是破界 |
 
 **为什么不是把 `RECT` 改个名字**：`PhysRect` 的四条边写死成 `int32_t`，并且"空矩形""包含""量不出来"
@@ -2053,7 +2067,7 @@ Windows 专属的说法（`--hwnd`、`--class`、`--capture` 的那些 Windows �
 
 alpha 从不靠猜：PNG 与 BMP 原样保留帧里的 alpha 字节（不合成、不做 unpremultiply），而 JPEG 根本没有 alpha 通道——这与 Windows 那一路用 `BitmapAlphaMode::Ignore` 说的是同一句"这一格式不表示透明"，而不是"这一帧是全不透明的"。
 
-Linux 编码路径的依赖与许可证（本机实测版本、许可名称与原文位置）记在 **`THIRD-PARTY-NOTICES.md`**：仓库里不复制任何上游源码，也不自动装依赖——CMake 发现 `PNG::PNG` / `JPEG::JPEG`，缺了就如实报缺口。
+Linux 编码路径的依赖与许可证见下文[许可](#许可)一节：仓库里不复制任何上游源码，也不自动装依赖——CMake 发现 `PNG::PNG` / `JPEG::JPEG`，缺了就如实报缺口。
 
 ### 这一层的验证入口
 
@@ -2065,12 +2079,13 @@ Linux 编码路径的依赖与许可证（本机实测版本、许可名称与�
 | `./test-all.sh` 的 `cli-text` 套件，以及 `scripts/core-portability-check.sh` 的 3b / 4b | Linux 一层：同一批共用源文件**不经 CMake 目标**自己生成嵌入文案再用 g++ 编好跑完。这条同时是"共用 CLI 层真的不含平台头"的机器证明，也是"改完文案不重编就会被查出来"的现场 |
 | `.\tests\encode.ps1` | 离线一层：`build\ecapture-encode-tests.exe` 对着**真的 WinRT 编码器**跑图像与编码判据（容器结构、通道顺序与 alpha、HDR 直通拒绝、能力与实请求一致、预算、主交付与历史共用同一份字节）。像素级解码回读只在 Linux 实测，Windows 这侧如实记 Skip，不拿结构核对冒充像素核对 |
 | `./test-all.sh` 的 `image-ops` / `crop-geometry` / `codec-encode` 套件，以及 `scripts/core-portability-check.sh` 的 3e / 4e-4g | Linux 一层：同一批判据源文件链 `PosixEncoder.cpp`（libpng + libjpeg + 自写 BMP）编译并运行——编码 121 条、像素操作 186 条、窗口内部裁剪 63 条，全部用合成帧，一个像素都不从屏幕取。缺 libpng / libjpeg 时目标不定义，记 `NOT RUN` 并给出安装提示 |
-| `./test-all.sh` | Linux 总跑：`offline` 层把上面那条与 CMake 构建出来的 `ecapture-core-tests`、`ecapture-wgc-tests` 一起串起来判；`isolated` 层要 wxWidgets 与图形会话（缺依赖记 `NOT RUN`，绝不算通过）；`manual` 层留给真机人工验证 |
+| `./test-all.sh` | Linux 总跑：`offline` 层跑全部离线判据；`isolated` 层要 wxWidgets 与图形会话，跑 `gui-probe-init` 与 `gui-runtime`（后者真的创建对话框、判长文本与六档结局，然后去掉 `DISPLAY` / `WAYLAND_DISPLAY` 要求初始化失败）。缺依赖记 `NOT RUN`，绝不算通过；`manual` 层留给真机人工验证 |
+| `.\tests\gui.ps1` | Windows 桌面层：`build\ecapture-gui-tests.exe` 跑同一套 GUI 生命周期与组件判据。它只打开程序自己的对话框并自己关闭，不取像素、也不替人回答真实授权窗口。本机没有 MSVC / Windows 桌面，所以 Windows GUI 判据记为未验证 |
 
 两条入口用的是同一个源文件——它一条都不 include `windows.h`。这一步没有做的（属于后续步骤）：
-X11 / Wayland 后端、wxWidgets 自有界面替掉 `DialogConsentPrompt` 与 WinRT toast（只把依赖发现与链接接到位，
-另加一个不建窗口的探针目标）、Portal + PipeWire 接入、把 `std::wstring` 本身换成自带编码约定的类型（约定
-已经写在 `src/core/TextCoding.h` 一处，类型还没跟着换）、辅助进程的线上格式去掉 `RECT` / `HRESULT`，
+X11 / Wayland 后端、把统一 wx 通知接口接进"截图完成后发什么"的策略（接口已在，但截图完成路径仍走既有
+WinRT toast）、Portal + PipeWire 接入、把 `std::wstring` 本身换成自带编码约定的类型（约定已经写在
+`src/core/TextCoding.h` 一处，类型还没跟着换）、辅助进程的线上格式去掉 `RECT` / `HRESULT`，
 以及 `Report.h` 剩下的那一拆（写标准输出已经归到平台服务 `src/OutputStream.h`，响应组装与桌面查询的渲染仍在
 Windows 那一侧）。
 
@@ -2078,7 +2093,18 @@ Windows 那一侧）。
 
 EvernightCapture 采用 [木兰宽松许可证第 2 版（Mulan PSL v2）](http://license.coscl.org.cn/MulanPSL2)，
 中英双语全文见 [LICENSE](LICENSE)。
-第三方依赖及其许可证（Windows 侧的 SDK / C++/WinRT 那一路，Linux 侧的 libpng、zlib 与 libjpeg，以及 GUI 那一步的 wxWidgets）记在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+
+第三方组件：
+
+| 组件 | 用途 | 许可证 |
+| --- | --- | --- |
+| Windows SDK / C++/WinRT | WGC、DWM、PrintWindow、BitBlt、桌面复制取帧；`BitmapEncoder` 编码 | MIT（系统组件，不随包分发） |
+| MSVC 运行时（`/MT`） | 单文件构建的静态 CRT | Visual Studio 许可 |
+| Inno Setup | 制作安装程序（`build-installer.ps1`） | Inno Setup 许可 |
+| libpng | Linux 上的 PNG 编码 | libpng License |
+| zlib | libpng 的 deflate 依赖 | zlib License |
+| libjpeg-turbo | Linux 上的 JPEG 编码 | BSD-3-Clause / IJG / zlib / MIT |
+| wxWidgets | 程序自有对话框与通知 | LGPL 2.1 with an exception |
 
 ```
 Copyright (c) 2025 KagurazakaYashi (KagurazakaMiyabi)

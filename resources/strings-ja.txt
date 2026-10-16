@@ -415,6 +415,9 @@ consent.plan	取得方式 %1、実際の経路 %2、出力先 %3
 consent.history	引き渡せた各画像は、このプログラム自身のディレクトリにある history サブフォルダにも独立したコピーとして1枚残ります（現地日付ごとのフォルダ、自動では消去しません）。
 consent.dialog_closes	このダイアログは取得開始前に閉じるので、画像には写りません。
 consent.ask	今取得することを許可しますか？
+consent.details_label	対象と出力
+consent.yes	許可する
+consent.no	許可しない
 consent.target_line	%1（領域 %2,%3 サイズ %4x%5）
 consent.scope_window	この経路は選択したウィンドウ自身のピクセルだけを取得し、デスクトップからはサンプルしません。
 consent.scope_desktop	この経路は現時点でその領域に映っているものを取得します：他のウィンドウ、開いている文書、通知、デスクトップ上の文字が写り込むことがあります。

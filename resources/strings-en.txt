@@ -416,6 +416,9 @@ consent.plan	Channel %1, actual path %2, image goes to %3
 consent.history	Every image that is delivered also keeps an independent copy under the history folder next to this program itself (one directory per local date, never pruned automatically).
 consent.dialog_closes	This dialog closes before the capture starts, so it will not appear in the image.
 consent.ask	Allow the capture now?
+consent.details_label	Targets and output
+consent.yes	Allow
+consent.no	Do not allow
 consent.target_line	%1 (area %2,%3 size %4x%5)
 consent.scope_window	This path takes only the selected window's own pixels; nothing is sampled from the desktop.
 consent.scope_desktop	This path takes whatever is on screen in that area right now: other windows, open documents, notifications and text on the desktop can end up in the image.

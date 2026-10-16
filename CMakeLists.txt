@@ -49,6 +49,11 @@ endif()
 # C++ 标准全仓一处：Windows 原来逐目标写 cxx_std_20，Linux 复用同一份，不再各抄一遍。
 set(ECAPTURE_CXX_STANDARD 20)
 
+# 共用状态机的判据使用 std::thread（GUI 看门线程与授权生命周期）；Linux 上显式发现 pthread。
+if(NOT WIN32)
+  find_package(Threads REQUIRED)
+endif()
+
 # ---------------------------------------------------------------------------
 # ecapture_apply_common(<target>)
 #
@@ -140,8 +145,11 @@ else()
     src/platform/linux/PosixFileSave.cpp)
 endif()
 
+# Lang.cpp 的严格 UTF-8 解码来自 core/TextCoding.cpp；把它与文案生成物放在同一组，
+# 所有链 Lang 的目标（包括 Windows 主程序与确认判据）都不会再漏掉这一份实现。
 set(ECAPTURE_LANG_SOURCES
   src/Lang.cpp
+  src/core/TextCoding.cpp
   "${ECAPTURE_LANG_DATA}"
   ${ECAPTURE_LOCALE_SOURCE})
 
@@ -183,7 +191,7 @@ elseif(ECAPTURE_ENABLE_CODEC)
   find_package(JPEG QUIET)
   if(PNG_FOUND AND JPEG_FOUND)
     # 版本在这里记账（写进构建日志与 ecapture-buildable-targets.txt，许可证材料在
-    # THIRD-PARTY-NOTICES.md）：PNG_LIBRARY_VERSION / JPEG_LIBRARY_VERSION 由那两个
+    # README 的许可协议一节）：PNG_LIBRARY_VERSION / JPEG_LIBRARY_VERSION 由那两个
     # Find 模块交回，本机实测 libpng 1.6.48 与 libjpeg-turbo 2.1.5（提供 IJG 兼容接口）。
     set(ECAPTURE_ENCODER_IMPL src/platform/linux/PosixEncoder.cpp)
     set(ECAPTURE_ENCODER_LIBS PNG::PNG JPEG::JPEG)
@@ -208,6 +216,163 @@ else()
   set(_ec_codec_note "编码路径：ECAPTURE_ENABLE_CODEC=OFF，Linux 上不构建编码器")
   message(STATUS "${_ec_codec_note}")
 endif()
+
+# ---------------------------------------------------------------------------
+# wxWidgets GUI 层（2026-10：使用 wxWidgets 统一所有平台的程序界面）
+#
+# 程序自有的确认框、权限说明、错误提示与通知都走这一份实现：Windows 与 Linux 编译同一批
+# src/gui/*.cpp。依赖发现放在平台目标定义**之前**，因为 Windows 主程序 ecapture 现在真的要
+# 链接 wx —— 它不再是"找到了就建一个探针"的可选项目。
+#
+#   * 目标版本：wxWidgets 3.2.x（Windows 上由用户安装并让 CMake 找到；Linux 上是发行版包
+#     libwxgtk3.2-dev / wxGTK3.2-devel）。
+#   * 发现方式：CMake MODULE 模式 FindwxWidgets，问 wx-config/安装前缀；组件只要 core + base。
+#   * 链接策略：Linux 用发行版共享库；Windows 默认静态库（与 /MT 一致，见下方开关）。
+#     不用 include(${wxWidgets_USE_FILE})，头/宏/编译选项/库四样分别挂到目标。
+#   * 许可证：LGPL 2.1 with an exception，动态链接无额外义务；材料在 README 的许可协议一节。
+#
+# 开关默认值：两个平台都是 ON。Windows 上如果 wx 缺失或有人显式关掉 GUI，配置阶段直接失败：
+# 没有 wx 的 Windows 主程序就没有确认框，不能静默退化成一条不完整的交付。Linux 上 wx 仍是
+# 可选依赖 —— 缺它只影响 GUI 判据与探针，不影响离线层。
+# ---------------------------------------------------------------------------
+option(ECAPTURE_ENABLE_GUI "构建 wxWidgets GUI 层（确认框 / 权限说明 / 错误提示 / 通知）" ON)
+option(ECAPTURE_REQUIRE_WX "找不到 wxWidgets 就报错退出（./build.sh --gui 用它把缺依赖变成硬错误）" OFF)
+set(ECAPTURE_WX_CONFIG "" CACHE FILEPATH "指定 wx-config 可执行文件；留空则由 FindwxWidgets 在 PATH 里找")
+set(ECAPTURE_WX_MIN_VERSION "" CACHE STRING "wxWidgets 版本下限，例如 3.2.0；留空表示找到即用")
+
+# Windows 交付仍是单文件 / 静态 CRT（/MT）。wxWidgets 必须与它一致：FindwxWidgets 默认
+# 优先共享库，而共享 wx 通常带 /MD，链接阶段会出现 LNK2038 的 RuntimeLibrary 不匹配。
+# 默认要求静态 wx（例如 vcpkg triplet x64-windows-static，或自己用 RUNTIME_LIBS=static 构建）。
+# 只装了 /MD 的 wx 时：要么按同一 CRT 重新构建 wx，要么在后续步骤明确调整交付方式；
+# 本步不擅自切到动态 CRT，也不把缺 DLL 的包当成完整交付。
+if(WIN32)
+  option(ECAPTURE_WX_USE_STATIC "Windows 上使用 wxWidgets 静态库（与静态 CRT 一致）" ON)
+  if(ECAPTURE_WX_USE_STATIC)
+    set(wxWidgets_USE_STATIC ON)
+  endif()
+endif()
+
+set(ECAPTURE_WX_FOUND FALSE)
+set(_ec_gui_target_note "")
+
+if(WIN32 AND NOT ECAPTURE_ENABLE_GUI)
+  message(FATAL_ERROR
+    "Windows 主程序 ecapture 的确认框、权限说明与通知都由 wxWidgets 实现；"
+    "不能把 ECAPTURE_ENABLE_GUI 设为 OFF。\n"
+    "  * 安装 wxWidgets 3.2.x（源码构建或发行包）后重新配置\n"
+    "  * 找不到时用 -DECAPTURE_WX_CONFIG=/全路径/wx-config 或 -DwxWidgets_ROOT_DIR=... 点名\n"
+    "  * 旧的 build\\ 缓存可能还保留着上一步的 ECAPTURE_ENABLE_GUI=OFF：用 .\\build.ps1 -Clean\n"
+    "    重建，或手工传 -DECAPTURE_ENABLE_GUI=ON 再配置一次\n"
+    "  * 本步不接受\"关掉 GUI 继续构建\"：那会把一条没有确认框的截图路径当成完整交付")
+endif()
+
+if(ECAPTURE_ENABLE_GUI)
+  if(ECAPTURE_WX_CONFIG)
+    set(wxWidgets_CONFIG_EXECUTABLE "${ECAPTURE_WX_CONFIG}")
+  endif()
+  set(_ec_wx_req "${ECAPTURE_WX_MIN_VERSION}")
+  find_package(wxWidgets ${_ec_wx_req} COMPONENTS core base QUIET)
+
+  if(wxWidgets_FOUND)
+    set(ECAPTURE_WX_FOUND TRUE)
+    set(_ec_wx_ver "${wxWidgets_VERSION_STRING}")
+    if(NOT _ec_wx_ver)
+      set(_ec_wx_ver "版本见 wx-config")
+    endif()
+    message(STATUS "wxWidgets：找到 ${_ec_wx_ver}（组件 core;base），库：${wxWidgets_LIBRARIES}")
+
+    # 四样依赖显式挂到目标上。wxWidgets_CXX_FLAGS 可能含多个以空格分隔的开关，
+    # 先按原生命令行拆成列表，避免整串被当成一个参数。
+    function(ecapture_apply_gui target)
+      target_include_directories(${target} PRIVATE ${wxWidgets_INCLUDE_DIRS})
+      target_compile_definitions(${target} PRIVATE ${wxWidgets_DEFINITIONS})
+      separate_arguments(_ec_wx_cxx_flags NATIVE_COMMAND "${wxWidgets_CXX_FLAGS}")
+      target_compile_options(${target} PRIVATE ${_ec_wx_cxx_flags})
+      target_link_libraries(${target} PRIVATE ${wxWidgets_LIBRARIES})
+    endfunction()
+
+    # 依赖探针保留：它只验证 wx 头、宏、编译选项与库都传给了目标，不建窗口、不弹框。
+    add_executable(ecapture-gui-probe src/gui/WxGuiProbe.cpp)
+    ecapture_apply_common(ecapture-gui-probe)
+    ecapture_apply_gui(ecapture-gui-probe)
+    set_target_properties(ecapture-gui-probe PROPERTIES OUTPUT_NAME "ecapture-gui-probe")
+
+    # GUI 判据：链的是生产那台授权状态机 + 生产那套 wx 对话框，只把"人怎么点"换成
+    # 编译期钩子（ECAPTURE_GUI_TESTING 只在这个目标上定义，发布版没有这个符号）。
+    # 它不需要取帧后端、不需要窗口枚举，只需要 GUI 主线程、Lang 与稳定时钟。
+    if(WIN32)
+      set(ECAPTURE_GUI_HOST_PATH src/platform/windows/WinHostPath.cpp)
+    else()
+      set(ECAPTURE_GUI_HOST_PATH src/platform/linux/PosixHostPath.cpp)
+    endif()
+    add_executable(ecapture-gui-tests
+      tests/gui_state.cpp
+      src/Consent.cpp
+      src/ConsentPrompt.cpp
+      src/gui/WxGuiRuntime.cpp
+      src/gui/WxGuiDialog.cpp
+      src/gui/WxConsentDriver.cpp
+      src/CaptureScope.cpp
+      src/Deadline.cpp
+      src/core/TextCoding.cpp
+      ${ECAPTURE_GUI_HOST_PATH}
+      ${ECAPTURE_LANG_SOURCES})
+    ecapture_apply_common(ecapture-gui-tests)
+    ecapture_apply_gui(ecapture-gui-tests)
+    target_compile_definitions(ecapture-gui-tests PRIVATE ECAPTURE_GUI_TESTING=1)
+    if(NOT WIN32)
+      target_link_libraries(ecapture-gui-tests PRIVATE Threads::Threads)
+    endif()
+    set_target_properties(ecapture-gui-tests PROPERTIES OUTPUT_NAME "ecapture-gui-tests")
+
+    set(_ec_gui_target_note ", ecapture-gui-probe, ecapture-gui-tests")
+  elseif(WIN32)
+    message(FATAL_ERROR
+      "Windows 主程序需要 wxWidgets，但 find_package(wxWidgets COMPONENTS core base) 没找到。\n"
+      "  * 本项目不自动装依赖（AGENTS.md）：请安装 wxWidgets 3.2.x，并让 CMake 找到它\n"
+      "  * 已安装但不在常见前缀：-DwxWidgets_ROOT_DIR=C:/wxWidgets-3.2.x 或 "
+      "-DECAPTURE_WX_CONFIG=/全路径/wx-config.exe\n"
+      "  * 版本下限卡住了：-DECAPTURE_WX_MIN_VERSION=3.2.0（留空表示找到即用）")
+  elseif(ECAPTURE_REQUIRE_WX)
+    message(FATAL_ERROR
+      "ECAPTURE_REQUIRE_WX=ON 但没找到 wxWidgets（FindwxWidgets 走 wx-config 与常见安装前缀都没命中）。\n"
+      "  * Linux 建议安装发行版包（本项目不自动装依赖，见 AGENTS.md）：Debian/Ubuntu "
+      "apt install libwxgtk3.2-dev；Fedora dnf install wxGTK3.2-devel\n"
+      "  * 已经装了但 wx-config 不在 PATH 上：-DECAPTURE_WX_CONFIG=/全路径/wx-config 再配置一次\n"
+      "  * 版本下限卡住了：-DECAPTURE_WX_MIN_VERSION=3.2.0（留空表示找到即用）\n"
+      "  * 只要核心离线判据：去掉 --gui（默认是可选依赖，不阻塞构建）")
+  else()
+    message(STATUS "wxWidgets：未找到，跳过 GUI 目标（ECAPTURE_ENABLE_GUI=ON 但依赖缺失）。"
+                   "离线判据不受影响；装好后重跑 ./build.sh --gui 可看到硬失败诊断。")
+  endif()
+else()
+  message(STATUS "wxWidgets：ECAPTURE_ENABLE_GUI=OFF，不构建 GUI 目标。")
+endif()
+
+# ---------------------------------------------------------------------------
+# 截图授权状态机的离线判据（两个平台同一份定义，不链 wx）。
+#
+# 注入假应答器 + 假屏幕布局，把 ConsentGate 与弹框生命周期整台跑完；真机对话框那一层由
+# ecapture-gui-tests 判。这里只链共用状态机、命令行/配置的少量共用源与平台服务，
+# 一个 GUI 头、一个取帧库都不需要。Windows 的 tests\consent.ps1 与 Linux 的 test-all.sh
+# 跑的是同一份源码。
+# ---------------------------------------------------------------------------
+add_executable(ecapture-consent-tests
+  tests/consent_state.cpp
+  src/Consent.cpp
+  src/CaptureScope.cpp
+  src/Deadline.cpp
+  src/CliOptions.cpp
+  ${ECAPTURE_HOST_SOURCES}
+  ${ECAPTURE_LANG_SOURCES})
+ecapture_apply_common(ecapture-consent-tests)
+if(WIN32)
+  target_link_libraries(ecapture-consent-tests PRIVATE
+    user32.lib kernel32.lib advapi32.lib)
+else()
+  target_link_libraries(ecapture-consent-tests PRIVATE Threads::Threads)
+endif()
+set_target_properties(ecapture-consent-tests PROPERTIES OUTPUT_NAME "ecapture-consent-tests")
 
 # ===========================================================================
 # 【平台层 · Windows】以下整段只在 Windows 定义
@@ -264,6 +429,11 @@ add_executable(ecapture
   src/Notification.cpp
   src/NotificationToast.cpp
   src/Consent.cpp
+  # 确认框的文案层与 wxWidgets 实现（Linux 共用同一批源文件；见 src/gui/）。
+  src/ConsentPrompt.cpp
+  src/gui/WxGuiRuntime.cpp
+  src/gui/WxGuiDialog.cpp
+  src/gui/WxConsentDriver.cpp
   src/CaptureCommon.cpp
   src/ImageOps.cpp
   src/D3dDevice.cpp
@@ -342,6 +512,9 @@ target_link_libraries(ecapture PRIVATE
   dwmapi.lib             # DwmRegisterThumbnail 通道 + DWMWA_EXTENDED_FRAME_BOUNDS
   user32.lib kernel32.lib advapi32.lib gdi32.lib)
 
+# 确认框 / 权限说明 / 错误提示的 wxWidgets 依赖（Windows 上必需）。
+ecapture_apply_gui(ecapture)
+
 # WinRT 异常需要 /EHsc；CRT 静态链接，避免目标机器缺少 VC++ 运行时（单文件交付）
 target_compile_options(ecapture PRIVATE /EHsc)
 set_property(TARGET ecapture PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -349,44 +522,6 @@ set_property(TARGET ecapture PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CON
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   set_property(TARGET ecapture PROPERTY LINK_FLAGS "/OPT:REF /OPT:ICF")
 endif()
-
-# ---------------------------------------------------------------------------
-# 截图授权状态机的离线判据（由 tests\consent.ps1 编译并运行）。
-#
-# 为什么单独一个可执行文件：授权这件事必须用"注入假的应答器 + 假的屏幕布局"来跑完整状态机
-# （升级要重新确认、拒绝之后不再换后端、目标挪位置作废凭证……），而这些判据一条都不能靠
-# 发布版里的测试开关实现 —— ECAPTURE.EXE 里不许有能跳过确认的后门。所以这里把纯逻辑那几份
-# 源文件单独编一个测试程序，假应答器与假拓扑从测试代码里注入。
-# 不碰 WinRT / D3D / 编码，所以链接项里一个图形相关的库都不需要。
-# ---------------------------------------------------------------------------
-add_executable(ecapture-consent-tests
-  tests/consent_state.cpp
-  src/HdrColor.cpp
-  src/CaptureDiag.cpp
-  src/platform/windows/WinHdrColor.cpp
-  src/Deadline.cpp
-  src/CaptureScope.cpp
-  src/Consent.cpp
-  src/CaptureCommon.cpp
-  src/ImageOps.cpp
-  src/CliOptions.cpp
-  ${ECAPTURE_HOST_SOURCES}
-  ${ECAPTURE_LANG_SOURCES}
-  src/ScreenMatch.cpp
-  src/ScreenIdentity.cpp
-  src/WindowMatch.cpp
-  resources/ecapture.rc)
-
-target_include_directories(ecapture-consent-tests PRIVATE resources src)
-target_compile_features(ecapture-consent-tests PRIVATE cxx_std_20)
-set_target_properties(ecapture-consent-tests PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
-target_compile_options(ecapture-consent-tests PRIVATE /utf-8 /W4 /permissive- /Zc:__cplusplus /EHsc)
-target_compile_definitions(ecapture-consent-tests PRIVATE UNICODE _UNICODE NOMINMAX)
-target_link_libraries(ecapture-consent-tests PRIVATE
-  user32.lib kernel32.lib advapi32.lib gdi32.lib dwmapi.lib)
-set_target_properties(ecapture-consent-tests PROPERTIES OUTPUT_NAME "ecapture-consent-tests")
-set_property(TARGET ecapture-consent-tests PROPERTY MSVC_RUNTIME_LIBRARY
-               "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # ---------------------------------------------------------------------------
 # 隔离执行那套内部消息格式与期限换算的离线判据（由 tests\timeout.ps1 编译并运行）。
@@ -1226,7 +1361,6 @@ endif()
 set(ECAPTURE_WINDOWS_ONLY_TARGETS
   ecapture
   ecapture-example-ini
-  ecapture-consent-tests
   ecapture-worker-tests
   ecapture-identity-tests
   ecapture-dup-tests
@@ -1255,88 +1389,19 @@ if(WIN32)
                         "缺这些：${_ec_list_missing_text}。名单是给 Linux 报告的口径，改了目标要同步改名单。")
   endif()
 endif()
-# Linux 侧"哪些目标还建不了"那句话放在文件末尾的 wx 判定之后一起说（要带上 GUI 探针的有无）。
-
-# ===========================================================================
-# wxWidgets 依赖接线（本步只做这一件：找得到就建一个探针目标，链上 core+base）
-#
-# 确认弹窗与通知的 wxWidgets 实现是后续步骤，这里**不**重写 Consent.cpp / Notification*.cpp。
-# 探针存在的意义是把"依赖发现 + 头/宏/库三样都传给了目标"钉成一条可重复验证的构建事实，
-# 而不是等到写 GUI 那天才发现 find_package 的组件与链接顺序不对。
-#
-# 选用版本与来源（也写进 README 与 MEMORY.md）：
-#   * 目标版本 wxWidgets 3.2.x（当前上游稳定分支）。Linux 上用发行版包，Debian/Ubuntu 是
-#     libwxgtk3.2-dev（工具集 wxGTK 3.0 那一档太旧，本项目不要）。
-#   * 发现方式：CMake 的 MODULE 模式 FindwxWidgets —— 它调 wx-config 问版本、cflags 与 libs，
-#     因此跟着发行版装的 wx 走，不写死安装路径；多版本共存时用 -DECAPTURE_WX_CONFIG=/path/to/wx-config 点名。
-#   * 链接策略：共享库（不用 wx 自带的 static 配置，避免与发行版 GTK 依赖打架）；
-#     组件只要 core + base —— core 自己带上工具集依赖，这里不硬编 GTK 版本号。
-#     头、宏、附加编译选项、库四样都由 target_* 显式挂到目标上，不用
-#     include(${wxWidgets_USE_FILE})，那会污染整个目录的作用域。
-#   * 许可证：wxWidgets 是 LGPL 2.1 with an exception（动态链接下无额外义务），本项目静态 CRT 的
-#     Windows 交付方式需要把它一并记账，属于 GUI 实现那一步的依赖材料。
-#
-# 默认值按平台分岔是刻意的：Windows 构建入口（build.ps1 + installer 那套判据）要保持原样，
-# 不能因为某台机器恰好装了 wx 就多出一个目标、把打包判据的产物清单打乱。
-# ===========================================================================
-if(WIN32)
-  set(_ec_gui_default OFF)
-else()
-  set(_ec_gui_default ON)
-endif()
-option(ECAPTURE_ENABLE_GUI "构建 wxWidgets GUI 目标（本步只有依赖探针，没有确认弹窗）" ${_ec_gui_default})
-option(ECAPTURE_REQUIRE_WX "找不到 wxWidgets 就报错退出（./build.sh --gui 用它把缺依赖变成硬错误）" OFF)
-set(ECAPTURE_WX_CONFIG "" CACHE FILEPATH "指定 wx-config 可执行文件；留空则由 FindwxWidgets 在 PATH 里找")
-set(ECAPTURE_WX_MIN_VERSION "" CACHE STRING "wxWidgets 版本下限，例如 3.2.0；留空表示找到即用")
-
-set(_ec_gui_target_note "")
-if(ECAPTURE_ENABLE_GUI)
-  if(ECAPTURE_WX_CONFIG)
-    set(wxWidgets_CONFIG_EXECUTABLE "${ECAPTURE_WX_CONFIG}")
-  endif()
-  set(_ec_wx_req "${ECAPTURE_WX_MIN_VERSION}")
-  find_package(wxWidgets ${_ec_wx_req} COMPONENTS core base QUIET)
-
-  if(wxWidgets_FOUND)
-    set(_ec_wx_ver "${wxWidgets_VERSION_STRING}")
-    if(NOT _ec_wx_ver)
-      set(_ec_wx_ver "版本见 wx-config")
-    endif()
-    message(STATUS "wxWidgets：找到 ${_ec_wx_ver}（组件 core;base），库：${wxWidgets_LIBRARIES}")
-    add_executable(ecapture-gui-probe src/gui/WxGuiProbe.cpp)
-    ecapture_apply_common(ecapture-gui-probe)
-    target_include_directories(ecapture-gui-probe PRIVATE ${wxWidgets_INCLUDE_DIRS})
-    target_compile_definitions(ecapture-gui-probe PRIVATE ${wxWidgets_DEFINITIONS})
-    target_compile_options(ecapture-gui-probe PRIVATE ${wxWidgets_CXX_FLAGS})
-    target_link_libraries(ecapture-gui-probe PRIVATE ${wxWidgets_LIBRARIES})
-    set_target_properties(ecapture-gui-probe PROPERTIES OUTPUT_NAME "ecapture-gui-probe")
-    set(_ec_gui_target_note ", ecapture-gui-probe")
-  elseif(ECAPTURE_REQUIRE_WX)
-    message(FATAL_ERROR
-      "ECAPTURE_REQUIRE_WX=ON 但没找到 wxWidgets（FindwxWidgets 走 wx-config 与常见安装前缀都没命中）。\n"
-      "  * Linux 建议安装发行版包（本项目不自动装依赖，见 AGENTS.md）：Debian/Ubuntu "
-      "apt install libwxgtk3.2-dev；Fedora dnf install wxGTK3.2-devel\n"
-      "  * 已经装了但 wx-config 不在 PATH 上：-DECAPTURE_WX_CONFIG=/全路径/wx-config 再配置一次\n"
-      "  * 版本下限卡住了：-DECAPTURE_WX_MIN_VERSION=3.2.0（留空表示找到即用）\n"
-      "  * 只要核心离线判据：去掉 --gui（默认是可选依赖，不阻塞构建）")
-  else()
-    message(STATUS "wxWidgets：未找到，跳过 GUI 探针目标（ECAPTURE_ENABLE_GUI=ON 但依赖缺失）。"
-                   "装好后重跑 ./build.sh --gui 可看到硬失败诊断。")
-  endif()
-else()
-  message(STATUS "wxWidgets：ECAPTURE_ENABLE_GUI=OFF，不构建 GUI 目标。")
-endif()
+# Linux 侧"哪些目标还建不了"那句话放在文件末尾（wx 判定已经在前面做完，带不带 GUI 目标
+# 都能写出完整清单）。
 
 # Linux 这一句要等 wx 判定完才写得出完整清单，所以放在文件末尾。
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests${_ec_encode_target_note}${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-gui-probe)
+  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

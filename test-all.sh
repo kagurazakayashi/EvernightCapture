@@ -63,8 +63,8 @@ EOF
 # ---------------------------------------------------------------------------
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
-SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths worker-ipc image-ops \
- crop-geometry codec-encode gui-probe-init"
+SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths worker-ipc consent-state \
+ image-ops crop-geometry codec-encode gui-probe-init gui-runtime"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -102,6 +102,12 @@ SUITE_TARGET[worker-ipc]="ecapture-ipc-tests"
 SUITE_NOTE[worker-ipc]="跨平台辅助进程通信与超时取消判据（真父子进程：协议错误、双向通信、阻塞、超时、取消、异常退出、端点防伪、并行排干、收尾与泄漏记账，120 条）"
 SUITE_PREREQ[worker-ipc]=""
 
+SUITE_LAYER[consent-state]="offline"
+SUITE_KIND[consent-state]="cmake"
+SUITE_TARGET[consent-state]="ecapture-consent-tests"
+SUITE_NOTE[consent-state]="授权状态机与弹框生命周期（假应答器 + 假拓扑：--yes 边界、拒绝传播、拓扑失效、超时/关框/初始化失败/取消、预算暂停，179 条）"
+SUITE_PREREQ[consent-state]=""
+
 SUITE_LAYER[image-ops]="offline"
 SUITE_KIND[image-ops]="cmake"
 SUITE_TARGET[image-ops]="ecapture-image-tests"
@@ -125,6 +131,12 @@ SUITE_KIND[gui-probe-init]="cmake"
 SUITE_TARGET[gui-probe-init]="ecapture-gui-probe"
 SUITE_NOTE[gui-probe-init]="wxWidgets 依赖接线在图形会话里真能初始化（探针不建窗口、不弹框、不取像素）"
 SUITE_PREREQ[gui-probe-init]=""
+
+SUITE_LAYER[gui-runtime]="isolated"
+SUITE_KIND[gui-runtime]="script"
+SUITE_TARGET[gui-runtime]="ecapture-gui-tests"
+SUITE_NOTE[gui-runtime]="确认框与公共对话框：长中文/长路径、默认焦点、可访问名称、同意/拒绝/关框/超时/取消、GDK_SCALE=2 高 DPI，以及无图形会话时初始化失败"
+SUITE_PREREQ[gui-runtime]="$EC_ROOT/tests/gui-runtime.sh"
 
 # ---------------------------------------------------------------------------
 # 参数
@@ -306,6 +318,21 @@ for s in "${PLAN[@]}"; do
         if [ ! -f "${SUITE_PREREQ[$s]}" ]; then
             ec_add_gap "$s" "判据脚本不存在 ${SUITE_PREREQ[$s]}"
         fi
+        # 脚本型套件也可以点名一个构建产物（gui-runtime 就是这种）：产物不在 = 缺前置。
+        t="${SUITE_TARGET[$s]}"
+        if [ -n "$t" ]; then
+            if ! ec_target_is_buildable "$t"; then
+                ec_add_gap "$s" "GUI 判据目标没生成 = 本机没找到 wxWidgets。
+      装上再跑（本脚本不自动装）：Debian/Ubuntu apt install libwxgtk3.2-dev
+      wx-config 不在 PATH 上时：./build.sh --gui --wx-config /全路径/wx-config"
+            elif [ ! -x "$EC_BUILD_DIR/$t" ]; then
+                ec_add_gap "$s" "目标可构建但产物不在 $EC_BUILD_DIR/$t（去掉 --no-build 先构建）"
+            fi
+        fi
+        if [ "$layer" = "isolated" ] && ! ec_graphic_prefix; then
+            ec_add_gap "$s" "这一层要图形会话，当前既没有 DISPLAY/WAYLAND_DISPLAY 也没有 xvfb-run。
+      建议（不自动装、不替你启动服务）：apt install xvfb"
+        fi
         continue
     fi
     t="${SUITE_TARGET[$s]}"
@@ -369,6 +396,11 @@ ec_run_suite() {
     local -a cmd
     if [ "${SUITE_KIND[$name]}" = "script" ]; then
         cmd=(bash "${SUITE_PREREQ[$name]}")
+        # 脚本型套件可以点名一个产物：把构建目录当作第一个参数交给脚本，
+        # 脚本自己按平台与配置找那份可执行文件（不在脚本里再抄一遍目录规则）。
+        if [ -n "${SUITE_TARGET[$name]}" ]; then
+            cmd+=("$EC_BUILD_DIR")
+        fi
     else
         cmd=("$EC_BUILD_DIR/${SUITE_TARGET[$name]}")
     fi

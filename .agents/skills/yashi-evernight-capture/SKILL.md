@@ -239,8 +239,10 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   * an **in-process fake**: `tests/consent_state.cpp` answers `ConsentGate` with a scripted `FakePrompt`. No window
     appears and no pixel is read, and it is linked only into test binaries - it is not reachable from `ECAPTURE.EXE`.
   * a **real dialog being clicked**: `Click-EcDialogButton` in `tests/harness.psm1` posts `BM_CLICK` to a control of
-    the actual `#32770` box, and under `-SimulateConsent` the desktop suites (`channels.ps1`, `screen.ps1`, `dup.ps1`,
-    `identity.ps1`) answer `IDYES` to the same box that would be asking about the live screen. That runs only because
+    the actual program-owned wxWidgets dialog (the helper also understands the legacy `#32770` class and maps
+    `IDYES`/`IDNO` to `wxID_YES`/`wxID_NO`), and under `-SimulateConsent` the desktop suites (`channels.ps1`,
+    `screen.ps1`, `dup.ps1`, `identity.ps1`) answer `IDYES` to the same dialog that would be asking about the live
+    screen. That runs only because
     the user deliberately chose a dedicated desktop and asked for those tests; it is a machine clicking a machine-made
     decision, not a person agreeing.
   So: "how a test gets a Yes" is never a way to call the tool, and neither mechanism is evidence that anyone
@@ -249,11 +251,10 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   independently of the decision, so none of them lowers the bar: `bitblt` with `--roi 0,0,8,8` and `--yes` still opens
   the dialog. `--capture auto` with `--yes` may walk the window-content routes silently but asks before entering any
   desktop route - approving window content is never approval of the desktop.
-- **The dialog is a `MB_YESNO` box**: two buttons, Yes and No, with the default focus on **No**. Only an explicit Yes
-  approves; every other result is a refusal. Declining means **clicking No**. Do not tell the user to press `Esc` or
-  click `X`: with this button set the title-bar `X` is shown but disabled and there is no Cancel button for `Esc` to
-  trigger, so neither is a dependable "No" gesture - the box has to be answered. The tool treats any non-Yes result
-  as a refusal anyway.
+- **The dialog is a program-owned wxWidgets dialog**: two buttons, "Allow" and "Do not allow" (localized), with the
+  default focus and default button on **Do not allow**. Only an explicit "Allow" approves. Clicking "Do not allow",
+  closing with `X`, or pressing `Esc` all count as a refusal; the tool distinguishes them internally but none of them
+  is consent. The user may also let `--consent-timeout-ms` expire, which is a timeout refusal, never consent.
 - **Do not answer the dialog for the user** (no `SendMessage`, no UI automation, no scripted click, no simulated Yes -
   the repository's own `Click-EcDialogButton` included; the fact that a desktop test suite can drive it is not a
   permission for you to) and do not fake an answer. Before starting a desktop route, tell the user what will be in the
@@ -272,8 +273,8 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   re-pop the dialog inside the same call. Unlike a refusal, this code does not stop the whole batch, **and re-asking
   is a new request**: re-discover the target, tell the user what the new picture contains, and let them confirm.
   Nothing about it is "automatic retry" material.
-- The dialog is plain `MessageBox` mis-click protection for cooperative automation. It does not verify that a human
-  clicked and it is not an OS security boundary.
+- The dialog is a program-owned wxWidgets dialog used as mis-click protection for cooperative automation. It does not
+  verify that a human clicked and it is not an OS security boundary.
 
 ## Output: prefer a file
 

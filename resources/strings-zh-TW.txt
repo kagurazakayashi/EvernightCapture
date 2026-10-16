@@ -415,6 +415,9 @@ consent.plan	取圖方式 %1，實際路徑 %2，圖片寫往 %3
 consent.history	每張成功交付的圖還會在程式自己那目錄下的 history 子目錄裡另存一份獨立副本（按本地日期分目錄，不會自動清理）。
 consent.dialog_closes	本對話框會在截圖開始前關閉，不會出現在圖裡。
 consent.ask	允許現在截圖嗎？
+consent.details_label	目標與輸出
+consent.yes	允許
+consent.no	不允許
 consent.target_line	%1（區域 %2,%3 尺寸 %4x%5）
 consent.scope_window	這條路徑只取所選視窗自己的畫面，不會從桌面取樣其它視窗的像素。
 consent.scope_desktop	這條路徑取的是螢幕上那塊區域此刻的樣子：其它視窗、開啟的文件、通知、桌面上的文字都可能進圖。
