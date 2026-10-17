@@ -6,16 +6,10 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
-#include <psapi.h>
-
+#include "Lang.h"
 #include "ScreenIdentity.h"   // MonitorSelectorLabel：选择器标签只写一处
-#include "ScreenMatch.h"
 #include "WindowMatchInternal.h"
+#include "WindowSource.h"     // EnumerateWindowCandidates：平台层只枚举，匹配语义留在这一层
 
 namespace ecapture {
 namespace {
@@ -23,78 +17,6 @@ namespace {
 std::wstring ToLowerPlain(std::wstring s) {
     for (auto& ch : s) ch = static_cast<wchar_t>(std::towlower(ch));
     return s;
-}
-
-std::wstring FileNameOf(const std::wstring& path) {
-    const size_t pos = path.find_last_of(L"\\/");
-    return pos == std::wstring::npos ? path : path.substr(pos + 1);
-}
-
-// 「被挡下」与「问不出来」是两件事：前者意味着换一个更高权限的调用方就能读到，
-// 后者可能是那个进程刚刚已经没了。结构化窗口查询要把这两种下场分开写，所以这里只认
-// 系统明确说不许你读的那两个码，其余一律按「问过而失败」处理。
-bool IsDeniedError(DWORD gle) {
-    return gle == ERROR_ACCESS_DENIED || gle == ERROR_PRIVILEGE_NOT_HELD;
-}
-
-// 一条候选窗口的归属进程问答结果（由 ProcessFactsOf 填，落到 WindowInfo 的同名诸项）。
-struct WindowFacts {
-    std::wstring path;
-    uint64_t startTicks = 0;
-    ReadState pathRead = ReadState::kFailed;
-    ReadState startRead = ReadState::kFailed;
-    uint32_t pathWin32 = 0;
-    uint32_t startWin32 = 0;
-};
-
-// 一次 OpenProcess 问两件事：映像路径与进程创建时间。分成两次开句柄没有意义，
-// 而"当场再问一次创建时间"更不行 —— 身份复核要比的是**枚举那一刻**的值
-//（见 WindowIdentity.h：中间那次销毁重建会被记成基线，复核就成了自己跟自己对答案）。
-// 读不到的一律留空 / 0：那是"这一条判据没做出来"，不是"它相同"。
-//
-// 每一问的下场都记进 WindowFacts（read + win32），因为读不到对调用方是有信息量的：
-// 结构化窗口查询（--list / --inspect）要把「这一项问不出来」与「这一项是空的」分开写，
-// 而不是拿空值冒充答案。原因码必须在失败点当场取走 —— 之后的任何 API 都会把它覆盖掉。
-WindowFacts ProcessFactsOf(HWND hwnd) {
-    WindowFacts f;
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0) return f;   // 连归属进程都问不出来：两条问句都没答案
-    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!proc) {
-        const DWORD gle = GetLastError();
-        f.pathWin32 = gle;
-        f.startWin32 = gle;
-        const ReadState state = IsDeniedError(gle) ? ReadState::kDenied : ReadState::kFailed;
-        f.pathRead = state;
-        f.startRead = state;
-        return f;
-    }
-    wchar_t buffer[8192];
-    DWORD size = static_cast<DWORD>(std::size(buffer));
-    if (QueryFullProcessImageNameW(proc, 0, buffer, &size)) {
-        f.path.assign(buffer, size);
-        f.pathRead = ReadState::kReadable;
-    } else {
-        f.pathWin32 = GetLastError();
-        f.pathRead = IsDeniedError(f.pathWin32) ? ReadState::kDenied : ReadState::kFailed;
-    }
-    FILETIME creation{}, exit{}, kernel{}, user{};
-    if (GetProcessTimes(proc, &creation, &exit, &kernel, &user)) {
-        ULARGE_INTEGER ticks{};
-        ticks.LowPart = creation.dwLowDateTime;
-        ticks.HighPart = creation.dwHighDateTime;
-        // QuadPart 为 0 是"没拿到"的写法，不能当成一个真值传给复核去比。
-        if (ticks.QuadPart != 0) {
-            f.startTicks = ticks.QuadPart;
-            f.startRead = ReadState::kReadable;
-        }
-    } else {
-        f.startWin32 = GetLastError();
-        f.startRead = IsDeniedError(f.startWin32) ? ReadState::kDenied : ReadState::kFailed;
-    }
-    CloseHandle(proc);
-    return f;
 }
 
 // 异常 what() 是窄字符，只留可打印 ASCII：这段细节要穿过管道交给父进程。
@@ -108,7 +30,23 @@ std::string AsciiDetail(const char* what) {
 }
 
 // CompiledConditions 与 RegexFault 这两份形状住在 WindowMatchInternal.h：离线判据要直接
-// 对着下面这两个函数注入假候选，而不是另抄一套匹配算法。
+// 对着下面那两个函数注入假候选，而不是另抄一套匹配算法。
+
+std::wstring BriefList(const std::vector<WindowInfo>& items, size_t limit) {
+    std::wstring s;
+    for (size_t i = 0; i < items.size() && i < limit; ++i) {
+        if (i) s += L" | ";
+        wchar_t buf[96];
+        swprintf(buf, 96, L"0x%08X", static_cast<unsigned>(items[i].hwnd));
+        s += buf;
+        s += L" ";
+        s += items[i].title.empty() ? Msg(L"match.untitled") : items[i].title;
+        if (!items[i].imageName.empty()) s += L" [" + items[i].imageName + L"]";
+    }
+    if (items.size() > limit) s += L" …";
+    return s;
+}
+
 }  // namespace
 
 bool CompileConditions(const MatchRequest& req, CompiledConditions* out,
@@ -201,103 +139,6 @@ bool MatchesWindow(const CompiledConditions& c, const WindowInfo& w, RegexFault*
     return true;
 }
 
-namespace {
-
-// 窗口矩形与所选屏有重叠即算命中，所以跨屏窗口在两块屏上都找得到。
-// 用完整窗口矩形（含 DWM 那圈透明边）而不是扩展边框：这里要的是"人把窗口放在哪"。
-bool OnAnyScreen(const CompiledConditions& c, const WindowInfo& w) {
-    if (c.onScreens.empty()) return true;
-    const PhysRect r{w.x, w.y, w.x + w.width, w.y + w.height};
-    for (const PhysRect& m : c.onScreens) {
-        if (RectOverlaps(r, m)) return true;   // 判据与这条改动之前逐字相同，见 core/Geometry.h
-    }
-    return false;
-}
-
-struct CollectState {
-    const CompiledConditions* compiled;
-    std::vector<WindowInfo>* all;      // 命中且可见
-    std::vector<WindowInfo>* iconic;   // 命中但最小化（用于给提示）
-    int32_t order = 0;
-    RegexFault fault;                  // 正则被上限挡下时的记录（不让异常穿出回调）
-};
-
-BOOL CALLBACK CollectCallback(HWND hwnd, LPARAM lParam) {
-    auto* state = reinterpret_cast<CollectState*>(lParam);
-    const int32_t thisOrder = state->order++;
-    if (!IsWindow(hwnd)) return TRUE;
-
-    WindowInfo w;
-    w.hwnd = reinterpret_cast<uint64_t>(hwnd);
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    w.pid = static_cast<uint32_t>(pid);
-
-    const int titleLen = GetWindowTextLengthW(hwnd);
-    if (titleLen > 0) {
-        w.title.resize(static_cast<size_t>(titleLen) + 1);
-        const int got = GetWindowTextW(hwnd, w.title.data(), titleLen + 1);
-        w.title.resize(got > 0 ? static_cast<size_t>(got) : 0);
-    }
-    wchar_t cls[256];
-    const int clsLen = GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
-    if (clsLen > 0) w.className.assign(cls, static_cast<size_t>(clsLen));
-
-    w.imagePath.clear();
-    const WindowFacts facts = ProcessFactsOf(hwnd);
-    w.imagePath = facts.path;
-    w.processStartTicks = facts.startTicks;
-    w.pathRead = facts.pathRead;
-    w.startRead = facts.startRead;
-    w.pathWin32 = facts.pathWin32;
-    w.startWin32 = facts.startWin32;
-    if (!w.imagePath.empty()) w.imageName = FileNameOf(w.imagePath);
-
-    RECT rect{};
-    if (GetWindowRect(hwnd, &rect)) {
-        w.x = rect.left;
-        w.y = rect.top;
-        w.width = rect.right - rect.left;
-        w.height = rect.bottom - rect.top;
-        w.rectRead = ReadState::kReadable;
-    } else {
-        // 量不出来与「量到了一个零尺寸的窗口」是两件事，两者都不能写成同一个值：
-        // 前者是这一次问答没有答案，后者是窗口自己的形状。查询层据此写字段级 unknown。
-        w.rectWin32 = GetLastError();
-        w.rectRead = ReadState::kFailed;
-    }
-    w.zOrder = thisOrder;
-    w.iconic = IsIconic(hwnd) != FALSE;
-
-    if (!IsWindowVisible(hwnd)) return TRUE;
-    if (w.width <= 0 || w.height <= 0) return TRUE;
-
-    if (state->fault.hit) return TRUE;   // 已经报废的求值不必再往下数
-    if (!MatchesWindow(*state->compiled, w, &state->fault)) return TRUE;
-    // 最小化的窗口只为 hint 收集，屏幕限制只管真正的目标
-    if (!w.iconic && !OnAnyScreen(*state->compiled, w)) return TRUE;
-    if (w.iconic) state->iconic->push_back(w);
-    else state->all->push_back(w);
-    return TRUE;
-}
-
-std::wstring BriefList(const std::vector<WindowInfo>& items, size_t limit) {
-    std::wstring s;
-    for (size_t i = 0; i < items.size() && i < limit; ++i) {
-        if (i) s += L" | ";
-        wchar_t buf[96];
-        swprintf(buf, 96, L"0x%08X", static_cast<unsigned>(items[i].hwnd));
-        s += buf;
-        s += L" ";
-        s += items[i].title.empty() ? Msg(L"match.untitled") : items[i].title;
-        if (!items[i].imageName.empty()) s += L" [" + items[i].imageName + L"]";
-    }
-    if (items.size() > limit) s += L" …";
-    return s;
-}
-
-}  // namespace
-
 std::wstring DescribeWindow(const WindowInfo& w) {
     wchar_t buf[160];
     swprintf(buf, 160, L"hwnd=0x%08X pid=%lu %dx%d+%d+%d", static_cast<unsigned>(w.hwnd),
@@ -306,49 +147,6 @@ std::wstring DescribeWindow(const WindowInfo& w) {
     s += L" class=" + w.className;
     if (!w.title.empty()) s += L" title=" + w.title;
     return s;
-}
-
-// ---------------------------------------------------------------------------
-// 条件求值：枚举 + AND/OR 判定（含正则）。这一半没有中断点，所以要限期限时得整半交给
-// 辅助进程（Worker.h 的 kTaskMatchWindows），在这里加"检查点"是假的期限。
-// 结果只带原因码，不带文案 —— 这条函数在另一个进程里也要能跑。
-// ---------------------------------------------------------------------------
-MatchOutcome EnumerateMatches(const MatchRequest& req) {
-    MatchOutcome outcome;
-    CompiledConditions c;
-    // 编译一次在枚举前（含 --title-regex 那几条）：避免每个窗口重复构造正则。
-    // 判据本体是 MatchesWindow，与离线判据共用同一份，这里不另立第二套匹配规则。
-    BlockedStatus compileStatus = BlockedStatus::kOk;
-    if (!CompileConditions(req, &c, &compileStatus, &outcome.detail)) {
-        outcome.status = compileStatus;
-        return outcome;
-    }
-
-    // 求值过程中的 regex_error：MSVC 的正则库对回溯复杂度有一道内置上限
-    // （error_complexity），所以失控的模式会以异常中断，而不是永远跑下去。
-    // 这是"能中断"的那一类，照实换成稳定诊断；时间上限另由期限那条路保证（Worker.h）。
-    CollectState state{&c, &outcome.hits, &outcome.iconic, 0};
-    try {
-        EnumWindows(CollectCallback, reinterpret_cast<LPARAM>(&state));
-    } catch (...) {
-        outcome.status = BlockedStatus::kInternal;
-        outcome.detail = "unknown";
-        outcome.hits.clear();
-        outcome.iconic.clear();
-        return outcome;
-    }
-    if (state.fault.hit) {
-        // 正则被本机正则库的上限挡下：状态码与细节照实交回去，
-        // 半套命中列表不能交回调用方 —— 那看起来像"就这些窗口"，实际是"数到一半就停了"。
-        outcome.status = state.fault.status;
-        outcome.detail = state.fault.detail;
-        outcome.hits.clear();
-        outcome.iconic.clear();
-        return outcome;
-    }
-    std::sort(outcome.hits.begin(), outcome.hits.end(),
-              [](const WindowInfo& a, const WindowInfo& b) { return a.zOrder < b.zOrder; });
-    return outcome;
 }
 
 std::wstring MonitorLabelOf(const Options& opt) {

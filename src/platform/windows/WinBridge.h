@@ -49,19 +49,19 @@ inline std::vector<RECT> ToNativeRects(const std::vector<PhysRect>& rects) {
     return out;
 }
 
-inline std::vector<PhysRect> FromNativeRects(const std::vector<RECT>& rects) {
-    std::vector<PhysRect> out;
-    out.reserve(rects.size());
-    for (const RECT& r : rects) out.push_back(FromNativeRect(r));
-    return out;
-}
-
 inline PhysRect FromNativeRect(const RECT& r) {
     PhysRect out;
     out.left = static_cast<int32_t>(r.left);
     out.top = static_cast<int32_t>(r.top);
     out.right = static_cast<int32_t>(r.right);
     out.bottom = static_cast<int32_t>(r.bottom);
+    return out;
+}
+
+inline std::vector<PhysRect> FromNativeRects(const std::vector<RECT>& rects) {
+    std::vector<PhysRect> out;
+    out.reserve(rects.size());
+    for (const RECT& r : rects) out.push_back(FromNativeRect(r));
     return out;
 }
 

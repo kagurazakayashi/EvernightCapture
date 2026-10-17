@@ -1,7 +1,7 @@
 // 【平台层 · Windows】WinRT toast 那份发送器实现（Notification.h 的接缝在这里落地；wxWidgets 版是后续步骤）。
 #include "Notification.h"
 
-#include "WinrtApartment.h"
+#include "platform/windows/WinrtApartment.h"
 
 #include <winrt/base.h>
 #include <winrt/Windows.Data.Xml.Dom.h>

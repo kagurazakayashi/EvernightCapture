@@ -8,7 +8,7 @@
 
 Windows.Graphics.Capture を基軸に、DWM サムネイル、`PrintWindow`、画面 `BitBlt`、DXGI デスクトップ複製の
 4 チャネルを加えた計 5 チャネルで画面を取得する。入口は `ECAPTURE.EXE` である。単一の実行ファイルで、
-CRT を静的リンクしているのでターゲットマシンに VC++ ランタイムは不要。出力はプログラムに優しい作りになっている：
+CRT と wxWidgets を静的リンクしているので、ターゲットマシンに VC++ ランタイムも wxWidgets の DLL も不要。出力はプログラムに優しい作りになっている：
 `--help`、`--version`、そして条件を一切与えない場合だけはプレーンテキストで、それ以外はすべて JSON。
 終了コードは安定、診断には安定した `code` を添えるので、人が直接叩いても、スクリプトや AI から呼び出しても扱いやすい。
 
@@ -76,6 +76,9 @@ Windows 11 の `magnification.dll` はもはや `MagGetImage` をエクスポー
 ## クイックスタート
 
 Visual Studio（「C++ によるデスクトップ開発」ワークロード）と Windows SDK が必要。ビルドスクリプトが両方を自動で見つける。
+プログラム自身の GUI は wxWidgets で実装されているため、**静的**ビルドの wxWidgets 3.2.x（例：vcpkg の
+`x64-windows-static`、または `RUNTIME_LIBS=static` で自前ビルドしたもの）も見つかる必要がある。無い場合
+`build.ps1` は CMake の設定段階で止まり、確認ダイアログの無いバイナリを出力することはない。
 
 ```powershell
 .\build.ps1                                  # Release、成果物は build\ecapture.exe
@@ -2102,6 +2105,43 @@ Linux のビルド成功を見せるために機能を削除することはし�
 質問を描画し、`src/gui/WxConsentDriver.cpp` が wx ダイアログを所有します。`--yes` の適用範囲と画素範囲の
 判定は、従来どおり `CaptureScope` と `src/core/Authorization.h` の 1 か所にだけあります。
 
+### Windows のクエリ／キャプチャバックエンドをクロスプラットフォーム界面へ接続（2026-10）
+
+このステップでは、Windows 側のクエリとキャプチャの実装をプラットフォーム界面上に接続し、ネイティブハンドルを
+実際に扱うファイルを `src/platform/windows/` へ移動した。
+
+- **クエリ層。** ウィンドウ列挙、身元再確認の安価な 4 つの問い、モニタ列挙と表示構成の事実、プロセス整合性の
+  問い合わせは `WinWindowSource.cpp`、`WinScreenSource.cpp`、`WinProcessIntegrity.cpp` にある。マッチ規則、
+  選択方針、身元判定、JSON 描画は共通層（`WindowMatch.cpp`、`WindowQuery.cpp`、`ScreenIdentity.cpp`、
+  `WindowQueryRun.cpp`）に残り、共通ヘッダは中性型（`WindowInfo`、`PhysRect`、`WindowQueryLayer`）だけを持つ。
+  実行時入口（`WindowMatchRun.cpp`、`ScreenQueryRun.cpp`）だけがプラットフォーム列挙を呼ぶので、オフライン
+  テストはウィンドウバックエンド無しで純粋な半分だけをリンクできる。
+- **キャプチャバックエンド。** 5 つの実チャネルの実装は `src/platform/windows/` に残し、
+  `WinCaptureBackends.cpp` に一度だけ登録する。共通層は `src/CaptureBackend.h` 経由で使う。パイプラインは
+  チャネルのヘッダを include しない：メソッドで登録表に問い合わせ、要求には認可結果（ウィンドウ経路または
+  デスクトップ許可証）、期限、身元スナップショットを含める。ピクセル来源は内部パス（`CaptureScope.cpp`）で
+  判定し、チャネル名では推測しない。各チャネルの失敗理由はそのまま返す。
+- **隔離と失敗の対応付け。** `IsolatedMatch` / `BlockedToDiagnostic` は `src/Isolation.h` へ移動。例外分類
+  （`CaptureFault.h`）とエラーコード文字列（`ErrorText.h`）はプラットフォームサービスになった。ワーカー
+  ペイロードは依然 `RECT` / `DWORD` / `HRESULT` のワイヤー形式で、脱プラットフォーム化は残作業として記録した。
+- **挙動の保持。** 遮蔽、最小化、サイズ変更、クライアント領域の切り抜き、`--roi` / `--scale`、カーソル、HDR、
+  モニタ回転の扱いは移動前の実装そのまま。取得できない場合は黒フレームや古いキャッシュで成功を装わず、実際の
+  理由を返す。すべての実フレーム入口は身元再確認、認可判定、共通の期限を必ず通る。
+- **配布依存。** Windows は引き続き単一実行ファイル + 静的 CRT だが、ビルド時に**静的** wxWidgets 3.2.x が
+  必須になった。成功すれば VC++ ランタイムも wx DLL も含まないはずだが、本ステップではインストーラーを実際に
+  作っていない。`--help`、JSON 契約、4 言語の文言は変更していない。
+- **検証範囲。** Linux：既存のオフライン判定 10 スイートが全て通過（1,928 件。GUI の 2 スイートはグラフィック
+  セッションが必要で、無い場合は NOT RUN と記録）。Windows：Windows 分岐の各翻訳単位が MSVC `/W4` の
+  コンパイル検査を通過（96/96。以前から壊れていた `WinBridge` の順序、`Worker` の include 漏れ、
+  `RealOutputSink` のシグネチャ不一致も含む）。さらに 21 個のオフライン判定ターゲットを CMake + Ninja + MSVC で
+  実際に構成・ビルド・実行し、**21/21 がビルド成功、3,095 件の判定が通過・失敗 0**（18 個は Debug。
+  `delivery` / `history` / `worker` の 3 つは Release で実行 —— Debug のデバッグ CRT とテスト内のグローバル
+  `operator new` の相互作用で abort するため）。途中で Windows 既存の不具合を 2 件見つけて修正した：
+  `ecapture-cli-text-tests` が Windows でリンクできない（`DecodePosixArgv`）ことと、2 つのテストの Windows 側
+  期待値が誤っていたこと（非 BMP コードポイントの `wchar_t` 切り詰め、`/tmp` のパス分類）。完全な
+  `ecapture.exe` のビルド（静的 wx リンク、リソース、インストーラー）と実デスクトップ検査は本ステップでは
+  Windows 上で**未検証**であり、Windows ビルドが動くとは主張しない。
+
 ### インストーラーのビルド：`build-installer.ps1`
 
 ルートのこのスクリプトは、どの作業ディレクトリからでも**絶対パス**で呼ばれることを前提にしている。リポジトリの位置はスクリプト自身から求め、カレントディレクトリには依存しない。
@@ -2141,7 +2181,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/` の共通モデル・方針ヘッダ | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 上のと同じ規則。これらは「何を撮り、何が承認され、このフレームがどんな形か」を記述し、どの API で入手したかは扱わない |
 | `src/platform/windows/WinBridge.h` | コアと Win32 の**唯一**の変換点：`RECT ↔ PhysRect`（単体と一括）と `Deadline → 待ちミリ秒` | プラットフォーム層の `.cpp` だけが include できる。変換呼び出しが行になる箇所が、レビュー時に「ここでプラットフォームの境界をまたいだ」と見える行である |
 | `src/gui/` | 全プラットフォームで共通の、このプログラム自身 GUI の唯一の置き場所。wxWidgets で作る。共通ダイアログ、必要時初期化の GUI ランタイム、同意ダイアログのドライバ、統一通知入口がここにあり、`WxGuiProbe.cpp` は依存プローブとして残る | wxWidgets を触るのはこの層だけ。`src/core/`、`Consent.cpp`、共通モデルはこれを include せず、逆にここで認可判定を定義もしない。GUI ターゲットとオフライン判定は互いに依存しない |
-| `CaptureCommon.h`、5 つのチャネルヘッダ、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【プラットフォーム層 · Windows】GDI / D3D / WinRT / 名前付きパイプ / 文字列リソースの実使用者 | 各ファイル冒頭でプラットフォーム層であることを明記。共通コアが逆にこれらを include すれば境界の破れ |
+| `src/platform/windows/`（`CaptureCommon.*`、5 チャネルの実装、`Worker*`、`D3dDevice`、`WinrtApartment`、`Win{Window,Screen}Source`、`Win{ProcessIntegrity,SystemCompat,ErrorText,CaptureFault,CaptureBackends}`、`WinEnvReport`、`WinHdrDetect` などの `Win*` サービス） | 【プラットフォーム層 · Windows】GDI / D3D / WinRT / 名前付きパイプ / 文字列リソース、およびウィンドウ・モニタ・プロセス整合性の問い合わせの実使用者 | 各ファイル冒頭でプラットフォーム層であることを明記。共通コアが逆にこれらを include すれば境界の破れ。プラットフォーム層のファイル同士は裸のファイル名で include する（Windows ビルドではこのディレクトリを include パスに追加） |
 
 **`RECT` の名前替えではありません。** `PhysRect` の 4 つの辺は `int32_t` に固定し、「空矩形」「包含」「測定できない」
 の 3 つの判定は `core/Geometry.h` に実装が 1 つしかなく、4 プラットフォームが同じ演算を共用します。

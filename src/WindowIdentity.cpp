@@ -1,19 +1,26 @@
 #include "WindowIdentity.h"
 
 #include <algorithm>
-#include <cinttypes>
+#include <cstdint>
 #include <cstdio>
 #include <cwctype>
-#include <iterator>
 #include <string>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "Lang.h"
-#include "WindowMatch.h"
+#include "WindowMatch.h"   // WindowInfo 的完整定义（MakeWindowIdentity 读它的字段）
+
+// 目标身份复核：确认「手上这个窗口现在还是当初选中的那一扇」。
+//
+// 这一份只放**判据**：快照怎么做、四问（句柄/归属进程/进程创建时间/类名）按什么顺序判、
+// 以及"问不出来"如何折成 unverifiable。四问的真机实现（IsWindow / GetWindowThreadProcessId /
+// GetProcessTimes / GetClassNameW）搬到了 src/platform/windows/WinWindowSource.cpp 的
+// SystemWindowQueryLayer()：共用层只对着 WindowQueryLayer 里的函数指针判，注入假答案就能把
+// 「句柄被另一个进程复用」「PID 相同但那是另一个进程」这类现场逐条判完。
+//
+// 三条边界（完整版见 WindowIdentity.h 顶部）：
+//   1. 复核只降低竞态窗口，不声称消除；判据与取帧不是原子的。
+//   2. 查不到就是查不到：任何一问没给出答案就按 capture.target_unverifiable 拒绝取帧。
+//   3. 身份变了不去找替代目标：用户针对旧对象给出的许可不转移给新对象。
 
 namespace ecapture {
 namespace {
@@ -49,47 +56,6 @@ std::string HwndText(uint64_t hwnd) {
     return buf;
 }
 
-bool WindowIsAlive(uint64_t hwnd) {
-    return IsWindow(reinterpret_cast<HWND>(hwnd)) != FALSE;
-}
-
-bool ReadWindowPid(uint64_t hwnd, uint32_t* pid) {
-    if (!pid) return false;
-    DWORD own = 0;
-    if (GetWindowThreadProcessId(reinterpret_cast<HWND>(hwnd), &own) == 0) return false;
-    if (own == 0) return false;
-    *pid = static_cast<uint32_t>(own);
-    return true;
-}
-
-bool ReadWindowClass(uint64_t hwnd, std::wstring* out) {
-    if (!out) return false;
-    wchar_t buffer[256];
-    const int len = GetClassNameW(reinterpret_cast<HWND>(hwnd), buffer,
-                                  static_cast<int>(std::size(buffer)));
-    if (len <= 0) return false;
-    out->assign(buffer, static_cast<size_t>(len));
-    return true;
-}
-
-// 进程创建时间。PROCESS_QUERY_LIMITED_INFORMATION 就够（这条句柄枚举那一步本来也要开一次），
-// 拿不到就是拿不到：调用方按"这一条判据没做出来"处理，而不是当成失败。
-bool ReadProcessStartTicks(uint32_t pid, uint64_t* out) {
-    if (!out) return false;
-    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!proc) return false;
-    FILETIME creation{}, quitting{}, kernel{}, user{};
-    const bool ok = GetProcessTimes(proc, &creation, &quitting, &kernel, &user) != FALSE;
-    CloseHandle(proc);
-    if (!ok) return false;
-    ULARGE_INTEGER ticks{};
-    ticks.LowPart = creation.dwLowDateTime;
-    ticks.HighPart = creation.dwHighDateTime;
-    if (ticks.QuadPart == 0) return false;   // 0 是"没读到"的写法，不能当成一个真值
-    *out = ticks.QuadPart;
-    return true;
-}
-
 }  // namespace
 
 WindowIdentity MakeWindowIdentity(const WindowInfo& selected, const MatchOptions& match,
@@ -106,15 +72,6 @@ WindowIdentity MakeWindowIdentity(const WindowInfo& selected, const MatchOptions
     id.selectionNeedsRecheck = !match.titles.empty() || !match.titleContains.empty() ||
                                !match.titleRegexes.empty() || monitorGiven;
     return id;
-}
-
-WindowQueryLayer SystemWindowQueryLayer() {
-    WindowQueryLayer q;
-    q.alive = &WindowIsAlive;
-    q.windowPid = &ReadWindowPid;
-    q.windowClass = &ReadWindowClass;
-    q.processStart = &ReadProcessStartTicks;
-    return q;
 }
 
 // ---------------------------------------------------------------------------

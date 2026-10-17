@@ -223,7 +223,7 @@ void CheckTextCoding() {
     Section("文本编码：出口编码与码位数");
     {
         std::wstring wide = W("标题");
-        wide.push_back(static_cast<wchar_t>(0x1F600));  // 一个码位：两个平台各自表示
+        wide += L"\U0001F600";  // 一个码位：两个平台各自表示（Windows 上是代理对）
         const std::string out = EncodeUtf8(wide);
         Check(IsWellFormedUtf8(out.data(), out.size()), "交出去的字节恒为合法 UTF-8");
         Check(out == "\xe6\xa0\x87\xe9\xa2\x98" "\xf0\x9f\x98\x80", "中文 + 非 BMP 编成预期字节");
@@ -466,8 +466,12 @@ void CheckPlatformGate() {
 
 void CheckPaths() {
     Section("路径服务：形状判据按本平台");
-    Check(ClassifyConfigPath(W("/tmp/x.png")) == ConfigPathFate::kQualified,
-          "以 / 起手在两种平台都是完全限定");
+    // 以 / 起手在 POSIX 上是完全限定；Windows 上它是"根相对"（缺盘符，不是完整路径），
+    // 两边按各自平台的语义判 —— 这条判据以前只在 Linux 上真跑过，Windows 的期望值是错的。
+    Check(ClassifyConfigPath(W("/tmp/x.png")) ==
+              (BuildPlatform() == PlatformKind::kWindows ? ConfigPathFate::kRootRelative
+                                                         : ConfigPathFate::kQualified),
+          "以 / 起手：POSIX 是完全限定，Windows 是根相对（缺盘符）");
     Check(ClassifyConfigPath(W("shots/x.png")) == ConfigPathFate::kRelativeToIni,
           "一般相对写法");
     Check(ClassifyConfigPath(W("C:shot.png")) ==
@@ -613,7 +617,7 @@ void CheckJson() {
     Section("JSON：转义与形状");
     Json j;
     j.Obj().Key(L"captured").Value(0).Key(L"title")
-        .Value(std::wstring(L"报\"\\文") + static_cast<wchar_t>(1) + static_cast<wchar_t>(0x1F600))
+        .Value(std::wstring(L"报\"\\文") + static_cast<wchar_t>(1) + L"\U0001F600")
         .End();
     const std::wstring doc = j.Str();
     Check(doc.find(W("\\\"")) != std::wstring::npos && doc.find(W("\\\\")) != std::wstring::npos,
@@ -723,6 +727,10 @@ void CheckStreamDiscipline() {
 // 用系统真的交下来的 argv 走一遍 DecodePosixArgv，再把结果按 JSON 转义后写成 UTF-8 交回 stdout。
 // 判据程序自己不是 ECAPTURE，所以这一条**不是**"整条 CLI 已经能跑"的证据；它只证明
 // 从 shell 到内部文字到出口字节这一段在真参数形状下不损不改（空格、中文、引号、控制字符）。
+#ifndef _WIN32
+// 这一段判的是 POSIX argv（execve 交下来的字节串）。Windows 的入口是一份 UTF-16 argv，
+// 由 WinCliArgs.cpp 的 DecodeWindowsArgv 解码；把 DecodePosixArgv 链到 Windows 判据目标上
+// 既没有实现也没有意义（HEAD 上正是这一条让 Windows 该目标链接失败）。
 int EchoArgv(int argc, char** argv) {
     const CliTokens tokens = DecodePosixArgv(argc, const_cast<const char* const*>(argv));
     Json j;
@@ -743,9 +751,12 @@ int EchoArgv(int argc, char** argv) {
     EmitStdout(j.Str() + L"\n");  // 出口那一层负责编成 UTF-8 字节
     return 0;
 }
+#endif  // !_WIN32
 
 int main(int argc, char** argv) {
+#ifndef _WIN32
     if (argc > 1 && std::string(argv[1]) == "--echo-argv") return EchoArgv(argc, argv);
+#endif
     std::printf("ecapture-cli-text-tests —— 本平台构建：%s\n", PlatformName(BuildPlatform()));
 
     const std::wstring dir = TempDir();

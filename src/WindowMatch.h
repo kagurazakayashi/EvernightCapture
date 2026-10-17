@@ -5,7 +5,9 @@
 //
 // 这一步拆成两半是有意为之：
 //   * 求值（EnumerateMatches）里有正则库的编译、一次跨进程取标题，还有 --title-regex 的
-//     回溯匹配 —— 三者都没有中断点，需要期限时把它整半交给辅助进程（见 Worker.h）。
+//     回溯匹配 —— 三者都没有中断点，需要期限时把它整半交给辅助进程（见 Isolation.h）。
+//   * 求值（EnumerateMatches）本身住在 src/WindowMatchRun.cpp：它是唯一调用平台窗口枚举的地方，
+//     纯匹配规则（CompileConditions / MatchesWindow / SelectFromHits）留在这份文件与它的 .cpp 里。
 //     解析层不预先编译"验语法"（CliOptions.cpp 的 --title-regex）：这里就是唯一的编译点，
 //     预算与隔离管不管得到，取决于调用方走 EnumerateMatches 还是 IsolatedMatch。
 //   * 消歧（SelectFromHits）只对着已经拿到手的列表做决定，纯计算，在哪跑都一样。
@@ -64,6 +66,10 @@ struct WindowInfo {
     uint32_t rectWin32 = 0;
     int32_t zOrder = 0;       // EnumWindows 的访问顺序，0 = 最前
     bool iconic = false;      // 最小化
+    // 这一条候选此刻可不可见。平台层只枚举、不替共用层判可见性策略：不可见与零尺寸的
+    // 候选照样交回来（字段是事实），要不要排除由 src/WindowMatch.cpp 的 EnumerateMatches
+    // 按 --list 的既有规则判 —— 于是"列出来的"与"截图会选中的"永远走同一份策略。
+    bool visible = true;
 };
 
 // 条件求值的输入：解析过的匹配条件，加上 --monitor 限缩到哪几块屏的矩形。

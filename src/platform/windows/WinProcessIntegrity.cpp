@@ -1,11 +1,18 @@
+// 【平台层 · Windows】本进程完整性级别的问答。
+//
+// 判据本体在 src/ProcessIntegrity.h：级别词表、低于中完整性那一条、access-denied 的识别
+// 与就地补写提示都是平台无关的（它们只读 Diagnostic 的稳定码与原生码字段）。本文件只做
+// 那一件只有 Windows 问得出来的事：打开自己的进程令牌，读出强制完整性标签的 RID。
+//
+// 这一问不读用户名、不读 SID 归属、不开文件、不枚举目录，也不构成任何提权建议。
+
 #include "ProcessIntegrity.h"
 
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
-
-#include "Lang.h"
 
 namespace ecapture {
 namespace {
@@ -15,34 +22,7 @@ namespace {
 // Untrusted，两份错答案看起来都像"问出来了"，只有对着自己机器上的标签值才看得出。判据
 // （tests\compat.ps1 的真机层）就是拿系统给的名字核对这一组符号，别再拿实现里的数字当期望。
 
-// "这一步是不是被完整性规则挡住的那一类落点"：取帧、写文件、写标准输出，以及历史副本的落盘。
-// 匹配、编码、确认框那几步不是（低完整性不参与那里的决定）。
-// 历史副本的落点算在这一组里：归档根住在实际运行的 exe 旁边，把进程带到低完整性的正是那个目录
-// 的标签，副本写不下去时交回的是同一个 win32 5 / 0x80070005 —— 旧版只挑 capture/write/stdout
-// 三种，主图成功而副本被系统拒绝的那一条就没有成因解释，调用方只能对着 history.write_failed 猜。
-// 这一格也只认"系统说不让"那两个原值：盘满、目标是个文件、重解析点、撞名、超时那些 history 失败
-// 各有各的 win32/HRESULT，不会被折成低完整性；确认框上的人答"否"不在 history 段，也绝不被补写。
-// 提示本身只说进程令牌这一问与那一路径的真实拒绝（Diagnostic.value 带着受阻的那个路径），
-// 不预测"这个目录一定写得进/写不进"，也不改 code、stage、images 与退出码。
-bool DeniableStage(const std::wstring& stage) {
-    return stage == stages::kCapture || stage == stages::kWrite || stage == stages::kStdout ||
-           stage == stages::kHistory;
-}
-
 }  // namespace
-
-const wchar_t* IntegrityName(Integrity value) {
-    switch (value) {
-        case Integrity::kUntrusted: return L"untrusted";
-        case Integrity::kLow: return L"low";
-        case Integrity::kMedium: return L"medium";
-        case Integrity::kHigh: return L"high";
-        case Integrity::kSystem: return L"system";
-        case Integrity::kProtectedProcess: return L"protected_process";
-        case Integrity::kUnknown: break;
-    }
-    return L"unknown";
-}
 
 Integrity ProbeProcessIntegrity(uint32_t* probeError) {
     if (probeError) *probeError = 0;
@@ -97,6 +77,29 @@ Integrity ProbeProcessIntegrity(uint32_t* probeError) {
     }
     if (!ridKnown) return Integrity::kUnknown;
     return IntegrityFromLabelRid(rid);
+}
+
+const wchar_t* IntegrityName(Integrity value) {
+    switch (value) {
+        case Integrity::kUntrusted: return L"untrusted";
+        case Integrity::kLow: return L"low";
+        case Integrity::kMedium: return L"medium";
+        case Integrity::kHigh: return L"high";
+        case Integrity::kSystem: return L"system";
+        case Integrity::kProtectedProcess: return L"protected_process";
+        case Integrity::kUnknown: break;
+    }
+    return L"unknown";
+}
+
+// "这一步是不是被完整性规则挡住的那一类落点"：取帧、写文件、写标准输出，以及历史副本的落盘。
+// 匹配、编码、确认框那几步不是（低完整性不参与那里的决定）。
+// 历史副本的落点算在这一组里：归档根住在实际运行的 exe 旁边，把进程带到低完整性的正是那个目录
+// 的标签，副本写不下去时交回的是同一个 win32 5 / 0x80070005 —— 旧版只挑 capture/write/stdout
+// 三种，主图成功而副本被系统拒绝的那一条就没有成因解释，调用方只能对着 history.write_failed 猜。
+bool DeniableStage(const std::wstring& stage) {
+    return stage == stages::kCapture || stage == stages::kWrite || stage == stages::kStdout ||
+           stage == stages::kHistory;
 }
 
 Integrity IntegrityFromLabelRid(uint32_t rid) {

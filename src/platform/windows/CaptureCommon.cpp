@@ -11,6 +11,7 @@
 
 #include <dwmapi.h>
 
+#include "ErrorText.h"
 #include "ImageOps.h"
 #include "platform/windows/WinBridge.h"   // RECT <-> PhysRect：只有这一层认识原生矩形
 
@@ -265,7 +266,7 @@ void EnsureDpiAware() {
     (void)done;
 }
 
-std::wstring Win32ErrorText(DWORD gle) { return Msgf(L"err.win32_code", gle); }
+std::wstring Win32ErrorText(DWORD gle) { return NativeErrorText(static_cast<NativeErrorCode>(gle)); }
 
 void DetailFromCurrentException(std::string* detail) {
     if (!detail) return;
@@ -286,9 +287,7 @@ void DetailFromCurrentException(std::string* detail) {
 }
 
 std::wstring HResultText(HRESULT hr) {
-    wchar_t buf[40];
-    swprintf(buf, 40, L"0x%08lX", static_cast<unsigned long>(hr));
-    return buf;
+    return HResultCodeText(static_cast<NativeErrorCode>(hr));
 }
 
 void CaptureError(Diagnostic* err, const wchar_t* channel, const std::wstring& message,

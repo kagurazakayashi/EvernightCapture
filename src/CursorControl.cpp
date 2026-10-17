@@ -3,11 +3,6 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "CaptureScope.h"   // WindowPathOf / ScreenPathOf：通道落到哪条内部路径，只有一份答案
 #include "HdrColor.h"       // FilterChainForHdr：显式 HDR 要求那一道闸门（判据在那个头文件）
 #include "Lang.h"

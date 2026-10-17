@@ -384,6 +384,10 @@ set_target_properties(ecapture-consent-tests PROPERTIES OUTPUT_NAME "ecapture-co
 # ===========================================================================
 if(WIN32)
 
+# 平台层实现文件移动之后按裸文件名互相 include（"CaptureCommon.h" / "Worker.h" …），
+# 与 src/ 里同一套写法；这个目录只在 Windows 构建里进入 include 路径。
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows)
+
 add_executable(ecapture
   src/platform/windows/EntryWin.cpp
   src/platform/windows/WinCliArgs.cpp
@@ -398,12 +402,14 @@ add_executable(ecapture
   src/WindowIdentity.cpp
   src/WindowQuery.cpp
   src/WindowQueryRun.cpp
+  src/WindowMatchRun.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
   src/ScreenQuery.cpp
+  src/ScreenQueryRun.cpp
   src/SystemCompat.cpp
-  src/ProcessIntegrity.cpp
-  src/EnvReport.cpp
+  src/platform/windows/WinProcessIntegrity.cpp
+  src/platform/windows/WinEnvReport.cpp
   src/Capture.cpp
   src/CaptureScope.cpp
   src/CropGeometry.cpp
@@ -411,42 +417,49 @@ add_executable(ecapture
   src/HdrColor.cpp
   src/CaptureDiag.cpp
   src/platform/windows/WinHdrColor.cpp
-  src/HdrDetect.cpp
+  src/platform/windows/WinHdrDetect.cpp
   src/Deadline.cpp
-  src/Worker.cpp
-  src/WorkerIo.cpp
-  src/WorkerProtocol.cpp
-  src/WorkerTiming.cpp
+  src/platform/windows/Worker.cpp
+  src/platform/windows/WorkerIo.cpp
+  src/platform/windows/WorkerProtocol.cpp
+  src/platform/windows/WorkerTiming.cpp
   src/core/WorkerFraming.cpp
   src/core/HelperTiming.cpp
   src/platform/windows/WinHostProcess.cpp
-  src/WinrtApartment.cpp
+  src/platform/windows/WinrtApartment.cpp
   src/OutputPlan.cpp
   src/Delivery.cpp
   src/HistoryArchive.cpp
   # 截图后的桌面通知。两个源文件分开是责任边界：Notification.cpp 只管"这条通知写什么"（纯函数，
   # 离线判据链它一份就够），NotificationToast.cpp 才碰 WinRT 与系统的通知平台（链 windowsapp.lib）。
   src/Notification.cpp
-  src/NotificationToast.cpp
+  src/platform/windows/NotificationToast.cpp
   src/Consent.cpp
   # 确认框的文案层与 wxWidgets 实现（Linux 共用同一批源文件；见 src/gui/）。
   src/ConsentPrompt.cpp
   src/gui/WxGuiRuntime.cpp
   src/gui/WxGuiDialog.cpp
   src/gui/WxConsentDriver.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
-  src/D3dDevice.cpp
+  src/platform/windows/D3dDevice.cpp
   src/WgcGeometry.cpp
   src/DupGeometry.cpp
-  src/CaptureWgc.cpp
-  src/CaptureDwm.cpp
-  src/CapturePrintWindow.cpp
-  src/CaptureBitBlt.cpp
-  src/CaptureDuplication.cpp
+  src/platform/windows/CaptureWgc.cpp
+  src/platform/windows/CaptureDwm.cpp
+  src/platform/windows/CapturePrintWindow.cpp
+  src/platform/windows/CaptureBitBlt.cpp
+  src/platform/windows/CaptureDuplication.cpp
   src/Encoder.cpp
   src/platform/windows/WinEncoder.cpp
   resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinScreenSource.cpp
+  src/platform/windows/WinSystemCompat.cpp
+  src/platform/windows/WinErrorText.cpp
+  src/platform/windows/WinCaptureBackends.cpp
+  src/platform/windows/WinCaptureFault.cpp
+  src/Isolation.cpp
 )
 
 # rc.exe 按当前目录解析它要读的文件名，而 Ninja 的工作目录是 build 目录：
@@ -547,23 +560,26 @@ add_executable(ecapture-worker-tests
   src/HdrColor.cpp
   src/CaptureDiag.cpp
   src/platform/windows/WinHdrColor.cpp
-  src/WorkerIo.cpp
-  src/WorkerProtocol.cpp
-  src/WorkerTiming.cpp
+  src/platform/windows/WorkerIo.cpp
+  src/platform/windows/WorkerProtocol.cpp
+  src/platform/windows/WorkerTiming.cpp
   src/core/WorkerFraming.cpp
   src/core/HelperTiming.cpp
   src/Deadline.cpp
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-worker-tests PRIVATE resources src)
 target_compile_features(ecapture-worker-tests PRIVATE cxx_std_20)
@@ -619,14 +635,17 @@ add_executable(ecapture-identity-tests
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-identity-tests PRIVATE resources src)
 target_compile_features(ecapture-identity-tests PRIVATE cxx_std_20)
@@ -657,7 +676,7 @@ add_executable(ecapture-dup-tests
   src/Deadline.cpp
   src/DupGeometry.cpp
   src/ImageOps.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
   src/ScreenMatch.cpp
@@ -666,7 +685,10 @@ add_executable(ecapture-dup-tests
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-dup-tests PRIVATE resources src)
 target_compile_features(ecapture-dup-tests PRIVATE cxx_std_20)
@@ -689,11 +711,13 @@ set_property(TARGET ecapture-dup-tests PROPERTY MSVC_RUNTIME_LIBRARY
 add_executable(ecapture-compat-tests
   tests/compat_state.cpp
   src/SystemCompat.cpp
-  src/ProcessIntegrity.cpp
+  src/platform/windows/WinProcessIntegrity.cpp
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinSystemCompat.cpp
+)
 
 target_include_directories(ecapture-compat-tests PRIVATE resources src)
 target_compile_features(ecapture-compat-tests PRIVATE cxx_std_20)
@@ -712,21 +736,24 @@ set_property(TARGET ecapture-compat-tests PROPERTY MSVC_RUNTIME_LIBRARY
 # 为什么单独一个可执行文件：这一批判据要的是"这台机器不是那一台开发机"的现场 ——
 # 无图形会话（一块屏都没有）、版本低于某条通道的下限、版本根本问不出来、某个编码器没登记。
 # 本机既降不了级也没有第二块显卡，也绝不能为了看"没有屏幕拓扑时会怎么判"而把显示器拔掉。
-# 判据本体（src/EnvReport.cpp 的 BuildEnvReport）是纯函数，注入一份假的 EnvProbe 就能
+# 判据本体（src/platform/windows/WinEnvReport.cpp 的 BuildEnvReport）是纯函数，注入一份假的 EnvProbe 就能
 # 逐条判；只有格式名与通道名那两套机器名要读 CliOptions，而它连带文案资源（.rc）一起编进来。
 # 这里不碰 WinRT / D3D / 窗口 / 弹框，链接项一个图形库都不需要。
 # ---------------------------------------------------------------------------
 add_executable(ecapture-capabilities-tests
   tests/capabilities_state.cpp
-  src/EnvReport.cpp
+  src/platform/windows/WinEnvReport.cpp
   src/SystemCompat.cpp
-  src/ProcessIntegrity.cpp
+  src/platform/windows/WinProcessIntegrity.cpp
   src/CaptureScope.cpp
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
   src/Json.cpp
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinSystemCompat.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-capabilities-tests PRIVATE resources src)
 target_compile_features(ecapture-capabilities-tests PRIVATE cxx_std_20)
@@ -762,7 +789,7 @@ add_executable(ecapture-windows-tests
   src/WindowMatch.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -770,7 +797,10 @@ add_executable(ecapture-windows-tests
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
   src/Json.cpp
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-windows-tests PRIVATE resources src)
 target_compile_features(ecapture-windows-tests PRIVATE cxx_std_20)
@@ -808,7 +838,7 @@ add_executable(ecapture-screens-tests
   src/WindowMatch.cpp
   src/WindowIdentity.cpp
   src/ScreenMatch.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -816,7 +846,10 @@ add_executable(ecapture-screens-tests
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
   src/Json.cpp
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-screens-tests PRIVATE resources src)
 target_compile_features(ecapture-screens-tests PRIVATE cxx_std_20)
@@ -863,7 +896,7 @@ add_executable(ecapture-cursor-tests
   src/HdrColor.cpp
   src/CaptureDiag.cpp
   src/platform/windows/WinHdrColor.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/Deadline.cpp
   src/Consent.cpp
@@ -875,7 +908,10 @@ add_executable(ecapture-cursor-tests
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-cursor-tests PRIVATE resources src)
 target_compile_features(ecapture-cursor-tests PRIVATE cxx_std_20)
@@ -914,7 +950,7 @@ add_executable(ecapture-hdr-tests
   src/CursorControl.cpp
   src/SystemCompat.cpp
   src/Deadline.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -924,7 +960,10 @@ add_executable(ecapture-hdr-tests
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-hdr-tests PRIVATE resources src)
 target_compile_features(ecapture-hdr-tests PRIVATE cxx_std_20)
@@ -959,7 +998,7 @@ add_executable(ecapture-delivery-tests
   src/platform/windows/WinHdrColor.cpp
   src/Deadline.cpp
   src/Delivery.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
@@ -969,7 +1008,10 @@ add_executable(ecapture-delivery-tests
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-delivery-tests PRIVATE resources src)
 target_compile_features(ecapture-delivery-tests PRIVATE cxx_std_20)
@@ -1037,12 +1079,15 @@ add_executable(ecapture-notification-tests
   src/Consent.cpp
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
   ${ECAPTURE_LANG_SOURCES}
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-notification-tests PRIVATE resources src)
 target_compile_features(ecapture-notification-tests PRIVATE cxx_std_20)
@@ -1078,14 +1123,17 @@ add_executable(ecapture-config-tests
   src/Deadline.cpp
   src/CaptureScope.cpp
   src/Consent.cpp
-  src/CaptureCommon.cpp
+  src/platform/windows/CaptureCommon.cpp
   src/ImageOps.cpp
   src/CliOptions.cpp
   ${ECAPTURE_LANG_SOURCES}
   src/ScreenMatch.cpp
   src/ScreenIdentity.cpp
   src/WindowMatch.cpp
-  resources/ecapture.rc)
+  resources/ecapture.rc
+  src/platform/windows/WinWindowSource.cpp
+  src/platform/windows/WinErrorText.cpp
+)
 
 target_include_directories(ecapture-config-tests PRIVATE resources src)
 target_compile_features(ecapture-config-tests PRIVATE cxx_std_20)
@@ -1312,7 +1360,7 @@ if(ECAPTURE_ENCODER_IMPL)
   # 与其建一个"链不上"或"只判了一半"的目标，不如让 ./test-all.sh 把 codec-encode 记成
   # NOT RUN 并说清缺什么 —— 缺依赖不算通过，也不算跳过。
   if(WIN32)
-    set(ECAPTURE_APARTMENT_SOURCE src/WinrtApartment.cpp)
+    set(ECAPTURE_APARTMENT_SOURCE src/platform/windows/WinrtApartment.cpp)
   else()
     set(ECAPTURE_APARTMENT_SOURCE "")
   endif()

@@ -1,30 +1,20 @@
 #include "Capture.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdint>
 #include <cstring>
-#include <cwctype>
-#include <exception>
+#include <cwchar>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <dxgi.h>   // DXGI_ERROR_DEVICE_* 要参与"这条错误是不是致命"的判断
-
-#include <winrt/base.h>   // 后端可能直接抛出 hresult_error，而不是返回错误码
-
-#include "CaptureWgc.h"
-#include "CaptureBitBlt.h"
-#include "CaptureCommon.h"
-#include "CaptureDwm.h"
-#include "CaptureDuplication.h"
-#include "CapturePrintWindow.h"
-#include "platform/windows/WinBridge.h"   // RECT <-> PhysRect；隔离调用的矩形走线上格式
+#include "CaptureBackend.h"   // 五条通道的统一登记与调用口（平台实现见 platform/windows）
+#include "CaptureDiag.h"      // 共用的取帧诊断骨架（CaptureError 的跨平台那一半）
+#include "CaptureFault.h"     // 一次抛出 -> 细节/原生码/致命与否（平台自己认异常类型）
+#include "CaptureScope.h"     // 路径 -> 像素来源的登记表（按路径判，不按通道名猜）
 #include "Consent.h"
 #include "CropGeometry.h"
 #include "CursorControl.h"   // 光标能力的闸门与 requested/effective/basis 那三个键的合成（判据在那个头文件）
@@ -34,16 +24,19 @@
 #include "FallbackChain.h"   // auto 那条回退链本体与"换后端有没有意义"的判据（离线判据注入假后端）
 #include "FileSave.h"
 #include "HistoryArchive.h"   // 主交付之外那一份历史副本（命名、独占提交与失败归类都在那一层）
+#include "HostPath.h"         // MonotonicClockMs：elapsedMs 与交付那一步用同一把单调时钟
 #include "ImageOps.h"
+#include "Isolation.h"    // IsolatedMatch / BlockedToDiagnostic（条件求值的隔离入口）
 #include "Lang.h"
 #include "OutputPlan.h"
+#include "OutputStream.h"   // EmitStdoutBytes / ClaimStdout（标准输出那两条通道）
 #include "Report.h"
 #include "ScreenIdentity.h"   // 屏幕目标的选定与复核（身份只在这里判一次，见那个头文件）
 #include "ScreenMatch.h"
-#include "SystemCompat.h"
+#include "SystemCompat.h"   // 通道闸门与版本下限（判据本体平台无关）
 #include "WindowIdentity.h"
 #include "WindowMatch.h"
-#include "Worker.h"
+#include "WindowSource.h"   // 几何问答与 DPI 设置（平台实现见 platform/windows/WinWindowSource.cpp）
 
 namespace ecapture {
 namespace {
@@ -112,50 +105,30 @@ AttemptAuth AuthorizeAttempt(ConsentGate& gate, const wchar_t* path, const std::
 
 // 抛出来的异常换成结构化诊断。判据只有"换一条通道会不会有区别"：
 // 内存耗尽、显卡设备没了 —— 换了也不会有区别，判致命、终止整批，不许继续换后端。
+// 异常类型与那几个原生码的识别在平台层（CaptureFault.h）：共用层不 include WinRT 头。
 void FillFromCurrentException(Diagnostic* diag, const wchar_t* stage, const wchar_t* backend,
                               bool* fatal) {
     if (fatal) *fatal = false;
     if (!diag) return;
 
-    std::wstring detail;
-    try {
-        std::rethrow_exception(std::current_exception());
-    } catch (const winrt::hresult_error& e) {
-        const HRESULT hr = e.code();
-        diag->hresult = HResultText(hr);
-        detail = diag->hresult;
-        const bool deviceLost = hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
-                                hr == DXGI_ERROR_DEVICE_HUNG;
-        if (fatal) *fatal = hr == E_OUTOFMEMORY || deviceLost;
-    } catch (const std::bad_alloc&) {
-        detail = L"std::bad_alloc";
-        if (fatal) *fatal = true;
-    } catch (const std::length_error&) {
-        detail = L"std::length_error";
-        if (fatal) *fatal = true;
-    } catch (const std::exception& e) {
-        // what() 是 ASCII 说明，逐字节宽化（本项目所有对外文字都走宽字符）
-        const char* p = e.what();
-        if (p) {
-            for (; *p; ++p) detail.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
-        }
-        if (detail.empty()) detail = L"std::exception";
-    } catch (...) {
-        detail = L"unknown";
-    }
+    const CaptureFault fault = DescribeCaptureException();
 
     const bool ioStage = std::wcscmp(stage, stages::kWrite) == 0 ||
                          std::wcscmp(stage, stages::kStdout) == 0;
     diag->code = ioStage ? codes::kWriteFailed
                : std::wcscmp(stage, stages::kEncode) == 0 ? codes::kEncoderUnavailable
                                                        : codes::kCaptureFailed;
-    diag->message = Msgf(L"err.exception", detail);
+    // hresult 那一格只在异常真的带着一个原生码时才写（0 = 没有这一格来源）。
+    // detail 里已经是 "0x........" 形状或异常自带的 ASCII 说明。
+    if (fault.hresult != kNativeErrorNone) diag->hresult = fault.detail;
+    diag->message = Msgf(L"err.exception", fault.detail);
     diag->option = ioStage ? L"--out" : L"--capture";
     if (backend) {
         diag->value = backend;
         diag->backend = backend;
     }
     diag->stage = stage;
+    if (fatal) *fatal = fault.fatal;
 }
 
 // 一次后端调用的异常边界：后端"失败"与后端"崩了"必须走同一条出口，否则一个抛异常的后端
@@ -186,6 +159,10 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
 // "当初那条选择条件现在还成立吗"（标题、按屏过滤那类易变属性）是 kFull，由 RunCapture
 // 在每个目标开工之前问一次 —— 那一问要重跑条件求值，按回退链的次数乘上去就是平白多几倍枚举。
 //
+// 通道分派走平台登记的 CaptureBackend（CaptureBackend.h）：共用层不认识任何一条通道头，
+// 也不自己写 switch。身份、授权与期限在调用之前判完；请求里带着凭证与 deadline，
+// 通道内部要升级到桌面路径（dwm.screen）时会拿同一个判定器回来重新问一次。
+//
 // timeoutMs 是"这一步自己愿意等多久"（等帧、泵消息），dl 是"这一次运行还剩多少预算"。
 // 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
 bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const PhysRect& area,
@@ -194,47 +171,38 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const P
                        CapturedFrame* out, Diagnostic* err) {
     if (!win.Recheck(IdentityScope::kCheap, err)) return false;
 
-    const wchar_t* path = WindowPathOf(method);
-    AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, area, err);
+    const CaptureBackend* backend = FindCaptureBackend(method);
+    if (!backend) {
+        if (err) {
+            *err = Diagnostic{codes::kUnsupported, Msg(L"cap.unsupported"), L"--capture",
+                              CaptureMethodName(method), std::wstring(), std::wstring(),
+                              CaptureMethodName(method), stages::kCapture};
+        }
+        return false;
+    }
+
+    AttemptAuth auth = AuthorizeAttempt(gate, backend->windowPath, targetKey, area, err);
     if (!auth.ok) {
         // 一帧都不去取。诊断里补上"是哪条通道要去的"：路径名在 value，通道名在 backend。
-        if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
+        if (err && err->backend.empty()) err->backend = backend->name;
         return false;
     }
     // 授权之后再过一次身份：上面那次判定与人点头之间隔着的这段时间不能当它不存在。
     if (!win.Recheck(IdentityScope::kCheap, err)) return false;
 
     const uint32_t wait = dl.ClampWait(timeoutMs);
-    const uint64_t hwnd = win.id.hwnd;
 
-    switch (method) {
-        case CaptureMethod::kWgc:
-            // 光标这件事只有这一条通道有一个真设得进去、也读得回来的开关，所以要求原样交给它；
-            // 兑现不了时它在开始采集**之前**就停下（capture.cursor_unverifiable）。
-            // HDR 那一条同通道也只有它有广色域帧池可建，与桌面凭证无关，照实交给它。
-            return CaptureWindowWgc(hwnd, wait, cursor, hdr, dl, out, err);
-        case CaptureMethod::kDwmThumbnail:
-            // 它自己会在内部升级到桌面路径时回来重新要一次许可，所以把判定器传进去；
-            // 身份也一并交给它 —— 那条退路读的是桌面像素，升级之前要按 kFull 再复核一次。
-            // dwm.thumbnail 结构上只带得回 8 位重定向位图，没有 HDR 可映射，所以 hdr 不传进它。
-            return CaptureWindowDwmThumbnail(hwnd, wait, gate, targetKey, win, dl, out, err);
-        case CaptureMethod::kPrintWindow:
-            // 这条一律走辅助进程：PrintWindow 同步等目标窗口的线程，本进程里没有中断点
-            return CaptureWindowPrintWindow(hwnd, dl, out, err);
-        case CaptureMethod::kBitBlt:
-            return CaptureWindowBitBlt(hwnd, wait, *auth.permit, out, err);
-        case CaptureMethod::kDuplication:
-            // hdr 照旧交给它，但**只有没要求过处理的那一路真会用到**：显式 tonemap / refuse 时
-            // 这条通道在闸门（以及解析期那一关）就被判成"本构建兑现不了"，不会成为候选。
-            // 它自己也不问那块屏此刻的色彩空间，所以交回的 8 位帧不声称来源是 SDR。
-            return CaptureWindowDuplication(hwnd, wait, *auth.permit, hdr, dl, out, err);
-        case CaptureMethod::kAuto:
-            break;  // auto 由 CaptureWithMethod 展开成回退链
-    }
-    if (err) *err = Diagnostic{codes::kUnsupported, Msg(L"cap.unsupported"), L"--capture",
-                               CaptureMethodName(method), std::wstring(), std::wstring(),
-                               CaptureMethodName(method), stages::kCapture};
-    return false;
+    CaptureWindowRequest request;
+    request.hwnd = win.id.hwnd;
+    request.timeoutMs = wait;
+    request.window = &win;
+    request.gate = &gate;
+    request.targetKey = &targetKey;
+    request.permit = auth.permit ? &*auth.permit : nullptr;
+    request.cursor = &cursor;
+    request.hdr = &hdr;
+    request.dl = &dl;
+    return AcquireWindowFrame(*backend, request, out, err);
 }
 
 // 屏幕目标的单通道取帧。dwm / printwindow 取的是"某个窗口的画面"，屏幕上并没有
@@ -247,10 +215,22 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
                              const ScreenCandidate& wanted, CaptureMethod method,
                              uint32_t timeoutMs, const Deadline& dl, const CursorRequest& cursor,
                              const HdrRequest& hdr, CapturedFrame* out, Diagnostic* err) {
-    const wchar_t* path = ScreenPathOf(method);
-    AttemptAuth auth = AuthorizeAttempt(gate, path, targetKey, wanted.screen.bounds, err);
+    const CaptureBackend* backend = FindCaptureBackend(method);
+    if (!backend || !backend->supportsScreen || !backend->screenPath) {
+        if (err) {
+            *err = Diagnostic{codes::kUnsupported,
+                              Msgf(L"cap.unsupported_for_screen", CaptureMethodName(method)),
+                              L"--capture", CaptureMethodName(method),
+                              Msg(L"cap.unsupported_for_screen_hint"), std::wstring(),
+                              CaptureMethodName(method), stages::kCapture};
+        }
+        return false;
+    }
+
+    AttemptAuth auth =
+        AuthorizeAttempt(gate, backend->screenPath, targetKey, wanted.screen.bounds, err);
     if (!auth.ok) {
-        if (err && err->backend.empty()) err->backend = CaptureMethodName(method);
+        if (err && err->backend.empty()) err->backend = backend->name;
         return false;   // 没通过授权：整块屏幕一个像素都不读
     }
 
@@ -262,48 +242,34 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
         RecheckScreenSampling(wanted, auth.permit->Approved(),
                               EnumScreenCandidates(wanted.facts.hasFacts), &live);
     if (rc != SamplingRecheck::kOk) {
-        const wchar_t* backend = CaptureMethodName(method);
+        const wchar_t* backendName = CaptureMethodName(method);
         if (rc == SamplingRecheck::kStale) {
-            CaptureError(err, backend, Msg(L"cap.consent.stale"), Msg(L"cap.consent.stale_hint"),
-                         codes::kConsentStale);
+            CaptureDiag(err, backendName, Msg(L"cap.consent.stale"), Msg(L"cap.consent.stale_hint"),
+                        codes::kConsentStale);
         } else if (rc == SamplingRecheck::kGone) {
             Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"), L"--monitor",
                          wanted.screen.deviceName, Msg(L"cap.monitor_changed_hint"), targetKey,
-                         backend, stages::kCapture};
+                         backendName, stages::kCapture};
             if (err) *err = std::move(d);
         } else {
             Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"), L"--monitor",
                          wanted.screen.deviceName, Msg(L"cap.monitor_unverifiable_hint"), targetKey,
-                         backend, stages::kCapture};
+                         backendName, stages::kCapture};
             if (err) *err = std::move(d);
         }
         return false;
     }
 
     const uint32_t wait = dl.ClampWait(timeoutMs);
-    const ScreenInfo& screen = live.screen;   // 采样对象 = 当下问到的那块屏（句柄与矩形都是）
 
-    switch (method) {
-        case CaptureMethod::kWgc:
-            // 整屏那条与窗口那条共用同一条会话接口，所以光标开关同样设得进去；
-            // 广色域帧池也同一条接口，hdr 一并交给它（屏就是那块 HMONITOR）。
-            return CaptureScreenWgc(screen, wait, cursor, hdr, dl, *auth.permit, out, err);
-        case CaptureMethod::kBitBlt:
-            return CaptureScreenBitBlt(screen, wait, *auth.permit, out, err);
-        case CaptureMethod::kDuplication:
-            return CaptureScreenDuplication(screen, wait, *auth.permit, hdr, dl, out, err);
-        case CaptureMethod::kAuto:
-            break;  // auto 由 CaptureScreenWithMethod 展开成回退链
-        default:
-            break;
-    }
-    if (err) {
-        *err = Diagnostic{codes::kUnsupported, Msgf(L"cap.unsupported_for_screen", CaptureMethodName(method)),
-                          L"--capture", CaptureMethodName(method),
-                          Msg(L"cap.unsupported_for_screen_hint"), std::wstring(),
-                          CaptureMethodName(method), stages::kCapture};
-    }
-    return false;
+    CaptureScreenRequest request;
+    request.screen = &live.screen;   // 采样对象 = 当下问到的那块屏（句柄与矩形都是）
+    request.timeoutMs = wait;
+    request.permit = &*auth.permit;
+    request.cursor = &cursor;
+    request.hdr = &hdr;
+    request.dl = &dl;
+    return AcquireScreenFrame(*backend, request, out, err);
 }
 
 // auto 的回退链本体在 src/FallbackChain.h（连同"这一关换后端有没有意义"那一条判据）：
@@ -389,7 +355,7 @@ void TagTarget(Diagnostic* d, const Target& t, const wchar_t* stage) {
 }
 
 // 一条矩形边的长度，非正数一律当 0（量不出来的矩形就是"什么都没有"，不是"负数个像素"）。
-uint32_t SpanOf(LONG from, LONG to) {
+uint32_t SpanOf(int32_t from, int32_t to) {
     return to > from ? static_cast<uint32_t>(static_cast<int64_t>(to) - from) : 0u;
 }
 
@@ -436,8 +402,7 @@ Diagnostic CropDiagnostic(const CropRequest& request, const CropResolution& res,
 bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
                      CapturedImage* img, std::optional<Diagnostic>* mappingNote, Diagnostic* err) {
     if (opt.crop.mode == CropMode::kNone) return true;
-    const HWND hwnd = reinterpret_cast<HWND>(t.window.hwnd);
-    const PhysRect visible = FromNativeRect(WindowScreenRect(hwnd));
+    const PhysRect visible = WindowScreenRectOf(t.window.hwnd);
     const DeliveredImage image = DescribeDeliveredImage(
         frame->width, frame->height, visible,
         visible.right > visible.left && visible.bottom > visible.top, frame->capturedRect,
@@ -445,9 +410,9 @@ bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
 
     ClientAreaProbe client;
     if (opt.crop.mode == CropMode::kClientArea) {
-        RECT area{};   // 原生问答交回的是 RECT，进共用结构前转一次
-        client.readable = ClientScreenRect(hwnd, &area);
-        client.screenRect = FromNativeRect(area);
+        PhysRect area{};
+        client.readable = ClientScreenRectOf(t.window.hwnd, &area);
+        client.screenRect = area;
     }
 
     const CropResolution res = ResolveWindowCrop(opt.crop, image, client);
@@ -465,8 +430,8 @@ bool ApplyWindowCrop(const Options& opt, const Target& t, CapturedFrame* frame,
     if (!CropFrame(frame, res.crop.x, res.crop.y, res.crop.width, res.crop.height)) {
         // 判据说过放得下、裁不下来：唯一剩下的可能是这一帧的内存形状自己说不通（那是
         // capture.frame_invalid 那条线的职责，退出码同为 7），所以这里照实报那条码而不硬交半张图。
-        CaptureError(err, backend, Msg(L"cap.crop_apply_failed"),
-                     Msg(L"cap.crop_apply_failed_hint"), codes::kFrameInvalid);
+        CaptureDiag(err, backend, Msg(L"cap.crop_apply_failed"), Msg(L"cap.crop_apply_failed_hint"),
+                    codes::kFrameInvalid);
         return false;
     }
 
@@ -503,7 +468,7 @@ public:
         return SaveFileAtomic(path, bytes, overwrite, err);
     }
     bool EmitBytes(const std::vector<uint8_t>& bytes, uint64_t* emitted,
-                   DWORD* ioError) override {
+                   NativeErrorCode* ioError) override {
         return EmitStdoutBytes(bytes, ioError, emitted);
     }
 };
@@ -516,7 +481,7 @@ public:
 // 条件求值这一步有两条执行路线，判据不是用户有没有要求，而是"这一步有没有中断点"：
 //   * 用了 --title-regex —— std::regex 的编译与回溯匹配都没有可查的中断点，
 //     而"限制模式串长度"根本不是执行期限（短串一样能爆炸性回溯）。所以编译与匹配整步
-//     放进辅助进程，到点就结束那个进程（Worker.h）；解析层不碰正则库，语法不合照样在这
+//     放进辅助进程，到点就结束那个进程（Isolation.h）；解析层不碰正则库，语法不合照样在这
 //     一步之前判出 cli.invalid_regex（stage=match），不取帧、不弹框。
 //   * 设了 --timeout-ms —— 连"给每个顶层窗口取标题"都可能被一扇挂住的窗口拖住
 //     （GetWindowText 是往那个线程发消息并等它回），所以整步也放进辅助进程。
@@ -550,7 +515,7 @@ WindowSelection PickWindows(const Options& opt, const Deadline& dl,
     std::vector<WindowInfo> iconic;
     if (sel.isolate) {
         Diagnostic err;
-        if (!IsolatedMatch(opt.match, ToNativeRects(onScreens), dl, &hits, &iconic, &err)) {
+        if (!IsolatedMatch(opt.match, onScreens, dl, &hits, &iconic, &err)) {
             // 期限到了 / 辅助进程没起来 / 消息不合：都照实报，不悄悄退回本进程再跑一遍 ——
             // 那样等于把期限当成建议，而慢的那一步下一次还会再慢一遍。
             if (err.code == codes::kMatchTimeout || err.code == codes::kInvalidRegex) {
@@ -565,7 +530,7 @@ WindowSelection PickWindows(const Options& opt, const Deadline& dl,
         const MatchOutcome m = EnumerateMatches(sel.request);
         if (m.status != BlockedStatus::kOk) {
             errors->push_back(
-                BlockedToDiagnostic(m.status, 0, S_OK, m.detail, L"match", stages::kMatch));
+                BlockedToDiagnostic(m.status, 0, 0, m.detail, L"match", stages::kMatch));
             return sel;
         }
         hits = std::move(m.hits);
@@ -586,7 +551,7 @@ WindowSelection PickWindows(const Options& opt, const Deadline& dl,
 // 那是整条链里最贵、也最可能被挂住的窗口拖住的一步。所以它只在每个目标开工之前跑一次
 //（外加 dwm 要升级到桌面像素之前那一次），并且**沿用第一次求值那同一条 isolate 判据**：
 // 用了 --title-regex 或设了预算就照旧进辅助进程、到点能结束，绝不因为要复核就在父进程里
-// 新造一个没有中断点的等待（Worker.h）。
+// 新造一个没有中断点的等待（Isolation.h）。
 WindowQueryLayer MakeTargetQuery(const MatchRequest& request, bool isolate, const Deadline& dl) {
     WindowQueryLayer q = SystemWindowQueryLayer();
     q.selectionStillMatches = [request, isolate, dl](uint64_t hwnd, bool* matched) -> bool {
@@ -594,8 +559,7 @@ WindowQueryLayer MakeTargetQuery(const MatchRequest& request, bool isolate, cons
         std::vector<WindowInfo> iconic;
         if (isolate) {
             Diagnostic err;
-            if (!IsolatedMatch(request.match, ToNativeRects(request.onScreens), dl, &hits, &iconic,
-                                &err)) {
+            if (!IsolatedMatch(request.match, request.onScreens, dl, &hits, &iconic, &err)) {
                 return false;   // 问不出来：期限到了 / 辅助进程坏了，调用方按无法验证处理
             }
         } else {
@@ -673,7 +637,7 @@ CaptureOutcome RunCapture(const Options& opt) {
             t.win.query = query;
             // 窗口目标用整窗外框当授权范围：桌面路径实际会从屏幕上读走的就是这一块
             // （DWM 那条退路摆的覆盖窗口也按它对齐），比可见边框矩形更宽一点而不是更窄。
-            t.area = FromNativeRect(WindowFullRect(reinterpret_cast<HWND>(w.hwnd)));
+            t.area = WindowFullRectOf(w.hwnd);
             targets.push_back(std::move(t));
         }
     }
@@ -718,7 +682,7 @@ CaptureOutcome RunCapture(const Options& opt) {
     if (opt.crop.mode == CropMode::kRoi) {
         for (const Target& t : targets) {
             if (t.isScreen) continue;   // 屏幕模式在解析期就被 capture.unsupported 挡掉了
-            const RECT visible = WindowScreenRect(reinterpret_cast<HWND>(t.window.hwnd));
+            const PhysRect visible = WindowScreenRectOf(t.window.hwnd);
             if (RoiFitsTarget(opt.crop, SpanOf(visible.left, visible.right),
                               SpanOf(visible.top, visible.bottom))) {
                 continue;
@@ -819,7 +783,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         gateCfg.outputs.push_back(p == L"-" ? Msg(L"consent.output_stdout") : p);
     }
     // 屏幕拓扑由这一侧显式交给授权判定器：Consent.cpp 不认识任何平台的屏幕枚举，
-    // 测试目标注入假布局，真机传本平台的 EnumScreens。
+    // 测试目标注入假布局，真机传本平台的 EnumScreens（平台实现在 WinScreenSource.cpp）。
     ConsentGate gate(std::move(gateCfg), prompt, EnumScreens);
 
     // 到这里结果 JSON 去哪条流就已经定死了（图片占 stdout => JSON 走 stderr）。
@@ -830,19 +794,20 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 交付那一步的几件事：整批共用的那一份预算（不是一个目标一份）、真的出口（文件 / 标准输出）、
     // 量 elapsedMs 的那把时钟，以及主交付之外那一份历史副本（命名、独占提交与失败归类都在
     // src/HistoryArchive.h 那一层，六条后端一条都不必知道历史的存在）。时钟必须与下面每个目标
-    // 开工时记的 started 同一把，否则 images[].elapsedMs 会跟着预算那把 QPC 一起漂；预算本身仍是
+    // 开工时记的 started 同一把，否则 images[].elapsedMs 会跟着预算那把时钟一起漂；预算本身仍是
     // Deadline 里那份，不在这里另领 —— 归档也不另领（预算已尽时它记成 skipped 而不是重来一次）。
+    const auto clock = [] { return static_cast<uint64_t>(MonotonicClockMs()); };
     RealOutputSink sink;
     // 关闭那一档交的是"没有归档这一步 + 这是主动关闭"两件事：交付层因此给每张已交付的图
     // 留一格 history.status=disabled，而不是把这一格整个省掉（省掉会被读成"这次根本没有副本
     // 这回事"），也不会把一个没人尝试过的失败编出来。
-    const DeliveryRun delivery{&dl, &sink, [] { return GetTickCount64(); },
+    const DeliveryRun delivery{&dl, &sink, clock,
                                historyArchive ? &*historyArchive : nullptr, opt.format,
                                !opt.historyEnabled};
 
     for (size_t i = 0; i < targets.size(); ++i) {
         Target& t = targets[i];
-        const ULONGLONG started = GetTickCount64();
+        const uint64_t started = clock();
 
         // 批次语义：预算是**整批一份**，不是一个目标一份。剩下的预算已经用尽时，
         // 后面的目标一个都不开工（不取帧、不弹框、不写文件），各自留下一条 capture.timeout，
@@ -857,8 +822,7 @@ CaptureOutcome RunCapture(const Options& opt) {
 
         // 量一遍当下的矩形再交给判定器：确认框上写的区域与实际要取样的区域必须是同一块。
         // 目标在确认之后挪走或变大，凭证的 Covers 就会拒绝，这一次不截。
-        if (!t.isScreen)
-            t.area = FromNativeRect(WindowFullRect(reinterpret_cast<HWND>(t.window.hwnd)));
+        if (!t.isScreen) t.area = WindowFullRectOf(t.window.hwnd);
         // 每个目标开工之前一次 kFull 复核：连"当初那条选择条件现在还成立吗"一起问
         //（标题、按屏过滤那类易变属性）。这一档要重跑条件求值，所以一个目标一次，
         // 不在每条通道的每一次尝试之前重复；那几处用的是 kCheap（CaptureOneChannel）。
@@ -977,8 +941,8 @@ CaptureOutcome RunCapture(const Options& opt) {
                 const ScaleResolution scaleRes = ResolveScale(opt.scale, frame.width, frame.height);
                 if (scaleRes.status == ScaleStatus::kRejected) {
                     ok = false;
-                    CaptureError(&targetErr, scaleChannel, Msg(L"cap.scale_apply_failed"),
-                                 Msg(L"cap.scale_apply_failed_hint"), codes::kFrameInvalid);
+                    CaptureDiag(&targetErr, scaleChannel, Msg(L"cap.scale_apply_failed"),
+                                Msg(L"cap.scale_apply_failed_hint"), codes::kFrameInvalid);
                 } else {
                     img.scaled = true;
                     img.scaleFromWidth = frame.width;
@@ -986,8 +950,8 @@ CaptureOutcome RunCapture(const Options& opt) {
                     img.scaleApplied = scaleRes.status == ScaleStatus::kScaled;
                     if (img.scaleApplied && !ScaleFrame(&frame, scaleRes.width, scaleRes.height)) {
                         ok = false;
-                        CaptureError(&targetErr, scaleChannel, Msg(L"cap.scale_apply_failed"),
-                                     Msg(L"cap.scale_apply_failed_hint"), codes::kFrameInvalid);
+                        CaptureDiag(&targetErr, scaleChannel, Msg(L"cap.scale_apply_failed"),
+                                    Msg(L"cap.scale_apply_failed_hint"), codes::kFrameInvalid);
                     }
                 }
             }
@@ -1147,8 +1111,8 @@ CaptureOutcome RunCapture(const Options& opt) {
         }
 
         if (!settled) {
-            // 这一张没走完成功的交付：要么在进交付段之前就停了（取帧 / 裁剪 / 缩放 / 编码那几段
-            // 的错误），要么交付那一段抛了异常被上面接住。两种都在这里记一条，backend 已被
+            // 这一张没走完成功的交付：要么在进交付段之前就停了（取帧 / 裁剪 / 缩放 / 编码那几段的
+            // 错误），要么交付那一段抛了异常被上面接住。两种都在这里记一条，backend 已被
             // 那两层填过的不改（它写的是自己那条真实路径，比这里能推断出的更准）。
             // 交付那一段自己记过账的（含"图已落地但预算才跨"那一种）不在这里重复入账。
             TagTarget(&targetErr, t, stage);

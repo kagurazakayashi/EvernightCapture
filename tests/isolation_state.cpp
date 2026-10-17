@@ -23,8 +23,8 @@
 #include "../src/Deadline.h"
 #include "../src/platform/windows/WinBridge.h"   // WaitTimeout 已从 Deadline.h 搬到平台侧
 #include "../src/Lang.h"
-#include "../src/WorkerProtocol.h"
-#include "../src/WorkerTiming.h"
+#include "../src/platform/windows/WorkerProtocol.h"
+#include "../src/platform/windows/WorkerTiming.h"
 
 namespace {
 

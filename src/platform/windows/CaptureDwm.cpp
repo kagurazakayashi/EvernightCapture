@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "CaptureCommon.h"
+#include "Isolation.h"   // BlockedToDiagnostic（共用层的失败映射）
 #include "Worker.h"
 #include "platform/windows/WinBridge.h"   // 宿主矩形（RECT）-> 授权判定器要的 PhysRect
 

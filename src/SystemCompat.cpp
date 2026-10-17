@@ -1,26 +1,19 @@
-// 【平台层 · Windows】本机版本与通道门槛探测的实现（判据本体在 SystemCompat.h，那份是平台无关的表）。
+// 本机版本门槛的判据本体（平台无关）。
+//
+// 这一份只回答"给定一个 OsVersion，这条通道 / 这个构建够不够门槛"以及"哪几条通道组成
+// auto 链"。真机版本探测（RtlGetVersion）搬到了 src/platform/windows/WinSystemCompat.cpp：
+// 共用层不再 include windows.h，注入一个假 OsVersion 就能离线逐条判边界（tests/compat_state.cpp）。
+#define WIN32_LEAN_AND_MEAN
 #include "SystemCompat.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
 
 #include "Lang.h"
 
 namespace ecapture {
 namespace {
-
-// RtlGetVersion 的函数原型。ntdll.dll 本来就在进程里（它是最初装载的那批之一），
-// 所以这里只取函数地址，不 LoadLibrary；那个结构是纯 POD，不依赖任何 SDK 版本宏。
-using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
-
-// 那个函数的成功返回值是 NTSTATUS 的 0。不引 STATUS_SUCCESS：它在 ntstatus.h 里，
-// 而这里只需要这一个数。
-constexpr LONG kNtSuccess = 0;
 
 // 版本够不够这一道门槛。minBuild=0 表示这一条没有版本门槛，永远够。
 Support Judge(const OsVersion& os, uint32_t minBuild) {
@@ -49,27 +42,6 @@ Diagnostic EnvBase(const wchar_t* code, const wchar_t* hintKey) {
 }
 
 }  // namespace
-
-OsVersion ProbeOsVersion() {
-    // 只问一次：一次运行里版本号不会变，而通道闸门与 -v 的回显两处都要读它。
-    static const OsVersion cached = [] {
-        OsVersion v;
-        const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-        if (!ntdll) return v;
-        const RtlGetVersionFn proc = reinterpret_cast<RtlGetVersionFn>(
-            reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetVersion")));
-        if (!proc) return v;
-        OSVERSIONINFOEXW info{};
-        info.dwOSVersionInfoSize = sizeof(info);
-        if (proc(&info) != kNtSuccess) return v;
-        v.major = static_cast<uint32_t>(info.dwMajorVersion);
-        v.minor = static_cast<uint32_t>(info.dwMinorVersion);
-        v.build = static_cast<uint32_t>(info.dwBuildNumber);
-        v.known = v.build != 0;
-        return v;
-    }();
-    return cached;
-}
 
 Capability AssessRuntime(const OsVersion& os) {
     return {Judge(os, os_floor::kEncoder), os_floor::kEncoder};

@@ -38,8 +38,9 @@ mkdir -p "$OUT_DIR"
 # ---------------------------------------------------------------------------
 # 1) 静态一关：共用模型头里不许出现 windows.h 与那一族原生类型。
 #    这份清单 = "共用模型"的名单，由本步的划分决定，不多不少：真正的平台层
-#    （CaptureCommon.h / Worker*.h / D3dDevice.h / WinrtApartment.h / 各通道头）照旧 include
-#    <windows.h>，那是它们各自的职责，第 2 关反而要求它们把归属写明白。
+#    （src/platform/windows/ 下的 CaptureCommon.* / 五条通道 / Worker* / D3dDevice /
+#    WinrtApartment / 本轮新增的 Win* 服务）照旧 include <windows.h>，那是它们各自的职责，
+#    第 2 关反而要求它们把归属写明白。
 #    判之前先去掉行注释（// 之后的一切）：这些头文件在注释里大量讨论 HWND / HRESULT 这些名字，
 #    那是说明边界，不是渗进边界。这一关是 lint，真正的证明在第 3 关的编译。
 # ---------------------------------------------------------------------------
@@ -103,6 +104,13 @@ NEUTRAL_HEADERS=(
     WgcGeometry.h
     gui/Gui.h
     gui/ConsentGuiDriver.h
+    # 2026-10（将 Windows 查询与截图后端接入跨平台架构）新增的平台接口声明头：
+    # 声明中性、实现在 platform/windows 与 platform/linux。
+    WindowSource.h
+    ErrorText.h
+    CaptureFault.h
+    Isolation.h
+    CaptureBackend.h
 )
 
 # GUI 的公开头也不许把 wx 头带进共用模型：wx 只允许出现在 src/gui/ 的实现文件里。
@@ -146,9 +154,18 @@ done
 #    所以缺标记只报 TODO、不算失败（标记补全属于本步的文档工作）。
 # ---------------------------------------------------------------------------
 echo "== 2) 平台层归属标记 =="
-for h in CaptureCommon.h CaptureWgc.h CaptureDwm.h CapturePrintWindow.h CaptureBitBlt.h \
-         CaptureDuplication.h D3dDevice.h WinrtApartment.h Worker.h WorkerIo.h \
-         WorkerProtocol.h WorkerTiming.h NotificationToast.cpp SystemCompat.cpp \
+for h in platform/windows/CaptureCommon.h platform/windows/CaptureWgc.h \
+         platform/windows/CaptureDwm.h platform/windows/CapturePrintWindow.h \
+         platform/windows/CaptureBitBlt.h platform/windows/CaptureDuplication.h \
+         platform/windows/D3dDevice.h platform/windows/WinrtApartment.h \
+         platform/windows/Worker.h platform/windows/WorkerIo.h \
+         platform/windows/WorkerProtocol.h platform/windows/WorkerTiming.h \
+         platform/windows/NotificationToast.cpp \
+         platform/windows/WinWindowSource.cpp platform/windows/WinScreenSource.cpp \
+         platform/windows/WinProcessIntegrity.cpp platform/windows/WinSystemCompat.cpp \
+         platform/windows/WinErrorText.cpp platform/windows/WinCaptureFault.cpp \
+         platform/windows/WinCaptureBackends.cpp platform/windows/WinEnvReport.cpp \
+         platform/windows/WinHdrDetect.cpp \
          platform/windows/WinCliArgs.cpp platform/windows/WinLocale.cpp \
          platform/windows/WinHostPath.cpp platform/windows/WinHostFile.cpp \
          platform/windows/WinHostDirectory.cpp platform/windows/WinFileSave.cpp \

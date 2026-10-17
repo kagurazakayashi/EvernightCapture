@@ -7,8 +7,8 @@ A command-line window screenshot tool: select windows by conditions, then save t
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja-JP.md)
 
 Built on Windows.Graphics.Capture plus four other acquisition channels (DWM thumbnail, `PrintWindow`, screen
-`BitBlt`, DXGI desktop duplication). The entry point is `ECAPTURE.EXE` — one executable, statically linked CRT, no
-VC++ runtime on the target machine. The output is program-friendly: everything except `--help`, `--version` and the
+`BitBlt`, DXGI desktop duplication). The entry point is `ECAPTURE.EXE` — one executable, statically linked CRT and a
+statically linked wxWidgets build, so the target machine needs neither the VC++ runtime nor any wx DLL. The output is program-friendly: everything except `--help`, `--version` and the
 "no conditions given" case is JSON, exit codes are stable, and every diagnostic carries a stable `code`, so the tool
 works just as well typed by hand as called from a script or an AI agent.
 
@@ -101,7 +101,9 @@ confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
 ## Quick start
 
 You need Visual Studio ("Desktop development with C++" workload) plus the Windows SDK; the build script locates
-both automatically.
+both automatically. The production GUI is wxWidgets, so a **static** wxWidgets 3.2.x build (for example a vcpkg
+`x64-windows-static` tree, or a self-built tree with `RUNTIME_LIBS=static`) must also be discoverable; without it
+`build.ps1` stops at the CMake configure step instead of producing a binary that has no confirmation dialog.
 
 ```powershell
 .\build.ps1                                  # Release, output: build\ecapture.exe
@@ -2410,6 +2412,45 @@ error instead).
 localized question and `src/gui/WxConsentDriver.cpp` owns the wx dialog. The scope of `--yes` and the pixel-scope
 rules still have exactly one home, in `CaptureScope` and `src/core/Authorization.h`.
 
+### Windows query and capture backends on the cross-platform interfaces (2026-10)
+
+This step routed the Windows query and capture implementations through the platform interfaces and moved the truly
+platform-specific files under `src/platform/windows/`:
+
+- **Query layer.** Window enumeration, the four cheap identity questions, monitor enumeration with the display-config
+  facts, and process integrity now live in `WinWindowSource.cpp`, `WinScreenSource.cpp` and
+  `WinProcessIntegrity.cpp`. Matching rules, selection policies, identity verdicts and all JSON rendering stay shared
+  (`WindowMatch.cpp`, `WindowQuery.cpp`, `ScreenIdentity.cpp`, `WindowQueryRun.cpp`); shared headers carry only neutral
+  types (`WindowInfo`, `PhysRect`, `WindowQueryLayer`). The runtime entries (`WindowMatchRun.cpp`, `ScreenQueryRun.cpp`)
+  are the only place that call the platform enumeration, so offline suites can link the pure half without a window
+  backend.
+- **Capture backends.** The five real channels keep their implementations (`CaptureWgc/Dwm/PrintWindow/BitBlt/`
+  `Duplication` under `src/platform/windows/`) and are registered once in `WinCaptureBackends.cpp` behind
+  `src/CaptureBackend.h`. The pipeline no longer includes a channel header: it asks the registry for a method, and the
+  authorization result (window path or desktop permit), the deadline and the identity snapshot are part of the request.
+  Pixel-source classification is still by internal path (`CaptureScope.cpp`), never by channel name; each channel keeps
+  its own failure reasons.
+- **Isolation and faults.** `IsolatedMatch` / `BlockedToDiagnostic` moved to `src/Isolation.h`; exception
+  classification (`CaptureFault.h`) and error-code text (`ErrorText.h`) became platform services. The worker payload
+  still serialises `RECT` / `DWORD` / `HRESULT`; de-platforming it is recorded as remaining work.
+- **Behaviour preserved.** Occlusion, minimised windows, size changes, client-area cropping, `--roi` / `--scale`,
+  cursor, HDR and monitor-rotation handling are the pre-move implementations; an uncapturable target still returns its
+  real reason instead of a black frame or a stale cache. Every real frame entry still passes the identity recheck, the
+  authorization gate and the shared deadline.
+- **Delivery dependency.** Windows still builds one executable with the static CRT and now requires a **static**
+  wxWidgets 3.2.x at build time; a successful build should still ship no VC++ runtime and no wx DLL, but no package
+  build was performed for this step. `--help`, the JSON contracts and the resource strings are unchanged.
+- **Verification.** Linux: the existing offline matrices pass (10 suites, 1,928 checks; the GUI suites need a graphics
+  session and are recorded NOT RUN without one). Windows: every Windows-branch translation unit passes MSVC `/W4`
+  compile checks (96/96, including the previously broken `WinBridge` ordering, `Worker` include and `RealOutputSink`
+  signature). The 21 offline test targets were also configured, built and run with CMake + Ninja + MSVC: all 21 build
+  and **3,095 checks pass with 0 failures** (18 targets in Debug; `delivery`, `history` and `worker` need Release
+  because their debug-CRT/global-`operator new` interaction aborts under Debug). Two pre-existing Windows defects
+  were found and fixed on the way: `ecapture-cli-text-tests` did not link on Windows (`DecodePosixArgv`) and two tests
+  had Windows-incorrect expectations (`wchar_t` truncation of a non-BMP code point, `/tmp` path classification).
+  A full `ecapture.exe` build (static wx link, resources, installer) and every real-desktop check are **not
+  verified** on Windows in this step, so no claim of a working Windows build is made.
+
 ### Building the installer: `build-installer.ps1`
 
 The root script is meant to be called by absolute path from any working directory; it locates the repository from its
@@ -2470,7 +2511,7 @@ line of X11 or Wayland backend is compiled into the build, so every cell in the 
 | Shared model and policy headers in `src/` | `CliOptions.h`, `Config.h`, `CaptureScope.h`, `Consent.h`, `Capture.h`, `CropGeometry.h`, `ImageOps.h`, `ScreenMatch.h`, `ScreenIdentity.h`, `WindowMatch.h`, `WindowIdentity.h`, `DupGeometry.h`, `EnvReport.h`, `Delivery.h`, `Report.h`, `Notification.h`, `Deadline.h` | Same rule as above: these describe *what* is captured, *what* was approved and *what* the frame looks like, not which API produced it |
 | `src/platform/windows/WinBridge.h` | The **only** place where the core meets Win32: `RECT ↔ PhysRect` (single and batch) and `Deadline → wait milliseconds` | Only platform-layer `.cpp` files may include it. Each conversion call is a visible crossing, reviewable line by line |
 | `src/gui/` | The single place for the program's own GUI on every platform, built on wxWidgets: the shared dialog, the lazy GUI runtime, the consent driver and the unified notification entry point. `WxGuiProbe.cpp` remains as the dependency probe | Only this layer touches wxWidgets; `src/core/`, `Consent.cpp` and the shared models must not include it, and it must not define any authorization judgement. The GUI targets and the offline suites are independent of each other |
-| `CaptureCommon.h`, the five channel headers, `Worker*.h`, `D3dDevice.h`, `WinrtApartment.h`, `NotificationToast.cpp`, `Lang.cpp`, `SystemCompat.cpp` | [Platform layer - Windows] the real users of GDI / D3D / WinRT / named pipes / string resources | Each file states up front that it is the platform layer; the shared core including them is a boundary breach |
+| `src/platform/windows/` (`CaptureCommon.*`, the five channel implementations, `Worker*`, `D3dDevice`, `WinrtApartment`, `Win{Window,Screen}Source`, `Win{ProcessIntegrity,SystemCompat,ErrorText,CaptureFault,CaptureBackends}`, `WinEnvReport`, `WinHdrDetect` and the other `Win*` services) | [Platform layer - Windows] the real users of GDI / D3D / WinRT / named pipes / string resources, plus window, monitor and process-integrity questions | Each file states up front that it is the platform layer; the shared core including them is a boundary breach. Platform files include each other by bare file name (the Windows build adds this directory to the include path) |
 
 **This is not a rename of `RECT`.** `PhysRect` pins its four edges to `int32_t`, and "empty", "contains"
 and "could not be measured" each have exactly one implementation in `core/Geometry.h`, shared by all four

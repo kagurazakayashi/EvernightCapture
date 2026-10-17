@@ -16,7 +16,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "../src/CaptureCommon.h"
+#include "../src/platform/windows/CaptureCommon.h"
 #include "../src/DupGeometry.h"
 #include "../src/ImageOps.h"
 #include "../src/ScreenMatch.h"

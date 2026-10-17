@@ -39,7 +39,7 @@ void RunNativeArgvChecks(void (*check)(bool, const char*)) {
         check(tokens.At(1) == std::wstring(lone), "Windows：落单的代理码元照样原样保留");
         check(!tokens.HasInvalidUtf8(), "Windows：这一条不算编码问题（不臆造失败）");
         const std::string out = EncodeUtf8(tokens.At(1));
-        check(out == "a\xef\xbf\xbdb", "Windows：到出口才换成 U+FFFD，不写半个序列");
+        check(out == "a\xef\xbf\xbd" "b", "Windows：到出口才换成 U+FFFD，不写半个序列");
     }
     {
         wchar_t storage0[] = {L'e', 0};

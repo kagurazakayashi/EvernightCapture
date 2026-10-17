@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 
-#include "../src/CaptureCommon.h"
+#include "../src/platform/windows/CaptureCommon.h"
 #include "../src/CaptureScope.h"
 #include "../src/Deadline.h"
 #include "../src/EnvReport.h"

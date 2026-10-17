@@ -35,7 +35,7 @@
 // 一次分类改动带过去。
 #include <dxgi.h>
 
-#include "../src/CaptureCommon.h"
+#include "../src/platform/windows/CaptureCommon.h"
 #include "../src/CaptureScope.h"
 #include "../src/CliOptions.h"
 #include "../src/CursorControl.h"   // GateCaptureChain：版本 / 光标 / HDR 三道闸门串成一份

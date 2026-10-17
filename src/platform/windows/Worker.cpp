@@ -20,6 +20,8 @@
 #include "Lang.h"
 #include "WorkerProtocol.h"
 #include "WorkerTiming.h"
+#include "Isolation.h"
+#include "platform/windows/WinBridge.h"
 
 namespace ecapture {
 namespace {
@@ -277,89 +279,6 @@ Diagnostic CallToDiagnostic(Call call, const Deadline& dl, const wchar_t* timeou
 
 }  // namespace
 
-Diagnostic BlockedToDiagnostic(BlockedStatus status, DWORD gle, HRESULT hr,
-                               const std::string& detail, const wchar_t* backend,
-                               const wchar_t* stage) {
-    Diagnostic d;
-    d.code = codes::kCaptureFailed;
-    d.option = L"--capture";
-    d.value = backend ? backend : std::wstring();
-    d.backend = d.value;
-    d.stage = stage;
-    d.win32 = gle;
-    if (FAILED(hr)) d.hresult = HResultText(hr);
-
-    switch (status) {
-        case BlockedStatus::kRectEmpty:
-            d.code = codes::kWindowGone;
-            d.message = Msg(L"cap.rect_empty_draw");
-            d.hint = Msg(L"cap.window_gone");
-            break;
-        case BlockedStatus::kDibCreate:
-            d.message = Msg(L"cap.create_dib_section");
-            d.hint = Msgf(L"err.win32_code", gle);
-            break;
-        case BlockedStatus::kPrintWindowFailed:
-            d.message = Msg(L"cap.pw.failed");
-            d.hint = Msgf(L"cap.pw.failed_hint", Win32ErrorText(gle));
-            break;
-        case BlockedStatus::kHostPrintWindowFailed:
-            d.message = Msg(L"cap.dwm.pw_failed");
-            d.hint = Msgf(L"err.win32_code", gle);
-            break;
-        case BlockedStatus::kHostClass:
-            d.message = Msg(L"cap.dwm.register_class");
-            d.hint = Msgf(L"err.win32_code", gle);
-            break;
-        case BlockedStatus::kHostCreate:
-            d.message = Msg(L"cap.dwm.create_host");
-            d.hint = Msgf(L"err.win32_code", gle);
-            break;
-        case BlockedStatus::kRegisterThumb:
-            d.message = Msg(L"cap.dwm.register_thumb");
-            d.hint = Msgf(L"cap.dwm.register_thumb_hint", Msgf(L"cap.hresult", HResultText(hr)));
-            break;
-        case BlockedStatus::kUpdateProps:
-            d.message = Msg(L"cap.dwm.update_props");
-            d.hint = Msgf(L"cap.hresult", HResultText(hr));
-            break;
-        case BlockedStatus::kHostRectEmpty:
-            d.message = Msg(L"cap.dwm.host_zero");
-            break;
-        case BlockedStatus::kRegexInvalid:
-            // 本机正则库拒绝这条模式——语法就是在这里（受约束的匹配执行层）第一次判的，
-            // 解析层不构造正则。码沿用 cli.invalid_regex、退出码仍是 1，stage/backend 说 match。
-            d.code = codes::kInvalidRegex;
-            d.option = L"--title-regex";
-            d.value = std::wstring();
-            d.message = Msg(L"cli.regex_late");
-            d.hint = Msg(L"cli.regex_hint") + L" (" + WideFromAscii(detail) + L")";
-            break;
-        case BlockedStatus::kRegexTooComplex:
-            // 语法没错，是这台机器的正则库不肯把它跑完。加大 --timeout-ms 不会有帮助
-            // （它不是慢，是被上限挡下），所以文案要指着"改模式"说，而不是"再等久一点"。
-            d.code = codes::kInvalidRegex;
-            d.option = L"--title-regex";
-            d.value = std::wstring();
-            d.message = Msg(L"cli.regex_too_complex");
-            d.hint = Msgf(L"cli.regex_too_complex_hint", WideFromAscii(detail));
-            break;
-        case BlockedStatus::kBadTask:
-            d.code = codes::kWorkerFailed;
-            d.message = Msg(L"cap.worker.bad_task");
-            d.hint = Msg(L"cap.worker.bad_task_hint");
-            break;
-        case BlockedStatus::kInternal:
-            d.message = Msgf(L"err.exception", WideFromAscii(detail));
-            break;
-        case BlockedStatus::kOk:
-        default:
-            d.message = Msg(L"cap.no_detail");
-            break;
-    }
-    return d;
-}
-
 // IsolatedWaitFor / HandshakeWaitMs / TaskBudgetMs / 辅助进程自己的阶段模型
 // 都在 WorkerTiming.cpp：那几条是纯换算，离线判据判的就是它们本体。
 
@@ -400,8 +319,8 @@ bool FrameFromReply(const Reply& reply, const wchar_t* backend, CapturedFrame* o
         return false;
     }
     if (reply.width == 0 || reply.height == 0 || reply.pixels.empty()) {
-        *err = BlockedToDiagnostic(BlockedStatus::kOk, reply.win32, S_OK, std::string(), backend,
-                                   stages::kCapture);
+        *err = BlockedToDiagnostic(BlockedStatus::kOk, static_cast<NativeErrorCode>(reply.win32), 0,
+                                   std::string(), backend, stages::kCapture);
         return false;
     }
     // 辅助进程那头的消息格式已经限过一次单边与整帧字节数（WorkerProtocol.h），这里按**帧自己的
@@ -467,22 +386,24 @@ bool IsolatedDwmThumbnail(uint64_t hwnd, uint32_t waitMs, const Deadline& dl, Ca
     return true;
 }
 
-bool IsolatedMatch(const MatchOptions& match, const std::vector<RECT>& onScreens,
+bool IsolatedMatch(const MatchOptions& match, const std::vector<PhysRect>& onScreens,
                    const Deadline& dl, std::vector<WindowInfo>* hits,
                    std::vector<WindowInfo>* iconic, Diagnostic* err) {
     Task task;
     task.kind = kTaskMatchWindows;
     task.match = match;
-    task.onScreens = onScreens;
+    // 载荷线上格式这一头暂时还是 RECT（WorkerProtocol.h 去平台类型是后续步骤）；
+    // 共用层交给这里的是中性 PhysRect，转换点只有这一处，看得见。
+    task.onScreens = ToNativeRects(onScreens);
     Reply reply;
     const Deadline wait = IsolatedWaitFor(dl);
     const Call call =
         Transact(task.kind, task, wait, &reply, err, codes::kMatchTimeout, stages::kMatch, L"match");
     if (call != Call::kDone) return false;
     if (reply.status != BlockedStatus::kOk) {
-        *err = BlockedToDiagnostic(reply.status, reply.win32, reply.hresult,
-                                   AsciiFromWide(reply.detail), L"match",
-                                   stages::kMatch);
+        *err = BlockedToDiagnostic(reply.status, static_cast<NativeErrorCode>(reply.win32),
+                                   static_cast<NativeErrorCode>(reply.hresult),
+                                   AsciiFromWide(reply.detail), L"match", stages::kMatch);
         return false;
     }
     *hits = std::move(reply.hits);

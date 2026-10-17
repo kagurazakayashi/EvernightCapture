@@ -54,6 +54,7 @@ const wchar_t* IntegrityName(Integrity value);
 // 一档之差会把 Medium 报成 Low、把 Low 报成 Untrusted，而两边看起来都像"有个答案"。
 Integrity IntegrityFromLabelRid(uint32_t rid);
 
+// 【平台入口】实现见 src/platform/windows/WinProcessIntegrity.cpp（与 IntegrityFromLabelRid 同一份）。
 // 本进程问一遍（GetTokenInformation(TokenIntegrityLevel)）。不读用户名、不读 SID 归属、
 // 不开文件、不枚举目录，所以这条问答可以直接放进那份"隐私自述"里说得通的只读查询。
 // `probeError` 可以为空；非空时带走这一问为什么没能给出答案：`OpenProcessToken` 或

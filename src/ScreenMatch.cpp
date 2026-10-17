@@ -1,39 +1,22 @@
+// 屏幕（显示器）目标：目标屏的枚举与选择判据。
+//
+// 编号是 **本次进程这一次 EnumDisplayMonitors 的顺序**，1 起。它是"这次枚举里的位置"，
+// 不是 Windows「显示设置」里那个标识号：系统那边给每块屏编的号存在注册表里、可以按设备重新
+// 排，而 EnumDisplayMonitors 的顺序由驱动枚举决定，两者常常一致但不保证一致，热插拔或改分辨率
+// 之后也会变。所以这里不声称"--monitor 2 就是设置里写着 2 的那块屏"，要跨调用追踪同一块屏
+// 请认 images[].device（"\.\DISPLAY1" 这个形状的设备名）。
+// 矩形用的是虚拟屏幕坐标系的物理像素（进程已声明 per-monitor DPI v2）。
+//
+// 分工：EnumDisplayMonitors 那一条真机问答（EnumScreens）与按选择器取屏的运行时入口
+// （SelectScreens / SelectedScreenRects）搬到了 src/platform/windows/WinScreenSource.cpp；
+// 这一份只留"给两份屏幕清单，判是不是同一块屏"的纯判据。
+
 #include "ScreenMatch.h"
 
 #include <string>
 #include <vector>
 
-#include <windows.h>
-
-#include "ScreenIdentity.h"   // 选择器判据只有一份，见那个头文件顶部那四条规矩
-#include "platform/windows/WinBridge.h"   // MONITORINFO 的 rcMonitor（RECT）-> 共用坐标模型
-
 namespace ecapture {
-namespace {
-
-BOOL CALLBACK CollectMonitor(HMONITOR hmon, HDC /*dc*/, LPRECT /*rect*/, LPARAM lParam) {
-    auto* list = reinterpret_cast<std::vector<ScreenInfo>*>(lParam);
-    MONITORINFOEXW info{};
-    info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(hmon, &info)) return TRUE;
-
-    ScreenInfo s;
-    s.monitor = reinterpret_cast<uint64_t>(hmon);
-    s.ordinal = static_cast<uint32_t>(list->size() + 1);
-    s.deviceName = info.szDevice;
-    s.bounds = FromNativeRect(info.rcMonitor);
-    s.primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0;
-    list->push_back(std::move(s));
-    return TRUE;
-}
-
-}  // namespace
-
-std::vector<ScreenInfo> EnumScreens() {
-    std::vector<ScreenInfo> screens;
-    EnumDisplayMonitors(nullptr, nullptr, CollectMonitor, reinterpret_cast<LPARAM>(&screens));
-    return screens;
-}
 
 std::wstring ScreenDisplayName(const ScreenInfo& s) {
     return StripScreenDevicePrefix(s.deviceName);
@@ -55,24 +38,6 @@ std::wstring BriefScreenList(const std::vector<ScreenInfo>& screens) {
         s += DescribeScreen(one);
     }
     return s;
-}
-
-std::vector<ScreenInfo> SelectScreens(const Options& opt, std::vector<Diagnostic>* errors) {
-    // 判据只有一份（ScreenIdentity.h 的 SelectScreenCandidates）：按屏过滤窗口这一路与
-    // 真去截整屏那一路必须认出同一块屏，否则 --list 里点名的那块和实际截到的那块能各判一次。
-    std::vector<ScreenInfo> out;
-    for (const ScreenCandidate& c : SelectScreenCandidatesOf(opt.monitor, errors)) {
-        out.push_back(c.screen);
-    }
-    return out;
-}
-
-std::vector<PhysRect> SelectedScreenRects(const Options& opt, std::vector<Diagnostic>* errors) {
-    std::vector<PhysRect> rects;
-    for (const auto& s : SelectScreens(opt, errors)) {
-        if (!RectIsEmpty(s.bounds)) rects.push_back(s.bounds);
-    }
-    return rects;
 }
 
 ScreenCheck CompareScreen(const ScreenInfo& wanted, const std::vector<ScreenInfo>& current,

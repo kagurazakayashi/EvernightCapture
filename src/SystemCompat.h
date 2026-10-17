@@ -39,6 +39,7 @@ struct OsVersion {
     bool known = false;
 };
 
+// 【平台入口】实现见 src/platform/windows/WinSystemCompat.cpp；下面的门槛表与闸门是共用判据。
 // 探测本机版本。走 ntdll!RtlGetVersion：它是内核真正的那份版本号。
 // 绝不用 GetVersionEx —— 那个函数受"应用清单兼容性声明"与版本伪装影响，没有清单时
 // 在 Windows 10/11 上固定回 6.2，拿它判下限等于自己骗自己。结果在本进程内只问一次。

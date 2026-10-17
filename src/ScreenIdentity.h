@@ -120,6 +120,7 @@ bool ScreenIdEquals(const std::wstring& a, const std::wstring& b);
 
 // 真机问答。needFacts=false 时只做 EnumScreens，facts 全部保持"没问过"。
 // 不取像素、不弹框、不写文件、不联网、不改任何显示设置。
+// 【平台入口】实现见 src/platform/windows/WinScreenSource.cpp；判据本体（选择 / 复核）留在共用层。
 std::vector<ScreenCandidate> EnumScreenCandidates(bool needFacts);
 
 // ---------------------------------------------------------------------------

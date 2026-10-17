@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include "CaptureCommon.h"  // HResultText：诊断里那个 0x%08X 的写法与全仓同一份
+#include "ErrorText.h"   // HResultCodeText：失败码 -> 文本（平台实现）  // HResultText：诊断里那个 0x%08X 的写法与全仓同一份
 #include "Lang.h"
 
 namespace ecapture {
@@ -327,7 +327,7 @@ NotifyOutcome SendCaptureNotifications(const std::vector<CapturedImage>& images,
             out.note.message = Msg(codes::kNotifySendFailed);
             AttachHint(&out.note);
             out.note.stage = stages::kNotify;
-            out.note.hresult = HResultText(static_cast<HRESULT>(out.lastError));
+            out.note.hresult = HResultCodeText(static_cast<NativeErrorCode>(out.lastError));
         }
         return out;
     }
@@ -341,7 +341,7 @@ NotifyOutcome SendCaptureNotifications(const std::vector<CapturedImage>& images,
     out.note.code = out.lastError == 0 ? codes::kNotifyUnavailable : codes::kNotifySendFailed;
     out.note.message = Msg(out.note.code.c_str());
     out.note.stage = stages::kNotify;
-    if (out.lastError != 0) out.note.hresult = HResultText(static_cast<HRESULT>(out.lastError));
+    if (out.lastError != 0) out.note.hresult = HResultCodeText(static_cast<NativeErrorCode>(out.lastError));
     return out;
 }
 

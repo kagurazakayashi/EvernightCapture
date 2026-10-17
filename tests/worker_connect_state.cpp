@@ -32,7 +32,7 @@
 #endif
 #include <windows.h>
 
-#include "../src/WorkerIo.h"
+#include "../src/platform/windows/WorkerIo.h"
 
 namespace ecapture {
 namespace {

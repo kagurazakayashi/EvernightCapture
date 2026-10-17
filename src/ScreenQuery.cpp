@@ -10,11 +10,6 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
 #include "Json.h"
 #include "Lang.h"
 #include "Version.h"
@@ -226,11 +221,6 @@ ScreenQueryResult BuildScreenQuery(const std::vector<ScreenCandidate>& all) {
     stale.stage = stages::kMatch;
     r.notes.push_back(std::move(stale));
     return r;
-}
-
-ScreenQueryResult RunScreenQuery() {
-    // 这份文档要回答的就是"每块屏的哪几种身份问得到"，所以显示配置那一路必须问。
-    return BuildScreenQuery(EnumScreenCandidates(/*needFacts=*/true));
 }
 
 std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool quiet) {

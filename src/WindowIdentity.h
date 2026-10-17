@@ -87,6 +87,7 @@ struct WindowQueryLayer {
 
 // 真机的 kCheap 那四问。selectionStillMatches 留空 —— 它要拿条件与期限才能跑，
 // 那两个东西只有流水线知道，所以由 Capture.cpp 把这一问补上（见 MakeTargetQueryLayer）。
+// 【平台入口】Windows 实现见 src/platform/windows/WinWindowSource.cpp。
 WindowQueryLayer SystemWindowQueryLayer();
 
 // 复核结果。四种都是终局判据，调用方据此决定"取不取这一帧"。

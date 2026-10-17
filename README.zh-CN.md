@@ -6,8 +6,8 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja-JP.md)
 
-基于 Windows.Graphics.Capture 的一整套取图通道，入口是 `ECAPTURE.EXE`——单个可执行文件，静态链接 CRT，
-目标机器不需要装 VC++ 运行时。输出对程序友好：`--help`、`--version` 与"一个条件都没给"这三种情形是纯文本，
+基于 Windows.Graphics.Capture 的一整套取图通道，入口是 `ECAPTURE.EXE`——单个可执行文件，静态链接 CRT 与
+静态 wxWidgets，目标机器不需要装 VC++ 运行时，也不需要任何 wxWidgets 的 DLL。输出对程序友好：`--help`、`--version` 与"一个条件都没给"这三种情形是纯文本，
 其余一律 JSON；退出码稳定，诊断带稳定的 `code`，所以既适合人敲，也适合被脚本和 AI 调用。
 
 当前版本 **1.0.0**：`--capture` 的取值全部可用（`wgc` / `dwm` / `printwindow` / `bitblt` / `duplication` / `auto`），
@@ -64,7 +64,9 @@
 
 ## 快速开始
 
-需要 Visual Studio（"使用 C++ 的桌面开发"工作负载）+ Windows SDK，构建脚本会自动定位它们。
+需要 Visual Studio（"使用 C++ 的桌面开发"工作负载）+ Windows SDK，构建脚本会自动定位它们。程序自身的界面由
+wxWidgets 实现，所以还要能找到一份**静态**的 wxWidgets 3.2.x（例如 vcpkg 的 `x64-windows-static`，或按
+`RUNTIME_LIBS=static` 自建的那一份）；找不到时 `build.ps1` 停在 CMake 配置阶段，而不是产出一个没有确认框的程序。
 
 ```powershell
 .\build.ps1                                  # Release，产物 build\ecapture.exe
@@ -1927,6 +1929,36 @@ Linux 上当前可构建的目标有 `ecapture-core-tests`、`ecapture-wgc-tests
 `src/gui/WxConsentDriver.cpp` 持有 wx 对话框。`--yes` 的适用范围与像素范围判据照旧只在 `CaptureScope`
 与 `src/core/Authorization.h` 那一份里。
 
+### Windows 查询与截图后端接入跨平台接口（2026-10）
+
+这一步把 Windows 侧的查询与截图实现接到平台接口上，并把真正碰原生句柄的文件移到 `src/platform/windows/`：
+
+- **查询层。** 窗口枚举、身份复核那四个便宜问题、显示器枚举与显示配置事实、进程完整性问答，分别落在
+  `WinWindowSource.cpp`、`WinScreenSource.cpp`、`WinProcessIntegrity.cpp`。匹配规则、选择策略、身份判据与全部
+  JSON 渲染留在共用层（`WindowMatch.cpp`、`WindowQuery.cpp`、`ScreenIdentity.cpp`、`WindowQueryRun.cpp`），
+  共用头只承载中性类型（`WindowInfo`、`PhysRect`、`WindowQueryLayer`）。运行时入口（`WindowMatchRun.cpp`、
+  `ScreenQueryRun.cpp`）是唯一调用平台枚举的地方，所以离线判据只链纯函数那一半、不需要窗口后端也能编。
+- **截图后端。** 五条真实通道的实现保留在 `src/platform/windows/`，在 `WinCaptureBackends.cpp` 里只登记一次，
+  共用层通过 `src/CaptureBackend.h` 取用。流水线不再 include 任何通道头：它按方法问登记表，请求里带着授权结果
+  （窗口路径或桌面凭证）、期限与身份快照。像素来源仍按**内部路径**判（`CaptureScope.cpp`），不按通道名猜；
+  每条通道自己的失败原因原样交回。
+- **隔离与失败映射。** `IsolatedMatch` / `BlockedToDiagnostic` 搬到 `src/Isolation.h`；异常分类
+  （`CaptureFault.h`）与错误码文本（`ErrorText.h`）成为平台服务。辅助进程载荷仍是 `RECT` / `DWORD` / `HRESULT`
+  的线上格式，去平台类型登记为剩余工作。
+- **行为保留。** 遮挡、最小化、尺寸变化、客户区裁剪、`--roi` / `--scale`、光标、HDR 与显示器旋转的处理逐字沿用
+  搬动之前的实现；截不到时照旧交回真实原因，不拿黑帧或旧缓存冒充成功。每一个真实取帧入口仍要过身份复核、
+  授权判定与同一份期限。
+- **交付依赖。** Windows 仍是单个可执行文件 + 静态 CRT，但构建期现在**必需**静态 wxWidgets 3.2.x；成功构建理论上
+  仍不携带 VC++ 运行时、也不新增 wx DLL，但本步没有真的打出一个安装包。`--help`、JSON 契约与四语文案一字未改。
+- **验证边界。** Linux：现有离线判据 10 套全过（1,928 条；GUI 两套需要图形会话，没有会话时如实记 NOT RUN）。
+  Windows：Windows 分支的每个编译单元都通过 MSVC `/W4` 编译检查（96/96，含原先就坏的 `WinBridge` 先用后声明、
+  `Worker` 缺 include、`RealOutputSink` 签名不一致）。21 个离线判据目标也用 CMake + Ninja + MSVC 真正构建并运行：
+  **21/21 构建成功，3,095 条判据通过、0 条失败**（18 套跑 Debug；`delivery` / `history` / `worker` 三套要用
+  Release —— 它们在 Debug 调试 CRT 与测试内全局 `operator new` 的交互下会 abort）。顺带发现并修掉两个 Windows
+  既有缺陷：`ecapture-cli-text-tests` 在 Windows 上链接失败（`DecodePosixArgv`），以及两条测试的 Windows 期望
+  不对（非 BMP 码位的 `wchar_t` 截断、`/tmp` 路径分类）。完整 `ecapture.exe` 构建（静态 wx 链接、资源、安装包）
+  与所有真实桌面检查在本步**未在 Windows 上验证**，因此不声称 Windows 构建已经可用。
+
 ### 构建安装包：`build-installer.ps1`
 
 这个根脚本就是要从任意工作目录按**绝对路径**调用：仓库位置取自脚本自身，不取自当前目录。
@@ -1965,7 +1997,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | `src/` 里这几份共用模型与策略头 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 与上面同一条：这些头描述的是"截什么、批准了什么、这一帧长什么样"，与用哪家 API 弄到手无关 |
 | `src/platform/windows/WinBridge.h` | 核心与 Win32 之间**唯一**的转换处：`RECT ↔ PhysRect`（含整批）与 `Deadline → 等待毫秒` | 只允许平台层的 `.cpp` include 它。转换点在代码里出现的那一行，就是审查时看得见"这里跨了一次平台边界"的那一行 |
 | `src/gui/` | 跨平台自有 GUI 的唯一去处，走 wxWidgets：公共对话框、按需初始化的 GUI 运行时、授权驱动与统一通知入口都在这里；`WxGuiProbe.cpp` 仍保留为依赖探针 | 只有这一层碰 wxWidgets；`src/core/`、`Consent.cpp` 与共用模型不许 include 它，也不许被它反向定义授权判据。GUI 目标与离线判据互不依赖 |
-| `CaptureCommon.h`、五条通道头、`Worker*.h`、`D3dDevice.h`、`WinrtApartment.h`、`NotificationToast.cpp`、`Lang.cpp`、`SystemCompat.cpp` | 【平台层 · Windows】GDI / D3D / WinRT / 命名管道 / 字符串资源的真实使用者 | 每个文件开头写明自己是平台层；共用核心反向 include 它们就是破界 |
+| `src/platform/windows/`（`CaptureCommon.*`、五条通道实现、`Worker*`、`D3dDevice`、`WinrtApartment`、`Win{Window,Screen}Source`、`Win{ProcessIntegrity,SystemCompat,ErrorText,CaptureFault,CaptureBackends}`、`WinEnvReport`、`WinHdrDetect` 等 `Win*` 服务） | 【平台层 · Windows】GDI / D3D / WinRT / 命名管道 / 字符串资源，以及窗口、屏幕与进程完整性问答的真实使用者 | 每个文件开头写明自己是平台层；共用核心反向 include 它们就是破界。平台文件之间按裸文件名互相 include（Windows 构建把这一目录加进 include 路径） |
 
 **为什么不是把 `RECT` 改个名字**：`PhysRect` 的四条边写死成 `int32_t`，并且"空矩形""包含""量不出来"
 这三条判据只在 `core/Geometry.h` 有一份实现，四个平台共用同一份算术。`RECT` 与 `LONG` 仍然是

@@ -33,7 +33,7 @@
 #include <utility>
 #include <vector>
 
-#include "CaptureCommon.h"   // CapturedFrame
+#include "core/Frame.h"      // CapturedFrame（跨平台帧形状；平台层的 Dib 不参与这一层）
 #include "CliOptions.h"      // CaptureMethod / CaptureMethodName / Diagnostic / codes:: / stages::
 #include "Deadline.h"        // dl.Spent()
 #include "Lang.h"            // Msg / Msgf：那两条 note 与最后那条包装文案

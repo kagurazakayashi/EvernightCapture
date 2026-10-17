@@ -57,15 +57,9 @@ namespace ecapture {
 bool IsolatedPrintWindow(uint64_t hwnd, const Deadline& dl, CapturedFrame* out, Diagnostic* err);
 bool IsolatedDwmThumbnail(uint64_t hwnd, uint32_t waitMs, const Deadline& dl, CapturedFrame* out,
                           Diagnostic* err);
-bool IsolatedMatch(const MatchOptions& match, const std::vector<RECT>& onScreens,
-                   const Deadline& dl, std::vector<WindowInfo>* hits,
-                   std::vector<WindowInfo>* iconic, Diagnostic* err);
-
-// 一步"会被卡住的调用"失败 -> 结构化诊断。本进程内跑的退路与辅助进程报回来的失败共用这一份
-// 映射，所以同一种失败在两条路上传出去的文字与码完全一致。
-Diagnostic BlockedToDiagnostic(BlockedStatus status, DWORD gle, HRESULT hr,
-                               const std::string& detail, const wchar_t* backend,
-                               const wchar_t* stage);
+// 条件求值的隔离入口（IsolatedMatch）与失败映射（BlockedToDiagnostic）在共用层
+// src/Isolation.h：它们判的是稳定码与文案，不是 Windows 的等待参数。本头只留
+// "读某一扇窗口自己的画面"那两条 Windows 后端入口。
 
 // 一次隔离调用实际能等多久、连管肯等多久、随任务交下去的那一笔预算是多少：
 // 这三条换算都在 WorkerTiming.h，本文件只用它们的结果（期限职责的分工也写在那里）。

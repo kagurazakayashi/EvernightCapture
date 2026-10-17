@@ -26,6 +26,7 @@ struct ScreenInfo {
 };
 
 // 本机全部屏幕，按编号升序。
+// 【平台入口】实现见 src/platform/windows/WinScreenSource.cpp（Linux 后端将来在自己的目录实现）。
 std::vector<ScreenInfo> EnumScreens();
 
 // 按 opt.monitor 取出目标屏（all = 全部；未给编号 = 主屏；否则按编号取一块）。

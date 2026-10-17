@@ -4,17 +4,11 @@
 #include <string>
 #include <vector>
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-
-#include "CaptureCommon.h"   // EnsureDpiAware：窗口矩形要的是物理像素
 #include "Deadline.h"
+#include "Isolation.h"       // IsolatedMatch / BlockedToDiagnostic（条件求值的同一条路线）
 #include "Lang.h"
 #include "ScreenMatch.h"
-#include "Worker.h"          // IsolatedMatch / BlockedToDiagnostic（条件求值的同一条路线）
-#include "platform/windows/WinBridge.h"   // 屏幕矩形 -> 辅助进程管道上的线上格式
+#include "WindowSource.h"    // EnsureDpiAware：窗口矩形要的是物理像素
 
 namespace ecapture {
 
@@ -31,7 +25,7 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
     WindowQuerySpec spec = MakeWindowQuerySpec(opt);
     spec.monitorLabel = MonitorLabelOf(opt);
     result.spec = spec;
-    // 生效条数由那一份三档判据给（--limit / 配置的 query.window_list_limit / 内置默认），
+    // 生效条数由那一份三档判据给（--limit / 配置的 window.window_list_limit / 内置默认），
     // 不在这里重算一次默认值。
     result.limit = EffectiveListLimit(spec);
     result.limitDefaulted = (spec.limit == 0);
@@ -59,8 +53,8 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
     WindowQuerySnapshot snapshot;
     if (isolate) {
         Diagnostic err;
-        if (!IsolatedMatch(request.match, ToNativeRects(request.onScreens), dl,
-                           &snapshot.hits, &snapshot.iconic, &err)) {
+        if (!IsolatedMatch(request.match, request.onScreens, dl, &snapshot.hits, &snapshot.iconic,
+                           &err)) {
             // 期限到了 / 正则不合本机上限 / 辅助进程坏了：照实报，不悄悄退回本进程再跑一遍
             //（那样等于把期限当成建议，慢的那一步下一次还会再慢一遍），也**不**在这里重新分类
             //（判据见 WindowQuery.h 的 RecordMatchFailure）。
@@ -71,7 +65,7 @@ WindowQueryResult RunWindowQuery(const Options& opt) {
         const MatchOutcome m = EnumerateMatches(request);
         if (m.status != BlockedStatus::kOk) {
             RecordMatchFailure(&result,
-                               BlockedToDiagnostic(m.status, 0, S_OK, m.detail, L"match",
+                               BlockedToDiagnostic(m.status, 0, 0, m.detail, L"match",
                                                   stages::kMatch));
             return result;
         }
