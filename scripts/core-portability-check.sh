@@ -70,6 +70,7 @@ NEUTRAL_HEADERS=(
     core/HelperTiming.h
     core/Authorization.h
     core/Capability.h
+    core/SessionCapability.h
     Main.h
     Capture.h
     CaptureScope.h
@@ -111,6 +112,10 @@ NEUTRAL_HEADERS=(
     CaptureFault.h
     Isolation.h
     CaptureBackend.h
+    # 2026-10（完善跨平台截图隐私确认与授权状态）：授权状态机、安全展示与弹框内容构造。
+    core/ConsentState.h
+    core/DisplayText.h
+    ConsentDialog.h
 )
 
 # GUI 的公开头也不许把 wx 头带进共用模型：wx 只允许出现在 src/gui/ 的实现文件里。

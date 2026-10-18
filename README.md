@@ -1440,6 +1440,25 @@ images follow the window rows above.
 - Several monitors plus stdout (`--monitor all --out -`) is refused before any dialog appears: one confirmation
   cannot buy "one image per monitor squeezed into the same stream". With only one monitor attached, `--monitor all`
   is a single target and that path still delivers one image on stdout.
+- The dialog return is an answer, not a grant. `src/core/ConsentState.h` keeps eight states per scope
+  (`not_requested` / `waiting` / `granted` / `denied` / `cancelled` / `timed_out` / `stale` / `error`), and only
+  `granted` is a permission. `granted` needs both a human "Allow" and a binding re-check; accepted-but-unverified
+  stays `waiting`. A "Yes" arriving after the wait deadline never becomes consent, and closing / denying /
+  cancelling / timing out / failing to show the dialog each have their own state and diagnostic; all of them stop
+  the rest of the request (no backend switch, no second ask).
+- `--yes` can skip the program confirmation only when three facts hold: the target is a single window's own image
+  (not a screen or a desktop region), the capability gate confirmed that route in this build, and the target
+  identity was re-checked. Any missing fact falls back to the normal dialog. The batch grant remains a snapshot of
+  the targets the dialog listed; a target added later is confirmed again or refused, never covered by an older "yes".
+- The dialog separates facts this program read itself (executable path, version, process id) from the
+  caller-provided description, which is labelled as unverified. Window titles, classes, `--purpose` and output
+  paths pass through `src/core/DisplayText.h`: C0/C1 controls, bidi overrides/isolates, zero-width and format
+  characters, line/paragraph separators and noncharacters become `U+FFFD`, and long text is truncated on code-point
+  boundaries with an ellipsis - so a crafted title cannot forge extra dialog lines or push the real question away.
+- System authorization (the Wayland portal) is reserved as a separate state (`SystemAuthState`) rather than folded
+  into the program dialog: `--yes` neither removes nor satisfies it, and a build that requires it without a driver
+  refuses the request with `capture.consent_unavailable` instead of treating program confirmation as both layers.
+  Windows and X11 remain program-confirmation-only.
 - Honest limit: this is a program-owned wxWidgets dialog, not an OS security boundary. It is mis-click protection for
   cooperative automation — it cannot tell whether a human or a script pressed the button, and it does not defend
   against a same-privilege process that intends to bypass it. What it does guarantee is that a caller following these
@@ -2450,6 +2469,23 @@ platform-specific files under `src/platform/windows/`:
   had Windows-incorrect expectations (`wchar_t` truncation of a non-BMP code point, `/tmp` path classification).
   A full `ecapture.exe` build (static wx link, resources, installer) and every real-desktop check are **not
   verified** on Windows in this step, so no claim of a working Windows build is made.
+
+### Privacy confirmation state machine and system authorization (2026-10)
+
+- Per-scope state machine in `src/core/ConsentState.h` (eight states); a dialog return is an answer, not a grant.
+  Only a human "Allow" plus a binding re-check reaches `granted`; accepted-but-unverified stays `waiting`, a late
+  "Yes" after the deadline never becomes consent, and denied / cancelled / timed-out / error all stop the request.
+- `--yes` is conditional: single-window target, capability-confirmed route, identity re-checked; otherwise the
+  normal dialog runs. Batch grants cover only the listed targets - later targets need a new confirmation or are
+  refused - and desktop / screen / region pixels always ask.
+- The dialog separates trusted facts (exe path, version, pid) from the caller-provided description, and sanitises
+  external text (`src/core/DisplayText.h`: controls, bidi/zero-width, overlong text) before display.
+- `SystemAuthState` reserves the Wayland portal layer: `--yes` does not change the requirement, and a build without
+  the driver fails closed with `capture.consent_unavailable`.
+- Verification: `ecapture-consent-tests` grew to **286 checks** (fake prompt / identity / clock; no real desktop):
+  state transitions, accepted-but-unverified, every refusal outcome, stale invalidation, batch membership, `--yes`
+  eligibility, system-layer fail-closed, dialog source separation and text safety. Linux offline suites pass; MSVC
+  per-unit checks pass and the same executable passes 286/0 on Windows.
 
 ### Building the installer: `build-installer.ps1`
 

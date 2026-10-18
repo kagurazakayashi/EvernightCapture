@@ -189,6 +189,10 @@ ConsentGate::ConsentGate(GateConfig config, IConsentPrompt& prompt, TopologyProv
     // 调用方必须显式给真机枚举或假布局。空函数是调用点写错：按空拓扑处理，
     // 绝不在这里偷偷去问某个平台的屏幕接口。
     if (!topology_) topology_ = [] { return std::vector<ScreenInfo>{}; };
+    // 系统授权层：这个平台不需要它时是 kNotRequired；需要但本构建还没有驱动时是
+    // kNotRequested —— 后者会让任何一次授权 fail-closed，绝不用程序确认冒充系统授权。
+    systemState_ = SystemAuthorizationRequired() ? SystemAuthState::kNotRequested
+                                                 : SystemAuthState::kNotRequired;
 }
 
 uint64_t ConsentGate::TopologyFingerprint() const { return Fingerprint(topology_()); }
@@ -201,6 +205,17 @@ void ConsentGate::SetTargetArea(const std::wstring& targetKey, const PhysRect& a
         }
     }
     // 清单外的目标 = 调用方扩大了范围，这里不接受：宁可让它因为"没有对应授权"而重新问一次。
+}
+
+void ConsentGate::ApplyAnswer(ConsentStateMachine* machine, ConsentAnswer answer) {
+    switch (answer) {
+        case ConsentAnswer::kAccepted: machine->Resolve(ConsentEvent::kAccepted); break;
+        case ConsentAnswer::kDeclined: machine->Resolve(ConsentEvent::kDeclined); break;
+        case ConsentAnswer::kClosed: machine->Resolve(ConsentEvent::kClosed); break;
+        case ConsentAnswer::kTimedOut: machine->Resolve(ConsentEvent::kTimedOut); break;
+        case ConsentAnswer::kCancelled: machine->Resolve(ConsentEvent::kCancelled); break;
+        case ConsentAnswer::kInitFailed: machine->Resolve(ConsentEvent::kFailed); break;
+    }
 }
 
 ConsentGate::ConsentSnapshot ConsentGate::TakeSnapshot() const {
@@ -232,6 +247,12 @@ ConsentQuestion ConsentGate::MakeQuestion(const wchar_t* path, PixelScope scope,
     // 并且程序自己那份目录里还会留一份持久副本"，不是只批准了前两样。它不参与区域与拓扑的
     // 变化判定（一次运行里不会中途变），所以不必进快照那份。
     q.historyCopy = config_.historyCopy;
+    // 来源：调用方自述（不可信）与程序核实的事实（可信）分两路交出去，渲染层分别带标签。
+    q.requestSource = config_.requestSource;
+    q.requestSourceGiven = config_.requestSourceGiven;
+    q.programPath = config_.programPath;
+    q.programVersion = config_.programVersion;
+    q.programPid = config_.programPid;
     return q;
 }
 
@@ -279,15 +300,75 @@ Diagnostic ConsentGate::Stale(const wchar_t* path, const std::wstring& targetKey
     return d;
 }
 
-void ConsentGate::GrantDesktop(const ConsentSnapshot& snap) {
-    desktopLevel_ = Level::kGranted;
-    desktopAreas_ = snap.listed;   // 冻结的就是人刚看过的那一份：之后目标挪了位置要重新问
+Diagnostic ConsentGate::SystemLayerUnavailable(const wchar_t* path,
+                                               const std::wstring& targetKey) const {
+    // 这一档不是"人拒绝"，也不是"对话框弹不出来"：这个平台要求系统授权层，而本构建还没有
+    // 那一层驱动（Portal 接入之前）。宁可一张都不截，也不拿程序确认冒充系统授权。
+    Diagnostic d;
+    d.code = codes::kConsentUnavailable;
+    d.message = Msg(L"consent.system_layer_required");
+    d.option = L"--capture";
+    d.value = path ? path : std::wstring();
+    d.hint = Msg(L"consent.system_layer_hint");
+    d.target = targetKey;
+    d.stage = stages::kConsent;
+    return d;
+}
+
+bool ConsentGate::EnsureSystemLayer(PixelScope scope, const wchar_t* path,
+                                    const std::wstring& targetKey, Diagnostic* err) {
+    (void)scope;
+    if (!SystemAuthorizationRequired()) {
+        systemState_ = SystemAuthState::kNotRequired;
+        return true;
+    }
+    if (systemState_ == SystemAuthState::kGranted) return true;
+    if (systemState_ == SystemAuthState::kNotRequired) systemState_ = SystemAuthState::kNotRequested;
+    if (systemState_ == SystemAuthState::kUnavailable || systemState_ == SystemAuthState::kError ||
+        SystemAuthBlocks(systemState_)) {
+        if (err) *err = SystemLayerUnavailable(path, targetKey);
+        return false;
+    }
+    // 需要系统授权层但本构建 / 本调用还没有把它取得：fail-closed，绝不把程序确认当两层。
+    // Portal 驱动接进来之后会在同一个状态字段上推进 kWaiting -> kGranted / kDenied / ...
+    systemState_ = SystemAuthState::kUnavailable;
+    lastDenyAnswer_ = ConsentAnswer::kInitFailed;
+    lastDenyNativeError_ = kNativeErrorNone;
+    if (err) *err = SystemLayerUnavailable(path, targetKey);
+    return false;
+}
+
+bool ConsentGate::ListedTarget(const std::wstring& targetKey) const {
+    for (const GateTarget& t : config_.targets) {
+        if (t.key == targetKey) return true;
+    }
+    return false;
+}
+
+void ConsentGate::GrantSnapshot(const ConsentSnapshot& snap) {
+    // 冻结的就是人刚看过的那一份（或 --yes 那一次已经交来的清单）：
+    //   * desktopAreas_ 带区域，之后目标挪了位置 / 矩形变大要重新问；
+    //   * windowKeys_ 只记"哪些目标在清单里"，窗口内容路径不绑定屏幕区域，但批量范围仍限定于此。
+    desktopAreas_.clear();
+    windowKeys_.clear();
+    for (const GateTarget& t : snap.listed) {
+        desktopAreas_.push_back(t);
+        windowKeys_.push_back(t.key);
+    }
     topologyAtAsk_ = snap.topology;  // 基线是弹框**之前**那一次取值，不是应答之后首次所见
+}
+
+bool ConsentGate::WindowGrantedFor(const std::wstring& targetKey) const {
+    if (!window_.granted()) return false;
+    for (const std::wstring& key : windowKeys_) {
+        if (key == targetKey) return true;
+    }
+    return false;   // 清单里没有这个目标 = 范围被扩大，重新问
 }
 
 bool ConsentGate::DesktopGrantedFor(const std::wstring& targetKey, const PhysRect& area,
                                     PhysRect* approved) const {
-    if (desktopLevel_ != Level::kGranted) return false;
+    if (!desktop_.granted()) return false;
     if (TopologyFingerprint() != topologyAtAsk_) return false;  // 拓扑变了 = 授权作废
     for (const GateTarget& t : desktopAreas_) {
         if (t.key != targetKey) continue;
@@ -299,75 +380,148 @@ bool ConsentGate::DesktopGrantedFor(const std::wstring& targetKey, const PhysRec
 }
 
 bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targetKey,
-                                 Diagnostic* err) {
+                                  Diagnostic* err, const YesEligibility& yes,
+                                  const ConsentBindingVerifier& verify) {
+    Diagnostic scratch;   // 调用方可以不要诊断，但本函数每一档都要写一条
+    if (!err) err = &scratch;
+    // 1) 系统授权层先判：需要而不可得时，程序确认做得再好也不授权。
+    if (!EnsureSystemLayer(PixelScope::kWindowContent, path, targetKey, err)) return false;
+    // 2) 已经有人答过否 / 取消 / 超时 / 机制错误：整批停在这里，不重复骚扰。
     if (Refused()) {
-        // 已经有人答过"否"（或根本没有桌面可弹）：这一次请求里后面都不再问、也不再截。
-        // 这条规矩放在判定器自己身上，不依赖调用方记得去查。
-        if (err) *err = Denied(path, targetKey, PixelScope::kWindowContent, lastDenyAnswer_,
-                               lastDenyNativeError_);
-        return false;
-    }
-    if (!NeedsHumanConsent(path, config_.yes)) return true;  // 带 --yes 的可靠窗口路径
-    if (windowLevel_ == Level::kGranted) return true;
-    if (windowLevel_ == Level::kRefused) {
-        if (err) *err = Denied(path, targetKey, PixelScope::kWindowContent, lastDenyAnswer_,
-                               lastDenyNativeError_);
-        return false;
-    }
-
-    ++windowAsks_;
-    // 同样从弹框前的快照问起（清单与文案同源）。这一级不做确认后的拓扑复核：窗口内容
-    // 路径的像素来自目标窗口自己，屏幕布局在确认期间怎么变都不改变"人批准了什么"；
-    // "点完'是'之后目标还是不是那一扇"由流水线在授权之后按身份复核（CaptureOneChannel
-    // 与 DWM 升级路径各有一次），不是这一关的职责。
-    const ConsentQuestion q = MakeQuestion(path, PixelScope::kWindowContent, TakeSnapshot());
-    const ConsentReply reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
-    if (reply.answer == ConsentAnswer::kAccepted) {
-        windowLevel_ = Level::kGranted;
-        return true;
-    }
-    windowLevel_ = Level::kRefused;
-    lastDenyAnswer_ = reply.answer;
-    lastDenyNativeError_ = reply.nativeError;
-    if (err) {
         *err = Denied(path, targetKey, PixelScope::kWindowContent, lastDenyAnswer_,
                       lastDenyNativeError_);
+        return false;
     }
-    return false;
+    // 3) 这一入口只接受窗口内容路径。拿窗口那一级的许可去放行桌面像素是越界，直接拒绝，
+    //    并把这一级推进到错误档（调用点写错时不能留下一个"看起来成功"的状态）。
+    if (ScopeOf(path) != PixelScope::kWindowContent) {
+        window_.Reset();
+        window_.Request();
+        window_.Resolve(ConsentEvent::kFailed);
+        *err = Denied(path, targetKey, PixelScope::kWindowContent, ConsentAnswer::kDeclined,
+                      kNativeErrorNone);
+        return false;
+    }
+    // 4) 已经批准过：只有清单里列过的目标才能复用；清单外 = 范围扩大，重新走确认。
+    if (window_.granted() && WindowGrantedFor(targetKey)) {
+        if (ConsentLayersSatisfy(config_.requiredGrantLayers, window_.state(), systemState_)) {
+            return true;
+        }
+    }
+    if (window_.granted() && !WindowGrantedFor(targetKey)) window_.Resolve(ConsentEvent::kInvalidated);
+
+    // 5) --yes 例外：必须同时满足"目标是单扇窗口 / 能力已确认 / 身份已复核"，而且目标在本次
+    //    清单里、绑定核实也通过。缺任何一条都退回正常确认，绝不因为给了 --yes 就放宽。
+    if (config_.yes && yes.Eligible() && ListedTarget(targetKey)) {
+        window_.Request();
+        if (!verify || !verify(err)) {
+            window_.Resolve(ConsentEvent::kInvalidated);
+            if (!err || err->code.empty()) *err = Stale(path, targetKey);
+            return false;
+        }
+        // 这里不是"人答了是"：按 yes_window_content 这一种非人来源授予（状态机只接受这一种）。
+        window_.GrantWithoutHuman(ConsentBasis::kYesWindowContent);
+        GrantSnapshot(TakeSnapshot());
+        if (!WindowGrantedFor(targetKey)) {
+            *err = Denied(path, targetKey, PixelScope::kWindowContent, ConsentAnswer::kDeclined,
+                          kNativeErrorNone);
+            return false;
+        }
+        return true;
+    }
+
+    // 6) 正常确认：从弹框前的快照问起（清单与文案同源）。窗口内容路径不绑定屏幕拓扑，
+    //    但"点完是之后目标还是不是那一扇"仍要在签发之前核实一次（verify），
+    //    流水线随后每次真实取帧之前还会再做（见 CaptureOneChannel）。
+    if (!window_.can_request()) {
+        *err = Denied(path, targetKey, PixelScope::kWindowContent, lastDenyAnswer_,
+                      lastDenyNativeError_);
+        return false;
+    }
+    window_.Request();
+    ++windowAsks_;
+    const ConsentSnapshot snap = TakeSnapshot();
+    const ConsentQuestion q = MakeQuestion(path, PixelScope::kWindowContent, snap);
+    ConsentReply reply;
+    try {
+        reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
+    } catch (...) {
+        // 应答器抛异常：异常照旧穿出去（调用方要看见），但这一级不能停在"等待"——
+        // 否则下一次调用会被 can_request() 拦下，像是一次永远答不完的弹框。
+        window_.Reset();
+        throw;
+    }
+    ApplyAnswer(&window_, reply.answer);
+    if (!window_.waiting() || !window_.accepted_pending()) {
+        lastDenyAnswer_ = reply.answer;
+        lastDenyNativeError_ = reply.nativeError;
+        *err = Denied(path, targetKey, PixelScope::kWindowContent, lastDenyAnswer_,
+                      lastDenyNativeError_);
+        return false;
+    }
+    // 人答了是，但**还不是授权**：先做这一次绑定核实。核实问不出来 / 目标变了 / 没有可用的
+    // 核实手段时，这一问以 stale 收尾，一张都不截。
+    if (!verify || !verify(err)) {
+        window_.Resolve(ConsentEvent::kInvalidated);
+        if (!err || err->code.empty()) *err = Stale(path, targetKey);
+        return false;
+    }
+    window_.Resolve(ConsentEvent::kVerified);
+    GrantSnapshot(snap);
+    if (!WindowGrantedFor(targetKey)) {
+        // 人在框上看到的清单里根本没有这次要取的这个目标：不给自己放行。
+        *err = Denied(path, targetKey, PixelScope::kWindowContent, ConsentAnswer::kDeclined,
+                      kNativeErrorNone);
+        return false;
+    }
+    return ConsentLayersSatisfy(config_.requiredGrantLayers, window_.state(), systemState_);
 }
 
 bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey,
                                    const PhysRect& area, std::optional<DesktopPermit>* out,
                                    Diagnostic* err) {
+    Diagnostic scratch;   // 同上：诊断指针为空也不在内部解引用空指针
+    if (!err) err = &scratch;
+    // 桌面路径永远要人确认：--yes 在这里不参与任何分支。
+    if (!EnsureSystemLayer(PixelScope::kDesktop, path, targetKey, err)) return false;
     if (Refused()) {   // 这一级或另一级被人否过（也包括弹不出框）：不再问第二遍，也不再截
-        if (err) *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyAnswer_,
-                               lastDenyNativeError_);
+        *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyAnswer_,
+                      lastDenyNativeError_);
         return false;
     }
     PhysRect approved{};
-    if (DesktopGrantedFor(targetKey, area, &approved)) {
+    if (desktop_.granted() && DesktopGrantedFor(targetKey, area, &approved)) {
         if (out) *out = DesktopPermit::Issue(targetKey, approved);
         return true;
     }
-    if (desktopLevel_ == Level::kGranted) {
-        // 之前批过，但这次的目标或矩形不在当时那份清单里 —— 范围升级，重新问一次。
-        desktopLevel_ = Level::kNotAsked;
-        desktopAreas_.clear();
+    if (desktop_.granted()) {
+        // 之前批过，但这次的目标 / 区域 / 拓扑不在当时那份清单里 —— 授权作废，重新问一次。
+        desktop_.Resolve(ConsentEvent::kInvalidated);
+    }
+    if (!desktop_.can_request()) {
+        *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyAnswer_,
+                      lastDenyNativeError_);
+        return false;
     }
 
+    desktop_.Request();
     ++desktopAsks_;
     // 弹框前冻结这一轮的授权快照：框上写的目标、区域、输出与拓扑基线全部出自这一次取值。
     const ConsentSnapshot snap = TakeSnapshot();
     const ConsentQuestion q = MakeQuestion(path, PixelScope::kDesktop, snap);
-    const ConsentReply reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
-    if (reply.answer != ConsentAnswer::kAccepted) {
-        desktopLevel_ = Level::kRefused;
+    ConsentReply reply;
+    try {
+        reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
+    } catch (...) {
+        desktop_.Reset();
+        throw;
+    }
+    ApplyAnswer(&desktop_, reply.answer);
+    if (!desktop_.waiting() || !desktop_.accepted_pending()) {
         lastDenyAnswer_ = reply.answer;
         lastDenyNativeError_ = reply.nativeError;
-        if (err) {
-            *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyAnswer_,
-                          lastDenyNativeError_);
-        }
+        *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyAnswer_,
+                      lastDenyNativeError_);
         return false;
     }
     // 人点头（含关闭动画缓冲）之后、签发授权之前，重新查询一遍拓扑，与**弹框前**那份快照比。
@@ -376,20 +530,21 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
     // 判据是停，不是重试：这一问一张都不采、不签发凭证，也不自动按新布局再弹一次框
     // （同一次调用里反复弹框就是无限重复问人）；调用方重来一遍时会在新的快照上重新问。
     if (TopologyFingerprint() != snap.topology) {
-        desktopLevel_ = Level::kNotAsked;   // 没答"否"：批次不因这个失败而整批停止
-        if (err) *err = Stale(path, targetKey);
+        desktop_.Resolve(ConsentEvent::kInvalidated);   // 没答"否"：批次不因这个失败而整批停止
+        *err = Stale(path, targetKey);
         return false;
     }
-    GrantDesktop(snap);
+    desktop_.Resolve(ConsentEvent::kVerified);
+    GrantSnapshot(snap);
     if (!DesktopGrantedFor(targetKey, area, &approved)) {
         // 人在框上看到的清单里根本没有这次要取的这一块：不给自己放行。
         // 真机流水线的目标矩形在问之前刚量过，正常走不到这里；走到就是调用点写错了。
-        if (err) *err = Denied(path, targetKey, PixelScope::kDesktop, ConsentAnswer::kDeclined,
-                               kNativeErrorNone);
+        *err = Denied(path, targetKey, PixelScope::kDesktop, ConsentAnswer::kDeclined,
+                      kNativeErrorNone);
         return false;
     }
     if (out) *out = DesktopPermit::Issue(targetKey, approved);
-    return true;
+    return ConsentLayersSatisfy(config_.requiredGrantLayers, desktop_.state(), systemState_);
 }
 
 }  // namespace ecapture

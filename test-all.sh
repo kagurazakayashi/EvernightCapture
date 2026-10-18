@@ -63,7 +63,7 @@ EOF
 # ---------------------------------------------------------------------------
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
-SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text save-paths worker-ipc consent-state \
+SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text session-probe save-paths worker-ipc consent-state \
  image-ops crop-geometry codec-encode gui-probe-init gui-runtime"
 
 SUITE_LAYER[core-portability]="offline"
@@ -83,6 +83,12 @@ SUITE_KIND[cli-text]="cmake"
 SUITE_TARGET[cli-text]="ecapture-cli-text-tests"
 SUITE_NOTE[cli-text]="命令行文本处理与多语言资源判据（编码边界、四语回退、参数与配置、JSON 转义、通道纪律，146 条）"
 SUITE_PREREQ[cli-text]=""
+
+SUITE_LAYER[session-probe]="offline"
+SUITE_KIND[session-probe]="cmake"
+SUITE_TARGET[session-probe]="ecapture-session-tests"
+SUITE_NOTE[session-probe]="Linux 会话识别与运行能力查询（X11 / Wayland / XWayland / SSH / 无桌面、Portal 版本与来源类型、PipeWire 前提、缺库/连接失败/未实现分支、真实只读探测与隐私不回显）"
+SUITE_PREREQ[session-probe]=""
 
 SUITE_LAYER[wgc-geometry]="offline"
 SUITE_KIND[wgc-geometry]="cmake"

@@ -16,8 +16,13 @@
 //   5. 被拒绝、框关掉、或根本没有交互桌面 => 停止本次请求剩下的采集，不换后端也不重试；
 //      之前已经完成的图保留。
 //   6. 一次确认可以覆盖本次明确列出的那一批目标，但绝不跨请求缓存，也不扩大目标；
-//      目标区域或屏幕拓扑一变，相应授权立即作废。
-//   7. "展示什么，就批准什么"：桌面那一级在弹框**之前**把目标清单、区域与屏幕拓扑冻结成
+//      目标区域或屏幕拓扑一变，相应授权立即作废。清单之外的目标不会因为同一批次里
+//      已经有人点过"是"就静默放行 —— 要么重新确认，要么按"范围已扩大"拒绝。
+//   7. 界面返回一个回答，不等于授权已经成立：状态机只在"人答了是"且"本次绑定核实通过"
+//      之后才进入 granted（见 core/ConsentState.h）。已答是但尚未核实的那一档仍是等待。
+//   8. 程序确认与系统授权是两层：Wayland 的 Portal 授权由 SystemAuthState 单独登记，
+//      --yes 只影响程序确认这一层，不能让系统授权层变得不需要，也不能冒充它已完成。
+//   9. "展示什么，就批准什么"：桌面那一级在弹框**之前**把目标清单、区域与屏幕拓扑冻结成
 //      一份不可变快照，框上的文字与答"是"后冻结的授权都出自这同一份事实。人点头之后先重新
 //      查询一遍拓扑再与这份快照比较 —— 确认期间布局变了（热插拔、改分辨率、挪位置）时，
 //      那次"是"批的是人最后看到的旧布局，新布局不会被当成旧请求的已批准基线：这一问以
@@ -39,6 +44,7 @@
 #include "CliOptions.h"
 #include "ScreenMatch.h"
 #include "core/Error.h"     // NativeErrorCode：这一格放 GetLastError 的原值
+#include "core/ConsentState.h"  // ConsentState / SystemAuthState / ConsentLayersSatisfy
 #include "core/Geometry.h"   // PhysRect：批准的那一块屏幕区域
 
 namespace ecapture {
@@ -53,6 +59,28 @@ class Deadline;
 // src/ConsentPrompt.cpp 里把这一问渲染成 wxWidgets 对话框（Windows 与 Linux 同一份代码，
 // 见 src/gui/）；ConsentGate 与 CaptureScope 那两层判据不认识任何控件。Wayland 的系统授权
 // 是**另一层**（操作系统自己的来源选择界面），本接缝既不实现它也不替代它。
+// --yes 想跳过程序确认时必须先交齐的三件事实。缺任何一条都不放行，退回正常确认；
+// 这三条由流水线在调用前判定，判定器**不**替调用方猜：
+//   * singleWindowTarget：本次要截的是单扇窗口自己的画面，不是屏幕 / 桌面区域；
+//   * capabilityConfirmed：能力闸门确认这条通道与这条路径在本构建、本机可用；
+//   * identityVerified：授权前那次目标身份复核（kCheap）已经通过。
+// 注意：--yes 永远不改变 SystemAuthState —— 系统授权层的要求与状态与这里无关。
+struct YesEligibility {
+    bool singleWindowTarget = false;
+    bool capabilityConfirmed = false;
+    bool identityVerified = false;
+
+    bool Eligible() const {
+        return singleWindowTarget && capabilityConfirmed && identityVerified;
+    }
+};
+
+// 授权后、签发之前的绑定核实接缝。窗口内容路径用它做一次身份复核（kCheap），
+// 返回 false 时把 *err 填成 capture.target_* 诊断；不传 = 这一问没有可用的绑定核实，
+// 于是即使人答了是也不会进入 granted（fail-closed）。桌面路径的绑定核实是判定器内部的
+// 拓扑快照比较，不用这个回调。
+using ConsentBindingVerifier = std::function<bool(Diagnostic* err)>;
+
 struct ConsentQuestion {
     PixelScope scope = PixelScope::kWindowContent;
     std::wstring path;                  // 实际要走的那条内部路径（dwm.screen / screen.wgc …）
@@ -63,6 +91,16 @@ struct ConsentQuestion {
     // 这一次会不会在程序目录下另存一份历史副本（归档根解析得通时为真）。副本这件事要写在人
     // 批准的那段文字里：不能批了一张主输出、事后才发现别处还留着一份持久截图。
     bool historyCopy = false;
+
+    // ----- 来源：可信与不可信分开渲染 -----
+    // 调用方自述（--purpose 之类）：由调用方提供，本程序无法核实。展示时必须带"未核实"标签，
+    // 并经过 control / bidi / 长度净化（见 core/DisplayText.h）。
+    std::wstring requestSource;
+    bool requestSourceGiven = false;
+    // 本程序核实的事实：映象路径、版本、进程号。由流水线向平台服务取，不取调用方给的文本。
+    std::wstring programPath;
+    std::wstring programVersion;
+    uint32_t programPid = 0;
 };
 
 // 一次问人的结局。六档各说一件事，谁也不冒充谁：
@@ -236,6 +274,17 @@ struct GateConfig {
     // 自动处理时间。--yes 直通、复用已给出的许可这些根本不弹框的分支不暂停、不补时间。
     // 指向的 Deadline 由建立它的流水线保活（判定器不持有所有权）。
     const Deadline* autoBudget = nullptr;
+
+    // 本平台要求的授权层（RequiredGrantLayers）。默认按编译期平台族取；测试可以显式覆盖，
+    // 用来判"只拿到程序确认时 Wayland 的两层要求没有满足"这条判据，而不用真的接 Portal。
+    uint32_t requiredGrantLayers = DefaultRequiredGrantLayers();
+
+    // 弹框上"谁在请求"那一段：调用方自述（不可信）+ 程序核实的事实（可信）。
+    std::wstring requestSource;
+    bool requestSourceGiven = false;
+    std::wstring programPath;
+    std::wstring programVersion;
+    uint32_t programPid = 0;
 };
 
 // 屏幕拓扑的取值函数。测试注入假布局，真机用 EnumScreens。
@@ -249,8 +298,14 @@ public:
     ConsentGate(GateConfig config, IConsentPrompt& prompt, TopologyProvider topology);
 
     // 窗口内容路径（wgc / printwindow / dwm 的缩略图主路径）。
-    // 带 --yes 时直接放行；否则整批问一次，之后同批次不再重复打扰。
-    bool AuthorizeWindow(const wchar_t* path, const std::wstring& targetKey, Diagnostic* err);
+    //   * 带 --yes 且 YesEligibility 三条都成立、目标在本次清单里、绑定核实也通过时，
+    //     直接签发（basis = yes_window_content），不弹框；
+    //   * 否则整批问一次；人答"是"之后还要过一次绑定核实（verify）才进入 granted。
+    // path 不是窗口内容路径时这条入口拒绝（防止拿窗口那一级的许可去放行桌面像素）；
+    // 清单外的目标不会复用已有许可，而是重新确认 / 按范围扩大拒绝。
+    // verify 为空 = 没有绑定核实可用：即使人答了是也不签发（fail-closed）。
+    bool AuthorizeWindow(const wchar_t* path, const std::wstring& targetKey, Diagnostic* err,
+                         const YesEligibility& yes, const ConsentBindingVerifier& verify);
 
     // 桌面路径（bitblt、duplication、整屏任何通道、以及 DWM 内部的屏幕退路）。
     // 永远要人确认；批准了才把 *out 填好，调用方没有它就取不到屏幕像素。
@@ -267,8 +322,27 @@ public:
     // 已经批准的桌面授权用的是快照里冻结的区域，所以挪动过的窗口会被判成"范围已变"而重新问。
     void SetTargetArea(const std::wstring& targetKey, const PhysRect& area);
 
-    // 已经有人在某一级确认上答过"否"（或根本弹不出框）：本次请求剩下的采集一律停止。
-    bool Refused() const { return windowLevel_ == Level::kRefused || desktopLevel_ == Level::kRefused; }
+    // 已经有人在某一级确认上答过"否"（含关框 / 取消 / 超时 / 机制错误）：
+    // 本次请求剩下的采集一律停止。kStale 不在其中（它要重新确认，不是把整批判死）。
+    bool Refused() const {
+        return window_.blocks() || desktop_.blocks() || SystemAuthBlocks(systemState_);
+    }
+
+    // ---- 状态查询（测试、诊断与将来的报告用）----
+    ConsentState WindowState() const { return window_.state(); }
+    ConsentState DesktopState() const { return desktop_.state(); }
+    ConsentBasis WindowConsentBasis() const { return window_.basis(); }
+    SystemAuthState SystemState() const { return systemState_; }
+    bool SystemAuthorizationRequired() const {
+        return (config_.requiredGrantLayers & kGrantSystemAuthorization) != 0;
+    }
+    // 这个范围内的授权此刻是否成立（两层都满足才算）。--yes 不参与这条判据。
+    bool AuthorizedFor(PixelScope scope) const {
+        return ConsentLayersSatisfy(config_.requiredGrantLayers,
+                                    scope == PixelScope::kDesktop ? desktop_.state()
+                                                                  : window_.state(),
+                                    systemState_);
+    }
 
     // 以下给测试看：弹了几次框、当前是哪一级。真实调用方不需要。
     int Asks() const { return windowAsks_ + desktopAsks_; }
@@ -277,11 +351,9 @@ public:
     uint64_t TopologyFingerprint() const;
 
 private:
-    enum class Level { kNotAsked, kGranted, kRefused };
-
     // 弹框前冻结的授权快照（"展示什么，就批准什么"的那一份事实）：
-    // 框上的每一行、答"是"之后 desktopAreas_ 里冻结的每个矩形、以及拓扑基线，
-    // 全部出自这同一次取值。之后的 SetTargetArea / 布局变化都改不了在世的那一轮。
+    // 框上的每一行、答"是"之后冻结的每个目标（与区域）、以及拓扑基线，全部出自这同一次取值。
+    // 之后的 SetTargetArea / 布局变化都改不了在世的那一轮。
     struct ConsentSnapshot {
         std::vector<GateTarget> listed;   // 清单与各自区域（弹框那一刻）
         std::vector<std::wstring> outputs;
@@ -293,25 +365,43 @@ private:
                                  const ConsentSnapshot& snap) const;
     Diagnostic Denied(const wchar_t* path, const std::wstring& targetKey, PixelScope scope,
                       ConsentAnswer answer, NativeErrorCode nativeError) const;
-    // 确认基线在弹框期间失效（拓扑变了）：这一问不授权，也不换基线重试
+    // 确认基线在弹框期间失效（拓扑 / 目标 / 范围变了）：这一问不授权，也不换基线重试。
     Diagnostic Stale(const wchar_t* path, const std::wstring& targetKey) const;
-    // 人同意、且确认后拓扑复核与快照一致之后：把快照里列出的目标区域冻结成本次桌面授权
-    void GrantDesktop(const ConsentSnapshot& snap);
+    // 系统授权层缺失 / 不可用时的诊断（不是"人拒绝"，也不是"机械问题"，是这一层没有取得）。
+    Diagnostic SystemLayerUnavailable(const wchar_t* path, const std::wstring& targetKey) const;
+    // 人同意、且确认后绑定核实与快照一致之后：把快照里列出的目标冻结成本次授权。
+    void GrantSnapshot(const ConsentSnapshot& snap);
+    bool WindowGrantedFor(const std::wstring& targetKey) const;
     bool DesktopGrantedFor(const std::wstring& targetKey, const PhysRect& area,
                            PhysRect* approved) const;
+    // 目标是否在本次请求的清单里（批量授权的范围只限于此）。
+    bool ListedTarget(const std::wstring& targetKey) const;
+
+    // 把一次界面回答推进到状态机；回答除此之外的一律按机制错误处理。
+    static void ApplyAnswer(ConsentStateMachine* machine, ConsentAnswer answer);
+    // 系统授权层是否满足本次要求；不满足时把状态推到对应档并给出诊断。
+    bool EnsureSystemLayer(PixelScope scope, const wchar_t* path, const std::wstring& targetKey,
+                           Diagnostic* err);
 
     GateConfig config_;
     IConsentPrompt& prompt_;
     TopologyProvider topology_;
     uint64_t topologyAtAsk_ = 0;   // 弹框**之前**的拓扑基线（来自快照，不是应答之后首次所见）
 
-    Level windowLevel_ = Level::kNotAsked;
-    Level desktopLevel_ = Level::kNotAsked;
-    // 拒绝的原因（人答否 / 关框 / 弹不出框 / 期限到点 / 程序取消）要粘住：后面那些目标
-    // 不再问第二遍，但它们各自的诊断得说清当初是哪一种，而不是统统写成"被拒绝"。
+    // 两级各自的状态机。窗口那一级不绑定屏幕拓扑，但仍绑定"本次清单里的哪些目标"；
+    // 桌面那一级绑定区域与拓扑。两者都只在通过绑定核实后进入 granted。
+    ConsentStateMachine window_;
+    ConsentStateMachine desktop_;
+    // 系统授权层：本构建没有 Portal 驱动时保持 kNotRequired（Windows / X11）或
+    // kNotRequested（需要但未取得，授权 fail-closed）。
+    SystemAuthState systemState_ = SystemAuthState::kNotRequired;
+
+    // 拒绝的原因（人答否 / 关框 / 弹不出框 / 期限到点 / 程序取消 / 系统层不可用）要粘住：
+    // 后面那些目标不再问第二遍，但它们各自的诊断得说清当初是哪一种。
     ConsentAnswer lastDenyAnswer_ = ConsentAnswer::kDeclined;
     NativeErrorCode lastDenyNativeError_ = kNativeErrorNone;
-    std::vector<GateTarget> desktopAreas_;  // 答"是"那一轮弹框前冻结的授权快照清单
+    std::vector<GateTarget> desktopAreas_;  // 答"是"那一轮冻结的桌面授权清单（含区域）
+    std::vector<std::wstring> windowKeys_;  // 答"是"那一轮冻结的窗口目标清单（含清单外检查）
     int windowAsks_ = 0;
     int desktopAsks_ = 0;
 };

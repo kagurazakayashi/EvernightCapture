@@ -21,8 +21,8 @@ usage() {
     cat <<'EOF'
 用法：./run.sh [选项] [-- 传给被运行程序的参数]
 
-  --target core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|crop-tests|
-           image-tests|encode-tests|consent-tests|gui-probe|gui-tests
+  --target ecapture|session-tests|core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|
+           crop-tests|image-tests|encode-tests|consent-tests|gui-probe|gui-tests
                                                     要运行哪个目标，默认 core-tests
   --exe <路径>                               直接点名一个可执行文件（跳过 --target 的解析）
   --config Debug|Release|RelWithDebInfo      从哪一份构建目录里取产物，默认 Release
@@ -30,7 +30,8 @@ usage() {
   -h, --help                                 本帮助
 
 说明：
-  * 想跑完整 CLI（ecapture / ECAPTURE.EXE）会当场得到"暂不可构建"的原因，不会被静默换成别的东西。
+  * Linux 的 ecapture 只提供只读查询（--help / --version / --show-config / --capabilities / --diagnostics）；
+    截图请求会返回 capture.unsupported（退出码 7），不会被静默换成别的东西。
   * gui-probe / gui-tests 需要一个图形会话：有 xvfb-run 时自动跑在虚拟显示上，否则用当前会话。
     gui-probe 不建窗口；gui-tests 会短暂创建程序自己的对话框（不碰系统授权窗口、不取像素）。
 

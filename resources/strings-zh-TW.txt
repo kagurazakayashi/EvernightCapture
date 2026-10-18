@@ -19,6 +19,9 @@ help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無
 help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
 help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
 help.system	執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
+help.status_linux	目前建置: 這個 Linux 建置沒有螢幕擷取與目標列舉後端。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行；截圖請求交回 capture.unsupported（結束碼 7），不交付任何影像
+help.system_linux	執行環境: Linux。--capabilities / --diagnostics 以唯讀方式連線 X11、Wayland 與工作階段 D-Bus（XDG Desktop Portal），並檢查 PipeWire 套接字前提。環境變數與桌面名稱只是線索：它們不證明服務可用，也不構成授權
+help.linux_query	Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；後端未實作時絕不回答「可以截圖」
 
 help.examples	示例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -36,7 +39,7 @@ grp.match	視窗匹配條件（同一選項多次出現取並集，不同選項�
 grp.pick	匹配到多個視窗時（互斥）
 grp.capture	取圖方式（預設 wgc；受系統版本或視窗性質限制時會失敗）
 grp.crop	視窗內部裁剪與等比縮小（對交付的整張視窗畫面，依畫面自己的像素座標再裁一次；不是桌面絕對座標；順序是先裁後縮，--roi 與 --client-area 兩條互斥）
-grp.consent	截圖授權（真實截圖預設都要先彈框問一次；--yes 只免掉只取視窗畫面的那條路徑）
+grp.consent	截圖授權（真實截圖預設先問人；--yes 只在能力與目標核實後免掉單一視窗自身畫面的確認；桌面 / 螢幕 / 區域像素一律人工確認）
 grp.timeout	執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
 grp.output	輸出
 grp.behavior	其他
@@ -61,9 +64,9 @@ opt.capture	wgc(預設，被遮擋也能截) / dwm(DWM 縮圖，被遮擋也能�
 opt.roi	從交付的整張視窗畫面裡裁出以 x,y 為起點、w×h 大小的一塊。原點 (0,0) 是這張畫面自己的左上角像素（畫面對應的是使用者看到的那圈可見邊框，DWM 那圈透明 resize 邊框不在裡面），單位是物理像素且不依 DPI 縮放（本程序是 per-monitor v2，要按邏輯像素指定就自己乘那道縮放），所以這四個數永遠不會被當成桌面絕對座標。四個數只認十進位、逗號分隔；x 與 y 可為 0，w 與 h 至少 1，都不超過 16384。放不下就整張不落地：取影格之前就看得出放不下報 match.roi_out_of_range（不彈框、不寫檔案），取到影格之後才發現的報 capture.roi_invalid —— 不往裡挪、不裁到邊上為止、也不退回整張交出。裁剪排在取影格之後，所以它不改變授權：會從螢幕上取樣的那幾條照樣一定問人，--yes 不會因為「最後只留一小塊」而生效。結果裡 cropRect 是畫面像素座標，cropScreenRect 是同一個矩形的螢幕座標（核實得出畫面原點時才寫），裁前尺寸在 fullWidth/fullHeight、裁後就是 width/height。與 --client-area 互斥，配整張螢幕的目標說不通（capture.unsupported）
 opt.client-area	只交回視窗客戶區那一塊：在交付的整張視窗畫面裡再去掉標題列與三邊邊框。這個矩形照目標此刻的幾何量出來（GetClientRect 加 ClientToScreen），座標系與單位跟 --roi 完全同一套。量不出客戶區報 capture.roi_unmeasurable，有一邊落在交付畫面之外（掛在螢幕外、或中途改了尺寸）報 capture.roi_invalid，兩種都不退回整張交出。與 --roi 互斥
 opt.scale	把交付的這張圖等比縮小到上限之內：max-width=N 限寬、max-height=N 限高、max-pixels=N 限總像素數（N 都是十進位；邊長 1..16384，像素數 1..268435456）。三條互相獨立，可只給一條、也可一條裡用逗號串幾條（如 max-width=1920,max-pixels=2073600）；這一條寫多次時每條上限各記各的，重複給同一條時最後一個生效。三條都按同一個比例縮（取最緊的那一條），寬高各自向下取整；預設不放大，圖本來就在上限之內就原樣交付（結果裡 scaleApplied=false）。插值策略只有一個，而且是可預測的整數映射：最近鄰。順序是先裁（--roi / --client-area）後縮、再編碼，所以縮的是裁完的那一塊；結果裡 scaleFromWidth/scaleFromHeight 是縮之前的尺寸、width/height 是縮之後的，scaleMethod 是插值策略，映射按這個順序閉合。這一條不改變授權與影格上限：會讀桌面像素的路徑照樣一定彈框問人（--yes 不會因為最後交的是張小圖而生效），影格大到過不了影格形狀檢查的縮不回來，--roi 的越界判據也仍按原圖判
-opt.yes	跳過「只取所選視窗畫面」那條路徑的確認框。不保證目標一定有畫面，也不忽略權限、受保護內容、錯誤或覆蓋保護；任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。寫 --yes=false 表示明確要問
+opt.yes	只在「目標是單一視窗自身畫面、能力閘門確認這條路徑可用、目標身分已複核」三條同時成立時，才免掉這一次程式確認；目標不是視窗（螢幕 / 區域），或者任一項核實沒有通過，都退回正常確認。任何會從螢幕上取樣的路徑（bitblt、duplication、整張螢幕任何通道、dwm 的螢幕退路）一定會彈框，這個開關跳不過。一次確認只覆蓋彈框裡列出的那批目標：之後才加入的目標不會沿用先前那句「是」，要嘛重新確認，要嘛拒絕。系統授權層（例如 Wayland 的 Portal）是獨立的一層：--yes 既不能取消它，也不能讓它算已完成。寫 --yes=false 表示明確要問
 opt.timeout-ms	自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時，尚未開始的階段被拒絕、那一張不落地（已經提交完成的檔案不會被回滾），依階段報 match.timeout / capture.timeout / io.timeout
-opt.consent-timeout-ms	確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
+opt.consent-timeout-ms	確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout；期限之後才落地的「是」也不會改判成同意。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
 opt.out	輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
 opt.format	強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
 opt.quality	JPEG 品質，十進位 1..100，預設 100
@@ -267,6 +270,7 @@ cap.offscreen	視窗完全在螢幕之外，取不到像素
 cap.visible_only	該通道只能拷螢幕上可見的部分
 cap.bitblt_failed	BitBlt 螢幕失敗
 cap.unsupported	該取圖方式尚未實現
+cap.linux_backend_not_implemented_hint	這個 Linux 建置沒有擷取與目標列舉後端。先用 --capabilities / --diagnostics 看清工作階段；顯示伺服器連得上不等於已授權，也不等於可以截圖
 cap.auto_failed	auto 的退回通道全部失敗（%1）
 cap.timeout	自動處理預算 %1 ms 已用盡（實際用時 %2 ms）
 cap.timeout_hint	加大 --timeout-ms，或換一條不會卡住的取圖通道（被遮擋的視窗用 wgc / dwm）；沒有可中斷等待點的那一步只能靠期限到點時中止本工具的輔助程序
@@ -413,6 +417,11 @@ consent.head	本工具準備截取畫面，需要你同意。
 consent.targets	目標（共 %1 個）：%2
 consent.plan	取圖方式 %1，實際路徑 %2，圖片寫往 %3
 consent.history	每張成功交付的圖還會在程式自己那目錄下的 history 子目錄裡另存一份獨立副本（按本地日期分目錄，不會自動清理）。
+consent.program_facts	這筆請求來自 %1（版本 %2，行程 %3）。這些事實由本程式自己讀取，呼叫方無法指定。
+consent.request_source_untrusted	呼叫方自述（本程式沒有核實）：%1
+consent.request_source_none	呼叫方沒有提供這次請求的說明。
+consent.system_layer_required	這個平台要求作業系統自己的截圖授權，而本建置沒有提供該授權層，因此這次沒有截
+consent.system_layer_hint	程式確認不能取代系統授權層。請使用實作了該層的建置，或在不要求它的平台上執行。
 consent.dialog_closes	本對話框會在截圖開始前關閉，不會出現在圖裡。
 consent.ask	允許現在截圖嗎？
 consent.details_label	目標與輸出
@@ -422,10 +431,10 @@ consent.target_line	%1（區域 %2,%3 尺寸 %4x%5）
 consent.scope_window	這條路徑只取所選視窗自己的畫面，不會從桌面取樣其它視窗的像素。
 consent.scope_desktop	這條路徑取的是螢幕上那塊區域此刻的樣子：其它視窗、開啟的文件、通知、桌面上的文字都可能進圖。
 consent.yes_desktop	你給的 --yes 對這條路徑不生效：會拍到桌面像素的截圖必須問人。
-consent.yes_window	只想以後不被問：這類只取視窗畫面的路徑可以帶 --yes（會拍到桌面的路徑仍然一定要問）。
+consent.yes_window	只取視窗自身畫面的路徑，只有在本工具核實了目標確為單一視窗、且這條路徑本身可用時，--yes 才免掉這個框；會讀到螢幕的路徑仍然一定要問。
 consent.more_targets	另有 %1 個目標未列出
 consent.denied	使用者拒絕了這次截圖
-consent.denied_hint_window	未截取任何畫面，也沒有寫入檔案。這條路徑只取所選視窗自己的畫面，帶 --yes 就不再彈框（會拍到桌面的路徑仍然一定要問）
+consent.denied_hint_window	未截取任何畫面，也沒有寫入檔案。這條路徑只取所選視窗自己的畫面；只有目標與路徑都核實過時，--yes 才免掉確認（會拍到桌面的路徑仍然一定要問）
 consent.denied_hint_desktop	未截取任何畫面，也沒有寫入檔案。這條路徑會拍到桌面像素，--yes 與 --quiet 都跳不過；只要某個視窗的話改用 wgc / printwindow / dwm 並帶 --yes
 consent.unavailable	無法顯示確認對話框，已按拒絕處理
 consent.unavailable_hint	這個工作階段沒有可互動的桌面（服務、排程工作或鎖屏狀態），沒有人能同意截圖。%1

@@ -18,6 +18,7 @@
 #include "Json.h"
 #include "Lang.h"
 #include "SystemCompat.h"
+#include "core/Platform.h"
 #include "Version.h"
 
 namespace ecapture {
@@ -89,8 +90,16 @@ std::wstring HelpText() {
     t += Msg(L"help.output2") + L"\n";
     t += Msg(L"help.exit1") + L"\n";
     t += Msg(L"help.exit2") + L"\n";
-    t += Msg(L"help.status") + L"\n";
-    t += Msg(L"help.system") + L"\n";
+    // 两个平台的支持声明不同源：Windows 那份是内部版本下限，Linux 这份是"只读查询可跑、
+    // 采集后端未实现"。在 Windows 上逐字节保持原样，不改动 README 里的帮助摘录。
+    if (BuildPlatform() == PlatformKind::kWindows) {
+        t += Msg(L"help.status") + L"\n";
+        t += Msg(L"help.system") + L"\n";
+    } else {
+        t += Msg(L"help.status_linux") + L"\n";
+        t += Msg(L"help.system_linux") + L"\n";
+        t += Msg(L"help.linux_query") + L"\n";
+    }
     // 授权这件事写在选项目录里（grp.consent 那一行 + --yes 的说明），不另立一段正文：
     // 免得同一个规矩在两处各写一遍，改了一处忘了另一处。
     t += L"\n";
@@ -104,6 +113,12 @@ std::wstring HelpText() {
 }
 
 std::wstring VersionText() {
+    // Windows 那份是"声明的最低内部版本"，与运行时那道能力检查取同一个数；Linux 这份
+    // 不能冒充一个 Windows 构建号 —— 它报告的是本平台只读查询可跑、采集后端未实现。
+    if (BuildPlatform() != PlatformKind::kWindows) {
+        return std::wstring(L"EvernightCapture ") + kVersion +
+               L"  (ECAPTURE / linux)  stage=" + kStage + L"  sessionQuery=read-only\n";
+    }
     // minWindowsBuild 是本工具**对外声明**的最低 Windows 内部版本，与运行时那道能力检查取的是
     // 同一个数（src/SystemCompat.h 的 kSupportedMinBuild），所以脚本不必先读文档就能问出
     // "这个 exe 打算在哪种系统上工作"。它是声明，不是实测范围：实测只有 README

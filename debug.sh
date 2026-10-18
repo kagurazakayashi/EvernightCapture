@@ -4,7 +4,7 @@
 #
 # 三条硬规矩：
 #   1) 只调"本平台当前真能构建"的那几份可执行文件，要显式点名（--target / --exe）。
-#      完整 CLI（ecapture）在 Linux 上还没迁移，指名要它会当场得到原因，不会被换成别的进程；
+#      Linux 的 ecapture 只有只读查询入口，截图请求会明确报未实现；
 #      也就是说：这个入口永远不会默认发起一次真实截图。
 #   2) 默认配置是 Debug（带 -g 符号）；产物没有调试符号时如实警告，不假装能看清源码行。
 #   3) 不 sudo、不装东西。调试器不在 PATH 上就报缺依赖和建议命令。
@@ -25,8 +25,8 @@ usage() {
     cat <<'EOF'
 用法：./debug.sh [选项] [-- 传给被调试程序的参数]
 
-  --target core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|crop-tests|
-           image-tests|encode-tests|consent-tests|gui-probe|gui-tests
+  --target ecapture|session-tests|core-tests|wgc-tests|cli-text-tests|save-tests|ipc-tests|
+           crop-tests|image-tests|encode-tests|consent-tests|gui-probe|gui-tests
                                                     要调试哪个目标，默认 core-tests
   --exe <路径>                               直接点名要调试的可执行文件
   --debugger gdb|lldb                        调试器，默认自动挑（先 gdb 后 lldb）

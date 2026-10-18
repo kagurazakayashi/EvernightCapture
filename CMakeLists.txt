@@ -308,6 +308,7 @@ if(ECAPTURE_ENABLE_GUI)
     add_executable(ecapture-gui-tests
       tests/gui_state.cpp
       src/Consent.cpp
+      src/ConsentDialog.cpp
       src/ConsentPrompt.cpp
       src/gui/WxGuiRuntime.cpp
       src/gui/WxGuiDialog.cpp
@@ -360,6 +361,7 @@ endif()
 add_executable(ecapture-consent-tests
   tests/consent_state.cpp
   src/Consent.cpp
+  src/ConsentDialog.cpp   # 判据要直接检查弹框内容（来源标签 / 净化 / 截断），不链 wx
   src/CaptureScope.cpp
   src/Deadline.cpp
   src/CliOptions.cpp
@@ -373,6 +375,79 @@ else()
   target_link_libraries(ecapture-consent-tests PRIVATE Threads::Threads)
 endif()
 set_target_properties(ecapture-consent-tests PROPERTIES OUTPUT_NAME "ecapture-consent-tests")
+
+# ---------------------------------------------------------------------------
+# Linux 只读会话 / 运行能力查询
+#
+# 这一组只在 Linux 定义：主程序 ecapture 是"查询 + 明确未实现"的入口（没有采集后端），
+# ecapture-session-tests 是可注入事实的离线判据 + 真实只读探测。三个探测库都是可选依赖：
+# 找到就把 ECAPTURE_HAVE_* 与链接项挂上，找不到时探针如实报 library_not_compiled，
+# 不自动安装、不删功能、也不拿"系统上应该有"当已经编译进来。
+# ---------------------------------------------------------------------------
+if(NOT WIN32)
+  find_package(PkgConfig QUIET)
+  if(PkgConfig_FOUND)
+    pkg_check_modules(EC_XCB QUIET xcb)
+    pkg_check_modules(EC_WAYLAND QUIET wayland-client)
+    pkg_check_modules(EC_DBUS QUIET dbus-1)
+    pkg_check_modules(EC_PIPEWIRE QUIET libpipewire-0.3)
+  endif()
+
+  set(ECAPTURE_SESSION_PROBE_DEFS "")
+  set(ECAPTURE_SESSION_PROBE_INCLUDES "")
+  set(ECAPTURE_SESSION_PROBE_LIBS "")
+  if(EC_XCB_FOUND)
+    list(APPEND ECAPTURE_SESSION_PROBE_DEFS ECAPTURE_HAVE_XCB)
+    list(APPEND ECAPTURE_SESSION_PROBE_INCLUDES ${EC_XCB_INCLUDE_DIRS})
+    list(APPEND ECAPTURE_SESSION_PROBE_LIBS ${EC_XCB_LIBRARIES})
+  endif()
+  if(EC_WAYLAND_FOUND)
+    list(APPEND ECAPTURE_SESSION_PROBE_DEFS ECAPTURE_HAVE_WAYLAND)
+    list(APPEND ECAPTURE_SESSION_PROBE_INCLUDES ${EC_WAYLAND_INCLUDE_DIRS})
+    list(APPEND ECAPTURE_SESSION_PROBE_LIBS ${EC_WAYLAND_LIBRARIES})
+  endif()
+  if(EC_DBUS_FOUND)
+    list(APPEND ECAPTURE_SESSION_PROBE_DEFS ECAPTURE_HAVE_DBUS)
+    list(APPEND ECAPTURE_SESSION_PROBE_INCLUDES ${EC_DBUS_INCLUDE_DIRS})
+    list(APPEND ECAPTURE_SESSION_PROBE_LIBS ${EC_DBUS_LIBRARIES})
+  endif()
+  if(EC_PIPEWIRE_FOUND)
+    list(APPEND ECAPTURE_SESSION_PROBE_DEFS ECAPTURE_HAVE_PIPEWIRE)
+    list(APPEND ECAPTURE_SESSION_PROBE_INCLUDES ${EC_PIPEWIRE_INCLUDE_DIRS})
+    list(APPEND ECAPTURE_SESSION_PROBE_LIBS ${EC_PIPEWIRE_LIBRARIES})
+  endif()
+
+  add_executable(ecapture-session-tests
+    tests/session_state.cpp
+    src/SessionReport.cpp
+    src/platform/linux/PosixSessionProbe.cpp
+    src/Json.cpp
+    src/core/TextCoding.cpp)
+  ecapture_apply_common(ecapture-session-tests)
+  target_compile_definitions(ecapture-session-tests PRIVATE ${ECAPTURE_SESSION_PROBE_DEFS})
+  target_include_directories(ecapture-session-tests PRIVATE ${ECAPTURE_SESSION_PROBE_INCLUDES})
+  target_link_libraries(ecapture-session-tests PRIVATE
+    ${ECAPTURE_SESSION_PROBE_LIBS} Threads::Threads)
+  set_target_properties(ecapture-session-tests PROPERTIES OUTPUT_NAME "ecapture-session-tests")
+
+  add_executable(ecapture
+    src/platform/linux/EntryLinux.cpp
+    src/platform/linux/PosixCliArgs.cpp
+    src/platform/linux/PosixEnvReport.cpp
+    src/platform/linux/PosixSessionProbe.cpp
+    src/SessionReport.cpp
+    src/CliOptions.cpp
+    src/CliText.cpp
+    src/Json.cpp
+    src/CaptureScope.cpp
+    ${ECAPTURE_HOST_SOURCES}
+    ${ECAPTURE_LANG_SOURCES})
+  ecapture_apply_common(ecapture)
+  target_compile_definitions(ecapture PRIVATE ${ECAPTURE_SESSION_PROBE_DEFS})
+  target_include_directories(ecapture PRIVATE ${ECAPTURE_SESSION_PROBE_INCLUDES})
+  target_link_libraries(ecapture PRIVATE ${ECAPTURE_SESSION_PROBE_LIBS} Threads::Threads)
+  set_target_properties(ecapture PROPERTIES OUTPUT_NAME "ecapture")
+endif()
 
 # ===========================================================================
 # 【平台层 · Windows】以下整段只在 Windows 定义
@@ -435,7 +510,8 @@ add_executable(ecapture
   src/Notification.cpp
   src/platform/windows/NotificationToast.cpp
   src/Consent.cpp
-  # 确认框的文案层与 wxWidgets 实现（Linux 共用同一批源文件；见 src/gui/）。
+  # 确认框的文案层（可信 / 不可信来源 + 外部文本净化）与 wxWidgets 实现。
+  src/ConsentDialog.cpp
   src/ConsentPrompt.cpp
   src/gui/WxGuiRuntime.cpp
   src/gui/WxGuiDialog.cpp
@@ -1407,7 +1483,6 @@ endif()
 # 这份名单由 Windows 分支自己复核（下面 get_property 那一条）：名单与真实定义对不上，
 # Windows 配置阶段直接失败。这样 Linux 报出来的"还建不了"不会有一天变成过期清单。
 set(ECAPTURE_WINDOWS_ONLY_TARGETS
-  ecapture
   ecapture-example-ini
   ecapture-worker-tests
   ecapture-identity-tests
@@ -1444,12 +1519,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
+  foreach(_ec_t IN ITEMS ecapture ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

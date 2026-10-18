@@ -106,10 +106,9 @@ ec_pick_generator() {
 # ---------------------------------------------------------------------------
 # 目标名
 #
-# 这一张表管住"脚本里能点名的可执行目标"。Linux 现在是离线判据 + 一个 wx 依赖探针 +
-# 一条真正创建 wxWidgets 对话框的 GUI 判据。完整 CLI（ecapture）仍然只在 CMake 的
-# 【平台层 · Windows】那一段定义 —— 指名要它时如实拒绝并说清缺口，既不静默忽略，
-# 也不退回运行别处那份旧的 ECAPTURE.EXE。
+# 这一张表管住"脚本里能点名的可执行目标"。Linux 现在已有只读会话查询入口
+# （ecapture，没有采集后端）与它的离线判据；完整截图后端仍然只在 Windows 分支定义。
+# 指名要一个本平台没有的目标时，如实拒绝并说清缺口。
 # ---------------------------------------------------------------------------
 EC_TARGET_CMAKE=""
 EC_TARGET_LAYER=""
@@ -125,21 +124,12 @@ ec_select_target() {
         encode-tests|ecapture-encode-tests) EC_TARGET_CMAKE="ecapture-encode-tests" ;;
         ipc-tests|ecapture-ipc-tests) EC_TARGET_CMAKE="ecapture-ipc-tests" ;;
         consent-tests|ecapture-consent-tests) EC_TARGET_CMAKE="ecapture-consent-tests" ;;
+        session-tests|ecapture-session-tests) EC_TARGET_CMAKE="ecapture-session-tests" ;;
         gui-probe|ecapture-gui-probe) EC_TARGET_CMAKE="ecapture-gui-probe" ;;
         gui-tests|ecapture-gui-tests) EC_TARGET_CMAKE="ecapture-gui-tests" ;;
-        ecapture|ecapture.exe|ECAPTURE.EXE)
-            ec_die_precondition "完整 CLI（ecapture / ECAPTURE.EXE）在 Linux 上暂不可构建。
-命令行文本这一层已经跨平台了（参数解析、配置、四语文案、路径与文件、标准流都在共用源文件里），
-辅助进程通信这一层的 Linux 平台服务也已经落地（PosixHostProcess，判据在 ipc-tests），
-确认框与通知的 wxWidgets 实现也已经跨平台（gui-tests 在 Linux 上真建对话框），
-还缺的是这几段：src/Report.cpp 里响应组装要调的窗口/屏幕枚举与取帧通道、EnvReport 的 Windows
-探测、NotificationToast 的 WinRT 通知，以及 Linux 截图后端本体。
-图像处理与编码那一段已经跨平台（crop-tests / image-tests / encode-tests 三条判据都在 Linux 真跑）。
-现在能跑的：core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests、crop-tests、
-image-tests、encode-tests、consent-tests（都一个像素都不从屏幕取），以及 gui-probe、gui-tests。"
-            ;;
-        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests consent-tests gui-probe gui-tests）" ;;
-        *) ec_die_args "不认识的目标 '$want'（可选：core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests consent-tests gui-probe gui-tests；ecapture 会如实告知暂不可构建）" ;;
+        ecapture|ecapture.exe|ECAPTURE.EXE) EC_TARGET_CMAKE="ecapture" ;;
+        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：ecapture core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests consent-tests session-tests gui-probe gui-tests）" ;;
+        *) ec_die_args "不认识的目标 '$want'（可选：ecapture core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests consent-tests session-tests gui-probe gui-tests）" ;;
     esac
     case "$EC_TARGET_CMAKE" in
         ecapture-gui-probe|ecapture-gui-tests) EC_TARGET_LAYER="gui" ;;

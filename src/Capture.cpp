@@ -24,6 +24,8 @@
 #include "FallbackChain.h"   // auto 那条回退链本体与"换后端有没有意义"的判据（离线判据注入假后端）
 #include "FileSave.h"
 #include "HistoryArchive.h"   // 主交付之外那一份历史副本（命名、独占提交与失败归类都在那一层）
+#include "HostProcess.h"      // SelfImagePath：弹框上"本程序核实"那一格由平台服务交回
+#include "Version.h"          // kVersion：同上，版本号只有这一处
 #include "HostPath.h"         // MonotonicClockMs：elapsedMs 与交付那一步用同一把单调时钟
 #include "ImageOps.h"
 #include "Isolation.h"    // IsolatedMatch / BlockedToDiagnostic（条件求值的隔离入口）
@@ -92,10 +94,13 @@ struct AttemptAuth {
 };
 
 AttemptAuth AuthorizeAttempt(ConsentGate& gate, const wchar_t* path, const std::wstring& targetKey,
-                             const PhysRect& area, Diagnostic* err) {
+                             const PhysRect& area, const YesEligibility& yes,
+                             const ConsentBindingVerifier& verify, Diagnostic* err) {
     AttemptAuth auth;
     if (ScopeOf(path) != PixelScope::kDesktop) {
-        auth.ok = gate.AuthorizeWindow(path, targetKey, err);
+        // 窗口内容路径：--yes 只有在调用方交齐三件事实时才可能跳过程序确认；
+        // 人答"是"之后，判定器还会用同一个 verify 做一次授权后 / 取帧前的绑定核实。
+        auth.ok = gate.AuthorizeWindow(path, targetKey, err, yes, verify);
         return auth;
     }
     auth.ok = gate.AuthorizeDesktop(path, targetKey, area, &auth.permit, err) &&
@@ -166,9 +171,9 @@ bool CallBackend(const wchar_t* stage, const wchar_t* backend, Fn fn, Diagnostic
 // timeoutMs 是"这一步自己愿意等多久"（等帧、泵消息），dl 是"这一次运行还剩多少预算"。
 // 每条通道真正等下去的时长都是两者里小的那个 —— 预算不被任何一条通道重新领一份。
 bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const PhysRect& area,
-                       const WindowTarget& win, CaptureMethod method, uint32_t timeoutMs,
-                       const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
-                       CapturedFrame* out, Diagnostic* err) {
+                       const WindowTarget& win, CaptureMethod method, bool capabilityConfirmed,
+                       uint32_t timeoutMs, const Deadline& dl, const CursorRequest& cursor,
+                       const HdrRequest& hdr, CapturedFrame* out, Diagnostic* err) {
     if (!win.Recheck(IdentityScope::kCheap, err)) return false;
 
     const CaptureBackend* backend = FindCaptureBackend(method);
@@ -181,7 +186,16 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const P
         return false;
     }
 
-    AttemptAuth auth = AuthorizeAttempt(gate, backend->windowPath, targetKey, area, err);
+    // --yes 想跳过程序确认，必须先交齐三件事实：目标是单扇窗口自己的画面、
+    // 能力闸门确认这条通道可用、授权前那次身份复核已经通过。三缺一都退回正常确认。
+    // 授权后、签发前判定器还会用同一个回调再核一次身份（"人点头之后目标还是不是它"）。
+    const YesEligibility yesEligibility{/*singleWindowTarget=*/true, capabilityConfirmed,
+                                       /*identityVerified=*/true};
+    const ConsentBindingVerifier verify = [&win](Diagnostic* e) {
+        return win.Recheck(IdentityScope::kCheap, e);
+    };
+    AttemptAuth auth = AuthorizeAttempt(gate, backend->windowPath, targetKey, area, yesEligibility,
+                                        verify, err);
     if (!auth.ok) {
         // 一帧都不去取。诊断里补上"是哪条通道要去的"：路径名在 value，通道名在 backend。
         if (err && err->backend.empty()) err->backend = backend->name;
@@ -227,8 +241,11 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
         return false;
     }
 
-    AttemptAuth auth =
-        AuthorizeAttempt(gate, backend->screenPath, targetKey, wanted.screen.bounds, err);
+    // 屏幕路径永远是桌面像素：--yes 的资格与绑定核实回调在这里都没有意义（判定器内部
+    // 用拓扑快照做绑定核实），所以两项都交空。
+    AttemptAuth auth = AuthorizeAttempt(gate, backend->screenPath, targetKey,
+                                        wanted.screen.bounds, YesEligibility{},
+                                        ConsentBindingVerifier{}, err);
     if (!auth.ok) {
         if (err && err->backend.empty()) err->backend = backend->name;
         return false;   // 没通过授权：整块屏幕一个像素都不读
@@ -289,10 +306,13 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const P
                        CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
                        bool* fatal) {
     if (method != CaptureMethod::kAuto) {
+        const bool capabilityConfirmed =
+            std::find(chain.begin(), chain.end(), method) != chain.end();
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
                                return CaptureOneChannel(gate, targetKey, area, win, method,
-                                                        timeoutMs, dl, cursor, hdr, out, err);
+                                                        capabilityConfirmed, timeoutMs, dl, cursor,
+                                                        hdr, out, err);
                            },
                            err, fatal);
     }
@@ -302,8 +322,10 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const P
             return CallBackend(
                 stages::kCapture, CaptureMethodName(m),
                 [&] {
-                    return CaptureOneChannel(gate, targetKey, area, win, m, timeoutMs, dl, cursor,
-                                             hdr, frame, e);
+                    const bool capabilityConfirmed =
+                        std::find(chain.begin(), chain.end(), m) != chain.end();
+                    return CaptureOneChannel(gate, targetKey, area, win, m, capabilityConfirmed,
+                                             timeoutMs, dl, cursor, hdr, frame, e);
                 },
                 e, fat);
         });
@@ -769,6 +791,19 @@ CaptureOutcome RunCapture(const Options& opt) {
     // 真人等待从上面那份整批自动预算里暂停出去（判定器只在真要弹框时套上暂停作用域；
     // --consent-timeout-ms 有自己的秒表，不跟着冻结）。dl 比判定器活得久，这里只借指针。
     gateCfg.autoBudget = &dl;
+    // 授权要求层与"谁在请求"这两件事在弹框之前定下来：
+    //   * requiredGrantLayers 来自编译期平台族（Windows / X11 只有程序确认；Wayland 还要系统
+    //     授权层）。本步只把系统层状态预留好，绝不拿程序确认冒充它。
+    //   * 程序核实的事实由平台服务与版本头给出；调用方自述（--purpose）单独标"未核实"。
+    gateCfg.requiredGrantLayers = RequiredGrantLayers(BuildPlatform());
+    gateCfg.requestSource = opt.purpose;
+    gateCfg.requestSourceGiven = !opt.purpose.empty();
+    {
+        std::wstring selfPath;
+        if (hostproc::SelfImagePath(&selfPath)) gateCfg.programPath = std::move(selfPath);
+    }
+    gateCfg.programVersion = kVersion;
+    gateCfg.programPid = CurrentProcessId();
     for (const Target& t : targets) {
         GateTarget gt;
         gt.screen = t.isScreen;

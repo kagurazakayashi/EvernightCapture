@@ -42,6 +42,7 @@
 #include "ProcessIntegrity.h"
 #include "SystemCompat.h"
 #include "core/Error.h"   // Tri：一条问句的三值下场（本体已搬到核心，这里只继续用）
+#include "core/SessionCapability.h"   // Linux 会话事实与运行能力（平台无关模型）
 
 namespace ecapture {
 
@@ -155,6 +156,28 @@ inline constexpr const wchar_t* kHdrLayoutIsNotColorSpace =
 // images[].history 那一格与同码的那条 errors 记录，不是这里。
 inline constexpr const wchar_t* kHistoryWritabilityNotProbed =
     L"history_root_writability_not_probed";
+// ---- Linux 会话查询新增的边界（只增不改名；Windows 上不出现）----
+// 这一份构建没有 Linux 采集后端：查询能报事实，但不能因此回答"可以截图"。
+inline constexpr const wchar_t* kLinuxBackendNotImplemented =
+    L"linux_capture_backend_not_implemented";
+// 只读查询不选 Portal 来源、不建捕获会话、不读像素、不弹系统授权界面。
+inline constexpr const wchar_t* kSessionQueryReadOnly = L"session_query_is_read_only";
+// 环境变量只是线索：会话类型 / DISPLAY / 桌面名称存在不等于服务可用，更不等于已授权。
+inline constexpr const wchar_t* kEnvironmentNotEvidence =
+    L"environment_variables_are_not_evidence";
+inline constexpr const wchar_t* kDesktopNameNotEvidence =
+    L"desktop_name_is_not_evidence";
+// XWayland 只覆盖实际 X11 窗口，不能当原生 Wayland 窗口查询或授权的替代。
+inline constexpr const wchar_t* kXwaylandNotNative = L"xwayland_covers_x11_windows_only";
+// 合成器不提供全局窗口列表：不虚构列表，也不拿 XWayland 的列表顶替。
+inline constexpr const wchar_t* kWaylandNoWindowList = L"wayland_has_no_global_window_list";
+// Portal 的来源类型只是能力事实；选来源与系统授权永远要一个人完成。
+inline constexpr const wchar_t* kPortalNeedsInteraction =
+    L"portal_source_selection_requires_a_person";
+// SSH 会话不等于无桌面：转发的显示仍可能连得上；反过来也成立。
+inline constexpr const wchar_t* kSshNotHeadless = L"ssh_session_does_not_imply_headless";
+// 问不出来就是 unknown，不折成 no。
+inline constexpr const wchar_t* kUnknownIsNotNo = L"unknown_is_not_no";
 }  // namespace caveat
 
 // 本项目**唯一实测过**这套工具的环境。README《系统支持》与 AGENTS.md 里"已实测"记的就是它，
@@ -183,6 +206,15 @@ constexpr uint32_t kEnvContractVersion = 1;
 struct EnvProbe {
     // 本机 Windows 内部版本（ProbeOsVersion；known=false = 这一问没成功）
     OsVersion os;
+
+    // Linux：系统名与内核版本（Windows 上留空）。它们不是 Windows 内部版本，
+    // 也不参与任何一条通道的版本门槛。
+    std::wstring osSystem;
+    std::wstring kernelRelease;
+
+    // Linux 会话事实（X11 / Wayland / Portal / PipeWire / SSH / 无桌面）。
+    // Windows 探针不填，BuildEnvReport 也不会声称有这份报告。
+    SessionFacts session;
 
     // CPU 架构（GetNativeSystemInfo）。arch 为空 = 认不出来。
     std::wstring arch;
@@ -389,6 +421,11 @@ struct EnvReport {
 
     // 本机系统
     OsVersion os;
+    // Linux：sysname 与 release（Windows 上为空）。它们不是 Windows 内部版本，
+    // 也不参与任何一条通道的版本门槛；留着这两个字段是为了让 Linux 报告
+    // 不必把内核版本硬塞进 arch 或 buildId。
+    std::wstring osSystem;
+    std::wstring kernelRelease;
     uint32_t declaredMinBuild = 0;   // 本工具对外声明的下限（kSupportedMinBuild）
     uint32_t encoderMinBuild = 0;    // 任何一张图都要求的那一道（kEncoder）
     uint32_t verifiedOsBuild = verified_env::kOsBuild;
@@ -454,6 +491,13 @@ struct EnvReport {
     bool privacyIncludesPaths = false;
 
     std::vector<std::wstring> caveats;
+
+    // Linux 会话查询的报告本体。hasSessionReport=false（Windows）时渲染器不写这一节，
+    // 所以既有 Windows 文档的字段一个都不变。
+    SessionReport sessionReport;
+    bool hasSessionReport = false;
+    // 这份查询读过哪些环境变量的**名字**（只报名字，不报值）。Windows 上为空。
+    std::vector<std::wstring> environmentAllowlist;
 
     // --verbose 才展开的"每一问的原始答案"，方便用户核对后再提交（不展开时上面那一段已经够了）。
     // 存的是探针的副本：报告要能脱离探针的生命周期被断言与渲染（离线判据就是这么用的）。

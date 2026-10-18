@@ -226,12 +226,25 @@ owner-authorized decision; this tool never does any of it, and it never elevates
 
 | Pixels come from | Route in `images[].path` | Without `--yes` | With `--yes` |
 | --- | --- | --- | --- |
-| the selected window itself | `wgc`, `printwindow`, `dwm.thumbnail` | one modal dialog | not asked |
+| the selected window itself | `wgc`, `printwindow`, `dwm.thumbnail` | one modal dialog | not asked **only** when the target is a single window, the capability gate confirmed the route and the identity was re-checked |
 | the screen at that rectangle | `bitblt.screen`, `duplication.frame`, `dwm.screen` | **asked** | **still asked** |
 | a whole monitor | `screen.wgc`, `screen.bitblt`, `screen.duplication` | **asked** | **still asked** |
 
 - The tier is decided by **where the pixels actually come from**, never by the channel name you typed. An unregistered
   or unprovable route counts as a desktop route, so a new channel that forgot to register itself ends up stricter.
+- **A dialog return is an answer, not a grant.** `src/core/ConsentState.h` keeps eight states per scope
+  (`not_requested` / `waiting` / `granted` / `denied` / `cancelled` / `timed_out` / `stale` / `error`); only
+  `granted` is a permission, and it needs both the human "Allow" and a binding re-check. "Allow" without that
+  re-check stays `waiting`; a "Yes" arriving after the wait deadline never becomes consent; deny / close / cancel /
+  timeout / dialog-init-failure each stop the rest of the request (no backend switch, no second ask). `stale` means
+  "that approval no longer describes this target" - re-discover and ask again; it is not a denial and not a retry.
+- `--yes` is conditional, not a blanket "window routes are free": it skips the program dialog only when the target is a
+  single window's own image, the capability gate confirmed that route in this build, and the target identity was
+  re-checked. Missing any of the three falls back to the normal dialog. A batch grant covers only the targets the
+  dialog listed; a target added later is confirmed again or refused, never covered by an earlier "yes".
+- System authorization (the Wayland portal) is a **separate layer** reserved as `SystemAuthState`: `--yes` neither
+  removes the requirement nor satisfies it. On Windows / X11 there is no such layer; do not tell a user that
+  `--yes` means "authorized" in general - it only means the program dialog was skipped for a verified window image.
 - **Nothing skips a desktop route**: not `--yes`, not `--quiet`, not an environment variable, not stdin, not who is
   calling. There is no hidden bypass switch and no public `--worker` entry point. The repository does get past the
   dialog in two different ways during testing, and they are not the same thing - do not read one as covering the
@@ -239,8 +252,9 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   * an **in-process fake**: `tests/consent_state.cpp` answers `ConsentGate` with a scripted `FakePrompt`. No window
     appears and no pixel is read, and it is linked only into test binaries - it is not reachable from `ECAPTURE.EXE`.
   * a **real dialog being clicked**: `Click-EcDialogButton` in `tests/harness.psm1` posts `BM_CLICK` to a control of
-    the actual program-owned wxWidgets dialog (the helper also understands the legacy `#32770` class and maps
-    `IDYES`/`IDNO` to `wxID_YES`/`wxID_NO`), and under `-SimulateConsent` the desktop suites (`channels.ps1`,
+    the actual program-owned wxWidgets dialog (the helper locates the `wxID_YES` / `wxID_NO` controls and keeps a
+    visible-top-level fallback; the old native Win32 dialog class `#32770` belongs to superseded builds), and under
+    `-SimulateConsent` the desktop suites (`channels.ps1`,
     `screen.ps1`, `dup.ps1`, `identity.ps1`) answer `IDYES` to the same dialog that would be asking about the live
     screen. That runs only because
     the user deliberately chose a dedicated desktop and asked for those tests; it is a machine clicking a machine-made
@@ -254,7 +268,10 @@ owner-authorized decision; this tool never does any of it, and it never elevates
 - **The dialog is a program-owned wxWidgets dialog**: two buttons, "Allow" and "Do not allow" (localized), with the
   default focus and default button on **Do not allow**. Only an explicit "Allow" approves. Clicking "Do not allow",
   closing with `X`, or pressing `Esc` all count as a refusal; the tool distinguishes them internally but none of them
-  is consent. The user may also let `--consent-timeout-ms` expire, which is a timeout refusal, never consent.
+  is consent. The dialog separately shows facts this program read itself (executable path, version, process id) and
+  the caller-provided description (labelled unverified), and it sanitises external text before display: control and
+  bidi / zero-width characters are replaced, long titles are truncated with an ellipsis, so a crafted window title
+  cannot forge extra dialog lines. The user may also let `--consent-timeout-ms` expire, which is a timeout refusal, never consent.
 - **Do not answer the dialog for the user** (no `SendMessage`, no UI automation, no scripted click, no simulated Yes -
   the repository's own `Click-EcDialogButton` included; the fact that a desktop test suite can drive it is not a
   permission for you to) and do not fake an answer. Before starting a desktop route, tell the user what will be in the

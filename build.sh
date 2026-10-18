@@ -26,10 +26,10 @@ usage() {
                                           （RelWithDebInfo 带调试符号，调试时可优先选它）
   --compiler gcc|clang|<编译器路径>        指定编译器；留空则用 $CXX，再退到 PATH 上的 g++/clang++
   --target <名字>                          只构建某个目标，可重复给
-                                          可选：core-tests wgc-tests cli-text-tests save-tests
-                                                ipc-tests crop-tests image-tests encode-tests
-                                                consent-tests gui-probe gui-tests
-                                          （ecapture 会如实告知它在 Linux 上暂不可构建）
+                                          可选：ecapture ecapture-session-tests core-tests
+                                                wgc-tests cli-text-tests save-tests ipc-tests
+                                                crop-tests image-tests encode-tests consent-tests
+                                                gui-probe gui-tests
   --list-targets                          打印当前平台可构建与暂不可构建的目标清单，不构建
   --clean                                 先删掉这一份构建目录再重新配置（只删 build-linux 下那一个）
   --gui                                   wxWidgets 缺失时直接失败（默认找到了才建 GUI 目标）
@@ -109,9 +109,10 @@ if [ "$LIST_ONLY" -eq 1 ]; then
         sed -n 's/^windows-only=//p' "$EC_BUILDABLE_FILE" | tr ',' '\n' | sed 's/^/  /'
     else
         ec_note "这一份构建目录还没配置过，先跑一次 ./build.sh 再 --list-targets 才有清单。"
-        ec_note "按 CMakeLists.txt 当前的划分，Linux 可构建：core-tests、wgc-tests、cli-text-tests、save-tests、"
-        ec_note "ipc-tests、crop-tests、image-tests、encode-tests、consent-tests；装了 wxWidgets 再加 gui-probe 与 gui-tests。"
-        ec_note "完整 CLI（ecapture）暂不可构建。"
+        ec_note "按 CMakeLists.txt 当前的划分，Linux 可构建：ecapture（只读查询）、ecapture-session-tests、"
+        ec_note "core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests、crop-tests、image-tests、encode-tests、consent-tests；"
+        ec_note "装了 wxWidgets 再加 gui-probe 与 gui-tests。"
+        ec_note "Linux 采集后端仍未实现：ecapture 对截图请求返回 capture.unsupported（退出码 7）。"
     fi
     exit 0
 fi

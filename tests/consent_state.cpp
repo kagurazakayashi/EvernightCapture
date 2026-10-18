@@ -7,6 +7,7 @@
 //
 // 这个可执行文件不含任何取帧代码：它只链接纯逻辑那几份源文件（见 CMakeLists.txt）。
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <climits>
@@ -24,9 +25,12 @@
 #include "../src/CaptureScope.h"
 #include "../src/CliOptions.h"
 #include "../src/Consent.h"
+#include "../src/ConsentDialog.h"        // 弹框内容构造（纯函数，不链 wx）
 #include "../src/Deadline.h"
 #include "../src/Lang.h"
 #include "../src/ScreenMatch.h"
+#include "../src/core/ConsentState.h"    // 状态机与两层授权判据
+#include "../src/core/DisplayText.h"     // 安全展示
 
 using namespace ecapture;
 
@@ -130,8 +134,16 @@ struct Fixture {
     FakePrompt prompt;
     ConsentGate gate;
 
-    Fixture(bool yes, std::vector<GateTarget> targets)
-        : gate(Config(yes, std::move(targets)), prompt, FakeTopology) {}
+    Fixture(bool yes, std::vector<GateTarget> targets,
+            uint32_t requiredLayers = DefaultRequiredGrantLayers())
+        : gate(MakeConfig(yes, std::move(targets), requiredLayers), prompt, FakeTopology) {}
+
+    static GateConfig MakeConfig(bool yes, std::vector<GateTarget> targets,
+                                 uint32_t requiredLayers) {
+        GateConfig c = Config(yes, std::move(targets));
+        c.requiredGrantLayers = requiredLayers;
+        return c;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -165,6 +177,18 @@ const PhysRect kAreaA = R(100, 100, 500, 400);
 const PhysRect kAreaB = R(600, 0, 900, 300);
 const std::wstring kA = L"0xAAAA";
 const std::wstring kB = L"0xBBBB";
+
+// --yes 想跳过程序确认时必须交齐的三件事实（写成一个夹具，测试里一眼看得出给了什么）。
+YesEligibility EligibleYes() { return YesEligibility{true, true, true}; }
+// 授权后绑定核实：正常通过 / 目标已经变了。
+bool VerifyOk(Diagnostic*) { return true; }
+bool VerifyTargetChanged(Diagnostic* err) {
+    if (err) {
+        err->code = codes::kTargetChanged;
+        err->stage = stages::kConsent;
+    }
+    return false;
+}
 
 std::vector<GateTarget> TwoTargets() {
     return {Target(kA.c_str(), kAreaA), Target(kB.c_str(), kAreaB)};
@@ -304,19 +328,19 @@ int main() {
     {
         Fixture f(true, TwoTargets());
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "带 --yes：窗口内容路径放行");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "带 --yes：窗口内容路径放行");
         Check(f.prompt.asks == 0, "带 --yes：一次框都没弹");
     }
     {
         Fixture f(false, TwoTargets());
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "不带 --yes：第一次问人之后放行");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "不带 --yes：第一次问人之后放行");
         Check(f.prompt.asks == 1, "不带 --yes：弹了一次");
         Check(f.prompt.asked[0].scope == PixelScope::kWindowContent, "问的是窗口内容这一级");
         Check(f.prompt.asked[0].targets == 2, "把整批两个目标都列给人看了");
         Check(f.prompt.asked[0].outputs == 2, "把整批输出名都列给人看了");
         Check(!f.prompt.asked[0].yesGiven, "这一轮没有 --yes");
-        Check(f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err),
+        Check(f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err, EligibleYes(), VerifyOk),
               "同批次第二个目标 / 另一条窗口路径不再重复弹框");
         Check(f.prompt.asks == 1, "一次确认覆盖本次列出的那一批目标");
     }
@@ -328,7 +352,7 @@ int main() {
         Fixture f(false, TwoTargets());
         f.prompt.answers = {ConsentAnswer::kDeclined};
         Diagnostic err;
-        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "答\"否\"就不放行");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "答\"否\"就不放行");
         Check(CodeIs(err, codes::kAccessDenied), "拒绝的码是 capture.access_denied");
         Check(err.stage == stages::kConsent, "拒绝的 stage 是 consent");
         Check(err.target == kA, "拒绝带上是哪个目标");
@@ -337,7 +361,7 @@ int main() {
         Check(f.gate.Refused(), "判定器记住\"已经被人拒过\"");
         const int before = f.prompt.asks;
         Diagnostic err2;
-        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err2),
+        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err2, EligibleYes(), VerifyOk),
               "被拒之后同批次其它目标也不再截（不换后端、不重试）");
         Check(f.prompt.asks == before, "被拒之后不重复弹框骚扰人");
         std::optional<DesktopPermit> permit;
@@ -351,7 +375,7 @@ int main() {
         Fixture f(false, TwoTargets());
         f.prompt.answers = {ConsentAnswer::kDeclined};
         Diagnostic err;
-        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "答\"否\"= 关框，都不放行");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "答\"否\"= 关框，都不放行");
     }
 
     // =========================================================================
@@ -362,7 +386,7 @@ int main() {
         f.prompt.answers = {ConsentAnswer::kInitFailed};
         f.prompt.initFailedNativeError = 21;   // ERROR_NOT_READY：一个具体的系统原值
         Diagnostic err;
-        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "弹不出框就不放行");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "弹不出框就不放行");
         Check(CodeIs(err, codes::kConsentUnavailable),
               "弹不出框给的是 capture.consent_unavailable，不是\"用户拒绝\"");
         Check(err.win32 == 21, "把\"为什么弹不出来\"的系统原值带出去");
@@ -374,7 +398,7 @@ int main() {
         Fixture f(true, TwoTargets());
         f.prompt.answers = {ConsentAnswer::kInitFailed};
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kDwmThumbnail, kA, &err),
+        Check(f.gate.AuthorizeWindow(paths::kDwmThumbnail, kA, &err, EligibleYes(), VerifyOk),
               "没有交互桌面时，带 --yes 的窗口内容路径照旧可以截");
         Check(f.prompt.asks == 0, "这条路一次都不弹框");
     }
@@ -399,7 +423,7 @@ int main() {
         // 范围升级：先确认了窗口内容，不等于确认了桌面
         Fixture f(false, TwoTargets());
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "不带 --yes：先确认窗口内容");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "不带 --yes：先确认窗口内容");
         Check(f.prompt.asks == 1, "窗口那一级弹了一次");
         std::optional<DesktopPermit> permit;
         Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err),
@@ -411,7 +435,7 @@ int main() {
         Fixture f(false, TwoTargets());
         f.prompt.answers = {ConsentAnswer::kAccepted, ConsentAnswer::kDeclined};
         Diagnostic err;
-        f.gate.AuthorizeWindow(paths::kWgc, kA, &err);
+        f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk);
         std::optional<DesktopPermit> permit;
         Check(!f.gate.AuthorizeDesktop(paths::kScreenWgc, kA, kAreaA, &permit, &err),
               "桌面那一级答\"否\"就不放行");
@@ -666,12 +690,12 @@ int main() {
         Fixture f(false, TwoTargets());
         f.prompt.answers = {ConsentAnswer::kTimedOut};
         Diagnostic err;
-        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "超时不放行");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "超时不放行");
         Check(CodeIs(err, codes::kConsentTimeout), "超时的码是 capture.consent_timeout（≠答否）");
         Check(err.stage == stages::kConsent, "stage 仍是 consent");
         Check(f.gate.Refused(), "超时同样停止本次剩下的采集");
         Diagnostic err2;
-        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err2), "同批第二个目标不再截");
+        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err2, EligibleYes(), VerifyOk), "同批第二个目标不再截");
         Check(CodeIs(err2, codes::kConsentTimeout), "粘住的诊断保持超时码，不被改写成\"被拒绝\"");
         std::optional<DesktopPermit> permit;
         Check(!f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err2) &&
@@ -683,12 +707,12 @@ int main() {
         Fixture f(false, TwoTargets());
         f.prompt.answers = {ConsentAnswer::kAccepted, ConsentAnswer::kTimedOut};
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口那级先批");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "窗口那级先批");
         std::optional<DesktopPermit> permit;
         Check(!f.gate.AuthorizeDesktop(paths::kScreenWgc, kA, kAreaA, &permit, &err),
               "桌面那级超时拒绝");
         Check(CodeIs(err, codes::kConsentTimeout), "桌面超时的码正确");
-        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err), "跨级也要停");
+        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err, EligibleYes(), VerifyOk), "跨级也要停");
         Check(CodeIs(err, codes::kConsentTimeout), "跨级粘住的仍是超时码");
     }
 
@@ -706,7 +730,7 @@ int main() {
             during = static_cast<int64_t>(f.dl.RemainingMs());
         };
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口确认：等人很久之后照常放行");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "窗口确认：等人很久之后照常放行");
         Check(during == 4000, "弹框在世时剩余预算冻结：人工等待不烧 --timeout-ms");
         Check(f.dl.RemainingMs() == 4000, "等待后同意仍剩 4000 ms：能继续处理（本修复的要害）");
         f.clock.ms += 500;   // 恢复后的自动处理：取帧 / 编码 / 写盘
@@ -718,7 +742,7 @@ int main() {
         BudgetFixture f(true, TwoTargets(), 5000);
         f.prompt.onAsk = [&] { f.clock.ms += 21000; };
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "--yes：窗口路径直接放行");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "--yes：窗口路径直接放行");
         Check(f.prompt.asks == 0, "--yes：压根没弹框，也就没进暂停");
         Check(f.dl.RemainingMs() == 5000, "直通分支不给预算白添时间（分毫未动）");
         std::optional<DesktopPermit> permit;
@@ -751,7 +775,7 @@ int main() {
         f.prompt.onAsk = [&] { f.clock.ms += 21000; };
         Diagnostic err;
         std::optional<DesktopPermit> permit;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口那级先问");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "窗口那级先问");
         f.clock.ms += 300;
         Check(f.gate.AuthorizeDesktop(paths::kScreenWgc, kA, kAreaA, &permit, &err),
               "同一批次升级到桌面那级再问");
@@ -773,7 +797,7 @@ int main() {
         f.prompt.answers = {ConsentAnswer::kTimedOut};
         f.prompt.onAsk = [&] { f.clock.ms += 60000; };
         Diagnostic err;
-        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "答\"否\"/超时：不放行");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "答\"否\"/超时：不放行");
         Check(CodeIs(err, codes::kConsentTimeout), "超时拒绝的诊断照旧（F04 不改拒绝语义）");
         Check(f.dl.RemainingMs() == 5000 && !f.dl.Spent(),
               "拒绝前的人等 60 秒也不烧自动预算");
@@ -786,7 +810,7 @@ int main() {
         Diagnostic err;
         bool threw = false;
         try {
-            f.gate.AuthorizeWindow(paths::kWgc, kA, &err);
+            f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk);
         } catch (const std::exception&) {
             threw = true;
         }
@@ -796,7 +820,7 @@ int main() {
         f.clock.ms += 700;
         Check(f.dl.RemainingMs() == 4300, "异常恢复后预算继续正常计时（深度没有残留）");
         Diagnostic err2;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err2), "异常之后的再一问照常进行");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err2, EligibleYes(), VerifyOk), "异常之后的再一问照常进行");
         Check(f.dl.RemainingMs() == 4300, "第二次人工段同样不烧：嵌套/异常路径的账都结得干净");
     }
 
@@ -928,13 +952,365 @@ int main() {
         g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
         Fixture f(false, {Target(kA.c_str(), kAreaA)});
         Diagnostic err;
-        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err), "窗口内容那一级先确认（--yes 未给）");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk), "窗口内容那一级先确认（--yes 未给）");
         f.prompt.onAsk = [] { g_screens.clear(); };
         std::optional<DesktopPermit> permit;
         Check(!f.gate.AuthorizeDesktop(paths::kDwmScreen, kA, kAreaA, &permit, &err) &&
                   CodeIs(err, codes::kConsentStale),
               "DWM 升级到桌面像素：同一条确认后复核，确认期间拓扑变了照样停");
         Check(!permit.has_value(), "升级路径也没有凭证可用");
+    }
+
+
+    // =========================================================================
+    Section("12) 共用状态机：界面返回 ≠ 授权成立（F08）");
+    // =========================================================================
+    {
+        ConsentStateMachine m;
+        Check(m.state() == ConsentState::kNotRequested, "初始 = not_requested（既没许可也没拒绝）");
+        Check(!m.granted() && !m.blocks(), "初始既不是许可也不是拒绝");
+        m.Resolve(ConsentEvent::kAccepted);
+        Check(m.state() == ConsentState::kNotRequested, "没发起请求时一个 accepted 不会凭空造出许可");
+        m.Request();
+        Check(m.state() == ConsentState::kWaiting, "Request -> waiting");
+        m.Resolve(ConsentEvent::kAccepted);
+        Check(m.state() == ConsentState::kWaiting && m.accepted_pending(),
+              "人答了是：仍是 waiting（界面返回 ≠ 授权成立）");
+        Check(!m.granted(), "未过绑定核实之前不授予");
+        m.Resolve(ConsentEvent::kVerified);
+        Check(m.granted() && m.basis() == ConsentBasis::kHumanAccepted,
+              "核实通过才 granted，basis=human_accepted");
+        m.Resolve(ConsentEvent::kInvalidated);
+        Check(m.state() == ConsentState::kStale && !m.granted(), "绑定失效 -> stale（不再是许可）");
+        Check(!m.blocks(), "stale 不停掉整批：允许带新事实重新确认");
+        Check(m.can_request(), "stale 可以重新发起");
+        m.Request();
+        Check(m.waiting(), "stale -> waiting");
+        m.Resolve(ConsentEvent::kTimedOut);
+        Check(m.state() == ConsentState::kTimedOut && m.blocks(), "超时 -> timed_out 并停批");
+        m.Request();
+        Check(m.state() == ConsentState::kTimedOut, "超时之后 Request 不能把它洗成新的等待");
+        m.Reset();
+        Check(m.state() == ConsentState::kNotRequested, "Reset 只给全新请求 / 测试");
+
+        ConsentStateMachine a;
+        a.Request();
+        a.Resolve(ConsentEvent::kDeclined);
+        Check(a.state() == ConsentState::kDenied && a.blocks(), "declined -> denied");
+        ConsentStateMachine b;
+        b.Request();
+        b.Resolve(ConsentEvent::kClosed);
+        Check(b.state() == ConsentState::kDenied, "closed 归入 denied（理由另记）");
+        ConsentStateMachine c;
+        c.Request();
+        c.Resolve(ConsentEvent::kCancelled);
+        Check(c.state() == ConsentState::kCancelled && c.blocks(), "cancelled -> cancelled");
+        ConsentStateMachine d;
+        d.Request();
+        d.Resolve(ConsentEvent::kFailed);
+        Check(d.state() == ConsentState::kError && d.blocks(), "机制失败 -> error");
+        ConsentStateMachine e;
+        e.GrantWithoutHuman(ConsentBasis::kNone);
+        Check(!e.granted(), "GrantWithoutHuman 不接受 kNone（防止忘了交事实就默认放行）");
+        e.GrantWithoutHuman(ConsentBasis::kYesWindowContent);
+        Check(e.granted() && e.basis() == ConsentBasis::kYesWindowContent,
+              "只有 yes_window_content 这一种非人来源能授权");
+        Check(std::string(ConsentStateName(ConsentState::kTimedOut)) == "timed_out",
+              "状态机器名稳定");
+    }
+    // 两层授权合并判据：程序确认不能冒充系统授权
+    {
+        const uint32_t programOnly = kGrantProgramConfirm;
+        const uint32_t both = kGrantProgramConfirm | kGrantSystemAuthorization;
+        Check(ConsentLayersSatisfy(programOnly, ConsentState::kGranted,
+                                   SystemAuthState::kNotRequired),
+              "只要程序层时：granted 就满足");
+        Check(!ConsentLayersSatisfy(programOnly, ConsentState::kWaiting,
+                                    SystemAuthState::kGranted),
+              "程序层还在等待时不算授权");
+        Check(!ConsentLayersSatisfy(both, ConsentState::kGranted, SystemAuthState::kNotRequired),
+              "要求两层时：只有程序确认不算");
+        Check(ConsentLayersSatisfy(both, ConsentState::kGranted, SystemAuthState::kGranted),
+              "两层都满足才算");
+        Check(!ConsentLayersSatisfy(both, ConsentState::kGranted, SystemAuthState::kNotRequested),
+              "系统层还没取得（not_requested）也不算");
+        Check((RequiredGrantLayers(PlatformKind::kLinuxWayland) & kGrantSystemAuthorization) != 0,
+              "Wayland 矩阵要求系统授权层");
+        Check((RequiredGrantLayers(PlatformKind::kWindows) & kGrantSystemAuthorization) == 0,
+              "Windows 没有每次调用的系统授权层");
+        Check(DefaultRequiredGrantLayers() == RequiredGrantLayers(BuildPlatform()),
+              "GateConfig 默认要求层来自平台族");
+        Check(YesGivenExempts(PixelScope::kWindowContent, true), "--yes 只免程序确认这一层");
+    }
+
+    // =========================================================================
+    Section("13) --yes 的资格：能力与目标都核实过，才可能跳过程序确认（F08）");
+    // =========================================================================
+    {
+        Fixture f(true, TwoTargets());
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk),
+              "--yes + 三件事实齐：直接放行");
+        Check(f.prompt.asks == 0, "资格成立时不弹框");
+        Check(f.gate.WindowState() == ConsentState::kGranted &&
+                  f.gate.WindowConsentBasis() == ConsentBasis::kYesWindowContent,
+              "状态机记的依据是 yes_window_content");
+        Check(f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err, EligibleYes(), VerifyOk),
+              "同批第二个窗口复用这份例外");
+        Check(f.prompt.asks == 0, "复用也不弹框");
+    }
+    {
+        struct Case {
+            const char* what;
+            YesEligibility facts;
+        } cases[] = {
+            {"能力未确认", YesEligibility{true, false, true}},
+            {"身份未复核", YesEligibility{true, true, false}},
+            {"不是单窗口目标", YesEligibility{false, true, true}},
+        };
+        for (const Case& c : cases) {
+            Fixture f(true, TwoTargets());
+            Diagnostic err;
+            const std::string what(c.what);
+            Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, c.facts, VerifyOk),
+                  (what + "：退回正常确认（人答是之后放行）").c_str());
+            Check(f.prompt.asks == 1, (what + "：确实问了人").c_str());
+            Check(f.gate.WindowConsentBasis() == ConsentBasis::kHumanAccepted,
+                  (what + "：依据记为真人同意").c_str());
+        }
+    }
+    {
+        Fixture f(true, TwoTargets());
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(),
+                                      VerifyTargetChanged),
+              "--yes 资格齐但授权后身份变了：不签发");
+        Check(f.gate.WindowState() == ConsentState::kStale, "状态是 stale（不是 granted）");
+        Check(!f.gate.Refused(), "stale 不停整批");
+        Check(CodeIs(err, codes::kTargetChanged), "保留绑定核实给出的 target_changed");
+    }
+    {
+        Fixture f(true, TwoTargets());
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kBitBltScreen, kA, &err, EligibleYes(), VerifyOk),
+              "拿窗口入口放行桌面路径：拒绝");
+        Check(f.gate.WindowState() == ConsentState::kError && f.gate.Refused(),
+              "入口越界按机制错误停批（fail-closed）");
+    }
+
+    // =========================================================================
+    Section("14) 人同意之后、签发之前的绑定核实");
+    // =========================================================================
+    {
+        Fixture f(false, TwoTargets());
+        f.prompt.answers = {ConsentAnswer::kAccepted};
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, VerifyTargetChanged),
+              "人答了是但目标变了：不签发");
+        Check(f.gate.WindowState() == ConsentState::kStale, "状态是 stale");
+        Check(!f.gate.Refused(), "stale 不停整批");
+        Check(f.prompt.asks == 1, "只问了一次");
+        f.prompt.answers = {};
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, VerifyOk),
+              "重新确认并在新的绑定上核实后签发");
+        Check(f.prompt.asks == 2, "重新确认要求再问一次");
+    }
+    {
+        Fixture f(false, TwoTargets());
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, {}),
+              "没有绑定核实手段时：即使人答是也不签发");
+        Check(f.gate.WindowState() == ConsentState::kStale, "按 stale 收尾");
+    }
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        f.prompt.onAsk = [] {
+            g_screens.push_back(MakeScreen(L"\\\\.\\DISPLAY2", R(1920, 0, 3840, 1080), false));
+        };
+        Diagnostic err;
+        std::optional<DesktopPermit> permit;
+        Check(!f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err),
+              "人答是之后拓扑变了：不签发");
+        Check(f.gate.DesktopState() == ConsentState::kStale, "DesktopState = stale");
+        Check(!f.gate.Refused(), "stale 不停批");
+        g_screens.pop_back();
+        f.prompt.onAsk = nullptr;
+        std::optional<DesktopPermit> again;
+        Check(f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &again, &err),
+              "重新确认后放行");
+    }
+
+    // =========================================================================
+    Section("15) 批量授权范围：窗口级也只覆盖清单里列出的目标");
+    // =========================================================================
+    {
+        Fixture f(false, {Target(kA.c_str(), kAreaA)});
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, VerifyOk),
+              "清单里的目标确认一次");
+        Check(f.prompt.asks == 1, "弹了一次");
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, VerifyOk),
+              "同目标复用该次确认");
+        Check(f.prompt.asks == 1, "复用不弹框");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, L"0xCCCC", &err, {}, VerifyOk),
+              "清单外目标不会沿用先前那句是");
+        Check(f.prompt.asks == 2, "清单外目标触发重新确认");
+        Check(CodeIs(err, codes::kAccessDenied), "重新确认仍覆盖不到 -> access_denied");
+        Diagnostic err2;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err2, {}, VerifyOk),
+              "清单里原来的目标不受影响");
+    }
+
+    // =========================================================================
+    Section("16) 系统授权层预留（Portal 接入前 fail-closed）");
+    // =========================================================================
+    {
+        const uint32_t both = kGrantProgramConfirm | kGrantSystemAuthorization;
+        Fixture f(true, TwoTargets(), both);
+        Diagnostic err;
+        Check(f.gate.SystemAuthorizationRequired(), "配置要求系统授权层");
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk),
+              "只有程序确认 + --yes：不授权");
+        Check(f.prompt.asks == 0,
+              "系统层缺失时连程序确认都不当成完整授权（不弹一个会误导人的框）");
+        Check(CodeIs(err, codes::kConsentUnavailable), "码是 capture.consent_unavailable");
+        Check(f.gate.SystemState() == SystemAuthState::kUnavailable, "系统层状态 = unavailable");
+        Check(f.gate.Refused(), "系统层不可用会停掉整批");
+        std::optional<DesktopPermit> permit;
+        Diagnostic err2;
+        Check(!f.gate.AuthorizeDesktop(paths::kBitBltScreen, kA, kAreaA, &permit, &err2),
+              "桌面路径同样不授权");
+        Check(f.prompt.asks == 0, "连桌面确认也不弹（缺的是系统层，不是人的回答）");
+    }
+    {
+        Fixture f(true, TwoTargets(), kGrantProgramConfirm);
+        Diagnostic err;
+        Check(f.gate.AuthorizeWindow(paths::kWgc, kA, &err, EligibleYes(), VerifyOk),
+              "只要程序层的平台不受影响");
+        Check(f.gate.SystemState() == SystemAuthState::kNotRequired,
+              "Windows / X11：系统层 = not_required");
+    }
+
+    // =========================================================================
+    Section("17) 弹框内容：可信 / 不可信分开 + 外部文本安全展示");
+    // =========================================================================
+    {
+        using namespace display_text;
+        const std::wstring evil = L"安全标题\n伪造：已获得授权\u202Eevil\u200B";
+        Check(ContainsUnsafeCodePoint(evil), "夹具本身确实带换行 / 双向 / 零宽");
+        const std::wstring safe = SanitizeDisplayLine(evil, 200);
+        Check(!ContainsUnsafeCodePoint(safe), "净化后不再含不安全码位");
+        Check(safe.find(L'\n') == std::wstring::npos, "换行被换成替换符，不能伪造额外行");
+        Check(safe.find(L'\u202E') == std::wstring::npos &&
+                  safe.find(L'\u200B') == std::wstring::npos,
+              "双向 / 零宽控制符被去掉");
+        const std::wstring emoji = L"\U0001F600\U0001F600";
+        const std::wstring cut = SanitizeDisplayLine(emoji, 1);
+        Check(CodePointCount(cut) == 2 && cut.back() == kEllipsis &&
+                  cut.find(L'\uFFFD') == std::wstring::npos,
+              "按码位截断：代理对不被劈开，追加省略号");
+        const std::wstring many = std::wstring(5000, L'x');
+        const std::wstring capped = SanitizeDisplayLine(many, 50);
+        Check(CodePointCount(capped) == 51 && capped.back() == kEllipsis,
+              "超长文本按上限截断并标出省略号");
+        const std::wstring block = L"第一行\r\n第二行\n第三行\n第四行\n第五行\n第六行\n第七行";
+        const std::wstring cappedBlock = SanitizeDisplayBlock(block, 4, 20);
+        Check(cappedBlock.find(L"第五行") == std::wstring::npos && !cappedBlock.empty(),
+              "多行有行数上限，超出部分不展示");
+    }
+    {
+        ConsentQuestion q;
+        q.scope = PixelScope::kWindowContent;
+        q.path = paths::kWgc;
+        q.captureLabel = L"auto";
+        q.programPath = L"C:\\Program Files\\EvernightCapture\\ECAPTURE.EXE";
+        q.programVersion = L"1.0.0";
+        q.programPid = 4242;
+        q.requestSource = L"调用方自述第一行\n伪造：允许读取整块屏幕\u202E";
+        q.requestSourceGiven = true;
+        q.targets = {std::wstring(L"标题安全\n伪造目标 (area 0,0 size 100x100)")};
+        q.outputs = {std::wstring(L"D:\\shots\\evil\n伪造.txt")};
+        q.historyCopy = true;
+        const GuiDialogRequest req = BuildConsentDialogRequest(q, 5000);
+        std::wstring all;
+        all += req.title + req.heading + req.detailsLabel + req.details + req.footer +
+               req.question + req.acceptLabel + req.declineLabel;
+        for (const auto& para : req.paragraphs) all += para;
+        // details 里我们自己拼的结构性换行是允许的；其余任何控制 / 双向 / 零宽字符都不允许。
+        std::wstring flat = all;
+        flat.erase(std::remove(flat.begin(), flat.end(), L'\n'), flat.end());
+        Check(!display_text::ContainsUnsafeCodePoint(flat),
+              "整份弹框内容（除结构性换行）不含控制 / 双向 / 零宽字符");
+        Check(req.details.find(L"伪造目标") != std::wstring::npos,
+              "目标那一段仍然展示（只是被安全化）");
+        Check(req.details.find(L"标题安全\n") == std::wstring::npos, "标题里的换行不生效");
+        Check(req.details.find(L'\uFFFD') != std::wstring::npos, "被替换的字符以 U+FFFD 明示");
+        bool trusted = false;
+        bool untrusted = false;
+        for (const auto& para : req.paragraphs) {
+            if (para.find(L"ECAPTURE.EXE") != std::wstring::npos &&
+                para.find(L"4242") != std::wstring::npos &&
+                para.find(L"read by this program itself") != std::wstring::npos) {
+                trusted = true;
+            }
+            if (para.find(L"Caller-provided description") != std::wstring::npos) untrusted = true;
+        }
+        Check(trusted, "程序核实的事实单独一段（映象 / 版本 / 进程号）");
+        Check(untrusted, "调用方自述带未核实标签");
+        {
+            ConsentQuestion empty = q;
+            empty.requestSource.clear();
+            empty.requestSourceGiven = false;
+            const GuiDialogRequest r2 = BuildConsentDialogRequest(empty, 0);
+            bool none = false;
+            for (const auto& para : r2.paragraphs) {
+                if (para.find(L"did not provide a description") != std::wstring::npos) none = true;
+            }
+            Check(none, "没有自述时明说没有，不空着也不冒充");
+            Check(r2.footer.empty(), "没有 --consent-timeout-ms 时不写期限行");
+        }
+        {
+            ConsentQuestion longq = q;
+            longq.requestSource = std::wstring(5000, L'y');
+            longq.targets = {std::wstring(5000, L'z')};
+            const GuiDialogRequest r3 = BuildConsentDialogRequest(longq, 0);
+            size_t zc = 0;
+            for (wchar_t ch : r3.details) {
+                if (ch == L'z') ++zc;
+            }
+            Check(zc <= 200, "超长目标行按码位上限截断");
+            Check(r3.details.find(display_text::kEllipsis) != std::wstring::npos,
+                  "截断有省略号");
+        }
+    }
+
+    // =========================================================================
+    Section("18) 拒绝 / 超时 / 机制失败在状态机上粘住整批");
+    // =========================================================================
+    {
+        Fixture f(false, TwoTargets());
+        f.prompt.answers = {ConsentAnswer::kTimedOut};
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, VerifyOk), "超时不放行");
+        Check(f.gate.WindowState() == ConsentState::kTimedOut, "状态 = timed_out");
+        Check(f.gate.Refused(), "超时停批");
+        const int asks = f.prompt.asks;
+        Diagnostic err2;
+        Check(!f.gate.AuthorizeWindow(paths::kPrintWindow, kB, &err2, {}, VerifyOk),
+              "同批下一个目标不再截");
+        Check(f.prompt.asks == asks, "不再弹框");
+        Check(CodeIs(err2, codes::kConsentTimeout), "粘住的是超时码");
+    }
+    {
+        Fixture f(false, TwoTargets());
+        f.prompt.answers = {ConsentAnswer::kInitFailed};
+        Diagnostic err;
+        Check(!f.gate.AuthorizeWindow(paths::kWgc, kA, &err, {}, VerifyOk),
+              "GUI 初始化失败不放行");
+        Check(f.gate.WindowState() == ConsentState::kError, "状态 = error");
+        Check(CodeIs(err, codes::kConsentUnavailable), "码 = consent_unavailable");
+        Check(f.gate.Refused(), "机制失败也停批");
     }
 
     // =========================================================================
