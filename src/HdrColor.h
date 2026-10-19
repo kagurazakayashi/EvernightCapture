@@ -223,6 +223,10 @@ inline constexpr HdrPathEntry kHdrTable[] = {
     {paths::kDwmScreen, HdrCapability::kSdrSourceOnly, hdr_reason::kScreenDc8},
     {paths::kBitBltScreen, HdrCapability::kSdrSourceOnly, hdr_reason::kScreenDc8},
     {paths::kScreenBitBlt, HdrCapability::kSdrSourceOnly, hdr_reason::kScreenDc8},
+    // X11 的窗口存储是服务端按视觉深度交回的整数像素；本构建只认 8 位 SDR 的 BGRA8
+    // 交付，没有广色域 / 浮点帧池，也没有 PQ/HLG 解码。显式 tonemap / refuse 因此
+    // 不能落到这条路径上（解析期就报做不到）。
+    {paths::kXComposite, HdrCapability::kSdrSourceOnly, hdr_reason::kSelfDrawn8},
 };
 
 // 整张登记表（只读视图）：--capabilities 的 color.paths 段与离线判据都遍历这一份。

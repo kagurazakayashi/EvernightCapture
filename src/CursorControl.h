@@ -166,6 +166,9 @@ inline constexpr CursorPathEntry kCursorTable[] = {
     {paths::kScreenWgc, CursorCapability::kSettable, cursor_reason::kSessionProperty},
     {paths::kPrintWindow, CursorCapability::kExcludesCursor, cursor_reason::kSelfDrawnSurface},
     {paths::kDwmThumbnail, CursorCapability::kExcludesCursor, cursor_reason::kDwmSurface},
+    // X11 窗口存储（XComposite）里没有指针：指针由 X 服务器单独合成到屏幕上，不写进
+    // 任何窗口的重定向位图。所以这条路径保证得回的画面里没有光标，而 include 做不到。
+    {paths::kXComposite, CursorCapability::kExcludesCursor, cursor_reason::kSelfDrawnSurface},
     {paths::kDwmScreen, CursorCapability::kExcludesCursor, cursor_reason::kScreenDc},
     {paths::kBitBltScreen, CursorCapability::kExcludesCursor, cursor_reason::kScreenDc},
     {paths::kScreenBitBlt, CursorCapability::kExcludesCursor, cursor_reason::kScreenDc},
@@ -234,6 +237,7 @@ inline constexpr bool ChannelGuaranteesCursorExclusion(CaptureMethod method) {
         case CaptureMethod::kPrintWindow:  // 窗口自绘到 DC，来源没有光标
         case CaptureMethod::kDwmThumbnail: // 读 DWM 重定向位图，来源没有光标
         case CaptureMethod::kBitBlt:       // 拷屏幕 DC，系统指针画在 DC 内容之外
+        case CaptureMethod::kXComposite:   // 读 X11 窗口存储，指针不写在那里
             return true;
         case CaptureMethod::kDuplication:
         case CaptureMethod::kAuto:

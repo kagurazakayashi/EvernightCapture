@@ -18,9 +18,9 @@ help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --
 help.exit2	        6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
 help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること；引き渡せた画像はプログラムがある場所の history にもコピーを1枚残します（自動消去はしません）
 help.system	実行環境: 64 ビット版 Windows、宣言上の下限はビルド 18362（Windows 10 version 1903）、実測はビルド 19045 のみ。この機のバージョンでは提供されない経路は、取得も確認表示も前に env.os_too_old / env.channel_unsupported として報告します（前者は経路を変えても変わりません）。--verbose の input.osBuild と input.captureChain に今回の利用可能な経路が出力されます
-help.status_linux	現在のビルド: この Linux ビルドには画面取得・ターゲット列挙のバックエンドがありません。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで実行できます。取得要求は capture.unsupported（終了コード 7）を返し、画像は一切納品しません
+help.status_linux	現在のビルド: この Linux ビルドが実装しているのは X11 の単一ウィンドウ取得（xcomposite、対象ウィンドウ自身のストレージを読む）だけです。デスクトップ画素の取得バックエンドはありませんが、--list / --inspect は X11 のウィンドウ問い合わせで動作します。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで実行できます。--capture auto が通るのはこのウィンドウ経路だけで、画面ターゲットは従来どおり capture.unsupported（終了コード 7）を返し、画像は一切納品しません
 help.system_linux	実行環境: Linux。--capabilities / --diagnostics は X11・Wayland・セッション D-Bus（XDG Desktop Portal）へ読み取り専用で接続し、PipeWire ソケットの前提を確認します。環境変数とデスクトップ名は手がかりにすぎません: サービスが到達可能であることも、認可済みであることも証明しません
-help.linux_query	Linux の事前確認: まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各ランタイムの compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。バックエンド未実装の間は「撮影できます」とは決して答えません
+help.linux_query	Linux の事前確認: まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各ランタイムの compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。表示サーバーに接続できても撮影できることにはなりません。実装済みのバックエンド（このビルドでは x11 の xcomposite ウィンドウ経路）だけが available と報告されます
 
 help.examples	例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -163,6 +163,21 @@ note.output_extension_hint	実際に書き出した名前は %1
 note.capture_channel	auto：%1 が使用できないため %2 を使いました
 note.frame_uniform	画像全体が単一色です：ARGB %1
 note.frame_uniform_hint	これは品質の通知でエラーではありません。単色のウィンドウや無地壁紙はそもそもこの見た目です。フレームが合成されなかった可能性もあります（保護コンテンツ / リモートデスクトップ / 基本ディスプレイドライバ）。気になるなら wgc チャネルでその画像を確認してください
+cap.x11.display_unavailable	X11 ディスプレイに接続できません
+cap.x11.display_unavailable_hint	DISPLAY が現在のデスクトップセッションを指しているか確認してください。ネイティブ Wayland セッションでは X11 セッションか XWayland 上のウィンドウを使ってください。表示接続がなければピクセルは一切読み取りません
+cap.x11.composite_unavailable	この X サーバーには XComposite 拡張がありません
+cap.x11.composite_unavailable_hint	このビルドの単一ウィンドウ撮影は XComposite のウィンドウストレージを読みます。デスクトップのピクセルに戻ることはありません。XComposite が有効な X11 サーバーを使用してください
+cap.x11.not_viewable	対象ウィンドウは現在表示可能な状態ではありません（最小化または未マップ）
+cap.x11.not_viewable_hint	XComposite はウィンドウがマップされている間だけそのストレージを提供します。本ツールはウィンドウを復元・アクティブ化・移動しません。画面に戻してから再実行してください
+cap.x11.frame_too_large	対象ウィンドウのクライアント領域が 1 フレームの上限を超えています
+cap.x11.pixmap_failed	オフスクリーンピックスマップを作成できません
+cap.x11.render_unavailable	この X サーバーには使用可能な XRender ARGB32 形式がありません
+cap.x11.render_unavailable_hint	このビルドは対象ウィンドウと子ウィンドウのストレージを XRender で 1 枚に合成します。デスクトップのピクセルで外観を補うことはありません
+cap.x11.read_pixels_failed	オフスクリーンピックスマップからピクセルを読み戻せませんでした
+cap.x11.convert_failed	ピクセルチャネル / 深度 / ストライドの変換に失敗しました
+cap.x11.name_pixmap_failed	対象ウィンドウ自身のストレージを取得できません（XCompositeNameWindowPixmap 失敗）
+note.x11_children_incomplete	マップされている子ウィンドウを取得できず、画像の一部が欠けている可能性があります
+note.x11_children_incomplete_hint	多くの場合、子ウィンドウが破棄されているためです。対象ウィンドウ自体は有効です。完全な画像が必要なら再試行してください
 
 # ---------------------------------------------------------------------------
 # ウィンドウ照合（src/WindowMatch.cpp）
@@ -270,7 +285,6 @@ cap.offscreen	ウィンドウが画面の完全に外にあるためピクセル
 cap.visible_only	このチャネルは画面上に見える部分だけをコピーできます
 cap.bitblt_failed	画面 DC からの BitBlt に失敗しました
 cap.unsupported	この画面取得方式は未実装です
-cap.linux_backend_not_implemented_hint	この Linux ビルドには取得・ターゲット列挙のバックエンドがありません。まず --capabilities / --diagnostics でセッションを確認してください。表示サーバーに接続できても、認可済みでも、撮影できることでもありません
 cap.auto_failed	auto のフォールバック先がすべて失敗しました（%1）
 cap.timeout	自動処理の予算 %1 ms を使い切りました（実際 %2 ms）
 cap.timeout_hint	--timeout-ms を大きくするか、詰まり取得経路（遮られたウィンドウなら wgc / dwm）に切り替えてください。割り込み可能な待機点がない段階は、期限到来時に本ツールのヘルパープロセスを中止するしかありません

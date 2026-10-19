@@ -6,7 +6,7 @@
 // X11 / Wayland / XWayland / SSH / headless / 缺库 / 服务不存在 / 版本过低 / 需要交互 /
 // 后端未实现这些分支逐条走完；最后一节再对**当前机器**做一次真实只读探测。
 //
-// 真实探测那一节只判三件事：不崩、没有一条 canCapture=true（本构建没有 Linux 采集后端）、
+// 真实探测那一节只判三件事：不崩、canCapture 只可能出现在真有后端的那一条（本构建是 x11）、
 // 报告里没有回显任何环境变量原值。它不弹框、不选来源、不建会话、不读像素。
 //
 // 用法：
@@ -126,9 +126,14 @@ void TestX11Only() {
     Check(r.platform == PlatformKind::kLinuxX11, "平台族是 linux-x11");
     const auto* x11 = r.RuntimeOf(L"x11");
     Check(x11 && x11->reachable == Tri::kYes, "x11 reachable=yes（真的连上了）");
-    Check(x11 && x11->implemented == Tri::kNo, "x11 implemented=no（没有采集后端）");
-    Check(x11 && x11->status == RuntimeStatus::kNotImplemented, "x11 status=not_implemented");
-    Check(x11 && !x11->canCapture, "x11 不回答可以截图");
+    // 本构建的 X11 后端只交付单窗口取帧（xcomposite）。连上了、实现了，所以是 available；
+    // 同时这条 available 的边界写在 caveat 里（不取桌面像素、不截整屏、不含指针）。
+    Check(x11 && x11->implemented == Tri::kYes, "x11 implemented=yes（单窗口通道已实现）");
+    Check(x11 && x11->status == RuntimeStatus::kAvailable, "x11 status=available");
+    Check(x11 && x11->canCapture, "x11 回答可以截图（限窗口自身存储）");
+    const std::wstring storageOnly = W(session_caveat::kX11WindowStorageOnly);
+    Check(Has(r.caveats, storageOnly.c_str()),
+          "x11 的边界写成 caveat");
     const auto* wayland = r.RuntimeOf(L"wayland");
     Check(wayland && wayland->compiled == false, "wayland 没编译进来");
     Check(wayland && wayland->status == RuntimeStatus::kNotCompiled, "wayland=not_compiled");
@@ -311,9 +316,15 @@ void TestPipeWirePrerequisite() {
 void TestInvariants(const SessionReport& r, const char* label) {
     Section(label);
     for (const auto& runtime : r.runtime) {
-        Check(!runtime.canCapture, "任何一条运行能力都不回答可以截图");
-        if (runtime.status == RuntimeStatus::kAvailable) {
-            Check(false, "本构建没有 Linux 采集后端，不应出现 available");
+        // canCapture 只允许出现在 x11 那一条，且必须与 status 一致：没有第二个后端，
+        // Wayland / portal / pipewire 这几条要么未编译、要么未实现、要么只是前提。
+        if (runtime.name == L"x11") {
+            Check(runtime.canCapture == (runtime.status == RuntimeStatus::kAvailable),
+                  "x11 的 canCapture 与 status 同源");
+        } else {
+            Check(!runtime.canCapture, "除 x11 外没有任何一条回答可以截图");
+            Check(runtime.status != RuntimeStatus::kAvailable,
+                  "除 x11 外没有第二条 available（没有第二个 Linux 后端）");
         }
     }
     Check(!r.authorizationGranted, "报告从不授权");
@@ -335,8 +346,12 @@ void TestRealProbe(bool printJson) {
     Section("9) 真实只读探测（当前机器）");
     Check(!json.empty(), "真实探测能渲染出 JSON");
     Check(json.find(L"\"runtime\"") != std::wstring::npos, "JSON 含 runtime 段");
-    Check(json.find(L"\"canCapture\": false") != std::wstring::npos,
-          "JSON 里没有 canCapture=true");
+    // canCapture 只能是 x11 那一条（且与 status 同源）。渲染层对每条 runtime 都写这个键，
+    // 所以这里判的是"除 x11 外没有第二处 true"，不是"整份 JSON 里没有 true"。
+    for (const auto& runtime : report.runtime) {
+        if (runtime.name == L"x11") continue;
+        Check(!runtime.canCapture, "真实探测里除 x11 外没有 canCapture=true");
+    }
     Check(json.find(L"\"pixelsRead\": false") != std::wstring::npos, "JSON 明写没有读像素");
     Check(json.find(L"\"sourceSelectionRequested\": false") != std::wstring::npos,
           "JSON 明写没有选来源");

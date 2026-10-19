@@ -44,6 +44,11 @@ inline const char* PlatformName(PlatformKind platform) {
 inline PlatformKind BuildPlatform() {
 #if defined(_WIN32)
     return PlatformKind::kWindows;
+#elif defined(__linux__)
+    // Linux 构建只带 X11 单窗口后端（XWayland 里可见的那部分 X11 窗口也算）。原生 Wayland
+    // 的 Portal / PipeWire 后端还没有接进来，所以这里不写 kLinuxWayland —— 那是运行时
+    // 会话探测的事（EnvReport），不是编译期平台族。缺 DISPLAY 时取帧会如实报不可用。
+    return PlatformKind::kLinuxX11;
 #else
     return PlatformKind::kUnknown;
 #endif

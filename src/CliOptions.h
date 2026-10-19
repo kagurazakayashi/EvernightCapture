@@ -66,6 +66,10 @@ enum class CaptureMethod {
     kBitBlt,        // BitBlt 屏幕 DC：拷屏幕上该窗口矩形，只截得到可见部分
     kDwmThumbnail,  // DwmRegisterThumbnail：DWM 缓存表面，能截被遮挡窗口（Win7+）
     kDuplication,   // DXGI Desktop Duplication：整张显示器合成分，再按窗口矩形裁剪（Win8+）
+    // X11 / XComposite：读目标窗口自己的重定向存储（NameWindowPixmap），按子窗口自己的存储
+    // 合成整扇窗口。被遮挡也能截，且屏幕上别的东西进不了图 —— 所以它是窗口内容路径。
+    // 只在 Linux 构建里可用；Windows 上既不接受这个取值，也没有对应实现。
+    kXComposite,
     kAuto,          // 按 wgc -> dwm -> printwindow -> bitblt 依次回退
 };
 
@@ -262,8 +266,14 @@ enum class NotifyMode {
 // ---------------------------------------------------------------------------
 namespace option_values {
 inline constexpr const wchar_t* kLang[] = {L"auto", L"zh-CN", L"zh-TW", L"en", L"ja", nullptr};
+#if defined(_WIN32)
 inline constexpr const wchar_t* kCapture[] = {L"wgc", L"dwm", L"printwindow", L"bitblt",
                                               L"duplication", L"auto", nullptr};
+#else
+// Linux 构建只带 X11 单窗口后端：显式点名 xcomposite 或 auto（只有这一条）。
+// 其余 Windows 通道名在这里如实报"未知取值"，而不是解析通过之后到运行期才说不支持。
+inline constexpr const wchar_t* kCapture[] = {L"xcomposite", L"auto", nullptr};
+#endif
 inline constexpr const wchar_t* kCursor[] = {L"default", L"include", L"exclude", nullptr};
 inline constexpr const wchar_t* kHdr[] = {L"auto", L"tonemap", L"refuse", nullptr};
 inline constexpr const wchar_t* kFormat[] = {L"png", L"jpg", L"jpeg", L"bmp", L"tiff", L"gif",
@@ -298,7 +308,14 @@ struct Options {
     MultiMatch multi = MultiMatch::kAsk;
     int index = 1;                    // multi == kIndex 时有效；只认十进制 1..0xFFFF
 
+    // --capture 的默认值：Windows 是 WGC；Linux 构建只有 X11 单窗口后端，默认就是它。
+    // 两条默认值都落在"本平台真的编进来的那一条"上，而不是让 Linux 默认值指向一条
+    // 只存在于 Windows 的通道（那会在每次不带 --capture 的调用上先报一次 unsupported）。
+#if defined(_WIN32)
     CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
+#else
+    CaptureMethod capture = CaptureMethod::kXComposite;  // --capture，默认 X11 窗口存储
+#endif
     bool captureExplicit = false;                  // 是否显式指定过 --capture
 
     // --cursor：画面里要不要鼠标指针。判据在 src/CursorControl.h（按"这条路径的来源像素里

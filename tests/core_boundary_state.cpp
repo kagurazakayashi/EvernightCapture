@@ -92,13 +92,19 @@ void CheckModelShapes() {
                   "授权清单里的目标区域也是共用坐标模型");
 
     Check(kNativeErrorNone == 0u, "0 = 没有错误可报（与 Diagnostic.win32 的既有约定同一句）");
-    Check(BuildPlatform() == PlatformKind::kWindows || BuildPlatform() == PlatformKind::kUnknown,
-          "编译期平台身份要么是 Windows、要么如实未知（不猜 X11 / Wayland）");
+    Check(BuildPlatform() == PlatformKind::kWindows ||
+              BuildPlatform() == PlatformKind::kLinuxX11 ||
+              BuildPlatform() == PlatformKind::kUnknown,
+          "编译期平台身份只有三个真话：Windows / Linux-X11 / 未知");
 #if defined(_WIN32)
     Check(BuildPlatform() == PlatformKind::kWindows, "Windows 构建认得出自己是 Windows");
+#elif defined(__linux__)
+    // Linux 构建只带 X11 单窗口后端，所以编译期就是 linux-x11；"这次是不是原生 Wayland"
+    // 是运行时探测（EnvReport 的会话种类）回答的事，不折进平台族。
+    Check(BuildPlatform() == PlatformKind::kLinuxX11,
+          "Linux 构建认得出自己是 linux-x11（原生 Wayland 的 Portal 后端没接进来）");
 #else
-    Check(!PlatformIsKnown(BuildPlatform()),
-          "本步还没有 Linux 后端：非 Windows 构建认不出平台，不许把 kLinuxX11 当默认值");
+    Check(!PlatformIsKnown(BuildPlatform()), "其它平台如实未知，不猜 X11 / Wayland");
 #endif
     Check(std::string(PlatformName(PlatformKind::kLinuxX11)) == "linux-x11", "平台名是 ASCII 机器名");
     Check(std::string(PlatformName(PlatformKind::kUnknown)) == "unknown", "认不出来就写 unknown");
@@ -245,11 +251,23 @@ void CheckMatrix() {
         for (MatrixFeature f : features) {
             const MatrixStatus s = MatrixStatusOf(p, f);
             Check(s != MatrixStatus::kUnknown, "每格都必须明确登记，kUnknown 不许当兜底值");
-            if (p != PlatformKind::kWindows) {
-                Check(!MatrixIsCompiled(s),
-                      "非 Windows 那一列不许声称已实现（本构建一行 Linux 取帧代码都没有）");
-            }
         }
+    }
+    // Linux X11 这一列只有窗口枚举与窗口截图两格编译进了构建（xcomposite 单窗口通道）：
+    // 其余六格一格都不许声称已实现，Wayland 那一列整列都不许。
+    Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kTargetListing)),
+          "Linux X11 的窗口枚举接了进来");
+    Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kWindowCapture)),
+          "Linux X11 的窗口截图接了进来（xcomposite）");
+    for (MatrixFeature f : features) {
+        const bool implemented =
+            f == MatrixFeature::kTargetListing || f == MatrixFeature::kWindowCapture;
+        if (!implemented) {
+            Check(!MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, f)),
+                  "Linux X11 除窗口枚举与窗口截图外都没实现（不许把计划写成事实）");
+        }
+        Check(!MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxWayland, f)),
+              "Wayland 那一列本构建一格都没实现");
     }
     // 没登记过的平台族（kUnknown）不该被误读成"支持"
     Check(MatrixStatusOf(PlatformKind::kUnknown, MatrixFeature::kWindowCapture) ==

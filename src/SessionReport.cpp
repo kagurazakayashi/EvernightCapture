@@ -410,6 +410,11 @@ SessionReport BuildSessionReport(const SessionFacts& facts) {
     report.caveats.push_back(W(session_caveat::kSshNotHeadless));
     report.caveats.push_back(W(session_caveat::kUnknownIsNotNo));
     report.caveats.push_back(W(session_caveat::kPipewirePrereqNotCapture));
+    // 本构建的 X11 后端只交付窗口自己的存储：这一句是"这条 available 不覆盖什么"的边界，
+    // 与 --capabilities 里 backends[].paths 那一段（xcomposite 的 scope=window）同源。
+    if (session_backend::kX11CaptureImplemented) {
+        report.caveats.push_back(W(session_caveat::kX11WindowStorageOnly));
+    }
 
     return report;
 }

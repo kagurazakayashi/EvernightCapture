@@ -70,6 +70,12 @@ inline constexpr const wchar_t* kOsUnverifiable = L"os_version_unavailable";    
 inline constexpr const wchar_t* kNoDisplayTopology = L"no_display_topology";    // 这个会话里没有可用的屏幕输出
 inline constexpr const wchar_t* kDisplayTopologyUnknown = L"display_topology_unavailable";
 inline constexpr const wchar_t* kEncoderNotRegistered = L"encoder_not_registered";
+// Linux X11 单窗口通道（xcomposite）的三条机器事实：显示连不上、服务端没有 Composite、
+// 服务端没有 RENDER。它们各说一件事，调用方的下一步不一样（换会话 / 换 X 服务器 / 换构建），
+// 所以不折成同一条。
+inline constexpr const wchar_t* kDisplayUnavailable = L"display_unavailable";
+inline constexpr const wchar_t* kCompositeUnavailable = L"composite_extension_unavailable";
+inline constexpr const wchar_t* kRenderUnavailable = L"render_extension_unavailable";
 // HDR（--hdr）：这份只读查询不去问那块屏此刻是不是 HDR 模式（那要开一次 DXGI 输出问答，
 // 而这一层的规矩是"不靠实际截图或实际探测能力"），所以它只报"这个构建带不带得回 + 映射怎么做"，
 // 对"这台机器的显示现在是不是 HDR"不作任何断言。
@@ -157,9 +163,6 @@ inline constexpr const wchar_t* kHdrLayoutIsNotColorSpace =
 inline constexpr const wchar_t* kHistoryWritabilityNotProbed =
     L"history_root_writability_not_probed";
 // ---- Linux 会话查询新增的边界（只增不改名；Windows 上不出现）----
-// 这一份构建没有 Linux 采集后端：查询能报事实，但不能因此回答"可以截图"。
-inline constexpr const wchar_t* kLinuxBackendNotImplemented =
-    L"linux_capture_backend_not_implemented";
 // 只读查询不选 Portal 来源、不建捕获会话、不读像素、不弹系统授权界面。
 inline constexpr const wchar_t* kSessionQueryReadOnly = L"session_query_is_read_only";
 // 环境变量只是线索：会话类型 / DISPLAY / 桌面名称存在不等于服务可用，更不等于已授权。

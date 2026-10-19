@@ -11,9 +11,8 @@
 //      没实测过的格子写 kUnverified，既不写 kImplemented 也不蒙一个 kRuntimeProbe。
 //
 // 用法约束：这份表是给"人读的功能矩阵（README）+ 机器读的判据（tests\core_boundary_state.cpp）"
-// 共用的同一份事实。--capabilities 现在仍然只报 Windows 那一路的探测结果（那份 JSON 的契约
-// 版本号没变），把这张表也写进 --capabilities 是后续步骤，等 Linux 后端真的编译进构建时再做，
-// 免得现在报一堆"计划支持"让调用方误判。
+// 共用的同一份事实。它尚未写进 --capabilities 的 JSON（那一份的契约版本号没变），
+// 逐条运行事实仍然只看 backends / session.runtime 两段。
 //
 // 状态取值里 **kUnknown 是禁止出现的**：一格子要是说不清，就先写成 kPlanned（本构建没实现）
 // 或 kNotSupported（这条路不做），并在那一句 note 里写清为什么；测试会逐格钉这一条。
@@ -109,25 +108,27 @@ inline const MatrixCell* PlatformMatrixCells(uint32_t* count) {
         {PlatformKind::kWindows, MatrixFeature::kHeadlessSession, MatrixStatus::kImplemented,
          "help/version/config/capabilities run with no desktop; desktop pixel paths report unavailable"},
 
-        // ---- Linux X11：本构建一行代码都没有，全部按"计划支持"登记 ----
-        {PlatformKind::kLinuxX11, MatrixFeature::kTargetListing, MatrixStatus::kPlanned,
-         "planned via X11 window queries; XWayland only sees X11 windows, native Wayland ones are invisible"},
-        {PlatformKind::kLinuxX11, MatrixFeature::kWindowCapture, MatrixStatus::kPlanned,
-         "planned; no X11 backend is compiled into this build"},
+        // ---- Linux X11：单窗口取帧已实现（XComposite），仍无桌面像素路径 ----
+        // 已实现不等于已验证跑遍：本项目只在开发机的 X11 桌面上实测过这一条，
+        // 所以只给 kUnverified，不写 kImplemented。
+        {PlatformKind::kLinuxX11, MatrixFeature::kTargetListing, MatrixStatus::kUnverified,
+         "implemented with X11 window queries; XWayland only sees X11 windows, native Wayland ones are invisible"},
+        {PlatformKind::kLinuxX11, MatrixFeature::kWindowCapture, MatrixStatus::kUnverified,
+         "implemented as xcomposite: reads the target window's own storage (NameWindowPixmap); desktop pixels are never read"},
         {PlatformKind::kLinuxX11, MatrixFeature::kScreenCapture, MatrixStatus::kPlanned,
-         "planned; needs the same human confirm as Windows desktop pixels"},
+         "planned; this build has no Linux desktop-pixel path, so screen targets are rejected at parse time"},
         {PlatformKind::kLinuxX11, MatrixFeature::kInteractiveGrant, MatrixStatus::kPlanned,
-         "planned: program confirm only (X11 itself has no per-call screen grant) until probed otherwise"},
-        {PlatformKind::kLinuxX11, MatrixFeature::kMinimizedWindow, MatrixStatus::kPlanned,
-         "planned; an iconic X11 window is unmapped, so whatever is offered must say it is a stale pixmap"},
-        {PlatformKind::kLinuxX11, MatrixFeature::kCursorControl, MatrixStatus::kPlanned,
-         "planned; not probed, not claimed"},
+         "planned: no program consent dialog on Linux yet; without --yes the capture is refused instead of silently allowed"},
+        {PlatformKind::kLinuxX11, MatrixFeature::kMinimizedWindow, MatrixStatus::kNotSupported,
+         "an unmapped X11 window has no viewable storage; the backend refuses instead of returning a stale pixmap"},
+        {PlatformKind::kLinuxX11, MatrixFeature::kCursorControl, MatrixStatus::kNotSupported,
+         "the pointer is composited by the X server, not written into window storage: exclude is inherent, include is refused"},
         {PlatformKind::kLinuxX11, MatrixFeature::kHdr, MatrixStatus::kPlanned,
          "planned; no X11 wide-gamut path is implemented here, so nothing is asserted about HDR"},
         {PlatformKind::kLinuxX11, MatrixFeature::kHeadlessSession, MatrixStatus::kPlanned,
          "planned: help/version/config/capabilities must run without DISPLAY; capture must report the real limit"},
 
-        // ---- Linux Wayland：同上，外加两条平台本身不给的路 ----
+        // ---- Linux Wayland：仍无实现，外加两条平台本身不给的路 ----
         {PlatformKind::kLinuxWayland, MatrixFeature::kTargetListing, MatrixStatus::kNotSupported,
          "compositors do not give clients a global window list; this tool will not fake one"},
         {PlatformKind::kLinuxWayland, MatrixFeature::kWindowCapture, MatrixStatus::kPlanned,

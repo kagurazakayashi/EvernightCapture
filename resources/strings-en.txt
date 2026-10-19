@@ -19,9 +19,9 @@ help.exit1	Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --
 help.exit2	        6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
 help.status	Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist; every delivered image also keeps a copy under history next to the program (never pruned automatically)
 help.system	Runtime: 64-bit Windows, declared floor build 18362 (Windows 10 version 1903), tested only on build 19045; a route this machine's version cannot offer is reported before any frame or dialog as env.os_too_old / env.channel_unsupported (the first does not improve with another channel). --verbose echoes input.osBuild and input.captureChain
-help.status_linux	Current build: this Linux build has no screen-capture or target-enumeration backend. Read-only commands --help / --version / --show-config / --capabilities / --diagnostics run without a desktop; a capture request reports capture.unsupported (exit 7) and delivers no image
+help.status_linux	Current build: this Linux build implements X11 single-window capture only (xcomposite, reading the target window's own storage). It has no desktop-pixel backend; --list and --inspect do work over X11 window queries. Read-only commands --help / --version / --show-config / --capabilities / --diagnostics run without a desktop; --capture auto only ever takes that one window route, and screen targets still report capture.unsupported (exit 7) without delivering an image
 help.system_linux	Runtime: Linux. --capabilities / --diagnostics connect read-only to X11, Wayland, the session D-Bus (XDG Desktop Portal) and stat the PipeWire socket prerequisite. Environment variables and desktop names are clues only: they never prove a service is reachable or authorized
-help.linux_query	Linux preflight: run --capabilities first. It reports the session kind (x11 / wayland / xwayland / headless), each runtime as compiled / reachable / versionSatisfied / interactionRequired / implemented, and never answers "can capture" while the backend is not implemented
+help.linux_query	Linux preflight: run --capabilities first. It reports the session kind (x11 / wayland / xwayland / headless) and each runtime as compiled / reachable / versionSatisfied / interactionRequired / implemented; a reachable display is not capture - only a backend that is really implemented (in this build the x11 xcomposite window route) is reported as available
 
 help.examples	Examples:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -164,6 +164,21 @@ note.output_extension_hint	actually written as %1
 note.capture_channel	auto: %1 was unavailable, used %2 instead
 note.frame_uniform	The whole image is a single colour: ARGB %1
 note.frame_uniform_hint	This is a quality hint, not an error. A solid-colour window or a plain wallpaper really does look like this; the frame may also have never been composed (protected content / remote desktop / basic display driver). Re-check that image with the wgc channel if it matters
+cap.x11.display_unavailable	Cannot connect to the X11 display
+cap.x11.display_unavailable_hint	Check that DISPLAY points at the current desktop session; on a native Wayland session use an X11 session or a window under XWayland. No pixels are read without a display connection
+cap.x11.composite_unavailable	This X server has no XComposite extension
+cap.x11.composite_unavailable_hint	Single-window capture in this build reads the window's own storage through XComposite; it will not fall back to desktop pixels. Use an X11 server with XComposite enabled
+cap.x11.not_viewable	The target window is not viewable (minimised or unmapped)
+cap.x11.not_viewable_hint	XComposite only provides a window's storage while it is mapped. This tool will not restore, activate or move the window for you; bring it back on screen and capture again
+cap.x11.frame_too_large	The target window's client area exceeds the per-frame limit
+cap.x11.pixmap_failed	Cannot create the off-screen pixmap
+cap.x11.render_unavailable	This X server has no usable XRender ARGB32 format
+cap.x11.render_unavailable_hint	This build composes the target window and its child windows from their own storage with XRender; it will not fill the appearance with desktop pixels
+cap.x11.read_pixels_failed	Reading pixels back from the off-screen pixmap failed
+cap.x11.convert_failed	Pixel channel / depth / stride conversion failed
+cap.x11.name_pixmap_failed	Cannot obtain the target window's own storage (XCompositeNameWindowPixmap failed)
+note.x11_children_incomplete	A mapped child window could not be captured; the image may be missing a region
+note.x11_children_incomplete_hint	Usually because the child is being destroyed. The target window itself is still valid; retry if you need the complete picture
 
 # ---------------------------------------------------------------------------
 # Window matching (src/WindowMatch.cpp)
@@ -271,7 +286,6 @@ cap.offscreen	The window is entirely off screen, no pixels to take
 cap.visible_only	This channel can only copy the visible part of the screen
 cap.bitblt_failed	BitBlt from the screen DC failed
 cap.unsupported	This capture method is not implemented
-cap.linux_backend_not_implemented_hint	This Linux build has no capture or target-enumeration backend. Use --capabilities / --diagnostics to see the session; a reachable display is not authorization and does not mean a screenshot can be taken
 cap.auto_failed	Every auto fallback channel failed (%1)
 cap.timeout	Automatic budget of %1 ms exhausted (took %2 ms)
 cap.timeout_hint	Raise --timeout-ms, or use a channel that cannot get stuck (wgc / dwm for an occluded window); a step with no interruptible wait can only be stopped by killing this tool's helper process when the deadline fires

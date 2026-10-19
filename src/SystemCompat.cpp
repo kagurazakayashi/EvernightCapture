@@ -56,6 +56,8 @@ Capability AssessChannel(CaptureMethod method, bool screenMode, const OsVersion&
         case CaptureMethod::kPrintWindow:
         case CaptureMethod::kDwmThumbnail: minBuild = os_floor::kPrintWindow; break;
         case CaptureMethod::kBitBlt:
+        // X11 的窗口存储与 Windows 版本无关：那一列门槛在这里不适用（0 = 没有门槛）。
+        case CaptureMethod::kXComposite:
         case CaptureMethod::kAuto: minBuild = 0; break;  // GDI 与"整条链"本身没有版本门槛
     }
     return {Judge(os, minBuild), minBuild};
@@ -67,12 +69,20 @@ Capability AssessWgcCursorControl(const OsVersion& os) {
 
 const std::vector<CaptureMethod>& AutoChain(bool screenMode) {
     // 屏幕目标没有"某个窗口自己的画面"可截，所以链与窗口模式不同（见 --capture 的说明）。
+#if defined(_WIN32)
     static const std::vector<CaptureMethod> kWindow = {
         CaptureMethod::kWgc, CaptureMethod::kDwmThumbnail, CaptureMethod::kPrintWindow,
         CaptureMethod::kBitBlt};
     static const std::vector<CaptureMethod> kScreen = {
         CaptureMethod::kWgc, CaptureMethod::kDuplication, CaptureMethod::kBitBlt};
     return screenMode ? kScreen : kWindow;
+#else
+    // Linux 本构建只有 X11 单窗口一条：auto 就是它，没有"另一条屏幕路线"可回退。
+    // 屏幕目标（--monitor 且无窗口条件）在解析期就报 capture.unsupported，不走这里。
+    (void)screenMode;
+    static const std::vector<CaptureMethod> kWindow = {CaptureMethod::kXComposite};
+    return kWindow;
+#endif
 }
 
 Diagnostic EnvironmentError(const OsVersion& os) {
@@ -89,6 +99,16 @@ ChannelGate GateChannels(CaptureMethod requested, bool screenMode, const OsVersi
     ChannelGate gate;
     const std::vector<CaptureMethod>& full = AutoChain(screenMode);
 
+#if !defined(_WIN32)
+    // Windows 版本门槛是 Windows 那一列的判据：Linux 上问不出、也不该问。这里不写
+    // "问不出来"的 note（那会让每一次 Linux 截图都带一条与本机无关的提示），直接按
+    // 本构建编进来的那一条通道给链。显式点名的通道若没有实现，运行期会交回
+    // capture.unsupported —— 不在这里替它换一条。
+    (void)os;
+    gate.chain = requested == CaptureMethod::kAuto ? full
+                                                   : std::vector<CaptureMethod>{requested};
+    return gate;
+#else
     // 版本问不出来：不按版本筛。整条链照旧交出去，让那一步自己交回真实的错误码，
     // 同时说明白"这一次没有按版本判过"，别让调用方以为判过了（问不出来 ≠ 不支持）。
     if (!os.known) {
@@ -132,6 +152,7 @@ ChannelGate GateChannels(CaptureMethod requested, bool screenMode, const OsVersi
         gate.chain.push_back(m);
     }
     return gate;
+#endif
 }
 
 }  // namespace ecapture

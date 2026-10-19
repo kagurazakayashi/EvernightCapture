@@ -14,6 +14,22 @@ writes that window's picture - or a whole monitor's - to an image. Success and f
 stable exit codes and stable diagnostic `code` values, so it is meant to be driven programmatically. Current build:
 `1.0.0`, stage `release` (`--version` prints both).
 
+**Linux build (`ecapture`, not `ECAPTURE.EXE`).** Everything above about JSON, exit codes and diagnostic `code` values
+holds unchanged; what differs is which routes exist. There is exactly one capture route - X11 XComposite single-window
+(`xcomposite`). It reads the target window's own redirected storage (`NameWindowPixmap`), so:
+
+- The frame is the **client area** (no title bar, no window frame), at the window's own size. Screen pixels, the panel
+  and any window overlapping the target are never read - overlapping the target with another window changes nothing.
+- `--monitor` / `--screens` style screen targets are refused (`capture.unsupported`, exit 7) and no image is delivered;
+  `--list`, `--inspect`, `--capabilities`, `--diagnostics`, `--show-config`, `--help`, `--version` work without a desktop.
+- `--yes` is honoured only for that window-storage route, and only after the target identity was re-checked.
+- `--cursor include` is refused (the pointer is composited by the server, never into window storage); `--cursor exclude`
+  is what you get either way.
+- Identity re-check needs `_NET_WM_PID` on the target. A window that does not set it (e.g. `xmessage`) is listed, but
+  capturing it is refused with `capture.target_unverifiable` instead of being captured unverified.
+- Nothing is restored, raised or activated: the tool never brings the target to the front and never changes its state,
+  so a minimized window stays minimized and is refused rather than captured from stale storage.
+
 Three kinds of call, and the difference matters:
 
 - **Read-only queries** - `--capabilities`, `--diagnostics`, `--screens`, `--list`, `--inspect`, `--show-config`,

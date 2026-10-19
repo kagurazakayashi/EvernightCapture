@@ -34,6 +34,9 @@ inline constexpr const wchar_t* kDuplicationFrame = L"duplication.frame";  // �
 inline constexpr const wchar_t* kScreenWgc = L"screen.wgc";              // 整块屏幕的 WGC 项目
 inline constexpr const wchar_t* kScreenBitBlt = L"screen.bitblt";
 inline constexpr const wchar_t* kScreenDuplication = L"screen.duplication";
+// X11 / XComposite：目标窗口自己的重定向存储（NameWindowPixmap）与它子窗口自己的存储。
+// 这条路径一个像素都不从屏幕上取，所以是窗口内容路径。
+inline constexpr const wchar_t* kXComposite = L"xcomposite";
 inline constexpr const wchar_t* kUnknown = L"unknown";
 }  // namespace paths
 

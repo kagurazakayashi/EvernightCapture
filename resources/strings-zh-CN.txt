@@ -19,9 +19,9 @@ help.exit1	退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无
 help.exit2	        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
 help.status	当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在；每张成功交付的图另存一份到程序目录的 history 下（不自动清理）
 help.system	运行环境: 64 位 Windows，声明的最低内部版本 18362（Windows 10 版本 1903），只在内部版本 19045 上实测过；本机版本提供不了的路线在取帧、弹框之前就报 env.os_too_old / env.channel_unsupported（前者换通道也没用），--verbose 的 input.osBuild 与 input.captureChain 回显这一次能走哪几条
-help.status_linux	当前构建: 这个 Linux 构建没有屏幕采集与目标枚举后端。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可运行；截图请求交回 capture.unsupported（退出码 7），不交付任何图像
+help.status_linux	当前构建: 这个 Linux 构建只实现了 X11 单窗口采集（xcomposite，读目标窗口自己的存储），没有桌面像素采集后端；--list / --inspect 走 X11 窗口查询，是能用的。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可运行；--capture auto 只会走这一条窗口通道，屏幕目标仍交回 capture.unsupported（退出码 7），不交付任何图像
 help.system_linux	运行环境: Linux。--capabilities / --diagnostics 只读连接 X11、Wayland 与会话 D-Bus（XDG Desktop Portal），并检查 PipeWire 套接字前提。环境变量与桌面名称只是线索：它们不证明服务可用，也不构成授权
-help.linux_query	Linux 预检: 先跑 --capabilities。它报告会话种类（x11 / wayland / xwayland / headless），以及每条运行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；后端未实现时绝不回答“可以截图”
+help.linux_query	Linux 预检: 先跑 --capabilities。它报告会话种类（x11 / wayland / xwayland / headless），以及每条运行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；显示服务器连得上不等于能截图，只有真正实现的后端（本构建是 x11 的 xcomposite 单窗口通道）才会被报成可用
 
 help.examples	示例:
 help.example1	ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
@@ -170,6 +170,21 @@ note.output_extension_hint	实际写成 %1
 note.capture_channel	auto：%1 不可用，改用 %2
 note.frame_uniform	这张图整幅只有一个颜色：ARGB %1
 note.frame_uniform_hint	这是质量提示，不是错误。纯色窗口或单色壁纸本来就是这个样子；也可能是这一帧没被合成出来（受保护内容 / 远程桌面 / 虚拟显卡）。要确认就换 wgc 通道再看一眼那张图
+cap.x11.display_unavailable	无法连接到 X11 显示
+cap.x11.display_unavailable_hint	确认 DISPLAY 指向当前桌面会话；原生 Wayland 会话里请改用 X11 会话或 XWayland 下的窗口。没有显示连接时一个像素都不会取
+cap.x11.composite_unavailable	这个 X 服务器没有 XComposite 扩展
+cap.x11.composite_unavailable_hint	本构建的单窗口截图依赖 XComposite 的窗口存储；没有它时不会退回去读桌面像素。请换一台启用 XComposite 的 X11 服务器
+cap.x11.not_viewable	目标窗口当前不在可查看状态（已最小化或未映射）
+cap.x11.not_viewable_hint	XComposite 只在窗口映射时提供它自己的存储。本工具不会替你恢复、激活或移动窗口；请先把窗口恢复到屏幕上再截
+cap.x11.frame_too_large	目标窗口的客户区超过单帧上限
+cap.x11.pixmap_failed	无法创建离屏位图
+cap.x11.render_unavailable	这个 X 服务器没有可用的 XRender ARGB32 格式
+cap.x11.render_unavailable_hint	本构建用 XRender 把目标窗口与子窗口的存储合成为一整扇窗口；没有它时不会用桌面像素补齐外观
+cap.x11.read_pixels_failed	从离屏位图读回像素失败
+cap.x11.convert_failed	像素通道 / 位深 / 行距转换失败
+cap.x11.name_pixmap_failed	无法取得目标窗口自己的存储（XCompositeNameWindowPixmap 失败）
+note.x11_children_incomplete	有映射中的子窗口没能取到，图像可能少一块
+note.x11_children_incomplete_hint	通常是因为子窗口正在销毁。目标窗口本身仍然有效；需要完整画面时请重试一次
 
 # ---------------------------------------------------------------------------
 # 窗口匹配（src/WindowMatch.cpp）
@@ -276,7 +291,6 @@ cap.offscreen	窗口完全在屏幕之外，取不到像素
 cap.visible_only	该通道只能拷屏幕上可见的部分
 cap.bitblt_failed	BitBlt 屏幕失败
 cap.unsupported	该取图方式尚未实现
-cap.linux_backend_not_implemented_hint	这个 Linux 构建没有采集与目标枚举后端。先用 --capabilities / --diagnostics 看清会话；显示服务器连得上不等于已授权，也不等于可以截图
 cap.auto_failed	auto 的回退通道全部失败（%1）
 cap.timeout	自动处理预算 %1 ms 已用尽（实际用时 %2 ms）
 cap.timeout_hint	加大 --timeout-ms，或换一条不会卡住的取图通道（被遮挡的窗口用 wgc / dwm）；没有可中断等待点的那一步只能靠期限到点时中止本工具的辅助进程

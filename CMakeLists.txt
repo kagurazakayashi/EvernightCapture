@@ -435,17 +435,56 @@ if(NOT WIN32)
     src/platform/linux/PosixCliArgs.cpp
     src/platform/linux/PosixEnvReport.cpp
     src/platform/linux/PosixSessionProbe.cpp
+    src/platform/linux/PosixWindowSource.cpp
+    src/platform/linux/PosixScreenSource.cpp
+    src/platform/linux/PosixCaptureBackends.cpp
+    src/platform/linux/PosixIsolation.cpp
+    src/platform/linux/PosixX11Compat.cpp
+    src/platform/linux/X11Capture.cpp
+    src/platform/linux/PosixHostProcess.cpp
+    src/platform/linux/PosixNotificationToast.cpp
+    ${ECAPTURE_IMAGE_SOURCES}
+    ${ECAPTURE_ENCODER_IMPL}
+    src/Encoder.cpp
+    src/Main.cpp
     src/SessionReport.cpp
     src/CliOptions.cpp
     src/CliText.cpp
     src/Json.cpp
+    src/Report.cpp
+    src/WindowMatch.cpp
+    src/WindowIdentity.cpp
+    src/WindowQuery.cpp
+    src/WindowQueryRun.cpp
+    src/WindowMatchRun.cpp
+    src/ScreenMatch.cpp
+    src/ScreenIdentity.cpp
+    src/ScreenQuery.cpp
+    src/ScreenQueryRun.cpp
+    src/SystemCompat.cpp
+    src/Capture.cpp
     src/CaptureScope.cpp
+    src/CursorControl.cpp
+    src/OutputPlan.cpp
+    src/Delivery.cpp
+    src/HistoryArchive.cpp
+    src/Notification.cpp
+    src/Consent.cpp
+    src/ConsentDialog.cpp
+    src/Isolation.cpp
     ${ECAPTURE_HOST_SOURCES}
     ${ECAPTURE_LANG_SOURCES})
   ecapture_apply_common(ecapture)
   target_compile_definitions(ecapture PRIVATE ${ECAPTURE_SESSION_PROBE_DEFS})
   target_include_directories(ecapture PRIVATE ${ECAPTURE_SESSION_PROBE_INCLUDES})
-  target_link_libraries(ecapture PRIVATE ${ECAPTURE_SESSION_PROBE_LIBS} Threads::Threads)
+  target_link_libraries(ecapture PRIVATE
+    ${ECAPTURE_SESSION_PROBE_LIBS}
+    ${ECAPTURE_ENCODER_LIBS}
+    Threads::Threads
+    X11
+    Xcomposite
+    Xrender
+    Xrandr)
   set_target_properties(ecapture PROPERTIES OUTPUT_NAME "ecapture")
 endif()
 

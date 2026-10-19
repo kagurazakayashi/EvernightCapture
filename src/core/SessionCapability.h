@@ -100,10 +100,13 @@ inline constexpr const char* kProbeNotCompiled = "probe_not_compiled";
 }  // namespace session_reason
 
 // caveat 的固定 token：这份报告**没有**断言什么。与 EnvReport 的 caveat 同一套用法。
-// 这一份构建里 Linux 采集后端实现到哪一步。只在这里写一次：查询层与将来的后端共用
-// 同一个事实；接上一条后端时改这里，不必重写 CLI 或 JSON 契约。
+// 这一份构建里 Linux 采集后端实现到哪一步。只在这里写一次：查询层与后端共用同一个事实；
+// 接上一条后端时改这里，不必重写 CLI 或 JSON 契约。
 namespace session_backend {
-inline constexpr bool kX11CaptureImplemented = false;
+// X11：只实现**单窗口**取帧，读目标窗口（及其子窗口）自己的重定向存储。
+// 不取桌面像素、不做整屏捕获、不把指针合成进帧。所以 canCapture=yes 说的是
+// "这条会话能截某扇 X11 窗口"，不是"能截整块屏幕"（见 caveat.kX11WindowStorageOnly）。
+inline constexpr bool kX11CaptureImplemented = true;
 inline constexpr bool kWaylandCaptureImplemented = false;
 inline constexpr bool kPortalCaptureImplemented = false;
 inline constexpr bool kPipeWireCaptureImplemented = false;
@@ -125,6 +128,9 @@ inline constexpr const char* kWaylandNoWindowList = "wayland_has_no_global_windo
 inline constexpr const char* kSshNotHeadless = "ssh_session_does_not_imply_headless";
 inline constexpr const char* kUnknownIsNotNo = "unknown_is_not_no";
 inline constexpr const char* kPipewirePrereqNotCapture = "pipewire_prerequisite_is_not_capture";
+// 本构建的 X11 通道只交付窗口自己的存储：不读桌面像素、没有整屏路径、指针不在帧里。
+// 这一条拦的是把 x11 的 available 读成"整屏也能截"或"能开关光标"。
+inline constexpr const char* kX11WindowStorageOnly = "x11_captures_window_storage_only";
 }  // namespace session_caveat
 
 // 一条诊断：code 是稳定的 ASCII（例如 "session.portal.service_not_found"），detail 是

@@ -2535,9 +2535,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 ## Cross-Platform Layers and Feature Matrix (maintainers)
 
 This repository is growing from "a Windows-only capture tool" into "one shared model with three
-platform paths". **This step only draws the boundary; Linux capture is not implemented.** Not a single
-line of X11 or Wayland backend is compiled into the build, so every cell in the Linux columns below is
-"planned" or "not supported". Marking an unimplemented cell as usable would be fabrication.
+platform paths". **Linux has exactly one implemented capture path: single-window frames over X11
+XComposite.** It reads the target window's own redirected storage (`NameWindowPixmap`) and nothing
+else - no desktop pixels, no whole-screen path, no pointer composited into the frame. Everything else
+in the Linux columns is still "planned" or "not supported". Marking an unimplemented cell as usable
+would be fabrication.
+
+The Linux X11 path is booked as **unverified**, not **implemented**: it is built and exercised on the
+development box's X11 desktop, but this project has not run it across the X11 implementations it
+would meet in the field.
+
+That path frames the target's **client area** (no title bar or window frame), at the window's own
+size, and needs `_NET_WM_PID` on the target to re-check its identity before every frame: a window
+that does not set it (`xmessage`, for one) is listed but refused with `capture.target_unverifiable`
+rather than captured unverified. No window is ever raised, activated or restored.
 
 ### Directories and ownership
 
@@ -2574,18 +2585,20 @@ depends on this machine) - **unverified** (built, never tested by this project i
 
 | Capability | Windows | Linux X11 | Linux Wayland |
 | ---------- | ------- | --------- | ------------- |
-| Target selection (list and match windows and screens) | implemented | planned (XWayland only sees X11 windows) | not supported (compositors give clients no global window list; this tool will not fake one) |
-| Window capture (the selected window's own pixels) | implemented | planned | planned (via Portal; window-scoped sources are a portal-implementation probe) |
-| Screen capture (desktop pixels of one output) | implemented, always behind a human confirm | planned | planned (Portal + PipeWire) |
-| Interactive grant | implemented (program dialog only; Windows has no per-call system screen grant) | planned (program dialog only, until probed otherwise) | planned (program confirm **and** the system Portal grant; neither replaces the other) |
-| Minimized window pixels | not supported (`--list=all` lists them, they are never captured) | planned (an unmapped window only offers a stale pixmap - say so) | not supported (no window list, no handle, nothing to point at) |
-| Cursor (`--cursor`) | runtime probe (the WGC switch has a build floor; duplication paths are registered unprovable) | planned | planned (depends on portal cursor metadata) |
-| HDR (`--hdr`) | unverified (tone mapping implemented and judged offline, but this project has no HDR display) | planned | planned |
-| Headless session | implemented (help / version / config / capabilities still run; desktop pixel paths report unavailable) | planned | planned |
+| Target selection (list and match windows and screens) | implemented | unverified (X11 window queries; under XWayland only X11 windows are visible, native Wayland windows are not) | not supported (compositors give clients no global window list; this tool will not fake one) |
+| Window capture (the selected window's own pixels) | implemented | unverified (XComposite `NameWindowPixmap`: the window's own storage, desktop pixels are never read) | planned (via Portal; window-scoped sources are a portal-implementation probe) |
+| Screen capture (desktop pixels of one output) | implemented, always behind a human confirm | planned (no Linux desktop-pixel path in this build: screen targets are rejected) | planned (Portal + PipeWire) |
+| Interactive grant | implemented (program dialog only; Windows has no per-call system screen grant) | planned (no program consent dialog on Linux yet; without `--yes` the capture is refused rather than silently allowed) | planned (program confirm **and** the system Portal grant; neither replaces the other) |
+| Minimized window pixels | not supported (`--list=all` lists them, they are never captured) | not supported (an unmapped window has no viewable storage; the backend refuses instead of returning a stale pixmap) | not supported (no window list, no handle, nothing to point at) |
+| Cursor (`--cursor`) | runtime probe (the WGC switch has a build floor; duplication paths are registered unprovable) | not supported (the pointer is composited by the X server, never written into window storage: `exclude` is inherent, `include` is refused) | planned (depends on portal cursor metadata) |
+| HDR (`--hdr`) | unverified (tone mapping implemented and judged offline, but this project has no HDR display) | planned (nothing is asserted about X11 wide gamut) | planned |
+| Headless session | implemented (help / version / config / capabilities still run; desktop pixel paths report unavailable) | planned (help / version / config / capabilities must run without `DISPLAY`; capture must report the real limit) | planned |
 
-`--capabilities` still reports only the Windows probe results; putting this matrix into that JSON is a
-later step - reporting a pile of "planned" today would only mislead callers. The matrix, this section and
-the README must be changed together.
+`--capabilities` already reports the Linux X11 backend it actually carries (`backends[]` =
+`xcomposite`, `autoChainWindow` = `xcomposite`, `autoChainScreen` empty) and the same session
+probe results as `x11` in `runtime[]`. The remaining "planned" rows above are deliberately **not**
+rendered into that JSON yet - reporting a pile of "planned" today would only mislead callers. The
+matrix, this section and the README must be changed together.
 
 ### Privacy boundaries (encoded as judgements, not just prose)
 

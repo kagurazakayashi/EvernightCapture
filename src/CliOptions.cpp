@@ -887,6 +887,7 @@ const wchar_t* CaptureMethodName(CaptureMethod m) {
         case CaptureMethod::kPrintWindow: return L"printwindow";
         case CaptureMethod::kBitBlt: return L"bitblt";
         case CaptureMethod::kDuplication: return L"duplication";
+        case CaptureMethod::kXComposite: return L"xcomposite";
         case CaptureMethod::kAuto: return L"auto";
     }
     return L"?";
@@ -2033,6 +2034,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             else if (v == L"printwindow") opt.capture = CaptureMethod::kPrintWindow;
             else if (v == L"bitblt") opt.capture = CaptureMethod::kBitBlt;
             else if (v == L"duplication") opt.capture = CaptureMethod::kDuplication;
+            else if (v == L"xcomposite") opt.capture = CaptureMethod::kXComposite;
             else opt.capture = CaptureMethod::kAuto;  // 取值已在上面按 kCaptureValues 校验过
             opt.captureExplicit = true;
             return;
