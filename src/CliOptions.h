@@ -80,8 +80,9 @@ enum class CaptureMethod {
 // 不该在无意间拍到整个桌面。
 //
 // 定位一块屏有三种来路，说的是三件事（数字只在本机本次枚举里有意义）：
-//   kOrdinal  本次 EnumDisplayMonitors 顺序里的位置。它既不是「显示设置」里那个标识号，
-//             也不保证插拔/改分辨率之后还指同一块屏 —— 所以要认屏请用下面两条。
+//   kOrdinal  本次屏幕枚举里的位置（Windows 是 EnumDisplayMonitors 的顺序，X11 是 XRRGetMonitors
+//             的交回顺序）。它既不是「显示设置」里那个标识号，也不保证插拔/改分辨率之后还指
+//             同一块屏 —— 所以要认屏请用下面两条。
 //   kDevice   当下的 GDI 视图设备名（`\\.\DISPLAY1`）。它比编号稳：同一块屏在本次桌面连接里
 //             一直是这个名字。但这个名字是系统按连接顺序**发**的，拔掉重插、换接口之后可能
 //             发给另一块屏，所以它仍然只是"本次连接的身份"。
@@ -935,6 +936,11 @@ struct OptionInfo {
 };
 
 const std::vector<OptionInfo>& OptionCatalog();
+
+// 这条选项说的是不是 Windows 才有的那件事（--hwnd / --class / --capture，见实现那一段的注释）。
+// 非 Windows 构建拿到它就得报 cli.platform_unsupported；帮助也按同一条判据把那些行省掉
+// —— 两边读的是同一份名单，不各维护一份。
+bool IsWindowsOnlyOption(const std::wstring& name);
 
 // 解析一串命令行参数（已经换成本项目的内部文字，见 src/core/CliTokens.h）。
 // 程序名占第 0 条，所以"没有参数"是 Count()==1，与 argc/argv 的习惯一致。

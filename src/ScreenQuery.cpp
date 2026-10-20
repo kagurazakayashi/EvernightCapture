@@ -13,6 +13,7 @@
 #include "Json.h"
 #include "Lang.h"
 #include "Version.h"
+#include "core/Platform.h"  // 标识写法成不成立、编号是谁给的枚举、设备名是哪一套名字：三处读同一份事实
 
 namespace ecapture {
 namespace {
@@ -173,7 +174,7 @@ ScreenQueryResult BuildScreenQuery(const std::vector<ScreenCandidate>& all) {
     if (!all.empty()) {
         r.config = all.front().facts.config;
     } else {
-        // 一块屏都没有：这一问本身还是跑了的（EnumDisplayMonitors 成功返回空表），
+        // 一块屏都没有：这一问本身还是跑了的（枚举成功返回空表），
         // 所以这里是 no 而不是 unknown —— 差别写在 caveats 里。
         r.config.read = ReadState::kReadable;
     }
@@ -250,16 +251,23 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     j.End();
     j.End();
 
-    // 四种身份各稳在哪一层，写成字段而不是正文。选择器只有两条：设备名与 devnode 路径。
-    // 编号与 LUID 没有选择器写法是有意的 —— 前者的作用域是"本次枚举"，
-    // 后者是"本次会话"，都能对上号却都不能拿去点名一块屏（点名用它们 = 赌）。
+    // 四种身份各稳在哪一层，写成字段而不是正文。每种身份的**出处**也按本平台的事实写：
+    // 编号这次枚举里的位置两个平台都有（`--monitor <n>` 两边都收），但给出这个顺序的枚举
+    // 不是同一个东西（Windows 是 EnumDisplayMonitors，X11 是 XRRGetMonitors），所以 kind
+    // 跟着平台走；device: 是“本次连接里这块屏叫什么”，两边都有（Windows 是 GDI 视图设备名，
+    // X11 是 XRandR 输出名）；id: 要监视器 devnode 路径，只有答得上显示配置的平台收——本平台
+    // 收不下来时，那一条照实写 usableAsSelector=false 且不写 selectorForm（不编一条照着敲一定
+    // 失败的写法）。编号与 LUID 没有选择器写法是有意的：前者的作用域是“本次枚举”，后者是
+    // “本次会话”，都能对上号却都不能拿去点名一块屏。
     j.Key(L"identity").Obj();
-    WriteIdentityKind(j, L"ordinal", L"enum_display_monitors_position",
+    WriteIdentityKind(j, L"ordinal", MonitorOrdinalKind(),
                       screen_stability::kThisInvocation, true, L"--monitor <n>");
-    WriteIdentityKind(j, L"deviceName", L"gdi_view_device_name", screen_stability::kThisAttach,
-                      true, L"device:");
+    WriteIdentityKind(j, L"deviceName", MonitorDeviceNameKind(), screen_stability::kThisAttach,
+                      MonitorDeviceSelectorSupported(),
+                      MonitorDeviceSelectorSupported() ? L"device:" : nullptr);
     WriteIdentityKind(j, L"monitorDevicePath", L"monitor_devnode_path",
-                      screen_stability::kCrossSession, true, L"id:");
+                      screen_stability::kCrossSession, MonitorPathSelectorSupported(),
+                      MonitorPathSelectorSupported() ? L"id:" : nullptr);
     WriteIdentityKind(j, L"adapterLuid", L"adapter_locally_unique_id",
                       screen_stability::kThisSession, false, nullptr);
     WriteIdentityKind(j, L"adapterDevicePath", L"adapter_devnode_path",
@@ -315,7 +323,8 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     }
     StrArray(j, L"caveats", caveats);
 
-    // 这份文档带着设备接口路径（那是硬件身份），但不带任何文件系统路径，也不带用户名。
+    // 这份文档带不带设备接口路径（那是硬件身份）按本平台的标识事实定：答得上 devnode 的平台
+    // （Windows）带着，答不上的（X11）就没有可带的东西。两边都不带文件系统路径与用户名，
     // 与 --capabilities 那份 privacy 的区别只有这一条，所以写清楚，别让调用方去猜。
     j.Key(L"privacy").Obj();
     j.Key(L"capturesScreen").Value(false);
@@ -325,7 +334,7 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     j.Key(L"changesDisplaySettings").Value(false);
     j.Key(L"includesUsernames").Value(false);
     j.Key(L"includesFileSystemPaths").Value(false);
-    j.Key(L"includesDevicePaths").Value(true);
+    j.Key(L"includesDevicePaths").Value(MonitorPathSelectorSupported());
     j.End();
 
     j.Key(L"limits").Obj();

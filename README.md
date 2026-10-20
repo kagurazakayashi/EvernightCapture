@@ -1106,7 +1106,8 @@ no output path, and is still a conflict with `--list` / `--inspect` rather than 
 ### Read-only screen enumeration (`--screens`)
 
 Naming "that monitor" used to have exactly one spelling: `--monitor <n>`, where `n` is the position in _this run's_
-`EnumDisplayMonitors` order. That is not the id Windows writes in Settings, and after a replug or a resolution
+screen enumeration (the `EnumDisplayMonitors` driver order on Windows, the monitor list `XRRGetMonitors` hands back
+on X11). That is not the id written in Settings, and after a replug or a resolution
 change it can name a different panel - and capturing the wrong screen means pixels nobody approved are already on
 disk. `--screens` turns that question into data:
 
@@ -1121,20 +1122,25 @@ display setting touched - finding out "is this screen rotated" by calling `SetDi
 exam to read the answer. Its document is a third contract (`screens`, version 1) and stays as separate from the
 capture result as `capabilities` and `windowquery` are.
 
-Four identities per screen, each stating how far it stays true (fields, not prose):
+Which identities a screen has, and how far each one stays true, is written as fields rather than prose -
+**which ones exist depends on the platform** (`deviceName` on both; the rest need the display-config path, which
+only Windows answers today):
 
-| Field               | What it is                            | Stable across            | Selector                |
-| ------------------- | ------------------------------------- | ------------------------ | ----------------------- |
-| `ordinal`           | position in this run's enumeration    | `this_invocation`        | `--monitor <n>`         |
-| `deviceName`        | GDI view device name, `\\.\DISPLAY1`  | `this_desktop_attach`    | `device:`               |
-| `monitorDevicePath` | monitor devnode device interface path | `cross_session_expected` | `id:`                   |
-| `adapterLuid`       | adapter's locally unique id           | `this_session`           | none - association only |
+| Field               | What it is                                                                                               | Stable across            | Selector                |
+| ------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------- |
+| `ordinal`           | position in this run's enumeration (`EnumDisplayMonitors` order on Windows, XRandR monitor order on X11) | `this_invocation`        | `--monitor <n>`         |
+| `deviceName`        | this desktop attach's name (Windows `\\.\DISPLAY1`, X11 `HDMI-1`)                                        | `this_desktop_attach`    | `device:`               |
+| `monitorDevicePath` | monitor devnode device interface path (Windows only)                                                     | `cross_session_expected` | `id:`                   |
+| `adapterLuid`       | adapter's locally unique id (Windows only)                                                               | `this_session`           | none - association only |
 
 `screens[].selectors` holds the exact strings to write back (`device:DISPLAY1`, `id:\\?\DISPLAY#…`), so nothing has
 to be guessed, and `identity.*` says which kinds may be used as a selector. The adapter LUID deliberately has none:
 it is unique only inside the current session, so naming a monitor with it would be a bet rather than a reference.
 `adapter.devicePath` (the adapter's own devnode path), `adapter.outputTechnology`, `targetId` and `targetAvailable`
-come from the same answer, which is how "which card drives this screen" gets reported.
+come from the same answer, which is how "which card drives this screen" gets reported. On a platform that
+cannot answer the display-config path, `monitorDevicePath` and `adapterLuid` still appear (the field set does not
+change per platform) but with `usableAsSelector` false and no per-screen value - that reports "this build cannot
+answer", not "this machine has no such layer".
 
 Three rules this layer keeps:
 
@@ -1465,8 +1471,9 @@ images follow the window rows above.
   rules gets asked at least once.
 
 `--monitor` (value omitted) and `--monitor primary` are the main monitor, `--monitor 2` the second one,
-`--monitor all` one image per monitor. The number is **the position in this run's `EnumDisplayMonitors` enumeration**,
-starting at 1 — it is not the id Windows writes in Settings, and unplugging a monitor or changing a resolution can
+`--monitor all` one image per monitor. The number is **the position in this run's screen enumeration** (the
+`EnumDisplayMonitors` driver order on Windows, the monitor list `XRRGetMonitors` hands back on X11), starting at 1 —
+it is not the id written in Settings, and unplugging a monitor or changing a resolution can
 reshuffle it, so do not store a number to identify a screen across runs. To name that monitor again, run `--screens` and write back what it reports (the
 `\\.\DISPLAY1` name of this desktop attach: `--monitor device:DISPLAY1`, or the monitor devnode path, which is the one that survives a session change: `--monitor "id:\\?\DISPLAY#…"`). An identifier that matches nothing gives `match.monitor_unknown_id` (exit code 4), one that matches several gives `match.monitor_ambiguous_id` (exit code 5, every candidate listed - the tool will not pick one), and an identity question that returned no answer gives `match.monitor_id_unverifiable` (exit code 7) - none of them quietly falls back to the primary monitor. An out-of-range number still gives
 `match.monitor_out_of_range` (exit code 1) with every local monitor listed in `hint`. Before a screen target is
@@ -2626,9 +2633,14 @@ across both platforms. Four boundaries make that possible:
 | Platform actions | Path shapes, whole-file reads, standard-stream writes and the display language: declared in shared headers, implemented per platform (`src/platform/windows/`, `src/platform/linux/`). On POSIX `\` is an ordinary filename character and `C:shot.png` is a legal relative name in the current directory - the Windows shape rules are not copied over. Case and whitespace judgements fold ASCII only, so they do not follow the runtime locale | `src/HostPath.h`, `src/HostFile.h`, `src/OutputStream.h`, `src/Lang.h` |
 
 Options that name something only Windows has (`--hwnd`, `--class`, the Windows capture channels of
-`--capture`, and the `device:` / `id:` monitor identifiers) report `cli.platform_unsupported` one per option in a
-non-Windows build (exit code 1): they are neither silently ignored nor translated into a "roughly equivalent"
-argument. The `--help` / `--version` paths hand over what the caller asked for first and do not raise this.
+`--capture`, and the `id:` monitor identifier, whose value is a monitor devnode path) report
+`cli.platform_unsupported` one per option in a non-Windows build (exit code 1): they are neither silently
+ignored nor translated into a "roughly equivalent" argument. The `device:` monitor identifier is *not* on that
+list: naming a screen by what it is called in this desktop attach exists on both platforms (a GDI view device
+name on Windows, an XRandR output name such as `HDMI-1` on X11), so `--screens` returns it and `--monitor`
+accepts it everywhere. What each build accepts is read from one place (`src/core/Platform.h`), so the refusal,
+the `--monitor` value hint in `--help` and the `usableAsSelector` flag in `--screens` cannot disagree. The
+`--help` / `--version` paths hand over what the caller asked for first and do not raise this.
 
 The stream split is unchanged: once an image claims stdout, every text write goes to stderr, `--help` /
 `--version` / no-condition stay plain text and everything else is the compact JSON. Line endings belong to the

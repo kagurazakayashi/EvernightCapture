@@ -988,8 +988,8 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # 撮影と同じ�
 ### 読み取り専用のモニタ列挙（`--screens`）
 
 これまでの「あのモニタが欲しい」には書き方がひとつしかなかった。`--monitor <n>` の n は**この回の
-`EnumDisplayMonitors` 列挙での位置**であり、Windows が設定画面に書く識別番号ではなく、抜き差しや解像度変更のあとに
-別のパネルを指しうる。当たりどころを間違えると、誰も承認していない画面がそのままディスクに載る。
+モニタ列挙での位置**（Windows は `EnumDisplayMonitors` のドライバ列挙順、X11 は XRandR が返すモニタ一覧の順）
+であり、設定画面に書かれる識別番号ではなく、抜き差しや解像度変更のあとに別のパネルを指しうる。当たりどころを間違えると、誰も承認していない画面がそのままディスクに載る。
 `--screens` はこの問いをデータとして返す。
 
 ```powershell
@@ -1003,20 +1003,24 @@ ECAPTURE.EXE --monitor "id:\\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 `SetDisplayConfig` を呼ぶのは、試験問題を自分で書き換えて答えを読むことに等しい。この文書は三つめの契約
 （`screens`、版 1）で、`capabilities` や `windowquery` 同体、画面取得の結果 JSON とは独立している。
 
-ひとつのモニタに四種類の識別子があり、それぞれ「どこまで安定か」をフィールドで宣言する（本文ではなく字段で）：
+ひとつのモニタが持つ識別子は、そのプラットフォームが答えられるものだけで、それぞれ「どこまで安定か」を
+フィールドで宣言する（本文ではなくフィールドで。**どれがあるかはプラットフォーム次第**）：
 
-| フィールド          | 何なのか                                      | 安定する範囲             | 指定の形           |
-| ------------------- | --------------------------------------------- | ------------------------ | ------------------ |
-| `ordinal`           | この回の列挙での位置                          | `this_invocation`        | `--monitor <n>`    |
-| `deviceName`        | GDI のビュー端末名 `\\.\DISPLAY1`             | `this_desktop_attach`    | `device:`          |
-| `monitorDevicePath` | モニタの devnode デバイスインターフェースパス | `cross_session_expected` | `id:`              |
-| `adapterLuid`       | アダプタのローカル一意識別子                  | `this_session`           | なし——関連情報のみ |
+| フィールド          | 何なのか                                                                              | 安定する範囲             | 指定の形           |
+| ------------------- | ------------------------------------------------------------------------------------- | ------------------------ | ------------------ |
+| `ordinal`           | この回の列挙での位置（Windows は `EnumDisplayMonitors` 順、X11 は XRandR のモニタ順） | `this_invocation`        | `--monitor <n>`    |
+| `deviceName`        | この接続でのデバイス名（Windows は `\\.\DISPLAY1`、X11 は `HDMI-1`）                  | `this_desktop_attach`    | `device:`          |
+| `monitorDevicePath` | モニタの devnode デバイスインターフェースパス（Windows のみ）                         | `cross_session_expected` | `id:`              |
+| `adapterLuid`       | アダプタのローカル一意識別子（Windows のみ）                                          | `this_session`           | なし——関連情報のみ |
 
 `screens[].selectors` にはそのまま書き戻せる二通り（`device:DISPLAY1`、`id:\\?\DISPLAY#…`）が入り、`identity.*` が
 どれを指定に使えるかを書く。アダプタの LUID には意図的に指定の形を与えていない：それは今回のセッション内でしか
 一意ではないので、それでモニタを名指しするのは参照ではなく賭けになる。`adapter.devicePath`（アダプタ自身の
 devnode パス）、`adapter.outputTechnology`、`targetId`、`targetAvailable` は同じ問いの答えで、「どのモニタがどの
-GPU についているか」はこうして返る。
+GPU についているか」はこうして返る。表示構成の経路に答えられないプラットフォームでは、`monitorDevicePath` と
+`adapterLuid` のキーは変わらず現れる（フィールド集合はプラットフォームで増減しない）が、`usableAsSelector` は
+false で `screens[]` に対応する値は入らない——返るのは「このビルドには答えられない」であって、
+「この機械にその層が無い」ではない。
 
 この層は三つの規則を守る：
 
@@ -1322,8 +1326,9 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
   1 回は聞かれる、という点だけです。
 
 `--monitor`（値を省略）と `--monitor primary` は主モニタ、`--monitor 2` は 2 台目のモニタ、
-`--monitor all` は全モニタを 1 枚ずつ。番号は**この回の実行における `EnumDisplayMonitors` 列挙での位置**で、
-1 始まり——Windows が設定画面に書く識別番号ではなく、モニタを抜いたり解像度を変えたりすると並びは変わり得る
+`--monitor all` は全モニタを 1 枚ずつ。番号は**この回の実行におけるモニタ列挙での位置**（Windows は
+`EnumDisplayMonitors` のドライバ列挙順、X11 は XRandR が返すモニタ一覧の順）で、
+1 始まり——設定画面に書かれる識別番号ではなく、モニタを抜いたり解像度を変えたりすると並びは変わり得る
 ので、実行をまたいで画面を識別するために番号を保存しないでほしい。同じモニタをもう一度名指ししたいなら
 `--screens` を実行して、返ってきた識別子をそのまま書き戻す：`--monitor device:DISPLAY1`（この接続での
 デバイス名）または `--monitor "id:\\?\DISPLAY#…"`（モニタの devnode デバイスインターフェースパス、セッションを
@@ -2278,10 +2283,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | 引数の入口 | プラットフォーム入口は自システムの argv を `CliTokens` に収めるだけ（Windows は UTF-16 をそのまま、Linux はバイト列を厳密にデコード）。本文 `CliMain` は共用で、Windows 入口は補助プロセスモードの振り分けも担当します。Linux 側の `DecodePosixArgv` は実バイト列で判定済みですが、`main` の 3 行はキャプチャ側が移り終えないとリンクできません | `src/CliArgs.h`、`src/Main.h` |
 | プラットフォームの動作 | パスの形、ファイルの全文読み、標準ストリームへの書き出し、表示言語：宣言は共用ヘッダ、実装は `src/platform/windows/` と `src/platform/linux/` に分かれています。POSIX では `\` はファイル名の中の普通の文字で、`C:shot.png` はカレントディレクトリの正当な相対名です（Windows の形判定を写しません）。大文字小文字と空白の判定は ASCII だけ折にし、実行時の locale に追随しません | `src/HostPath.h`、`src/HostFile.h`、`src/OutputStream.h`、`src/Lang.h` |
 
-Windows 固有の言い方（`--hwnd`、`--class`、`--capture` の Windows キャプチャ経路、および `--monitor` の
-`device:` / `id:` の 2 種類の識別子）は、非 Windows ビルドでは 1 本ごとに `cli.platform_unsupported`
-（終了コード 1）を返します：黙って無視もしなければ、「だいたい等価」な別の引数に翻訳もしません。
-`--help` / `--version` の道筋はまず人が求める出力を渡しに出るので、この判定は行いません。
+Windows 固有の言い方（`--hwnd`、`--class`、`--capture` の Windows キャプチャ経路、および `--monitor` の `id:` 識別子——値はモニタの devnode パス）は、非 Windows ビルドでは 1 本ごとに `cli.platform_unsupported`（終了コード 1）を返します：黙って無視もしなければ、「だいたい等価」な別の引数に翻訳もしません。`device:` はこの一覧に入りません：「このデスクトップ接続でこの画面は何と呼ばれているか」で名指しする層は両方のプラットフォームにあります（Windows は GDI ビューのデバイス名、X11 は XRandR の出力名。例: `HDMI-1`）。だから `--screens` は返せますし、`--monitor` も受け付けます。各表記がこのビルドで成り立つかは 1 か所（`src/core/Platform.h`）だけを読みます。そのため解析期の拒否、`--help` の値ヒント、`--screens` の `usableAsSelector` が別々のことを言う余地はありません。`--help` / `--version` の道筋はまず人が求める出力を渡しに出るので、この判定は行いません。
 
 標準ストリーム分担は従来どおり：画像が stdout を取ったあとは文字すべて stderr に回ります。
 `--help` / `--version` / 条件なしは引き続きプレーンテキスト、それ以外は簡潔な JSON。

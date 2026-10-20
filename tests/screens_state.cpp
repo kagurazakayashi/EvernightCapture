@@ -24,6 +24,7 @@
 #include "../src/ScreenMatch.h"
 #include "../src/ScreenQuery.h"
 #include "../src/WindowQuery.h"
+#include "../src/core/Platform.h"  // 标识写法成不成立、编号的枚举出处、设备名是哪一套名字：与渲染那份读同一份事实
 
 using namespace ecapture;
 
@@ -494,9 +495,21 @@ void TestRenderDocument() {
           "四种稳定性各写一条：本次枚举 / 本次连接 / 跨会话 / 本次会话，不互相冒充");
     Check(Contains(doc, L"\"adapterLuid\"") && Contains(doc, L"\"usableAsSelector\": false"),
           "适配器 LUID 只作关联信息：它在这次会话之外就不唯一，所以没有选择器写法");
-    Check(Contains(doc, L"\"selectorForm\": \"device:\"") &&
-              Contains(doc, L"\"selectorForm\": \"id:\""),
-          "两条有选择器的身份各写出自己的写法，调用方不必读源码才知道该怎么写回 --monitor");
+    // 选则器写法按本平台的标识事实写（core/Platform.h）：device: 是“本次连接里这块屏叫什么”，
+    // 两边都有；id: 要监视器 devnode 路径，答不上来的平台上它就不是一个能用的写法，
+    // 所以那时照实写 usableAsSelector=false 且不写 selectorForm —— 不把人引向一条注定失败的
+    // 命令行，也不在 --screens 里自称一个本构建没有的身份。
+    Check(Contains(doc, L"\"selectorForm\": \"device:\"") == MonitorDeviceSelectorSupported() &&
+              Contains(doc, L"\"selectorForm\": \"id:\"") == MonitorPathSelectorSupported(),
+          "有选择器的身份各写出自己那种写法，而写法在不在按本平台的事实定");
+    Check(Contains(doc, std::wstring(L"\"kind\": \"") + MonitorDeviceNameKind() + L"\""),
+          "设备名写清楚是哪一套名字：Windows 是 GDI 视图设备名，X11 是 XRandR 输出名");
+    // 编号同理：两个平台都有"这次枚举里的第几块"，但给出这个顺序的枚举不是一个东西。
+    // 照实写它的出处，不拿 EnumDisplayMonitors 这个 Windows 枚举名去描述 X11 交回的编号。
+    Check(Contains(doc, std::wstring(L"\"kind\": \"") + MonitorOrdinalKind() + L"\""),
+          "编号写出它是哪一次枚举里的位置：Windows 是 EnumDisplayMonitors，X11 是 XRandR");
+    Check(std::wstring(MonitorOrdinalKind()) != L"unspecified_ordinal_position",
+          "本构建认得出自己的枚举：认不出时才允许写 unspecified_ordinal_position");
 
     // 问不到的那一项：值整个键不出现，而下场写在 readability 里 —— 不拿 0 或空串冒充答案。
     Check(!Contains(doc, L"\"effectiveX\": 0") && Contains(doc, L"\"dpi\"") &&
@@ -514,10 +527,10 @@ void TestRenderDocument() {
               Contains(doc, L"\"desktopPixelsAlwaysAsk\": true") &&
               Contains(doc, L"\"yesSkipsThisLevel\": false"),
           "只读与授权自述齐备：真去截整屏一定问人，--yes 对桌面像素不生效");
-    Check(Contains(doc, L"\"includesDevicePaths\": true") &&
+    Check((Contains(doc, L"\"includesDevicePaths\": true") == MonitorPathSelectorSupported()) &&
               Contains(doc, L"\"includesFileSystemPaths\": false") &&
               Contains(doc, L"\"includesUsernames\": false"),
-          "这份文档与 --capabilities 的差别只有一条：这里有设备路径，没有文件系统路径与用户名");
+          "带不带设备路径按本平台的事实：有 devnode 那一路才有东西可带，文件系统路径与用户名两边都不带");
 
     Check(Contains(doc, L"\"cross_session_stability_not_tested\"") &&
               Contains(doc, L"\"screen_capture_always_asks\"") &&

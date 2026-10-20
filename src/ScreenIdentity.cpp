@@ -1,12 +1,13 @@
 // 屏幕身份的问答与判据。
 //
 // 判据本体（SelectScreenCandidates / CompareScreenIdentity / RecheckScreenSampling /
-// MonitorSelectorLabel / ScreenIdEquals）是纯函数，留在这份共用文件里；碰 Win32 的那两半
-//（EnumScreenCandidates 与 SelectScreenCandidatesOf）搬到了
-// src/platform/windows/WinScreenSource.cpp —— 共用层只 include 平台无关的声明。
+// MonitorSelectorLabel / ScreenIdEquals）是纯函数，留在这份共用文件里；碰系统的那两半
+//（EnumScreenCandidates 与 SelectScreenCandidatesOf）按平台分在 src/platform/ 下
+//（windows/WinScreenSource.cpp 与 linux/PosixScreenSource.cpp）—— 共用层只 include
+// 平台无关的声明。
 //
 // 本文件不取一个像素、不弹确认框、不写文件，也**绝不**改任何显示设置（想"看清这块屏是不是
-// 转过的"就去调 SetDisplayConfig，等于为了读答案把考卷改了）。
+// 转过的"就去改显示配置，等于为了读答案把考卷改了）。
 
 #include "ScreenIdentity.h"
 
@@ -57,10 +58,11 @@ bool PathReadable(const ScreenCandidate& c) {
 }  // namespace
 
 bool ScreenIdEquals(const std::wstring& a, const std::wstring& b) {
-    // 逐字符不区分大小写，与 Windows 自己看设备名的办法一致（区域敏感的比较规则会把
-    // 土耳其语的 i 之类写成另一个名字，而"是不是同一个设备"不该由那种规则决定）。
-    // 设备名 / devnode 路径都是系统用来认对象的键，原样交付、不做归一化；这里只折叠 ASCII
-    // 与各语言字母的大小写（towlower），不裁空白、不换分隔符。
+    // 折叠大小写比（towlower），不用区域敏感的比较规则 —— 那种规则会把土耳其语的 i 之类
+    // 写成另一个名字，而"是不是同一个设备"不该由它决定。Windows 上这与系统认设备名的办法
+    // 一致；X11 的输出名本来是区分大小写的 atom，折叠是给手抄 --screens 输出的调用方留的
+    // 余地（有意的宽松，不是系统判据）。设备名 / devnode 路径都是系统用来认对象的键，
+    // 原样交付、不做归一化；这里只折叠大小写，不裁空白、不换分隔符。
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i) {
         if (std::towlower(a[i]) != std::towlower(b[i])) return false;

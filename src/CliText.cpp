@@ -65,8 +65,15 @@ std::wstring HelpText() {
     // 要回答"读的是哪一份"，所以这一段紧邻着查询那一节。
     const wchar_t* groups[] = {L"target", L"match", L"pick", L"capture", L"crop", L"consent",
                                L"timeout", L"output", L"config", L"query", L"behavior"};
+    // 本平台不成立的那几条不列进本平台的帮助：帮助要说的是"这个构建能怎么用"，而 --hwnd /
+    // --class / --capture 在非 Windows 构建里一给就报 cli.platform_unsupported（判据与解析层
+    // 是同一个 IsWindowsOnlyOption）。省掉而不是标一句"不可用"：一行注定失败的写法不算选项。
+    const auto listed = [](const OptionInfo& o) {
+        return BuildPlatform() == PlatformKind::kWindows || !IsWindowsOnlyOption(o.name);
+    };
     size_t width = 0;
     for (const auto& o : catalog) {
+        if (!listed(o)) continue;   // 列宽按本平台真会印出来的那几行算
         std::wstring col = FlagColumn(o);
         if (!o.valueHint.empty()) col += L" " + o.valueHint;
         width = std::max(width, col.size());
@@ -76,6 +83,7 @@ std::wstring HelpText() {
         t += L"\n";
         for (const auto& o : catalog) {
             if (o.group != g) continue;
+            if (!listed(o)) continue;
             std::wstring col = FlagColumn(o);
             if (!o.valueHint.empty()) col += L" " + o.valueHint;
             col = L"  " + col;
@@ -90,16 +98,13 @@ std::wstring HelpText() {
     t += Msg(L"help.output2") + L"\n";
     t += Msg(L"help.exit1") + L"\n";
     t += Msg(L"help.exit2") + L"\n";
-    // 两个平台的支持声明不同源：Windows 那份是内部版本下限，Linux 这份是"只读查询可跑、
-    // 采集后端未实现"。在 Windows 上逐字节保持原样，不改动 README 里的帮助摘录。
-    if (BuildPlatform() == PlatformKind::kWindows) {
-        t += Msg(L"help.status") + L"\n";
-        t += Msg(L"help.system") + L"\n";
-    } else {
-        t += Msg(L"help.status_linux") + L"\n";
-        t += Msg(L"help.system_linux") + L"\n";
-        t += Msg(L"help.linux_query") + L"\n";
-    }
+    // 两个平台的支持声明不同源：Windows 那份写的是内部版本下限，Linux 那份写的是本构建真实现了
+    // 什么、哪些开关在这里不成立。差异由文案表的平台变体承担（非 Windows 构建的 Msg 自动取
+    // help.status_linux / help.system_linux，见 src/Lang.cpp），这里不写分支——分支一多，
+    // 下一个平台就得改这里；help.linux_query 是 Linux 独有的那一段，所以只有那边多一行。
+    t += Msg(L"help.status") + L"\n";
+    t += Msg(L"help.system") + L"\n";
+    if (BuildPlatform() != PlatformKind::kWindows) t += Msg(L"help.linux_query") + L"\n";
     // 授权这件事写在选项目录里（grp.consent 那一行 + --yes 的说明），不另立一段正文：
     // 免得同一个规矩在两处各写一遍，改了一处忘了另一处。
     t += L"\n";
@@ -114,10 +119,14 @@ std::wstring HelpText() {
 
 std::wstring VersionText() {
     // Windows 那份是"声明的最低内部版本"，与运行时那道能力检查取同一个数；Linux 这份
-    // 不能冒充一个 Windows 构建号 —— 它报告的是本平台只读查询可跑、采集后端未实现。
+    // 不能冒充一个 Windows 构建号 —— 它报告的是本平台这一条实际存在的采集通道。程序名与
+    // 帮助首屏取的是同一个事实（PlatformExecutableName），不另拼一次。
+    // 2026-11：Linux 侧不再只有只读查询（--list / --inspect 已是 X11 窗口查询，另有 xcomposite
+    // 单窗口采集），所以这一行不再写 sessionQuery=read-only —— 那会把能用的采集说成不能用。
     if (BuildPlatform() != PlatformKind::kWindows) {
         return std::wstring(L"EvernightCapture ") + kVersion +
-               L"  (ECAPTURE / linux)  stage=" + kStage + L"  sessionQuery=read-only\n";
+               L"  (" + PlatformExecutableName() + L" / linux)  stage=" + kStage +
+               L"  capture=x11-xcomposite\n";
     }
     // minWindowsBuild 是本工具**对外声明**的最低 Windows 内部版本，与运行时那道能力检查取的是
     // 同一个数（src/SystemCompat.h 的 kSupportedMinBuild），所以脚本不必先读文档就能问出

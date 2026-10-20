@@ -404,23 +404,6 @@ struct OptionSpec {
     bool valueAlways = false;
 };
 
-// 说的全是 Windows 才有的那几件事，换平台没有"对等的那一条"可换：
-//   * --hwnd   一个 HWND 的数字。X11 的窗口号、Wayland 的 surface 都不是同一个标识，
-//              拿它们接同一个取值就是把一个标识当另一个用（AGENTS.md：目标标识含所属后端）。
-//   * --class  Win32 的窗口类名。别的系统上没有这一层名字。
-//   * --capture  这一组的每一条取值（wgc / dwm / printwindow / bitblt / duplication）都是
-//              Windows 的取图通道；--auto 是"按这条链回退"，链本身也是 Windows 的。
-// 屏幕的两条标识写法（--monitor=device: / id:）不在这张表里：--monitor 这个选项本身在
-// 别的平台上成立（编号与 primary、all 都说得通），不成立的只有那两种 Windows 形状的标识，
-// 所以那一条按取值判，见下面的 ScanPlatformUnsupported。
-bool IsWindowsOnlyOption(const std::wstring& name) {
-    static const std::wstring kList[] = {L"hwnd", L"class", L"capture"};
-    for (const std::wstring& n : kList) {
-        if (n == name) return true;
-    }
-    return false;
-}
-
 constexpr OptionSpec kOptions[] = {
     // ---- 截图目标 ----
     // valueHint 用方括号表示"取值可省略"：省略时下一个参数不会被吞掉，
@@ -532,7 +515,7 @@ constexpr OptionSpec kOptions[] = {
     // 它与环境查询同族（不选窗口、不取像素、不弹框、不建输出与历史目录），而允许清单不同 ——
     // 它的用途正是观察偏好，所以带着覆盖参数一起跑是合法的（判据见 AllowedWithConfigView）。
     {L"show-config", L"", false, L"query", L"", nullptr, L"opt.show-config"},
-    // 只读的屏幕枚举：本机现在有哪几块屏、每块屏的三种身份各稳在哪一层。
+    // 只读的屏幕枚举：本机现在有哪几块屏、每块屏有哪几种身份（按本平台给得出的那几层）、各稳在哪一层。
     // 与上面两条同一家族（不取像素、不弹框、不写文件），所以冲突与允许清单也走同一条判据。
     // 判据与渲染在 src/ScreenQuery.h，屏幕身份的问答在 src/ScreenIdentity.h。
     {L"screens", L"", false, L"query", L"", nullptr, L"opt.screens"},
@@ -549,6 +532,19 @@ constexpr OptionSpec kOptions[] = {
     {L"limit", L"", true, L"query", L"<n>", nullptr, L"opt.limit"},
 };
 
+// --monitor 的取值提示：只列本构建真的收得下的那几种写法。
+//
+// 判据与解析期那条拒绝（ScanPlatformUnsupported）同源：device: 与 id: 各读自己那一条
+// 平台事实（core/Platform.h），而不是在这里再写一遍“非 Windows 就怎么怎么样”。
+// Windows 上拼出来的仍是原来那一串 `[<n|primary|all|device:|id:>]`，帮助正文逐字节不变。
+std::wstring MonitorValueHint() {
+    std::wstring hint = L"[<n|primary|all";
+    if (MonitorDeviceSelectorSupported()) hint += L"|device:";
+    if (MonitorPathSelectorSupported()) hint += L"|id:";
+    hint += L">]";
+    return hint;
+}
+
 std::vector<OptionInfo> BuildCatalog() {
     std::vector<OptionInfo> catalog;
     catalog.reserve(std::size(kOptions));
@@ -560,6 +556,10 @@ std::vector<OptionInfo> BuildCatalog() {
         info.group = spec.group;
         info.valueHint = spec.valueHint;
         info.messageKey = spec.messageKey;
+        // 取值提示里那一段也得按平台收窄：本构建不收的标识写法一给就报 cli.platform_unsupported
+        // （判据见 ScanPlatformUnsupported），把只说不出的话留在帮助里，等于让人照着敲一条
+        // 注定失败的写法。哪几条写得下由 core/Platform.h 那两条事实决定，不在这里重判平台。
+        if (info.name == L"monitor") info.valueHint = MonitorValueHint();
         for (const wchar_t* const* p = spec.allowed; p && *p; ++p) info.allowedValues.emplace_back(*p);
         catalog.push_back(std::move(info));
     }
@@ -808,9 +808,12 @@ void ScanPlatformUnsupported(const std::vector<ScannedItem>& items,
         bool hit = IsWindowsOnlyOption(name);
         if (!hit && name == L"monitor") {
             // 只看形状，不重判语法：形状坏的那一条由 Apply 报它自己的码，两条不互相顶替。
+            // 两条标识写法各读自己那一条平台事实（core/Platform.h）：device: 在两边都成立，
+            // 所以这里只会在真的没有那一层名字的平台上拒；id: 只有答得上 devnode 的平台收。
             std::wstring body;
             const MonitorIdKind kind = SplitMonitorSelector(value, &body);
-            hit = (kind == MonitorIdKind::kDevice || kind == MonitorIdKind::kPath);
+            hit = (kind == MonitorIdKind::kDevice && !MonitorDeviceSelectorSupported()) ||
+                  (kind == MonitorIdKind::kPath && !MonitorPathSelectorSupported());
         }
         if (!hit) continue;
         const std::wstring label = L"--" + name;
@@ -838,6 +841,29 @@ void SelectLanguageFromCommandLine(const CliTokens& tokens) {
 }  // namespace
 
 // 以下为 ecapture 命名空间的公开辅助函数（供 main.cpp 复用）
+
+// 说的全是 Windows 才有的那几件事，换平台没有"对等的那一条"可换：
+//   * --hwnd   一个 HWND 的数字。X11 的窗口号、Wayland 的 surface 都不是同一个标识，
+//              拿它们接同一个取值就是把一个标识当另一个用（AGENTS.md：目标标识含所属后端）。
+//   * --class  Win32 的窗口类名。别的系统上没有这一层名字。
+//   * --capture  这一组的每一条取值（wgc / dwm / printwindow / bitblt / duplication）都是
+//              Windows 的取图通道；--auto 是"按这条链回退"，链本身也是 Windows 的。
+// 屏幕的两条标识写法（--monitor=device: / id:）不在这张表里：--monitor 这个选项本身在
+// 别的平台上成立（编号与 primary、all 都说得通），而它那两种标识写法各属另一件事，
+// 由 core/Platform.h 的那两条事实（MonitorDeviceSelectorSupported /
+// MonitorPathSelectorSupported）回答：device: 是“本次连接里这块屏叫什么”，两边都有；
+// id: 是监视器 devnode 路径，只有 Windows 的显示配置答得上来。那一组按取值判，
+// 见上面的 ScanPlatformUnsupported。
+//
+// 这一条判据有两处读它，读的是同一份名单：解析层据此报 cli.platform_unsupported，
+// 帮助层据此把这些行从**本平台**的帮助里省掉（列出来再让人一试就失败，等于把错误当成选项）。
+bool IsWindowsOnlyOption(const std::wstring& name) {
+    static const std::wstring kList[] = {L"hwnd", L"class", L"capture"};
+    for (const std::wstring& n : kList) {
+        if (n == name) return true;
+    }
+    return false;
+}
 
 // 严格十进制的对外出口：本体就是上面那个 DecimalLiteral，这里只把它请出匿名命名空间。
 // 配置文件里的数（src/Config.cpp）与命令行取值读的是**同一份**语法，两处不许各写一套 ——
@@ -1954,7 +1980,9 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
                 return;
             }
             PushUnique(&opt.match.processes, v, L"--process", &warnings);
-            if (v.find(L'.') == std::wstring::npos)
+            // 这条 note 只在真的会补后缀的平台上成立（Windows）。Linux 上按原样比，替用户
+            // 报一句"匹配时按 .exe 处理"就是在说一件不会发生的事。
+            if (ProcessNameAssumesExeSuffix() && v.find(L'.') == std::wstring::npos)
                 Note(codes::kExtensionAppended, Msg(L"note.extension_appended"), L"--process",
                      v + L".exe");
             return;

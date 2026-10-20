@@ -381,6 +381,10 @@ try {
     Assert-Ec ($doc.Json.identity.adapterLuid.stableAcross -eq 'this_session' -and
                 $doc.Json.identity.ordinal.stableAcross -eq 'this_invocation') `
         '稳定性写错了：编号只是本次枚举的位置，LUID 只在本次会话里唯一'
+    # 编号的**出处**也按平台写：这里是 Windows，给顺序的是 EnumDisplayMonitors。
+    # （非 Windows 构建的那一半由 tests/screens_state.cpp 按 core/Platform.h 的事实判。）
+    Assert-Ec ($doc.Json.identity.ordinal.kind -eq 'enum_display_monitors_position') `
+        "编号没有写出它是哪一次枚举里的位置（实际 $($doc.Json.identity.ordinal.kind)）"
     Assert-Ec (@($doc.Json.caveats) -contains 'cross_session_stability_not_tested') `
         '跨会话稳定性本项目只在同一会话里观察过，文档必须自己钉住这一点'
     Assert-Ec (@($doc.Json.caveats) -contains 'screen_capture_always_asks' -and

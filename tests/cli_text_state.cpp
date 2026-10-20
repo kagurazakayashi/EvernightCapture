@@ -81,6 +81,26 @@ size_t CountErrors(const ParseResult& r, const wchar_t* code) {
     }
     return n;
 }
+const Diagnostic* FindNote(const ParseResult& r, const wchar_t* code) {
+    for (const Diagnostic& d : r.warnings) {
+        if (d.code == code) return &d;
+    }
+    return nullptr;
+}
+
+// 帮助里那一条**选项行**（行首两个空格 + 旗标）。正文里提到同一串字不算 —— 非 Windows 的
+// 帮助正文会点名"--hwnd / --class / --capture 在这里会被拒绝"，那不是在列选项。
+std::wstring OptionLine(const std::wstring& help, const std::wstring& flag) {
+    const std::wstring head = L"  " + flag;
+    size_t start = 0;
+    while (start < help.size()) {
+        size_t end = help.find(L'\n', start);
+        if (end == std::wstring::npos) end = help.size();
+        if (help.compare(start, head.size(), head) == 0) return help.substr(start, end - start);
+        start = end + 1;
+    }
+    return std::wstring();
+}
 const wchar_t* SourceOf(const Options& opt, const wchar_t* id) {
     for (const Options::ResolvedSetting& s : opt.settings) {
         if (s.id == id) return s.source.c_str();
@@ -444,9 +464,24 @@ void CheckPlatformGate() {
               "--capture 的取值全是 Windows 的取图通道");
     }
     {
+        // device: 是"本次桌面连接里这块屏叫什么"，两个平台都有这一层名字（Windows 是 GDI
+        // 视图设备名，X11 是 XRandR 输出名），所以两边都收，而且都落到同一个选择器种类上。
+        // 写成"按平台事实判"而不是硬生生的"两边都行"：这一条读的事实与解析层、帮助取值提示、
+        // --screens 的 usableAsSelector 是同一份（core/Platform.h）。
         const auto r = Run({"--monitor", "device:DISPLAY1", "out.png"});
-        Check((HasError(r, codes::kPlatformUnsupported) != 0) == !windows,
-              "--monitor 的两条 Windows 标识写法按取值判");
+        Check((HasError(r, codes::kPlatformUnsupported) == 0) == MonitorDeviceSelectorSupported(),
+              "--monitor device: 只在本平台真的有这一层名字时才收");
+        Check(MonitorDeviceSelectorSupported() ==
+                      (r.ok && r.options.monitor.kind == MonitorSelector::Kind::kDevice &&
+                       r.options.monitor.id == W("DISPLAY1")),
+              "收到的 device: 落到 kDevice，且标识本体只去前缀、不改内容");
+    }
+    {
+        // id: 是监视器 devnode 的设备接口路径，只有答得上显示配置的平台收。
+        const auto r = Run({"--monitor", "id:\\\\?\\DISPLAY#DELA026#5&2b7d1f1e&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}",
+                            "out.png"});
+        Check((HasError(r, codes::kPlatformUnsupported) != 0) == !MonitorPathSelectorSupported(),
+              "--monitor id: 只在本平台真的答得上 devnode 时收");
     }
     {
         const auto r = Run({"--monitor", "2", "out.png"});
@@ -461,6 +496,50 @@ void CheckPlatformGate() {
         const auto r = Run({"--help", "--hwnd", "0x10"});
         Check(r.ok && r.options.showHelp && !HasError(r, codes::kPlatformUnsupported),
               "--help 那一路先把人要的帮助交出去，不报平台专属");
+    }
+
+    // 帮助也按平台收窄：列出来再让人一试就失败，等于把错误当成选项。判据与解析层读同一份
+    // 名单（IsWindowsOnlyOption），所以"这里报不支持"与"这里不印出来"不会各说一套。
+    {
+        SetLanguage(Language::kEn);
+        const std::wstring help = HelpText();
+        Check(OptionLine(help, W("--hwnd")).empty() == !windows,
+              "帮助里有没有 --hwnd 这一行，按平台定（正文提到它不算）");
+        Check(OptionLine(help, W("--class")).empty() == !windows,
+              "--class 与 --hwnd 同行同止");
+        Check(OptionLine(help, W("--capture")).empty() == !windows,
+              "--capture 的取值全是 Windows 的取图通道：非 Windows 那份不列");
+        // 取值提示同样按平台收窄：本构建不收的标识写法一给就报 cli.platform_unsupported，
+        // 印在选项行上就是在教人敲一条注定失败的命令。拼法读的是 core/Platform.h 那两条事实
+        // （与解析期那条拒、与 --screens 的 usableAsSelector 同源），不在这里再判一次平台。
+        std::wstring wantHead = W("  --monitor, -m [<n|primary|all");
+        if (MonitorDeviceSelectorSupported()) wantHead += W("|device:");
+        if (MonitorPathSelectorSupported()) wantHead += W("|id:");
+        wantHead += W(">]");
+        const std::wstring monitorLine = OptionLine(help, W("--monitor"));
+        Check(monitorLine.rfind(wantHead, 0) == 0,
+              "--monitor 的取值提示只列本构建真的收得下的标识写法");
+        // %exe% 是本平台的可执行文件名（Windows 是 ECAPTURE.EXE，Linux 是 ecapture）：
+        // 没展开说明文案表漏了这一份，写成另一套系统的名字就是让人照着敲错命令。
+        Check(help.find(W("%exe%")) == std::wstring::npos &&
+                  help.find(std::wstring(PlatformExecutableName())) != std::wstring::npos,
+              "帮助里的 %exe% 已按本平台展开成真实的文件名");
+    }
+
+    // --process 的后缀约定是平台事实（core/Platform.h），解析期那条 note 必须跟着同一份判据：
+    // Windows 的映像名带扩展名，补后缀时才报"匹配时按 .exe 处理"；Linux 的映像名本来就不带，
+    // 报这一句就是在说一件不会发生的事。
+    {
+        const auto r = Run({"--process", "xterm", "out.png"});
+        const Diagnostic* note = FindNote(r, codes::kExtensionAppended);
+        Check(r.ok && !HasError(r, codes::kPlatformUnsupported),
+              "--process 两种平台上都是能用的说法");
+        Check((note != nullptr) == ProcessNameAssumesExeSuffix(),
+              "note.extension_appended 只在本平台真的会补后缀时发出");
+        if (note) {
+            Check(note->option == W("--process") && note->value == W("xterm.exe"),
+                  "那条 note 的取值是补过后缀以后的那一份");
+        }
     }
 }
 

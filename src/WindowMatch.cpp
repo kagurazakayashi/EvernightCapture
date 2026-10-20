@@ -10,6 +10,7 @@
 #include "ScreenIdentity.h"   // MonitorSelectorLabel：选择器标签只写一处
 #include "WindowMatchInternal.h"
 #include "WindowSource.h"     // EnumerateWindowCandidates：平台层只枚举，匹配语义留在这一层
+#include "core/Platform.h"    // ProcessNameAssumesExeSuffix：补不补 .exe 是平台事实，只写一处
 
 namespace ecapture {
 namespace {
@@ -56,7 +57,10 @@ bool CompileConditions(const MatchRequest& req, CompiledConditions* out,
     c.pids = req.match.pids;
     for (const auto& s : req.match.processes) {
         std::wstring v = ToLowerPlain(s);
-        if (v.find(L'.') == std::wstring::npos) v += L".exe";
+        // 无扩展名时补 .exe 只是 Windows 的命名约定（映像名带扩展名）。Linux 的进程名取自
+        // /proc/<pid>/exe 的文件名，本来就不带扩展名，补上去只会谁都匹配不到。判据在
+        // core/Platform.h，与解析期那条 note.extension_appended 是同一份。
+        if (ProcessNameAssumesExeSuffix() && v.find(L'.') == std::wstring::npos) v += L".exe";
         c.processes.push_back(std::move(v));
     }
     for (const auto& s : req.match.exePaths) c.exePaths.push_back(ToLowerPlain(s));

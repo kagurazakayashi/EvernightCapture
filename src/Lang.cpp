@@ -8,6 +8,7 @@
 #include <map>
 
 #include "LangData.h"
+#include "core/Platform.h"
 #include "core/TextCoding.h"
 
 namespace ecapture {
@@ -58,6 +59,54 @@ std::map<std::wstring, std::wstring> LoadTable(Language lang) {
     return ParseTable(DecodeUtf8(blob->bytes, blob->size).text);
 }
 
+// %exe% -> 本平台的可执行文件名。取的是**事实**（哪个文件），不是措辞，所以不分语言。
+std::wstring ExpandPlatformTokens(const std::wstring& text) {
+    static constexpr wchar_t kToken[] = L"%exe%";
+    if (text.find(kToken) == std::wstring::npos) return text;
+    std::wstring out;
+    out.reserve(text.size() + 16);
+    size_t pos = 0;
+    for (;;) {
+        const size_t hit = text.find(kToken, pos);
+        if (hit == std::wstring::npos) {
+            out.append(text, pos, std::wstring::npos);
+            break;
+        }
+        out.append(text, pos, hit - pos);
+        out += PlatformExecutableName();
+        pos = hit + (sizeof(kToken) / sizeof(wchar_t)) - 1;
+    }
+    return out;
+}
+
+// 平台变体后缀：这一条说法在本平台有一份更贴切的写法时取 <key>_linux，没有就用共用的那一条。
+//
+// 为什么这道分支放在取文案这一层、而不是各调用点：要文案的地方有几十处（帮助正文、选项目录、
+// 解析期诊断），每处写一遍 "if Windows ? k : k_linux" 就是同一道判据抄几十遍，漏一处就是
+// 某段文字还在讲别的系统的事。Windows 构建恒无后缀 —— 帮助正文与 README 里的帮助摘录逐字节不变。
+const wchar_t* PlatformVariantSuffix() {
+    switch (BuildPlatform()) {
+        case PlatformKind::kLinuxX11:
+        case PlatformKind::kLinuxWayland:
+            return L"_linux";
+        case PlatformKind::kWindows:
+        case PlatformKind::kUnknown:
+            break;  // 认不出来的平台不冒充任何一种说法，用共用那一条
+    }
+    return nullptr;
+}
+
+// 按平台变体取表里的那一条；返回的是文案本体（%exe% 还没展开），没有就是 nullptr。
+const std::wstring* LookupText(const std::map<std::wstring, std::wstring>& table,
+                              const wchar_t* key) {
+    if (const wchar_t* suffix = PlatformVariantSuffix()) {
+        const auto variant = table.find(std::wstring(key) + suffix);
+        if (variant != table.end()) return &variant->second;
+    }
+    const auto it = table.find(key);
+    return it == table.end() ? nullptr : &it->second;
+}
+
 struct Cache {
     Language lang = Language::kEn;
     std::map<std::wstring, std::wstring> table;
@@ -67,6 +116,13 @@ struct Cache {
 Cache& Active() {
     static Cache cache;
     return cache;
+}
+
+void EnsureLoaded() {
+    Cache& cache = Active();
+    if (cache.loaded) return;
+    cache.table = LoadTable(cache.lang);
+    cache.loaded = true;
 }
 
 }  // namespace
@@ -114,26 +170,19 @@ Language CurrentLanguage() { return Active().lang; }
 
 std::wstring Msg(const wchar_t* key) {
     if (!key || !*key) return std::wstring();
-    Cache& cache = Active();
-    if (!cache.loaded) {
-        cache.table = LoadTable(cache.lang);
-        cache.loaded = true;
+    EnsureLoaded();
+    if (const std::wstring* text = LookupText(Active().table, key)) {
+        return ExpandPlatformTokens(*text);
     }
-    const auto it = cache.table.find(key);
-    if (it != cache.table.end()) return it->second;
     return std::wstring(L"?") + key;  // 让写错的 key 在输出里显眼，而不是静默空白
 }
 
-// 与 Msg 同一份表、同一次惰性加载，只是**不**把"没有这个 key"做成一句可见的文字。
+// 与 Msg 同一份表、同一次惰性加载、同一套平台变体，只是**不**把"没有这个 key"做成一句可见的文字。
 // 给可选的那一句用（例如诊断的 hint：有 <code>_hint 就带，没有就整个字段省略）。
 bool HasMsg(const wchar_t* key) {
     if (!key || !*key) return false;
-    Cache& cache = Active();
-    if (!cache.loaded) {
-        cache.table = LoadTable(cache.lang);
-        cache.loaded = true;
-    }
-    return cache.table.find(key) != cache.table.end();
+    EnsureLoaded();
+    return LookupText(Active().table, key) != nullptr;
 }
 
 const wchar_t* LanguageTag(Language lang) {

@@ -7,6 +7,16 @@
 // 这样写错 key 会在输出里留下看得见的痕迹，而不是静默变成空白。
 // 占位符：%1 .. %9 按位置代入，%% 出一个 %；其它 %x（如文件名里的 %i）原样保留。
 // 所以文案里的百分号要输出字面量时写成 %%。
+//
+// 另有一个**具名**令牌 %exe%：本平台的可执行文件名（Windows 是 ECAPTURE.EXE，Linux 是
+// ecapture）。它由 core/Platform.h 的 PlatformExecutableName() 回答，在 Msg() 取到文案时
+// 就地展开——各语言只翻译句子，不各自拼程序名，也就不会出现某一种语言还写着别的系统的文件名。
+//
+// 另一条约定：**平台变体**。一条说法在某平台上不成立时（帮助正文说"基于 WGC"、示例里写着
+// D:\shots\...、选项说明讲如何按 .exe 匹配），文案里另给一条 <key>_linux；非 Windows 构建的
+// Msg() / HasMsg() 会自动取它（见 src/Lang.cpp），所以调用点只写共用的 key。没有 _linux 变体
+// 的 key 非 Windows 构建照旧取共用那一条。--- Windows 构建从不看 _linux，帮助正文与 README 里
+// 的摘录逐字节不变。
 
 #include <optional>
 #include <string>

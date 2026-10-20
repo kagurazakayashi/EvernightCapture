@@ -26,6 +26,7 @@
 #include "../src/WindowMatch.h"
 #include "../src/WindowMatchInternal.h"
 #include "../src/WindowQuery.h"
+#include "../src/core/Platform.h"   // ProcessNameAssumesExeSuffix：映像名带不带 .exe 是平台事实
 
 using namespace ecapture;
 
@@ -33,6 +34,25 @@ namespace {
 
 int g_checks = 0;
 int g_failures = 0;
+
+// 本平台的"归属映像"长什么样。Windows 的映像名带扩展名（app.exe）、完整路径带盘符；
+// Linux 的映像名取自 /proc/<pid>/exe 的文件名，本来就不带扩展名，完整路径是 POSIX 绝对路径。
+// 假候选按本平台造，判据里的 --process 取值才是在判这一条平台规则，而不是在另一个系统上
+// 碰巧成立 —— 同一件事的判据在 core/Platform.h，这里只读它，不另写一份 #ifdef。
+const std::wstring kFakeImageName = ProcessNameAssumesExeSuffix() ? L"app.exe" : L"app";
+const std::wstring kFakeImagePath = ProcessNameAssumesExeSuffix()
+                                        ? L"C:\\Users\\someone\\App\\app.exe"
+                                        : L"/home/someone/app/bin/app";
+// 隐私判据要的"路径里那段用户名目录"与"绝对路径的起手"也按本平台取。
+const wchar_t* const kPathPrivateSegment = L"someone";
+const wchar_t* const kPathAbsolutePrefix = ProcessNameAssumesExeSuffix() ? L"C:\\" : L"/home/";
+
+// 原生原因码也按本平台取：它只是"读不到"的现场原因（判据只要求原样交回），但填一个
+// 只属于另一套系统的数字，会让人以为这一条在本平台也真的跑过。
+const bool kOnWindows = BuildPlatform() == PlatformKind::kWindows;
+const uint32_t kNativeAccessDenied = kOnWindows ? 5u : 13u;      // ERROR_ACCESS_DENIED / EACCES
+const uint32_t kNativeGone = kOnWindows ? 87u : 3u;              // ERROR_INVALID_PARAMETER / ESRCH
+const uint32_t kNativeNoSuchWindow = kOnWindows ? 1400u : 22u;   // ERROR_INVALID_WINDOW_HANDLE / EINVAL
 
 void Check(bool ok, const char* what) {
     ++g_checks;
@@ -64,8 +84,8 @@ WindowInfo HealthyWindow(uint64_t hwnd, int z) {
     w.processStartTicks = 130000000000000000ull + static_cast<uint64_t>(z);
     w.title = L"Title";
     w.className = L"TestClass";
-    w.imageName = L"app.exe";
-    w.imagePath = L"C:\\Users\\someone\\App\\app.exe";
+    w.imageName = kFakeImageName;
+    w.imagePath = kFakeImagePath;
     w.pathRead = ReadState::kReadable;
     w.startRead = ReadState::kReadable;
     w.rectRead = ReadState::kReadable;
@@ -182,7 +202,9 @@ void TestCombinedConditions() {
     Check(!Hit(regexOnly, priv), "只有正则：标题 PRIVATE 拒绝（这一条本来就对，钉住它）");
 
     // 每一类各给一个"这一条候选确实满足"的取值，再叠一条对它不成立的正则。
-    // --process 写 APP（不带 .exe）与 --class 写 TestCLASS：顺带钉住大小写折叠与补 .exe 那两条写法。
+    // --process 写 APP（不带扩展名）与 --class 写 TestCLASS：顺带钉住大小写折叠，以及
+    // "补不补 .exe"那条平台约定 —— 本平台的映像名是 app.exe（Windows）或 app（Linux），
+    // APP 按大小写折叠后正好是本平台那一份，两种平台上都该命中。
     MatchOptions byHwnd;
     byHwnd.hwnds.push_back(priv.hwnd);
     MatchOptions byPid;
@@ -190,7 +212,7 @@ void TestCombinedConditions() {
     MatchOptions byProcess;
     byProcess.processes.push_back(L"APP");
     MatchOptions byExe;
-    byExe.exePaths.push_back(L"C:\\Users\\someone\\App\\app.exe");
+    byExe.exePaths.push_back(kFakeImagePath);
     MatchOptions byTitle;
     byTitle.titles.push_back(L"PRIVATE");
     MatchOptions byContains;
@@ -226,7 +248,7 @@ void TestCombinedConditions() {
 
     // 反过来那一半也得判：正则成立而别的类不成立，同样不能放行。
     MatchOptions wrongProcess = onlyRegex;
-    wrongProcess.processes.push_back(L"notepad.exe");
+    wrongProcess.processes.push_back(L"otherapp");
     Check(!Hit(Compile(wrongProcess), pub), "正则命中 + 进程不命中：拒绝");
     MatchOptions wrongTitle = onlyRegex;
     wrongTitle.titles.push_back(L"OTHER");
@@ -240,12 +262,12 @@ void TestCombinedConditions() {
 
     // 同类多个取值的 OR 没有因为这次改动而变严：进程写两个、其中一个成立，仍是命中。
     MatchOptions processOr = byProcess;
-    processOr.processes.push_back(L"notepad.exe");
+    processOr.processes.push_back(L"otherapp");
     processOr.titleRegexes.push_back(L"^PUBLIC$");
     Check(!Hit(Compile(processOr), priv),
           "同类 OR（进程两个取值命中一个）也不许替正则说话：拒绝");
     MatchOptions processOrOk = byProcess;
-    processOrOk.processes.push_back(L"notepad.exe");
+    processOrOk.processes.push_back(L"otherapp");
     processOrOk.titleRegexes.push_back(L"^PRIVATE$");
     Check(Hit(Compile(processOrOk), priv), "同类 OR：进程两个取值里命中一个 + 正则成立 -> 命中");
 
@@ -309,6 +331,49 @@ void TestCombinedConditions() {
     recheckCheap.pids.push_back(pub.pid);
     Check(!MakeWindowIdentity(pub, recheckCheap, false).selectionNeedsRecheck,
           "只靠 PID/句柄/类名认出的目标：不重跑条件（kCheap 那四问已覆盖）");
+}
+
+// ---------------------------------------------------------------------------
+// --process 的后缀约定：本平台的映像名长什么样，匹配就按那个约定来
+//
+// 旧判据把 --process APP 当成"会补 .exe 去比 app.exe"，那只是 Windows 的事实。Linux 的
+// 进程名取自 /proc/<pid>/exe 的文件名（xterm / firefox），本来就不带扩展名，替它补一个
+// .exe 只会谁都对不上。这一节把两件事分开判：
+//   * 不带扩展名的取值，两种平台上都命中本平台那一份映像名；
+//   * "带 .exe 的取值能不能认成同一个程序"只在本平台真的会补后缀时成立。
+// 判的本体仍是生产函数本体（CompileConditions 补后缀、MatchesWindow 比对），期望值来自
+// core/Platform.h 的 ProcessNameAssumesExeSuffix —— 判据与实现读同一份平台事实。
+// ---------------------------------------------------------------------------
+void TestProcessSuffixFollowsPlatform() {
+    Section("--process 的后缀约定按平台（映像名带不带 .exe 是平台事实）");
+    const bool appendsSuffix = ProcessNameAssumesExeSuffix();
+
+    const WindowInfo native = HealthyWindow(0x8A0, 0);   // 本平台那一份映像名与完整路径
+    WindowInfo dotted = HealthyWindow(0x8A1, 0);          // 名字里真的带 .exe（另一套系统的写法）
+    dotted.imageName = L"app.exe";
+    dotted.imagePath = L"C:\\Users\\someone\\App\\app.exe";
+
+    MatchOptions bare;
+    bare.processes.push_back(L"app");   // 不带扩展名
+    Check(Hit(Compile(bare), native),
+          "不带扩展名写 --process：命中本平台的映像名（Windows 补 .exe，Linux 按原样）");
+
+    MatchOptions dottedOpt;
+    dottedOpt.processes.push_back(L"app.exe");
+    Check(Hit(Compile(dottedOpt), native) == appendsSuffix,
+          "写全 .exe：只有真的按 .exe 比的平台才认成本平台那一份");
+    Check(Hit(Compile(bare), dotted) == appendsSuffix,
+          "候选名自带 .exe：只有 Windows 上那个补后缀才会把裸名认成同一个程序");
+
+    // 大小写折叠两边一致（映像名比较一直是忽略大小写的）。
+    MatchOptions upper;
+    upper.processes.push_back(L"APP");
+    Check(Hit(Compile(upper), native), "大小写折叠：APP 与 app 是同一个映像名");
+
+    // 另一个进程无论如何都不许命中（补后缀不改变"这是另一个程序"这件事）。
+    MatchOptions other;
+    other.processes.push_back(L"otherapp");
+    Check(!Hit(Compile(other), native), "另一个进程名：补不补后缀都不命中");
 }
 
 // ---------------------------------------------------------------------------
@@ -609,11 +674,11 @@ void TestFieldReadability() {
     limited.imagePath.clear();
     limited.imageName.clear();
     limited.pathRead = ReadState::kDenied;
-    limited.pathWin32 = 5;   // ERROR_ACCESS_DENIED
+    limited.pathWin32 = kNativeAccessDenied;
 
     WindowRecord rec = MakeWindowRecord(limited, ListSpec(0, 0, false, true));
     Check(rec.processRead == L"denied", "归属进程这一层综合成 denied（两条问句取更糟的那个）");
-    Check(rec.imagePathRead == L"denied" && rec.imagePathWin32 == 5,
+    Check(rec.imagePathRead == L"denied" && rec.imagePathWin32 == kNativeAccessDenied,
           "imagePath 这一问写 denied 并带上系统原因码");
     Check(rec.exePathRequested && !rec.exePathReadable && !rec.exePathIncluded,
           "给了 --exe-path 而这一问没答案：报告里看得见「想写而没写成」");
@@ -626,9 +691,9 @@ void TestFieldReadability() {
     unopenable.imageName.clear();
     unopenable.processStartTicks = 0;
     unopenable.pathRead = ReadState::kFailed;
-    unopenable.pathWin32 = 87;
+    unopenable.pathWin32 = kNativeGone;
     unopenable.startRead = ReadState::kFailed;
-    unopenable.startWin32 = 87;
+    unopenable.startWin32 = kNativeGone;
     WindowRecord rec2 = MakeWindowRecord(unopenable, ListSpec());
     Check(rec2.processRead == L"failed" && rec2.startRead == L"failed",
           "问过而失败：两条都写 failed，不是 readable");
@@ -639,9 +704,9 @@ void TestFieldReadability() {
     WindowInfo noRect = HealthyWindow(0x1236, 0);
     noRect.x = 0; noRect.y = 0; noRect.width = 0; noRect.height = 0;
     noRect.rectRead = ReadState::kFailed;
-    noRect.rectWin32 = 1400;
+    noRect.rectWin32 = kNativeNoSuchWindow;
     WindowRecord rec3 = MakeWindowRecord(noRect, ListSpec());
-    Check(rec3.rectRead == L"failed" && rec3.rectWin32 == 1400 && rec3.width == 0,
+    Check(rec3.rectRead == L"failed" && rec3.rectWin32 == kNativeNoSuchWindow && rec3.width == 0,
           "矩形问不出来：值留 0 而 rectRead 写 failed 并带原因码");
 
     // 标题为空是真值（无标题窗口本来就有），与「读不到」必须能区分。
@@ -655,7 +720,8 @@ void TestFieldReadability() {
         Snapshot({limited, unopenable, noRect}), ListSpec(0, 0, false, true), none,
         std::wstring());
     const std::wstring doc = Render(r, WindowAction::kList);
-    Check(Contains(doc, L"\"state\": \"denied\"") && Contains(doc, L"\"win32\": 5"),
+    Check(Contains(doc, L"\"state\": \"denied\"") &&
+              Contains(doc, L"\"win32\": " + std::to_wstring(kNativeAccessDenied)),
           "readability 那一段真把 state 与原因码写进文档");
     Check(Contains(doc, L"\"exePathRequested\": true") &&
               Contains(doc, L"\"exePathReadable\": false"),
@@ -675,10 +741,10 @@ void TestPathPrivacy() {
     const WindowQueryResult dflt =
         BuildWindowQueryResult(Snapshot(one), ListSpec(), none, std::wstring());
     const std::wstring d = Render(dflt, WindowAction::kList);
-    Check(!Contains(d, L"someone"), "默认那份不含路径里的用户名目录那一段");
+    Check(!Contains(d, kPathPrivateSegment), "默认那份不含路径里的用户名目录那一段");
     Check(!Contains(d, L"exePath"), "默认那份连 exePath 这个键都不出现（不是写一个空值）");
-    Check(!Contains(d, L"C:\\"), "默认那份不含任何带盘符的绝对路径");
-    Check(Contains(d, L"\"image\": \"app.exe\""),
+    Check(!Contains(d, kPathAbsolutePrefix), "默认那份不含任何绝对路径的起手（盘符或根目录）");
+    Check(Contains(d, L"\"image\": \"" + kFakeImageName + L"\""),
           "映像文件名照旧交付：那是匹配与识别要用的最小信息");
 
     const WindowQueryResult full =
@@ -1002,6 +1068,7 @@ int main() {    // 渲染不读文案资源（机器取值全 ASCII），但判�
 
     TestMachineWords();
     TestCombinedConditions();
+    TestProcessSuffixFollowsPlatform();
     TestParseDefersRegexCompile();
     TestListIsNeverAmbiguous();
     TestInspectNeedsUniqueTarget();

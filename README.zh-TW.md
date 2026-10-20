@@ -884,7 +884,8 @@ ECAPTURE.EXE --inspect --process notepad.exe --topmost-match  # 與截圖完全�
 
 ### 唯讀的螢幕列舉（`--screens`）
 
-在此之前，「要那一張螢幕」只有一種寫法：`--monitor <n>`，而那個 n 是**本次執行 `EnumDisplayMonitors` 列舉中的位置**。
+在此之前，「要那一張螢幕」只有一種寫法：`--monitor <n>`，而那個 n 是**本次執行螢幕列舉中的位置**（Windows 是
+`EnumDisplayMonitors` 的驅動列舉順序，X11 是 XRandR 交回的螢幕清單順序）。
 它不是「顯示設定」裡 Windows 寫的那個識別號，拔掉重插或改一次解析度之後可能指到另一張面板——而猜錯的結果是一張
 沒人批准過的畫面已經落盤。`--screens` 把這個問答成資料：
 
@@ -898,19 +899,22 @@ ECAPTURE.EXE --monitor "id:\\?\DISPLAY#GSM41A2#5&…#{…}" --out shot.png   # �
 轉了多少度」去呼叫 `SetDisplayConfig`，等於把考卷改了再答題。這份文件是第三份契約（`screens`，版本 1），與截圖
 那份精簡 JSON 各自獨立，就像 `capabilities` 與 `windowquery` 一樣。
 
-每張螢幕有四種身分，各自寫明它穩到哪一層（寫成欄位，不是正文）：
+每張螢幕有哪幾種身分、各自穩到哪一層，寫成欄位而不是正文；**有哪幾種隨平台而定**（`deviceName` 兩邊都有，
+其餘幾條要顯示設定那一路，目前只有 Windows 答得上）：
 
-| 欄位                | 是什麼                        | 穩定範圍                 | 選擇器           |
-| ------------------- | ----------------------------- | ------------------------ | ---------------- |
-| `ordinal`           | 本次列舉中的位置              | `this_invocation`        | `--monitor <n>`  |
-| `deviceName`        | GDI 檢視裝置名 `\\.\DISPLAY1` | `this_desktop_attach`    | `device:`        |
-| `monitorDevicePath` | 螢幕 devnode 的裝置介面路徑   | `cross_session_expected` | `id:`            |
-| `adapterLuid`       | 配接器的本機唯一識別          | `this_session`           | 無——只作關聯資訊 |
+| 欄位                | 是什麼                                                                        | 穩定範圍                 | 選擇器           |
+| ------------------- | ----------------------------------------------------------------------------- | ------------------------ | ---------------- |
+| `ordinal`           | 本次列舉中的位置（Windows 是 `EnumDisplayMonitors` 序，X11 是 XRandR 螢幕序） | `this_invocation`        | `--monitor <n>`  |
+| `deviceName`        | 本次連線裡的裝置名（Windows `\\.\DISPLAY1`，X11 `HDMI-1`）                    | `this_desktop_attach`    | `device:`        |
+| `monitorDevicePath` | 螢幕 devnode 的裝置介面路徑（僅 Windows）                                     | `cross_session_expected` | `id:`            |
+| `adapterLuid`       | 配接器的本機唯一識別（僅 Windows）                                            | `this_session`           | 無——只作關聯資訊 |
 
 `screens[].selectors` 直接給出可以原樣抄回去的那兩條（`device:DISPLAY1`、`id:\\?\DISPLAY#…`），`identity.*` 寫明
 哪一種能當選擇器用。配接器 LUID 故意沒有選擇器寫法：它只在工作階段內唯一，拿它點名一張螢幕是下注而不是引用。
 `adapter.devicePath`（配接器自己的裝置介面路徑）、`adapter.outputTechnology`、`targetId`、`targetAvailable` 來自
-同一次問答，「這張螢幕掛在哪塊顯示卡上」就是這樣交回的。
+同一次問答，「這張螢幕掛在哪塊顯示卡上」就是這樣交回的。答不上顯示設定那一路的平台，`monitorDevicePath` 與
+`adapterLuid` 這兩個 key 照舊出現（欄位集不隨平台增減），但 `usableAsSelector` 為 false、`screens[]` 裡不帶對應取值——
+交回的是「本建置答不上來」，不是「這台機器上沒有這一層」。
 
 這一層守三條規矩：
 
@@ -1131,7 +1135,8 @@ HDR 色彩這件事不改變授權：整個處理排在取影之後、編碼之�
   也擋不住同一個權限等級裡存心要繞過的處理程序。它能保證的是：照這套規矩跑的呼叫端，一定會被問上這一次。
 
 `--monitor`（省略取值）與 `--monitor primary` 是主螢幕，`--monitor 2` 是第 2 張螢幕，`--monitor all` 每張螢幕一張。
-編號是**本次執行 `EnumDisplayMonitors` 列舉中的位置**，從 1 起——它不是「顯示設定」裡 Windows 寫的那個識別號，
+編號是**本次執行螢幕列舉中的位置**，從 1 起（Windows 是 `EnumDisplayMonitors` 的驅動列舉順序，X11 是 XRandR
+交回的螢幕清單順序）——它不是「顯示設定」裡寫的那個識別號，
 而且拔掉一張螢幕或改一次解析度都可能把它重新排過，所以不要把編號存下來當作跨執行的螢幕識別。要再次認出同一張
 螢幕時，跑一次 `--screens`，把它交回的識別原樣寫回來：`--monitor device:DISPLAY1`（本次桌面連線的
 裝置名）或 `--monitor "id:\\?\DISPLAY#…"`（螢幕的 devnode 裝置介面路徑，跨工作階段還成立的那一條）。
@@ -1957,9 +1962,7 @@ Windows 那側的原生型別，只在通道內部與輔助進程管道的線上
 | 參數入口 | 平台入口只負責把本系統的 argv 收進 `CliTokens`（Windows 的 UTF-16 原樣搬、Linux 的位元組嚴格解碼），正文 `CliMain` 是共用的；Windows 入口另外分診輔助行程模式。Linux 那側 `DecodePosixArgv` 已按真實位元組陣列判過，`main` 那三行要等取影格那幾層遷完才鏈得起來 | `src/CliArgs.h`、`src/Main.h` |
 | 平台動作 | 路徑形狀、整份讀檔、寫標準流、系統顯示語言：宣告在共用頭，實作分兩側（`src/platform/windows/`、`src/platform/linux/`）。POSIX 上 `\` 是檔名裡的普通字元、`C:shot.png` 是目前目錄下一個合法的相對名，不照抄 Windows 的形狀判據；大小寫與空白的判定只折 ASCII，不跟執行期 locale 走 | `src/HostPath.h`、`src/HostFile.h`、`src/OutputStream.h`、`src/Lang.h` |
 
-Windows 專屬的說法（`--hwnd`、`--class`、`--capture` 的那些 Windows 通道，以及 `--monitor` 的 `device:` /
-`id:` 兩種識別碼）在非 Windows 建置裡逐條報 `cli.platform_unsupported`（退出碼 1）：既不靜默忽略，
-也不翻譯成「大概對等」的另一條參數。`--help` / `--version` 那一路先把人要的輸出交出去，不在這一條上報。
+Windows 專屬的說法（`--hwnd`、`--class`、`--capture` 的那些 Windows 通道，以及 `--monitor` 的 `id:` 識別碼——它的取值是螢幕 devnode 路徑）在非 Windows 建置裡逐條報 `cli.platform_unsupported`（退出碼 1）：既不靜默忽略，也不翻譯成「大概對等」的另一條參數。`device:` 不在這份名單上：依「本次桌面連線裡這塊螢幕叫什麼」點名，兩個平台都有這一層（Windows 是 GDI 檢視裝置名，X11 是 XRandR 輸出名，例如 `HDMI-1`），所以 `--screens` 交得回、`--monitor` 也收。每種寫法在本建置成不成立只讀一處（`src/core/Platform.h`），解析期那條拒絕、`--help` 裡的取值提示與 `--screens` 裡的 `usableAsSelector` 因此不會各說一套。`--help` / `--version` 那一路先把人要的輸出交出去，不在這一條上報。
 
 標準流的分工照舊：影格佔用 stdout 之後文字一律改道 stderr；`--help` / `--version` / 未給條件仍是純文字，
 其餘是精簡 JSON。行尾交給出口那一層決定（Windows 歸一成 CRLF，Linux 用 `\n`），所以共用文字裡只寫 `\n`。
