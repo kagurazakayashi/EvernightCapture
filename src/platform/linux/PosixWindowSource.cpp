@@ -33,27 +33,71 @@ PhysRect ToPhysRect(const x11::ClientWindowFacts& facts) {
     return rect;
 }
 
+PhysRect FramePhysRectOf(const x11::ClientWindowFacts& facts) {
+    if (facts.frameRectRead != ReadState::kReadable) {
+        // 外框量不出来时不编一块屏幕矩形：调用方会把它当成空矩形（这一问没有答案）。
+        // 需要客户区的路径必须显式走 ClientScreenRectOf。
+        return PhysRect{};
+    }
+    const int64_t right = static_cast<int64_t>(facts.frameX) + facts.frameWidth;
+    const int64_t bottom = static_cast<int64_t>(facts.frameY) + facts.frameHeight;
+    PhysRect rect;
+    rect.left = facts.frameX;
+    rect.top = facts.frameY;
+    rect.right = static_cast<int32_t>(std::max<int64_t>(facts.frameX, right));
+    rect.bottom = static_cast<int32_t>(std::max<int64_t>(facts.frameY, bottom));
+    return rect;
+}
+
 void ToWindowInfo(const x11::ClientWindowFacts& facts, WindowInfo* out) {
-    out->hwnd = static_cast<uint64_t>(facts.window);
+    out->hwnd = static_cast<uint64_t>(facts.window);   // 中性承载：这一格在 X11 上是 XID
     out->pid = facts.pid;
+    out->pidRead = facts.pidRead;
     out->processStartTicks = facts.processStartTicks;
     out->pathRead = facts.pathRead;
     out->startRead = facts.startRead;
     out->pathWin32 = facts.pathErrno;
     out->startWin32 = facts.startErrno;
+    out->processAttribution = facts.processAttribution;
     out->title = facts.title;
+    out->titleRead = facts.titleRead;
     out->className = facts.className;
+    out->classRead = facts.classRead;
     out->imageName = facts.imageName;
     out->imagePath = facts.imagePath;
     out->x = facts.x;
     out->y = facts.y;
     out->width = static_cast<int32_t>(std::min<uint32_t>(facts.width, 0x7fffffffu));
     out->height = static_cast<int32_t>(std::min<uint32_t>(facts.height, 0x7fffffffu));
+    out->borderWidth = facts.borderWidth;
     out->rectRead = facts.rectRead;
     out->rectWin32 = facts.rectErrno;
+    out->frameRectRead = facts.frameRectRead;
+    out->frameRectWin32 = facts.frameRectErrno;
+    out->frameX = facts.frameX;
+    out->frameY = facts.frameY;
+    out->frameWidth = static_cast<int32_t>(std::min<uint32_t>(facts.frameWidth, 0x7fffffffu));
+    out->frameHeight = static_cast<int32_t>(std::min<uint32_t>(facts.frameHeight, 0x7fffffffu));
+    out->frameRectSource = facts.frameRectSource;
     out->zOrder = facts.zOrder;
     out->iconic = facts.iconic;
     out->visible = facts.viewable;
+
+    // XID 与显示连接作用域是一个整体：只把整数带下去，换一台 X 服务器就可能指到
+    // 另一个对象。X11 的 scopeRequired 为真，复核时缺少会话基线就 fail-closed。
+    out->native.backend = facts.session.backend.empty() ? L"x11" : facts.session.backend;
+    out->native.idForm = L"xid";
+    out->native.sessionRead = facts.session.read;
+    out->native.sessionKnown = facts.session.known;
+    out->native.sessionScope = facts.session.scope;
+    out->native.displayName = facts.session.displayName;
+    out->native.serverVendor = facts.session.serverVendor;
+    out->native.serverRelease = facts.session.serverRelease;
+    out->native.protocolMajor = facts.session.protocolMajor;
+    out->native.protocolMinor = facts.session.protocolMinor;
+    out->native.rootWindow = facts.session.rootWindow;
+    out->native.xwayland = facts.session.xwayland;
+    out->native.scopeRequired = true;
 }
 
 }  // namespace
@@ -124,21 +168,58 @@ WindowQueryLayer SystemWindowQueryLayer() {
         // 与枚举时 _NET_WM_PID 那条问答共用同一份 /proc 解析与单位换算。
         return x11::ReadProcessStartTicksForPid(pid, ticks, &error);
     };
+    // 复核时重新问一次当前显示连接作用域。每次新开连接并读同一组服务器事实，
+    // 不依赖进程启动时的全局 Display*；跨 DISPLAY / XWayland 会话的 XID 不可比。
+    layer.nativeIdentity = [](uint64_t hwnd, WindowNativeIdentity* out) {
+        if (!out) return false;
+        x11::DisplayConnection connection;
+        if (!connection.ok()) return false;
+        x11::ClientWindowFacts facts;
+        if (!x11::QueryClientWindow(connection.get(), static_cast<Window>(hwnd), &facts)) {
+            return false;
+        }
+        out->backend = facts.session.backend.empty() ? L"x11" : facts.session.backend;
+        out->idForm = L"xid";
+        out->sessionRead = facts.session.read;
+        out->sessionKnown = facts.session.known;
+        out->sessionScope = facts.session.scope;
+        out->displayName = facts.session.displayName;
+        out->serverVendor = facts.session.serverVendor;
+        out->serverRelease = facts.session.serverRelease;
+        out->protocolMajor = facts.session.protocolMajor;
+        out->protocolMinor = facts.session.protocolMinor;
+        out->rootWindow = facts.session.rootWindow;
+        out->xwayland = facts.session.xwayland;
+        out->scopeRequired = true;
+        return facts.session.known;
+    };
     // selectionStillMatches 由 Capture.cpp 补上（它要条件与期限）。
     return layer;
 }
 
 PhysRect WindowFullRectOf(uint64_t hwnd) {
+    // 授权 / 取帧前置的范围用**外框**：WM 装饰也是用户以为被批准的那一块。
+    // 外框读不到时交回空矩形，绝不拿客户区冒充外框。
     x11::DisplayConnection connection;
     if (!connection.ok()) return PhysRect{};
     x11::ClientWindowFacts facts;
-    if (!x11::QueryClientWindow(connection.get(), static_cast<Window>(hwnd), &facts)) return PhysRect{};
-    return ToPhysRect(facts);
+    if (!x11::QueryClientWindow(connection.get(), static_cast<Window>(hwnd), &facts)) {
+        return PhysRect{};
+    }
+    return FramePhysRectOf(facts);
 }
 
 PhysRect WindowScreenRectOf(uint64_t hwnd) {
-    // X11 没有 DWM 那圈透明边框：完整矩形就是用户实际看到的那一块。
-    return WindowFullRectOf(hwnd);
+    // 这一问要的是"交付图像对应屏幕上的哪一块"。XComposite 交的是客户区自身存储，
+    // 所以这里必须是客户区矩形，不能换成 WM 装饰外框；外框只用于授权范围与诊断。
+    // 量不到时交空矩形，不制造一个虚假的屏幕矩形。
+    x11::DisplayConnection connection;
+    if (!connection.ok()) return PhysRect{};
+    x11::ClientWindowFacts facts;
+    if (!x11::QueryClientWindow(connection.get(), static_cast<Window>(hwnd), &facts)) {
+        return PhysRect{};
+    }
+    return ToPhysRect(facts);
 }
 
 bool ClientScreenRectOf(uint64_t hwnd, PhysRect* out) {

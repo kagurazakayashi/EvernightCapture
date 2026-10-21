@@ -166,8 +166,18 @@ const wchar_t* ReadStateName(ReadState state) {
         case ReadState::kReadable: return L"readable";
         case ReadState::kDenied: return L"denied";
         case ReadState::kFailed: return L"failed";
+        case ReadState::kAbsent: return L"absent";
     }
     return L"failed";   // 没登记过的取值不当成「能读」：宁可说问不出来
+}
+
+const wchar_t* ProcessAttributionName(ProcessAttribution attribution) {
+    switch (attribution) {
+        case ProcessAttribution::kVerified: return L"verified";
+        case ProcessAttribution::kDeclaredUnverified: return L"declared_unverified";
+        case ProcessAttribution::kUnknown: return L"unknown";
+    }
+    return L"unknown";
 }
 
 // ---------------------------------------------------------------------------

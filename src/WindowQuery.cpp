@@ -8,6 +8,7 @@
 #include "Json.h"
 #include "Lang.h"
 #include "Version.h"
+#include "core/Platform.h"
 
 namespace ecapture {
 namespace {
@@ -59,25 +60,64 @@ void WriteFieldState(Json& j, const wchar_t* key, const std::wstring& state, uin
     j.End();
 }
 
+bool IsX11Identity(const WindowIdentity& id) {
+    return id.native.idForm == L"xid" || id.native.backend == L"x11";
+}
+
 // 身份约束字段那一小段：--list 与 --inspect 共用同一个形状，不各写一份。
+// 原生标识按后端命名：X11 交 xid，Windows 交 hwnd；两者都只是"本后端本会话"的键，
+// 不是可跨会话长期复用的句柄。nativeId 对象把这件事写成机器可读字段。
 void WriteIdentity(Json& j, const WindowIdentity& id) {
-    std::wstring hwndHex;
-    std::wstring cls;
-    uint32_t pid = 0;
-    uint64_t start = 0;
-    bool needsRecheck = false;
-    WindowIdentityOf(id, &hwndHex, &cls, &pid, &start, &needsRecheck);
+    const bool x11 = IsX11Identity(id);
+    const std::wstring nativeValue = HwndHexOf(id.hwnd);
     j.Obj();
-    j.Key(L"hwnd").Value(hwndHex);
-    j.Key(L"pid").Value(static_cast<long long>(pid));
-    OptStr(j, L"class", cls);
+    j.Key(L"platform").Value(x11 ? L"linux-x11" : L"windows");
+    j.Key(L"backend").Value(id.native.backend.empty() ? (x11 ? L"x11" : L"win32")
+                                                       : id.native.backend);
+    j.Key(L"nativeId").Obj();
+    j.Key(L"form").Value(id.native.idForm.empty() ? (x11 ? L"xid" : L"hwnd")
+                                                  : id.native.idForm);
+    j.Key(L"value").Value(nativeValue);
+    j.Key(L"persistent").Value(false);
+    j.Key(L"stableAcross").Value(x11 ? L"one_x11_display_scope" : L"one_window_lifetime");
+    j.End();
+    if (x11) j.Key(L"xid").Value(nativeValue);
+    else j.Key(L"hwnd").Value(nativeValue);
+
+    // X11 的会话作用域：XID 只在这一组事实相同的时候才可直接比较。Windows 这份快照
+    // 目前不把会话作用域作为必填判据，因此 known=false 表示"这一问没做"，不是"跨会话相同"。
+    j.Key(L"session").Obj();
+    j.Key(L"known").Value(id.native.sessionKnown);
+    j.Key(L"state").Value(ReadStateName(id.native.sessionRead));
+    if (!id.native.displayName.empty()) j.Key(L"display").Value(id.native.displayName);
+    if (!id.native.serverVendor.empty()) j.Key(L"serverVendor").Value(id.native.serverVendor);
+    if (id.native.serverRelease != 0)
+        j.Key(L"serverRelease").Value(static_cast<long long>(id.native.serverRelease));
+    if (id.native.protocolMajor != 0) {
+        j.Key(L"protocol").Value(std::to_wstring(id.native.protocolMajor) + L"." +
+                                 std::to_wstring(id.native.protocolMinor));
+    }
+    if (id.native.rootWindow != 0) {
+        wchar_t root[24];
+        swprintf(root, 24, L"0x%08X", static_cast<unsigned>(id.native.rootWindow));
+        j.Key(L"rootWindow").Value(root);
+    }
+    j.Key(L"xwayland").Value(id.native.xwayland);
+    OptStr(j, L"scope", id.native.sessionScope);
+    j.End();
+
+    j.Key(L"pid").Value(static_cast<long long>(id.pid));
+    j.Key(L"processAttribution").Value(ProcessAttributionName(id.processAttribution));
+    OptStr(j, L"class", id.className);
     // 问不出来的那一条写 unknown：截图时的复核会整个跳过基线没有的判据，
     // 但那是一次**没做出来**的判定，不是「它等于 0」。
-    if (start != 0) j.Key(L"processStartTicks").Value(static_cast<long long>(start));
-    else j.Key(L"processStartTicks").Value(L"unknown");
-    j.Key(L"selectionNeedsRecheck").Value(needsRecheck);
-    // 这三句是这份文档最容易被读错的地方，所以写在字段旁边而不是正文里：
-    // 复核照旧要做、这不是许可、也不保证竞态窗口为零。
+    if (id.processStartTicks != 0)
+        j.Key(L"processStartTicks").Value(static_cast<long long>(id.processStartTicks));
+    else
+        j.Key(L"processStartTicks").Value(L"unknown");
+    j.Key(L"selectionNeedsRecheck").Value(id.selectionNeedsRecheck);
+    // 这几句是这份文档最容易被读错的地方，所以写在字段旁边而不是正文里：
+    // 复核照旧要做、这不是许可、也不保证竞态窗口为零；X11 的 PID 还只是窗口自述。
     j.Key(L"verificationRequired").Value(true);
     j.Key(L"isAuthorizationToken").Value(false);
     j.Key(L"raceWindowReducedNotEliminated").Value(true);
@@ -85,29 +125,75 @@ void WriteIdentity(Json& j, const WindowIdentity& id) {
 }
 
 void WriteWindow(Json& j, const WindowRecord& r) {
+    const bool x11 = IsX11Identity(r.identity);
     j.Obj();
-    j.Key(L"hwnd").Value(r.hwndHex);
+    // XID 与 HWND 不是同一个东西：字段名、稳定性描述和会话绑定都按后端写。
+    j.Key(x11 ? L"xid" : L"hwnd").Value(r.hwndHex);
     j.Key(L"pid").Value(static_cast<long long>(r.pid));
     // 标题与类名原样交付：调用方（含 AI）按字段读，不该再解析一段拼出来的描述字符串。
     j.Key(L"title").Value(r.title);          // 空标题就是空串，那是真值而不是「没读到」
     OptStr(j, L"class", r.windowClass);
     OptStr(j, L"image", r.imageName);
     if (r.exePathIncluded) j.Key(L"exePath").Value(r.imagePath);
+    // rect 保留为兼容形状：它的含义是**客户区**在根坐标中的像素矩形。外框不塞进这里，
+    // 更不拿客户区冒充外框；完整口径见下面的 geometry。
     j.Key(L"rect").Obj();
     j.Key(L"x").Value(static_cast<long long>(r.x));
     j.Key(L"y").Value(static_cast<long long>(r.y));
     j.Key(L"width").Value(static_cast<long long>(r.width));
     j.Key(L"height").Value(static_cast<long long>(r.height));
     j.End();
+    if (x11) {
+        // 只有 X11 这一份模型真的把客户区与外框分开问过。Windows 旧契约里的 rect
+        // 仍是整窗矩形；不在这里改叫 client，避免给另一平台编一个没量过的含义。
+        j.Key(L"geometry").Obj();
+        j.Key(L"coordinateSpace").Value(L"x11_root_pixels");
+        j.Key(L"pixelCoordinates").Value(true);
+        // X11 协议没有逻辑坐标这一问；不把 DPI 缩放猜成一个逻辑矩形。
+        j.Key(L"logical").Obj();
+        j.Key(L"known").Value(false);
+        j.Key(L"reason").Value(L"x11_has_no_logical_coordinate_space");
+        j.End();
+        j.Key(L"client").Obj();
+        j.Key(L"state").Value(r.rectRead);
+        if (r.rectRead == L"readable") {
+            j.Key(L"x").Value(static_cast<long long>(r.clientX));
+            j.Key(L"y").Value(static_cast<long long>(r.clientY));
+            j.Key(L"width").Value(static_cast<long long>(r.clientWidth));
+            j.Key(L"height").Value(static_cast<long long>(r.clientHeight));
+            j.Key(L"borderWidth").Value(static_cast<long long>(r.clientBorderWidth));
+        }
+        j.End();
+        j.Key(L"frame").Obj();
+        j.Key(L"state").Value(r.frameRectRead);
+        OptStr(j, L"source", r.frameRectSource);
+        if (r.frameRectRead == L"readable") {
+            j.Key(L"x").Value(static_cast<long long>(r.frameX));
+            j.Key(L"y").Value(static_cast<long long>(r.frameY));
+            j.Key(L"width").Value(static_cast<long long>(r.frameWidth));
+            j.Key(L"height").Value(static_cast<long long>(r.frameHeight));
+        }
+        j.End();
+        j.End();
+    }
     j.Key(L"visible").Value(r.visible);
     j.Key(L"minimized").Value(r.iconic);
     j.Key(L"zOrder").Value(static_cast<long long>(r.zOrder));
     // 字段级可读性：读不到的那几项在上面写的是哨兵值，靠这一段说明「那不是值，是没问出来」。
     j.Key(L"readability").Obj();
-    j.Key(L"process").Obj().Key(L"state").Value(r.processRead).End();
+    j.Key(L"pid").Obj().Key(L"state").Value(r.pidRead).End();
+    j.Key(L"title").Obj().Key(L"state").Value(r.titleRead).End();
+    j.Key(L"class").Obj().Key(L"state").Value(r.classRead).End();
+    j.Key(L"process").Obj();
+    j.Key(L"state").Value(r.processRead);
+    j.Key(L"attribution").Value(r.processAttribution);
+    if (x11) j.Key(L"pidSource").Value(L"ewmh_net_wm_pid_self_declared");
+    j.End();
     WriteFieldState(j, L"imagePath", r.imagePathRead, r.imagePathWin32);
     WriteFieldState(j, L"processStart", r.startRead, r.startWin32);
     WriteFieldState(j, L"rect", r.rectRead, r.rectWin32);
+    WriteFieldState(j, L"frameRect", r.frameRectRead, r.frameRectWin32);
+    j.Key(L"session").Obj().Key(L"state").Value(ReadStateName(r.identity.native.sessionRead)).End();
     j.End();
     if (r.exePathRequested) {
         // 想写完整路径而这一问没答案：两个字段一起说清，而不是安静地少一个键。
@@ -204,24 +290,43 @@ WindowRecord MakeWindowRecord(const WindowInfo& w, const WindowQuerySpec& spec) 
     r.width = w.width;
     r.height = w.height;
     r.iconic = w.iconic;
-    r.visible = !w.iconic;
+    r.visible = w.visible;   // 最小化窗口通常同时不可见；两个字段各说各的事实
     r.zOrder = w.zOrder;
     r.imageName = w.imageName;
-    // 归属进程这一层的综合下场，取两条问句里更糟的那一个：被挡下优先于「问过而失败」，
-    // 因为前者告诉调用方「换个权限的调用方读得到」，后者不告诉任何人这件事。
+    r.pidRead = ReadStateName(w.pidRead);
+    r.processAttribution = ProcessAttributionName(w.processAttribution);
+    r.titleRead = ReadStateName(w.titleRead);
+    r.classRead = ReadStateName(w.classRead);
+    // 归属进程这一层的综合下场：denied 最具体，absent 次之（窗口没声明 PID），
+    // 其余问过而失败的写 failed；只有路径与启动时间都读到才写 readable。
     if (w.pathRead == ReadState::kDenied || w.startRead == ReadState::kDenied) {
         r.processRead = ReadStateName(ReadState::kDenied);
-    } else if (w.pathRead != ReadState::kReadable || w.startRead != ReadState::kReadable) {
-        r.processRead = ReadStateName(ReadState::kFailed);
-    } else {
+    } else if (w.pathRead == ReadState::kReadable && w.startRead == ReadState::kReadable) {
         r.processRead = ReadStateName(ReadState::kReadable);
+    } else if (w.pathRead == ReadState::kAbsent || w.startRead == ReadState::kAbsent ||
+               w.pidRead == ReadState::kAbsent) {
+        r.processRead = ReadStateName(ReadState::kAbsent);
+    } else {
+        r.processRead = ReadStateName(ReadState::kFailed);
     }
     r.imagePathRead = ReadStateName(w.pathRead);
     r.startRead = ReadStateName(w.startRead);
     r.rectRead = ReadStateName(w.rectRead);
+    r.frameRectRead = ReadStateName(w.frameRectRead);
+    r.frameRectSource = w.frameRectSource;
     r.imagePathWin32 = w.pathRead == ReadState::kReadable ? 0 : w.pathWin32;
     r.startWin32 = w.startRead == ReadState::kReadable ? 0 : w.startWin32;
     r.rectWin32 = w.rectRead == ReadState::kReadable ? 0 : w.rectWin32;
+    r.frameRectWin32 = w.frameRectRead == ReadState::kReadable ? 0 : w.frameRectWin32;
+    r.clientX = w.x;
+    r.clientY = w.y;
+    r.clientWidth = w.width;
+    r.clientHeight = w.height;
+    r.clientBorderWidth = w.borderWidth;
+    r.frameX = w.frameX;
+    r.frameY = w.frameY;
+    r.frameWidth = w.frameWidth;
+    r.frameHeight = w.frameHeight;
     // 路径的「能不能读」与「写不写」是两件事：--inspect=path 给了而这一问没答案时，报告里要看得见
     // 「想写而没写成」（exePathRequested 为真而 exePathIncluded 为假），而不是安静地少一个键。
     r.exePathRequested = spec.exePath;
@@ -343,6 +448,10 @@ WindowQueryResult BuildWindowQueryResult(const WindowQuerySnapshot& snapshot,
 std::wstring RenderWindowQuery(const WindowQueryResult& r, const std::wstring& contract,
                                bool verbose, bool quiet) {
     const WindowQuerySpec& spec = r.spec;
+    bool x11Query = BuildPlatform() == PlatformKind::kLinuxX11;
+    for (const auto& w : r.windows) {
+        if (IsX11Identity(w.identity)) x11Query = true;
+    }
     Json j;
     j.Obj();
     // 与 --capabilities / --diagnostics 同级的另一份契约：这两个键**不**加到截图那份精简 JSON 上，
@@ -377,6 +486,13 @@ std::wstring RenderWindowQuery(const WindowQueryResult& r, const std::wstring& c
     // 系统窗口没有可判的身份（没有公开 API 说「我是系统窗口」），所以这里不作任何断言。
     j.Key(L"systemWindowAssertion").Value(false);
     j.Key(L"order").Value(L"zOrder");
+    // 原生标识只在本后端/本会话内有意义；查询交回的不是可长期保存的句柄。
+    j.Key(L"nativeIdPersistent").Value(false);
+    if (x11Query) {
+        j.Key(L"nativeIdScope").Value(L"x11_display_session");
+        j.Key(L"processAttribution").Value(L"declared_unverified");
+        j.Key(L"coordinateSpace").Value(L"x11_root_pixels");
+    }
     j.End();
 
     j.Key(L"pagination").Obj();
@@ -424,6 +540,13 @@ std::wstring RenderWindowQuery(const WindowQueryResult& r, const std::wstring& c
     caveats.push_back(window_caveat::kIdentityNotToken);
     caveats.push_back(window_caveat::kVisibilityPolicy);
     caveats.push_back(window_caveat::kDeniedNotGuarantee);
+    if (x11Query) {
+        caveats.push_back(window_caveat::kX11XidScoped);
+        caveats.push_back(window_caveat::kX11PidDeclared);
+        caveats.push_back(window_caveat::kX11VisibleScope);
+        caveats.push_back(window_caveat::kX11PixelCoordinates);
+        caveats.push_back(window_caveat::kX11FrameVsClient);
+    }
     if (r.truncated || r.iconicExcluded > 0) {
         // 「这份列表不是全集」单独写一条：只数 windows[] 会以为整机就这几个窗口。
         caveats.push_back(window_caveat::kListMayBePartial);

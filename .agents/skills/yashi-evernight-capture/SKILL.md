@@ -1,6 +1,6 @@
 ---
 name: yashi-evernight-capture
-description: Capture window or full-screen images on Windows with ECAPTURE.EXE (EvernightCapture) by selecting targets through conditions. Use when taking a screenshot, grabbing one specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), naming a monitor by a stable identifier (--screens), capturing several windows at once, capturing one whole monitor, or interpreting ECAPTURE's JSON result, exit codes and stable diagnostic codes. Prefer read-only queries over probing by capturing. Any route that samples desktop pixels (whole screen, bitblt, duplication, DWM's screen fallback) requires the user's own confirmation - present it to the user instead of answering for them.
+description: Capture window images on Windows or X11 Linux with EvernightCapture (ECAPTURE.EXE / ecapture) by selecting targets through conditions. Use when taking a screenshot, grabbing one specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), naming a monitor by a stable identifier (--screens), capturing several windows at once, capturing one whole monitor, or interpreting ECAPTURE's JSON result, exit codes and stable diagnostic codes. Prefer read-only queries over probing by capturing. Any route that samples desktop pixels (whole screen, bitblt, duplication, DWM's screen fallback) requires the user's own confirmation - present it to the user instead of answering for them.
 argument-hint: <window conditions> <output path>
 license: MulanPSL-2.0
 ---
@@ -21,14 +21,26 @@ holds unchanged; what differs is which routes exist. There is exactly one captur
 - The frame is the **client area** (no title bar, no window frame), at the window's own size. Screen pixels, the panel
   and any window overlapping the target are never read - overlapping the target with another window changes nothing.
 - `--monitor` / `--screens` style screen targets are refused (`capture.unsupported`, exit 7) and no image is delivered;
-  `--list`, `--inspect`, `--capabilities`, `--diagnostics`, `--show-config`, `--help`, `--version` work without a desktop.
+  `--capabilities`, `--diagnostics`, `--show-config`, `--help`, `--version` work without a desktop. `--list` and
+  `--inspect` are read-only but still need a reachable X11 display; they enumerate only that connection's X11 windows.
 - `--yes` is honoured only for that window-storage route, and only after the target identity was re-checked.
 - `--cursor include` is refused (the pointer is composited by the server, never into window storage); `--cursor exclude`
   is what you get either way.
 - Identity re-check needs `_NET_WM_PID` on the target. A window that does not set it (e.g. `xmessage`) is listed, but
-  capturing it is refused with `capture.target_unverifiable` instead of being captured unverified.
-- Nothing is restored, raised or activated: the tool never brings the target to the front and never changes its state,
-  so a minimized window stays minimized and is refused rather than captured from stale storage.
+  capturing it is refused with `capture.target_unverifiable` instead of being captured unverified. `_NET_WM_PID` is
+  self-declared: `/proc/<pid>` can prove that the PID exists, not that the XID belongs to it, so query output labels
+  process attribution `declared_unverified`.
+- **X11 query identity is XID + display-session scope.** An XID is 32-bit and only comparable within one display
+  connection scope. `--list` / `--inspect` return `xid` (or `identity.nativeId.form = "xid"`), `persistent: false`,
+  and `identity.session` with display name, server vendor/release, X11 protocol, root XID and whether XWAYLAND is
+  present. A changed scope makes the old XID unverifiable, not a reusable handle. The query covers only X11 windows
+  visible to this connection; native Wayland windows are not in the list, and XWayland exposes only its X11 windows.
+- **Client vs frame geometry is explicit.** The queried client area and the WM decoration frame are separate
+  `geometry.client` / `geometry.frame` objects in X11 root pixel coordinates. X11 has no logical-coordinate question
+  here, so `geometry.logical.known` is `false`; the delivered XComposite image is the client area. A missing/denied/
+  failed property is reported with its own state (`absent` is not PID 0 or an empty answer).
+- Nothing is restored, raised, activated or moved: the tool never brings the target to the front and never changes its
+  state, so a minimized window stays minimized and is refused rather than captured from stale storage.
 
 Three kinds of call, and the difference matters:
 
@@ -159,9 +171,11 @@ Do not assume the tool is on `PATH`.
 2. **Discover the target as data.** `--list --process app.exe` (several matches are the normal answer; it pages with
    `--offset` / `--limit`, total in `pagination.matched` - the page size you actually got is `pagination.limit`, whose
    source is `pagination.limitSource` (`cli` / `config` / `builtin`: a preference can change that default, so do not
-   assume 50), `--inspect --hwnd 0x…` (one window - it uses the same
+   assume 50), `--inspect --hwnd 0x…` on Windows (one window - it uses the same
    selection policy as a capture and answers `match.ambiguous_window` + 5 rather than pick one for you), `--screens`
-   (monitor identities; copy `screens[].selectors.device` or `.id` verbatim into `--monitor`).
+   (monitor identities; copy `screens[].selectors.device` or `.id` verbatim into `--monitor`). On X11 there is no
+   `--hwnd`; narrow with `--class` / `--process` / `--title`, read the returned `xid`, and re-query for a fresh
+   snapshot instead of storing an XID. If the ambient `DISPLAY` / session changes, treat old XIDs as unverifiable.
    **Read `errors` even when the list looks empty**: a query whose evaluation could not finish still prints
    `windows: []` with `matched: 0`, and "the question failed" is not "nothing matches".
 3. **Select it with conditions that actually pin it down**, taken from the snapshot you just ran: `--class` /
@@ -490,7 +504,9 @@ $exe = Join-Path "$env:USERPROFILE\.agents\skills\yashi-evernight-capture" 'ECAP
 & $exe --capabilities                                   # what can this machine do
 & $exe --show-config                                    # which preferences file, and which level set each item
 & $exe --list   --process notepad.exe                   # who matches, as structured JSON (paged)
-& $exe --inspect --hwnd 0x001A0B4C                      # confirm one window + its identity constraints
+& $exe --inspect --hwnd 0x001A0B4C                      # Windows: confirm one window + identity constraints
+& $exe --list --title-contains Report --class ReportApp # X11: use class/title/PID/process, then read xid
+& $exe --inspect --class ReportApp --title-contains Report # X11: exactly one target or ambiguity + 5
 & $exe --screens                                        # monitor identities -> copy a selector verbatim
 
 # These are capture templates: adapt the conditions to a target you actually established, and expect a

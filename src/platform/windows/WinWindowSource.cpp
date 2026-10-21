@@ -114,16 +114,35 @@ BOOL CALLBACK CollectCandidate(HWND hwnd, LPARAM lParam) {
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     w.pid = static_cast<uint32_t>(pid);
+    w.pidRead = pid != 0 ? ReadState::kReadable : ReadState::kAbsent;
+    w.processAttribution = ProcessAttribution::kVerified;
+    w.native.backend = L"win32";
+    w.native.idForm = L"hwnd";
+    w.native.scopeRequired = false;
 
+    // GetWindowTextW 对"空标题"与"读取失败"都可能给 0；这里把能调用成功视为
+    // 标题这一问给出了答案（空串是真值），只有 API 明确报错时才写 failed。
+    SetLastError(ERROR_SUCCESS);
     const int titleLen = GetWindowTextLengthW(hwnd);
     if (titleLen > 0) {
         w.title.resize(static_cast<size_t>(titleLen) + 1);
         const int got = GetWindowTextW(hwnd, w.title.data(), titleLen + 1);
-        w.title.resize(got > 0 ? static_cast<size_t>(got) : 0);
+        if (got > 0) w.title.resize(static_cast<size_t>(got));
+        w.titleRead = ReadState::kReadable;
+    } else {
+        w.title.clear();
+        w.titleRead = GetLastError() == ERROR_SUCCESS ? ReadState::kReadable
+                                                      : ReadState::kFailed;
     }
     wchar_t cls[256];
     const int clsLen = GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
-    if (clsLen > 0) w.className.assign(cls, static_cast<size_t>(clsLen));
+    if (clsLen > 0) {
+        w.className.assign(cls, static_cast<size_t>(clsLen));
+        w.classRead = ReadState::kReadable;
+    } else {
+        w.classRead = GetLastError() == ERROR_SUCCESS ? ReadState::kAbsent
+                                                      : ReadState::kFailed;
+    }
 
     const WindowFacts facts = ProcessFactsOf(hwnd);
     w.imagePath = facts.path;

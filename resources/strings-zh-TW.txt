@@ -21,7 +21,7 @@ help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無
 help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
 help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
 help.system	執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
-help.status_linux	目前建置: 這個 Linux 建置只實作了 X11 單一視窗擷取（xcomposite，讀取目標視窗自己的儲存內容），沒有桌面像素擷取後端，所以螢幕目標一律交回 capture.unsupported（結束碼 7），不交付任何影像；--list / --inspect 走 X11 視窗查詢，是可以用的。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。Windows 專屬開關（--hwnd / --class / --capture）在這裡會報 cli.platform_unsupported，不會被默默忽略
+help.status_linux	目前建置: 這個 Linux 建置實作了 X11 單一視窗擷取（xcomposite，讀取目標視窗自己的儲存內容）與唯讀 X11 視窗查詢；沒有桌面像素擷取後端，所以螢幕目標一律交回 capture.unsupported（結束碼 7），不交付任何影像。--list / --inspect 只列舉本連線看得到的 X11 視窗，原生 Wayland 視窗不在其中；結果把 XID 與顯示工作階段作用域一起交付，XID 不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，行程歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不恢復最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。Windows 專屬開關（--hwnd / --class / --capture）在這裡會報 cli.platform_unsupported，不會被默默忽略
 help.system_linux	執行環境: Linux。--capabilities / --diagnostics 以唯讀方式連線 X11、Wayland 與工作階段 D-Bus（XDG Desktop Portal），並檢查 PipeWire 套接字前提。環境變數與桌面名稱只是線索：它們不證明服務可用，也不構成授權
 help.linux_query	Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於可以截圖，只有真正實作的後端（本建置是 x11 的 xcomposite 單視窗通道）才會被報成可用
 
@@ -100,8 +100,8 @@ opt.capabilities	輸出本機能力報告（JSON）：版本、系統與工作�
 opt.diagnostics	輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
 opt.screens	唯讀地列出本機每張螢幕：工具編號、裝置名、是否主螢幕、實體矩形、DPI 與旋轉（問得到的話）、歸屬配接器關聯，並標出這幾種身分各自穩到哪一層。不取一個影格、不彈框、不寫檔案，也不改任何顯示設定。交回的 device:<裝置名> 與 id:<螢幕裝置路徑> 可以直接寫進 --monitor。與截圖那一級的選項互斥（cli.query_conflict + 結束碼 1）；真去截整張螢幕仍然一定彈框，--yes 跳不過
 opt.screens_linux	唯讀列出本機每塊螢幕：工具編號、輸出名稱、是否主螢幕、實體矩形、問得到的 DPI 與旋轉，答不上來的那一項標 failed 而不是猜一個數。不取一個像素、不彈框、不寫檔、也不改任何顯示設定。工具編號可以直接寫進 --monitor <n>；重新插拔或改解析度之後同一個編號可能指到另一塊螢幕。每塊螢幕的輸出名也能直接寫回 --monitor device:<輸出名>。本建置答不上跨工作階段的螢幕識別，id:<螢幕裝置路徑> 只有 Windows 才有，這裡以 cli.platform_unsupported 拒絕。與擷取那一級的選項互斥（cli.query_conflict + 結束碼 1）
-opt.list	唯讀地把滿足全部條件的頂層視窗列成 JSON（句柄 / PID / 類名 / 標題 / 映像名 / 矩形 / Z 序 / 身分約束欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。結果會過期，截圖時仍要複核身分
-opt.inspect	唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到的項寫欄位級 denied / failed，不建議改用管理員身分；不恢復或啟用任何視窗
+opt.list	唯讀地把滿足全部條件的頂層用戶端視窗列成 JSON（原生識別 / PID / 類名 / 標題 / 映像名 / 客戶區與外框幾何 / Z 序 / 工作階段作用域內的身分欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。X11 上原生識別是 xid，只在本連線交回的顯示工作階段作用域內有效；_NET_WM_PID 是視窗自述，歸屬只寫 declared_unverified。結果會過期，截圖時仍要複核身分
+opt.inspect	唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到或缺失的項寫欄位級 readable / absent / denied / failed 與原碼，不建議改用管理員身分；不恢復或啟用任何視窗。X11 幾何把 WM 裝飾外框與客戶區分開，邏輯座標明確寫 unknown 而不編一個
 opt.offset	視窗查詢跳過開頭 n 個（0 起）
 opt.limit	視窗查詢本批最多 n 個（預設 50）
 # 解析期診斷（src/CliOptions.cpp）
@@ -150,9 +150,9 @@ cli.conflicting_hint	例如只保留 --index 2
 cli.query_conflict	查詢命令與截圖選項不能同時給出：--capabilities / --diagnostics 是唯讀地問環境，本身不截圖
 cli.query_conflict_hint	查詢只接受 --lang、-v/--verbose、-q/--quiet；請去掉其餘選項與輸出路徑，或把截圖另起一次
 cli.list_value	--list 的取值只接受 all（把最小化視窗也列進來），或整個省略
-cli.list_value_hint	寫成 --list=all；要限制條數與翻頁請用 --limit / --offset
+cli.list_value_hint	寫成 --list=all；要限制條數與翻頁請用 --limit / --offset。X11 上請用這份快照裡的標題 / 類名 / PID / 行程條件收窄目標；xid 不是跨工作階段控制代碼
 cli.inspect_value	--inspect 的取值只接受 path（寫出歸屬映像的完整路徑），或整個省略
-cli.inspect_value_hint	寫成 --inspect=path；點名某一扇視窗請用 --hwnd，多匹配時請先消歧
+cli.inspect_value_hint	寫成 --inspect=path；Windows 可用 --hwnd 點名，X11 請用 --class / --process / --title 收窄，多匹配時先消歧
 cli.window_query_conflict	視窗查詢（--list / --inspect）不能與截圖那一級或環境查詢同時給出：它不產圖，多匹配也不是截圖歧義
 cli.window_query_conflict_hint	視窗查詢接受視窗條件、--monitor、--offset / --limit、--timeout-ms、--yes 與 --lang / -v / -q（取捨寫在 --list=all / --inspect=path 裡）；請去掉 --out / --format / --quality / --capture / --dry-run / 確認框期限 / --capabilities / --diagnostics，或把截圖與查詢分成兩次
 cli.list_count_value	條數不合法：要寫十進位，0 到 %1
@@ -215,7 +215,7 @@ match.index_hint	共 %1 個候選：%2
 match.ambiguous	匹配到多個視窗，需要消歧
 match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或補充條件。候選（按 Z 序）：%1
 match.untitled	(無標題)
-match.inspect_ambiguous_hint	--inspect 需要唯一目標：用 --hwnd 點名，或補 --class / --process / --title 把條件收窄到一扇，或用 --index / --topmost-match / --bottommost-match 選定。本工具不替你挑一個，也不因為另一扇「看起來一樣」就先擷取它。候選（按 Z 序）：%1
+match.inspect_ambiguous_hint	--inspect 需要唯一目標：Windows 可用 --hwnd 點名；X11 請補 --class / --process / --title 把條件收窄到一扇；或用 --index / --topmost-match / --bottommost-match 選定。本工具不替你挑一個，也不因為另一扇「看起來一樣」就先擷取它。候選（按 Z 序）：%1
 
 # ---------------------------------------------------------------------------
 # 流程與寫檔（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）

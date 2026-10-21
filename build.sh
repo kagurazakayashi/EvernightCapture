@@ -26,9 +26,10 @@ usage() {
                                           （RelWithDebInfo 带调试符号，调试时可优先选它）
   --compiler gcc|clang|<编译器路径>        指定编译器；留空则用 $CXX，再退到 PATH 上的 g++/clang++
   --target <名字>                          只构建某个目标，可重复给
-                                          可选：ecapture ecapture-session-tests core-tests
-                                                wgc-tests cli-text-tests save-tests ipc-tests
-                                                crop-tests image-tests encode-tests consent-tests
+                                          可选：ecapture ecapture-x11-window-tests
+                                                ecapture-session-tests core-tests wgc-tests
+                                                cli-text-tests save-tests ipc-tests crop-tests
+                                                image-tests encode-tests consent-tests
                                                 gui-probe gui-tests
   --list-targets                          打印当前平台可构建与暂不可构建的目标清单，不构建
   --clean                                 先删掉这一份构建目录再重新配置（只删 build-linux 下那一个）

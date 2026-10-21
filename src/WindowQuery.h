@@ -105,13 +105,31 @@ struct WindowRecord {
     int32_t zOrder = 0;               // 当下叠放次序中的位置，0 = 最前
     // 三条跨进程问句各自的下场：readable / denied / failed（ReadState 的机器名）。
     // 值与下场必须成对读：读不到的那几项，上面那些数是哨兵而不是答案。
-    std::wstring processRead;         // 归属进程开句柄 + 两条问句的综合下场（取更糟的那一个）
+    std::wstring pidRead;             // 归属 PID 属性本身那一问（readable / denied / failed / absent）
+    std::wstring processRead;         // 归属进程路径 + 启动时间两条问句的综合下场
+    std::wstring processAttribution;  // verified / declared_unverified / unknown
+    std::wstring titleRead;
+    std::wstring classRead;
     std::wstring imagePathRead;
     std::wstring startRead;           // 进程创建时间那一问
-    std::wstring rectRead;            // 窗口矩形那一问
+    std::wstring rectRead;            // 客户区矩形那一问
+    std::wstring frameRectRead;       // 装饰外框矩形那一问
+    std::wstring frameRectSource;     // ewmh_net_frame_extents / x11_parent_window / client_is_top_level
     uint32_t imagePathWin32 = 0;      // 只有对应的 read 不是 readable 时才有意义
     uint32_t startWin32 = 0;
     uint32_t rectWin32 = 0;
+    uint32_t frameRectWin32 = 0;
+    // 客户区（根坐标像素）与装饰外框（根坐标像素）分开交付。二者都只在对应 ReadState
+    // 为 readable 时才是值；逻辑坐标在本平台没有可问的 API，报告里写 known=false。
+    int32_t clientX = 0;
+    int32_t clientY = 0;
+    int32_t clientWidth = 0;
+    int32_t clientHeight = 0;
+    uint32_t clientBorderWidth = 0;
+    int32_t frameX = 0;
+    int32_t frameY = 0;
+    int32_t frameWidth = 0;
+    int32_t frameHeight = 0;
     bool exePathRequested = false;    // --inspect=path 给了（想写完整路径）
     bool exePathIncluded = false;     // 这一条真把 imagePath 写出来了
     bool exePathReadable = false;     // 这一问有答案；想写而问不出来时报告里要看得见
@@ -208,7 +226,7 @@ std::wstring RenderWindowQuery(const WindowQueryResult& result, const std::wstri
 
 // 窗口查询文档的契约名与版本（与 EnvReport 那份 kEnvContractVersion 各自独立演进）。
 inline constexpr const wchar_t* kWindowQueryContractName = L"windowquery";
-inline constexpr uint32_t kWindowQueryContractVersion = 1;
+inline constexpr uint32_t kWindowQueryContractVersion = 2;
 
 // caveats 的稳定 token：这一组说的都是「这份文档**没有**断言什么」，
 // 与 --capabilities 那份的 caveat.* 同一思路（只增不改名）。
@@ -230,6 +248,17 @@ inline constexpr const wchar_t* kDeniedNotGuarantee = L"unreadable_fields_are_no
 // 本批没有交回全部命中（分页截断，或有最小化窗口被默认策略挡掉）：windows[] 的条数
 // 不等于「整机满足条件的窗口数」，后者看 pagination.matched。
 inline constexpr const wchar_t* kListMayBePartial = L"list_may_be_partial";
+// X11 的 XID 只在一次显示连接作用域内可比；换了 DISPLAY / 重启了服务器（XWayland 也一样）
+// 就必须重新查询，不能把旧 XID 当长期标识。
+inline constexpr const wchar_t* kX11XidScoped = L"x11_xid_is_connection_scoped";
+// `_NET_WM_PID` 是窗口自己声明的，读到 /proc/<pid> 只证明该进程存在，不证明 XID 归属它。
+inline constexpr const wchar_t* kX11PidDeclared = L"x11_pid_is_self_declared_not_ownership_proof";
+// X11 查询只看本次 X 连接能看到的窗口；原生 Wayland 窗口不在这份列表里。
+inline constexpr const wchar_t* kX11VisibleScope = L"x11_query_covers_this_connection_only";
+// X11 坐标是服务端像素坐标；本工具不伪造逻辑坐标。
+inline constexpr const wchar_t* kX11PixelCoordinates = L"x11_coordinates_are_server_pixels";
+// 外框是 WM 装饰，客户区是客户端内容；截图交付客户区，二者不可互相冒充。
+inline constexpr const wchar_t* kX11FrameVsClient = L"x11_frame_and_client_are_distinct";
 }  // namespace window_caveat
 
 }  // namespace ecapture

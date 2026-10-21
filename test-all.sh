@@ -64,7 +64,7 @@ EOF
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
 SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text session-probe save-paths worker-ipc consent-state \
- image-ops crop-geometry codec-encode gui-probe-init gui-runtime"
+ image-ops crop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -89,6 +89,12 @@ SUITE_KIND[session-probe]="cmake"
 SUITE_TARGET[session-probe]="ecapture-session-tests"
 SUITE_NOTE[session-probe]="Linux 会话识别与运行能力查询（X11 / Wayland / XWayland / SSH / 无桌面、Portal 版本与来源类型、PipeWire 前提、缺库/连接失败/未实现分支、真实只读探测与隐私不回显）"
 SUITE_PREREQ[session-probe]=""
+
+SUITE_LAYER[x11-window-query]="isolated"
+SUITE_KIND[x11-window-query]="cmake"
+SUITE_TARGET[x11-window-query]="ecapture-x11-window-tests"
+SUITE_NOTE[x11-window-query]="X11 窗口查询、客户区/外框几何、XID+显示会话身份复核与自建窗口集成判据（只读、不取像素；不含真实 WM / Wayland / GPU 验证）"
+SUITE_PREREQ[x11-window-query]=""
 
 SUITE_LAYER[wgc-geometry]="offline"
 SUITE_KIND[wgc-geometry]="cmake"
@@ -231,7 +237,7 @@ done
 if [ ${#PLAN[@]} -eq 0 ]; then
     ec_note "计划是空的（--layer $LAYER 与 --only/--except 筛完没有任何套件）。"
     if [ "$LAYER" = "manual" ]; then
-        ec_note "manual 层本来就没有可自动跑的套件：Linux 截图后端还没实现，真机验证项从后端落地那一步才开始登记。"
+        ec_note "manual 层本来就没有可自动跑的套件：需要在真实窗口管理器 / 合成器 / 多屏现场人工核对，脚本不代跑。"
         ec_note "这一层的结论由做验证的人写，脚本不代跑、不代答确认框，也不会把它算成通过。"
     fi
     ec_note "被排除的："
@@ -254,7 +260,7 @@ print_plan() {
         for e in "${EXCLUDED[@]}"; do ec_note "  - $e"; done
     fi
     if [ "$LAYER" = "manual" ] || [ "$LAYER" = "all" ]; then
-        ec_note "manual 层当前没有任何自动化套件：Linux 截图后端还没实现，真实桌面验证从后端落地那一步开始登记。"
+        ec_note "manual 层当前没有任何自动化套件：真实窗口管理器 / 合成器 / 多屏现场仍需人工核对。"
     fi
     ec_note "人工验证层（manual）不在脚本里代跑：需要真人点确认框、真机多屏与 HDR 现场，"
     ec_note "以及 Portal/PipeWire 的系统授权。这一层的结论只能由做的人写，不会被算成通过。"
@@ -339,6 +345,14 @@ for s in "${PLAN[@]}"; do
             ec_add_gap "$s" "这一层要图形会话，当前既没有 DISPLAY/WAYLAND_DISPLAY 也没有 xvfb-run。
       建议（不自动装、不替你启动服务）：apt install xvfb"
         fi
+        if [ "$s" = "x11-window-query" ] && ! ec_have xvfb-run; then
+            # 这一套只认 X11。仅有 WAYLAND_DISPLAY 时不能拿当前会话冒充 X11；有 X11
+            # DISPLAY 也要实际连一次（变量存在不等于可达）。连不上就记 NOT RUN。
+            if ! ec_have xdpyinfo || ! xdpyinfo >/dev/null 2>&1; then
+                ec_add_gap "$s" "这一套要可达的 X11 显示（不是仅设置 DISPLAY 或仅有 WAYLAND_DISPLAY）。
+      建议（不自动装、不替你启动服务）：apt install xvfb；或在真实 X11 桌面会话中运行。"
+            fi
+        fi
         continue
     fi
     t="${SUITE_TARGET[$s]}"
@@ -362,6 +376,14 @@ for s in "${PLAN[@]}"; do
     if [ "$layer" = "isolated" ] && ! ec_graphic_prefix; then
         ec_add_gap "$s" "这一层要图形会话，当前既没有 DISPLAY/WAYLAND_DISPLAY 也没有 xvfb-run。
       建议（不自动装、不替你启动服务）：apt install xvfb"
+    fi
+    if [ "$s" = "x11-window-query" ] && ! ec_have xvfb-run; then
+        # 这一套只认 X11。仅有 WAYLAND_DISPLAY 时不能拿当前会话冒充 X11；有 X11
+        # DISPLAY 也要实际连一次（变量存在不等于可达）。连不上就记 NOT RUN。
+        if ! ec_have xdpyinfo || ! xdpyinfo >/dev/null 2>&1; then
+            ec_add_gap "$s" "这一套要可达的 X11 显示（不是仅设置 DISPLAY 或仅有 WAYLAND_DISPLAY）。
+      建议（不自动装、不替你启动服务）：apt install xvfb；或在真实 X11 桌面会话中运行。"
+        fi
     fi
 done
 
@@ -471,7 +493,7 @@ ec_note "  意外没跑成：$NOTRUN"
 ec_note "  主动没排：${#EXCLUDED[@]}（原因见上面计划段逐条列出，不合并成一个数字）"
 ec_note "  日志目录：$LOG_DIR"
 if [ "$LAYER" = "manual" ] || [ "$LAYER" = "all" ]; then
-    ec_note "  manual 层：Linux 截图后端未实现，本层暂无可跑套件；真机验证待人工，不算通过也不算失败。"
+    ec_note "  manual 层：本层暂无可跑套件；真实窗口管理器 / 合成器验证待人工，不算通过也不算失败。"
 fi
 
 if [ "$FAILED" -gt 0 ] || [ "$NOTRUN" -gt 0 ]; then

@@ -298,27 +298,39 @@ void CheckReply() {
     w.x = -8; w.y = 0; w.width = 1936; w.height = 1048; w.zOrder = 3; w.iconic = true;
     // 三条跨进程问句各自的下场：结构化窗口查询要靠它们区分"问不出来"与"是空的"，
     // 所以辅助进程问出来的答案必须逐项原样抵达父进程，不能被折成空值或默认成"能读"。
+    w.pidRead = ecapture::ReadState::kReadable;
     w.pathRead = ecapture::ReadState::kDenied;
     w.pathWin32 = 5;               // ERROR_ACCESS_DENIED
     w.startRead = ecapture::ReadState::kReadable;
     w.processStartTicks = 0x0123456789ABCDEFull;
     w.rectRead = ecapture::ReadState::kFailed;
     w.rectWin32 = 1400;
+    w.titleRead = ecapture::ReadState::kReadable;
+    w.classRead = ecapture::ReadState::kReadable;
+    w.processAttribution = ecapture::ProcessAttribution::kVerified;
+    w.visible = false;
+    w.frameRectRead = ecapture::ReadState::kAbsent;
     list.hits.push_back(w);
     std::vector<uint8_t> listBlob;
     Check(EncodeReply(list, &listBlob) && DecodeReply(listBlob.data(), listBlob.size(), &back),
           "命中窗口列表能往返");
     Check(back.hits.size() == 1 && back.hits[0].hwnd == 0x001A0B4C && back.hits[0].iconic &&
-              back.hits[0].title == L"标题 with D:\\path",
-          "列表里的句柄、标志与标题逐项一致");
+              !back.hits[0].visible && back.hits[0].title == L"标题 with D:\\path",
+          "列表里的句柄、可见性、标志与标题逐项一致");
     Check(back.hits.size() == 1 &&
               back.hits[0].pathRead == ecapture::ReadState::kDenied &&
               back.hits[0].pathWin32 == 5 &&
               back.hits[0].startRead == ecapture::ReadState::kReadable &&
               back.hits[0].processStartTicks == 0x0123456789ABCDEFull &&
               back.hits[0].rectRead == ecapture::ReadState::kFailed &&
-              back.hits[0].rectWin32 == 1400,
-          "三条问句的下场与原因码逐项原样抵达父进程");
+              back.hits[0].rectWin32 == 1400 &&
+              back.hits[0].pidRead == ecapture::ReadState::kReadable &&
+              back.hits[0].titleRead == ecapture::ReadState::kReadable &&
+              back.hits[0].classRead == ecapture::ReadState::kReadable &&
+              back.hits[0].processAttribution ==
+                  ecapture::ProcessAttribution::kVerified &&
+              back.hits[0].frameRectRead == ecapture::ReadState::kAbsent,
+          "问句的下场、归属标记与原因码逐项原样抵达父进程");
 
     // 没登记过的"问句下场"整条作废：两边不是同一份代码时不能把未知值当成"能读"往下走
     Reply bogusState;

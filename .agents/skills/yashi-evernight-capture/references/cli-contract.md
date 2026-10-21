@@ -248,9 +248,19 @@ shell 自己那一档（`S-1-16-4096` 是 Low，`S-1-16-8192` 是 Medium，`S-1-
 ECAPTURE.EXE --list --title-contains 记事本          # 列表（JSON，contract=windowquery）
 ECAPTURE.EXE --list=all --class Notepad              # 把最小化窗口也并进同一根 Z 序轴
 ECAPTURE.EXE --list --offset 50 --limit 50            # 翻页：总数看 pagination.matched
-ECAPTURE.EXE --inspect --hwnd 0x001A0B4C             # 单扇窗口的身份快照（contract=windowinspect）
+ECAPTURE.EXE --inspect --hwnd 0x001A0B4C             # Windows：单扇窗口身份快照（contract=windowinspect）
 ECAPTURE.EXE --inspect=path --title 订单              # 同上，并写出归属映像完整路径（默认只写文件名）
+ecapture --list --class ReportApp --title-contains 报告  # Linux X11：用类名 / 标题 / PID / 进程条件收窄
+ecapture --inspect --class ReportApp --title 报告         # X11 没有 --hwnd；多匹配仍是歧义 + 5
 ```
+
+**Linux X11 范围**：X11 查询只列本显示连接实际看得见的 X11 客户端窗口（XWayland 暴露的 X11 窗口算其中，
+原生 Wayland 窗口不在其中）。原生标识是 `xid`，不是 `hwnd`；`identity.session` 同时交回显示名、服务器
+厂商/版本、X11 协议、root XID 与 XWAYLAND 是否存在。XID 只在这个显示会话作用域内可比，`persistent: false`；
+换 `DISPLAY` / 服务器 / XWayland 会话后旧 XID 不可复用。`_NET_WM_PID` 是窗口自行声明，读到 `/proc/<pid>`
+只能证明该 PID 存在，不证明 XID 归属；因此 X11 的 `processAttribution` 是 `declared_unverified`。
+WM 装饰外框只作为树结构穿过、不会成为目标；子窗口不会因有 WM_CLASS 就升成新顶层。几何把客户区与外框分开
+写在 X11 root 像素坐标，`geometry.logical.known` 为 `false`；查询不激活、不移动、不恢复任何窗口。
 
 条件语义与截图**同一套**：同一个选项写多次 = OR，不同选项 = AND，`--monitor` 按屏过滤，
 `--title-regex` 与设了 `--timeout-ms` 时同样走辅助进程。所以一次查询里 `--list` 与 `--inspect` 只能选一个入口。
@@ -267,18 +277,25 @@ ECAPTURE.EXE --inspect=path --title 订单              # 同上，并写出归�
 
 ### 每一问的读数：读不到 ≠ 空值
 
-跨进程问的每一件事都带一个三态答案，问不出来绝不写成空串、0 或 false：
+跨进程问的每一件事都带一个逐字段答案，问不出来绝不写成空串、0 或 false：
 
 ```json
 "readability": {
-  "process":      { "state": "denied", "win32": 5 },
-  "imagePath":    { "state": "readable" },
+  "pid":          { "state": "readable" },
+  "title":        { "state": "readable" },
+  "class":        { "state": "absent" },
+  "process":      { "state": "declared_unverified" },
+  "imagePath":    { "state": "denied", "win32": 5 },
   "processStart": { "state": "failed", "win32": 87 },
-  "rect":         { "state": "readable" }
+  "rect":         { "state": "readable" },
+  "frameRect":    { "state": "readable" },
+  "session":      { "state": "readable" }
 }
 ```
 
-`state` 只有 `readable` / `denied` / `failed` 三种，`win32` 是失败点当场取走的 `GetLastError` 原值。
+`state` 是 `readable` / `absent` / `denied` / `failed`：`absent` 表示对象本身没有声明该属性（例如 X11 窗口
+没有 `_NET_WM_PID`，或没有 WM_CLASS），它既不是 0，也不是读取失败。`win32` 是失败点当场取走的
+`GetLastError` 原值；X11 路径的 errno / X 错误同样只作为原因码原样交回，不改写成 `win32` 的语义。
 事实只有这两样：这一问的读数状态，和那一条 API 的原样错误码。`denied` 说的是**这一问被拒绝了**
 （`win32` 为 `5` 时就是 `ERROR_ACCESS_DENIED`）——对方的权限或完整性级别与本机不同只是**一种可能原因**，
 这个字段既证明不了它，也证明不了目标受保护，更说明不了截图会不会成功（`unreadable_fields_are_not_a_prediction`
@@ -290,7 +307,15 @@ ECAPTURE.EXE --inspect=path --title 订单              # 同上，并写出归�
 
 ```json
 "identity": {
-  "hwnd": "0x001A0B4C", "pid": 27256, "class": "Notepad",
+  "platform": "windows",
+  "backend": "win32",
+  "nativeId": {
+    "form": "hwnd", "value": "0x001A0B4C",
+    "persistent": false, "stableAcross": "one_window_lifetime"
+  },
+  "hwnd": "0x001A0B4C",
+  "session": { "known": false, "state": "failed", "xwayland": false },
+  "pid": 27256, "processAttribution": "verified", "class": "Notepad",
   "processStartTicks": 134351164333279485,
   "selectionNeedsRecheck": true,
   "verificationRequired": true,
@@ -299,11 +324,22 @@ ECAPTURE.EXE --inspect=path --title 订单              # 同上，并写出归�
 }
 ```
 
+X11 的同一段改用 `xid` / `nativeId.form = "xid"`，并把 `session.known`、`session.state`、`display`、
+`serverVendor` / `serverRelease`、`protocol`、`rootWindow`、`xwayland` 与 `scope` 一起交回；`_NET_WM_PID`
+那一格单独有 `readability.pid`，归属进程写 `declared_unverified`，不能当成系统核实的归属证明。客户区与外框
+几何在 `geometry.client` / `geometry.frame` 两个对象里（X11 root 像素坐标）；`rect` 是兼容字段，X11 上是
+客户区矩形，不是外框。
+
 - `processStartTicks` 把「PID 被系统复用」与「还是那个进程」分开；问不到时写字符串 `"unknown"`，不写 0。
 - `selectionNeedsRecheck: true` = 当初的条件含易变项（标题、按屏过滤），截图前要拿条件重跑一次；`false` = 只按类名/句柄选中，比类名就够。
+- X11 上还有一条额外约束：`session.scope` 不同则 XID 不可比，复核会给 `capture.target_unverifiable`；
+  同一作用域内再比较声明的 PID、该 PID 的进程启动时间、`WM_CLASS` 与重跑后的原条件。
 - 这三件是**给下一次截图带回去的约束**，不是许可凭证：真去截图时本工具仍会在取帧之前复核目标身份
   （`capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable`），确认框也照旧按像素来源判。
 - 每次窗口查询都固定带一条 `note.window_query_stale` 说这件事，`-v` 的 `policy` 与 `caveats` 里也各列一份。
+  Linux X11 还恒带 `x11_xid_is_connection_scoped`、`x11_pid_is_self_declared_not_ownership_proof`、
+  `x11_query_covers_this_connection_only`、`x11_coordinates_are_server_pixels` 与
+  `x11_frame_and_client_are_distinct`，分别说明 XID 会话范围、声明的 PID、XWayland 可见范围与两条几何口径。
 
 默认策略是显式写出来的，不是隐含的：`policy.invisibleExcluded` / `zeroSizedExcluded` 恒为 `true`，
 `minimizedIncluded` 默认 `false`（`--list=all` 改成 `true`），`systemWindowAssertion: false` 表示

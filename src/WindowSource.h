@@ -41,14 +41,17 @@ namespace ecapture {
 bool EnumerateWindowCandidates(std::vector<WindowInfo>* out, BlockedStatus* status,
                                std::string* detail);
 
-// 窗口完整矩形（含 DWM 那圈透明边框），虚拟屏幕坐标的物理像素。量不出来时交回空矩形。
+// 窗口外框矩形：Windows 是含 DWM 透明边框的整窗矩形；X11 是 WM 装饰外框（优先
+// `_NET_FRAME_EXTENTS`，否则结构父窗口，root 直系客户窗口则把自身 border 算进去）。
+// 坐标系是该后端的屏幕/根窗口像素。量不出来时交回空矩形，不拿客户区或虚假屏幕矩形顶替。
 PhysRect WindowFullRectOf(uint64_t hwnd);
 
-// 用户实际看到的矩形：优先 DWMWA_EXTENDED_FRAME_BOUNDS，问不到时退回完整矩形。
-// 量不出来时交回空矩形（与 WindowFullRectOf 同一条规矩）。
+// 交付图像对应的屏幕矩形：Windows 优先 DWMWA_EXTENDED_FRAME_BOUNDS；X11 是客户区自身存储
+// 在 root 坐标中的矩形（不是 WM 装饰外框）。量不出来时交回空矩形，不拿外框或虚假屏幕矩形顶替。
 PhysRect WindowScreenRectOf(uint64_t hwnd);
 
-// 客户区在**虚拟屏幕坐标**里的那一块（左上含、右下不含）。
+// 客户区在**屏幕/根窗口像素坐标**里的那一块（左上含、右下不含）。X11 的客户区原点
+// 由 XTranslateCoordinates 给出内容原点，客户窗口 border 不属于客户区内容。
 // 返回 false = 这一问没有答案（句柄已失效 / 两条 API 有一条失败 / 加出来的坐标不在 int32 里）；
 // 返回 true 而矩形的宽或高为 0 = 这扇窗口此刻确实还没有客户区（是一条事实，不是失败）。
 bool ClientScreenRectOf(uint64_t hwnd, PhysRect* out);

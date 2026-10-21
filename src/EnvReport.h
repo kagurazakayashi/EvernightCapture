@@ -174,6 +174,15 @@ inline constexpr const wchar_t* kDesktopNameNotEvidence =
 inline constexpr const wchar_t* kXwaylandNotNative = L"xwayland_covers_x11_windows_only";
 // 合成器不提供全局窗口列表：不虚构列表，也不拿 XWayland 的列表顶替。
 inline constexpr const wchar_t* kWaylandNoWindowList = L"wayland_has_no_global_window_list";
+// X11 窗口查询只覆盖**本连接实际能见到的 X11 窗口**（含 XWayland 暴露给 X11 的那部分）；
+// 原生 Wayland 窗口不在这份列表里，也不能靠切到 XWayland 去补齐。
+inline constexpr const wchar_t* kX11WindowScope = L"x11_window_query_scope_is_this_connection";
+// XID 是 32 位服务端对象名，只在同一显示连接 / 会话作用域内可比；不是可长期保存的句柄。
+inline constexpr const wchar_t* kX11XidNotPersistent = L"x11_xid_is_not_persistent";
+// X11 的 _NET_WM_PID 由客户端自己声明；工具能读 /proc 证明 PID 存在，但不能证明窗口归属。
+inline constexpr const wchar_t* kX11PidNotOwnership = L"x11_pid_is_declared_not_ownership";
+// X11 坐标是服务端像素坐标；外框与客户区是两块不同的几何，截图交付的是客户区存储。
+inline constexpr const wchar_t* kX11GeometryScope = L"x11_coordinates_and_window_frame_scope";
 // Portal 的来源类型只是能力事实；选来源与系统授权永远要一个人完成。
 inline constexpr const wchar_t* kPortalNeedsInteraction =
     L"portal_source_selection_requires_a_person";

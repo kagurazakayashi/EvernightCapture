@@ -59,11 +59,7 @@ confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
 - **Screenshot authorization**: any capture that really grabs a frame asks in a modal dialog first, reliable
   window paths included; `--yes` skips that ask **only** for paths whose frame is bound to the selected window
   itself — anything sampling desktop pixels always needs a person and no switch can skip it
-- **Target identity that is re-checked**: the handle, owning process, that process's creation time, window class and the
-  original selection conditions are recorded when a target is picked, then verified again before every capture attempt and
-  once more right after the consent answer. A destroyed window, a handle reused by another process, or one that no longer
-  satisfies the condition it was selected by gives `capture.target_gone` / `capture.target_changed` /
-  `capture.target_unverifiable` instead of a picture nobody approved
+- **Target identity that is re-checked**: the native id (HWND on Windows, XID plus its X11 display-session scope on Linux), owning process, that process's creation time, window class and the original selection conditions are recorded when a target is picked, then verified again before every capture attempt and once more right after the consent answer. A destroyed window, a reused id, a changed display session, or one that no longer satisfies the condition it was selected by gives `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable` instead of a picture nobody approved. On X11 `_NET_WM_PID` is self-declared, so process attribution is reported as `declared_unverified`, never as proof of ownership
 - **Deadlines that hold**: `--timeout-ms` is one budget for the whole automatic stage (matching, backend retries,
   frame waits, encoding, writing) and `--consent-timeout-ms` times the human dialog separately; calls that wait on
   another process (`PrintWindow`, the DWM read-back, regex evaluation) run in a helper process the tool can stop,
@@ -88,9 +84,11 @@ confirm) → [Exit codes](#exit-codes) (what went wrong and what to do).
   never an authorization — so a bare run still takes no screenshot. Full rule set:
   [Configuration file (`ECAPTURE.ini`)](#configuration-file-ecaptureini)
 - **Windows you can list and inspect without capturing**: `--list` returns the matched windows as structured JSON
-  (handle, PID, class, title, image name, physical rectangle, visibility / minimized, z-order, and the identity
-  fields a later capture re-checks) with paging instead of an ambiguity error; `--inspect` describes one window and
-  reports several matches as an ambiguity instead of picking one. Neither takes a pixel, shows a dialog, writes a
+  (native id, PID, class, title, image name, geometry, visibility / minimized, z-order, and the identity fields a
+  later capture re-checks) with paging instead of an ambiguity error; `--inspect` describes one window and reports
+  several matches as an ambiguity instead of picking one. On Linux/X11 the native id is an `xid` bound to the
+  reported display-session scope, process attribution from `_NET_WM_PID` is marked `declared_unverified`, and WM
+  frame / client geometry and X11 pixel coordinates are reported separately. Neither takes a pixel, shows a dialog, writes a
   file or touches a window, `--yes` changes nothing there, and the answer is an explicitly-labelled snapshot
 - **Capabilities you can ask about read-only**: `--capabilities` / `--diagnostics` report which routes this machine
   can take, how far `--yes` really reaches, and a checkable build id — without taking a pixel, showing a dialog,
@@ -150,107 +148,105 @@ below is the verbatim output of `ECAPTURE.EXE --help`; run `.\scripts\mkreadme.p
 
 <!-- BEGIN ECAPTURE-HELP -->
 ```text
-EvernightCapture (ECAPTURE.EXE) - capture a window selected by conditions, built on Windows.Graphics.Capture
+EvernightCapture (ecapture) - capture a window selected by conditions, built on X11 (XComposite)
 
-Usage: ECAPTURE.EXE [conditions...] <output-path>     With no conditions at all => this help
-       ECAPTURE.EXE [conditions...] --out <path>      "-" means image bytes go to stdout
-       ECAPTURE.EXE [conditions...]                    No output path => png bytes to stdout
-       ECAPTURE.EXE --monitor [n] <path>         --monitor with no window conditions => that whole screen
+Usage: ecapture [conditions...] <output-path>     With no conditions at all => this help
+       ecapture [conditions...] --out <path>      "-" means image bytes go to stdout
+       ecapture [conditions...]                    No output path => png bytes to stdout
+       ecapture --monitor [n] <path>         --monitor with no window conditions => that whole screen
 
 Capture target (without --monitor only the window conditions below are used)
-  --monitor, -m [<n|primary|all|device:|id:>] Monitor number, 1-based and decimal (the order of this run's enumeration, not guaranteed to match the id in Display settings; use device in the result to identify a monitor); primary = main one, all = one image per monitor. Without window conditions = capture that whole screen; with them = only windows overlapping it. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. A whole screen is desktop pixels, so a person must confirm it and --yes cannot skip that; filtering windows by monitor still yields window images; to name a specific monitor use an identifier from --screens: device:<name> (this desktop attach) or id:<monitor device path> (the cross-session one) - a number can point at a different screen after a replug or a mode change
+  --monitor, -m [<n|primary|all|device:>] Monitor number, 1-based and decimal (the order of this run's XRandR enumeration, not a stable identity; a number can point at another screen after a replug or a mode change); primary = main one, all = one entry per monitor for window filtering. Without window conditions a whole screen is asked for, and this build has no desktop-pixel backend so that always reports capture.unsupported; with them only windows overlapping that screen are picked, which still yields window images. The value may be omitted (= primary), and then the next argument is not swallowed, so --monitor out.png still works. To name a specific monitor use device:<output name> from --screens - that is the name of that screen in this desktop attach (e.g. HDMI-1), and a number can point at a different screen after a replug or a mode change. This build answers no cross-session monitor identity question, so id:<monitor device path> is Windows-only and is refused here as cli.platform_unsupported
 
 Window match conditions (repeat one option for OR, combine different options with AND)
-  --hwnd <handle>                             Window handle. Plain digits are decimal; a 0x prefix or a-f digits are hexadecimal - prefer 0x. No sign and no whitespace; an underscore may only sit between two hexadecimal digits
-  --pid <pid>                                 Process id, decimal only and greater than 0
-  --process, -p <image-name>                  Image file name (no path), case-insensitive; without an extension .exe is assumed
-  --exe <full-path>                           Full image path, case-insensitive
-  --title, -t <exact-title>                   Window title, exact match
-  --title-contains, -T <text>                 Window title contains this substring
-  --title-regex, -R <regex>                   Window title regular-expression match (ECMAScript), validated at match time
-  --class, -c <class-name>                    Window class name, case-insensitive, e.g. Notepad / CabinetWClass
+  --pid <pid>                             Process id, decimal only and greater than 0
+  --process, -p <image-name>              Process image name (no path), case-insensitive; matched exactly as written - this platform takes the name from the executable file name (/proc/<pid>/exe, for example xterm), which carries no extension, so none is assumed
+  --exe <full-path>                       Full image path, case-insensitive
+  --title, -t <exact-title>               Window title, exact match
+  --title-contains, -T <text>             Window title contains this substring
+  --title-regex, -R <regex>               Window title regular-expression match (ECMAScript), validated at match time
 
 When several windows match (mutually exclusive)
-  --index, -i <n>                             Take the n-th window, 1-based decimal, ordered by visibility and z-order
-  --topmost-match                             Take the topmost matched window in the current z-order
-  --bottommost-match                          Take the bottommost matched window in the current z-order
-  --newest                                    Deprecated alias of --topmost-match: it picks by z-order, not by creation time
-  --oldest                                    Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
-  --all, -a                                   Save one image per matched window
+  --index, -i <n>                         Take the n-th window, 1-based decimal, ordered by visibility and z-order
+  --topmost-match                         Take the topmost matched window in the current z-order
+  --bottommost-match                      Take the bottommost matched window in the current z-order
+  --newest                                Deprecated alias of --topmost-match: it picks by z-order, not by creation time
+  --oldest                                Deprecated alias of --bottommost-match: it picks by z-order, not by creation time
+  --all, -a                               Save one image per matched window
 
-Capture channel (default wgc; may fail because of the OS version or the window itself)
-  --capture, -C <method>                      wgc (default, works through occlusion) / dwm (DWM thumbnail, works through occlusion) / printwindow (window paints itself) / bitblt (copies visible screen pixels) / duplication (desktop duplication cropped to the rect; corrected for the monitor's rotation, and it only takes the one output overlapping the target most - partial captures come back with capturedRect/clipped) / auto (falls back wgc-dwm-printwindow-bitblt; a whole screen only uses wgc-duplication-bitblt)
-  --cursor <default|include|exclude>          Whether the mouse pointer belongs in the image: default (nothing is changed and the three cursor keys stay out of the result) / include / exclude. Only wgc has a switch that can be set and read back (needs build 19041+); printwindow / dwm / bitblt come from pixels that hold no pointer, while duplication returns a desktop frame that may already have the pointer drawn into it and has no switch, so include with those four and exclude with duplication are refused as capture.cursor_unsupported (two wordings) and --cursor default delivers the frame with cursorEffective unverified. It never falls back to a screen-pixel channel; with auto those paths are dropped, each leaving a note.cursor_channel_skipped. This does not change consent; the requested / effective / basis rules are in the README
-  --hdr <auto|tonemap|refuse>                 How to treat an HDR source: auto (default; changes nothing about color. Unwritten, the color keys do not appear) / tonemap (map an HDR frame to 8-bit SDR with a fixed tone curve before delivering) / refuse (if the source is confirmed HDR, error out and never deliver a BGRA8-washed image). In this build only wgc can fulfill tonemap/refuse, so asking for one with printwindow / dwm / bitblt / duplication reports capture.hdr_unsupported at parse time and never reroutes to a channel that reads desktop pixels; with --capture auto the same judgment narrows the fallback chain to the channels that really fulfill it (note.hdr_channel_skipped per channel dropped, env.hdr_unsupported if none is left). A capture that comes back capture.hdr_refused stops the chain instead of being retried on another backend. This does not change authorization; the source color space, bit depth and the processing actually applied are written into the result (see README and the color section of --capabilities)
+Cursor and HDR handling for the delivered image (this build has exactly one capture route: X11 XComposite window capture; --capture itself is a Windows switch and is refused here)
+  --cursor <default|include|exclude>      Whether the mouse pointer belongs in the image: default (nothing is changed and the three cursor keys stay out of the result) / include / exclude. This build's only route reads the target window's own storage, which holds no pointer and has no switch that can be set or read back, so include reports capture.cursor_unsupported while exclude adds nothing (that frame never contained the pointer); --cursor default delivers the frame with cursorEffective unverified. This does not change consent
+  --hdr <auto|tonemap|refuse>             How to treat an HDR source: auto (default; changes nothing about color. Unwritten, the color keys do not appear) / tonemap / refuse. This build's only route cannot read the source color space, so tonemap and refuse are refused at parse time as capture.hdr_unsupported - an image crushed into BGRA8 is never delivered; auto delivers the frame as read from the window's storage and writes no color keys. This does not change authorization
 
 Cropping inside the window and proportional shrinking (another crop of the delivered whole-window image, in that image's own pixel coordinates - not desktop coordinates; the order is crop first and then scale, and the two crop options are mutually exclusive)
-  --roi <x,y,w,h>                             Cut a w x h block starting at x,y out of the delivered whole-window image. The origin (0,0) is this image's own top-left pixel (the image is the visible window frame you actually see; the transparent DWM resize border is not in it), in physical pixels and not scaled by DPI (the process is per-monitor v2, so multiply the scale yourself for logical pixels) - which is why these four numbers are never read as desktop-absolute coordinates. Four decimal integers separated by commas; x and y may be 0, w and h are at least 1, none above 16384. If it does not fit, nothing is written: match.roi_out_of_range when that is already clear before the frame is taken (no dialog, no file) and capture.roi_invalid when it only turns out afterwards - the rectangle is never slid inside, never cropped to the edge, and the uncropped window is never handed over instead. The crop runs after the capture, so it changes nothing about authorization: channels that sample the screen still always ask, and --yes does not start applying because only a small piece is kept. In the result cropRect is in image pixels, cropScreenRect is the same rectangle in screen coordinates (written only when the image's screen origin can be established), fullWidth/fullHeight are the size before cropping and width/height after. Mutually exclusive with --client-area, and meaningless for a whole-screen target (capture.unsupported)
-  --client-area                               Keep only the window's client area: also drop the title bar and the three borders from the delivered whole-window image. That rectangle is measured from the target's geometry right now (GetClientRect plus ClientToScreen), so the coordinate system and units are exactly the --roi ones. A client area that cannot be measured reports capture.roi_unmeasurable, one that hangs outside the delivered image (off screen, or the window resized in between) reports capture.roi_invalid; neither falls back to the whole window. Mutually exclusive with --roi
-  --no-crop                                   cancel the crop group coming from the configuration file (no cropping at all this run); conflicting with this run's --roi / --client-area
-  --no-scale                                  cancel the scale group coming from the configuration file (no scaling this run); conflicting with this run's --scale
-  --scale <key=N>                             Shrink the delivered image proportionally into the given ceilings: max-width=N limits the width, max-height=N the height, max-pixels=N the total pixel count (all decimal; sides 1..16384, pixel count 1..268435456). The three are independent - give one, or several in one comma-separated token (for example max-width=1920,max-pixels=2073600); repeating this option keeps each ceiling separately and the last value written for the same ceiling wins. All three are applied through one single ratio (the tightest one), and width and height are each rounded down; it never upscales, so an image already inside the ceilings is delivered untouched (scaleApplied=false in the result). There is exactly one interpolation strategy, a predictable integer mapping: nearest neighbour. The order is crop (--roi / --client-area) first, then scale, then encode, so the scaling applies to the cropped block; in the result scaleFromWidth/scaleFromHeight are the size before scaling and width/height after, scaleMethod is the strategy, and the mapping closes in that same order. This option changes nothing about authorization or the frame limits: channels that sample the screen still always ask (--yes does not start applying because a small image is delivered in the end), a frame too large for the frame shape check cannot be scaled back down, and --roi is still judged against the unscaled image
+  --roi <x,y,w,h>                         Cut a w x h block starting at x,y out of the delivered whole-window image. The origin (0,0) is this image's own top-left pixel (the image is the window itself as the user sees it; the decorations drawn by the window manager are a separate window and are not in it), in physical pixels and not scaled - X11 reports physical pixels, so these four numbers are never read as desktop-absolute coordinates. Four decimal integers separated by commas; x and y may be 0, w and h are at least 1, none above 16384. If it does not fit, nothing is written: match.roi_out_of_range when that is already clear before the frame is taken (no dialog, no file) and capture.roi_invalid when it only turns out afterwards - the rectangle is never slid inside, never cropped to the edge, and the uncropped window is never handed over instead. The crop runs after the capture, so it changes nothing about authorization. In the result cropRect is in image pixels, cropScreenRect is the same rectangle in screen coordinates (written only when the image's screen origin can be established), fullWidth/fullHeight are the size before cropping and width/height after. Mutually exclusive with --client-area
+  --client-area                           Keep only the window's client area. On this platform the delivered image already is this window's own storage, and the decorations the window manager draws are a separate (parent) window that is not in it, so the client area normally equals the whole image and this option usually changes nothing; when the geometry cannot be measured or does not line up with the delivered image it reports capture.roi_unmeasurable / capture.roi_invalid as they are, and never hands over the uncropped window instead or guesses an offset. Mutually exclusive with --roi
+  --no-crop                               cancel the crop group coming from the configuration file (no cropping at all this run); conflicting with this run's --roi / --client-area
+  --no-scale                              cancel the scale group coming from the configuration file (no scaling this run); conflicting with this run's --scale
+  --scale <key=N>                         Shrink the delivered image proportionally into the given ceilings: max-width=N limits the width, max-height=N the height, max-pixels=N the total pixel count (all decimal; sides 1..16384, pixel count 1..268435456). The three are independent - give one, or several in one comma-separated token (for example max-width=1920,max-pixels=2073600); repeating this option keeps each ceiling separately and the last value written for the same ceiling wins. All three are applied through one single ratio (the tightest one), and width and height are each rounded down; it never upscales, so an image already inside the ceilings is delivered untouched (scaleApplied=false in the result). There is exactly one interpolation strategy, a predictable integer mapping: nearest neighbour. The order is crop (--roi / --client-area) first, then scale, then encode, so the scaling applies to the cropped block; in the result scaleFromWidth/scaleFromHeight are the size before scaling and width/height after, scaleMethod is the strategy, and the mapping closes in that same order. This option changes nothing about authorization or the frame limits: channels that sample the screen still always ask (--yes does not start applying because a small image is delivered in the end), a frame too large for the frame shape check cannot be scaled back down, and --roi is still judged against the unscaled image
 
-Capture authorization (a real capture asks first; --yes skips window-content paths)
-  --yes, -y                                   Skip the confirmation for window-content paths (wgc / printwindow / the dwm thumbnail route). Anything reading the screen (bitblt, duplication, a whole screen, dwm screen fallback) always asks; --yes cannot skip it. --yes=false asks on purpose
+Capture authorization (a real capture asks first; --yes skips only a verified single window's own image once the capability gate has confirmed the route; system authorization such as a Wayland portal is a separate layer that --yes neither removes nor satisfies)
+  --yes, -y                               Skip the program confirmation only for a single window's own image, and only when the target is a window, the capability gate has confirmed the route, and the target identity was re-checked. This build never samples desktop pixels, so no route here skips asking because it reads the screen; a batch consent covers only the targets listed in that dialog: a target added later is confirmed again (or refused), never covered by an earlier "yes". System authorization (for example a Wayland portal) is a separate layer: --yes neither removes nor satisfies it. --yes=false asks on purpose
 
 Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
-  --timeout-ms <ms>                           Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out, a step that has not started yet is refused and its image is not written (a file that already finished committing is never rolled back); you get match.timeout / capture.timeout / io.timeout per stage
-  --consent-timeout-ms <ms>                   How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
+  --timeout-ms <ms>                       Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out, a step that has not started yet is refused and its image is not written (a file that already finished committing is never rolled back); you get match.timeout / capture.timeout / io.timeout per stage
+  --consent-timeout-ms <ms>               How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout; a late "yes" arriving after the deadline never turns it into consent. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
 
 Output
-  --out, -o <path|->                          Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
-  --format, -f <name>                         Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
-  --quality <1-100>                           JPEG quality, decimal 1-100, default 100
-  --no-overwrite                              Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
+  --out, -o <path|->                      Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
+  --format, -f <name>                     Force the encoding format; otherwise it comes from the output file extension, and png when that fails too
+  --quality <1-100>                       JPEG quality, decimal 1-100, default 100
+  --no-overwrite                          Fail instead of overwriting an existing target (no value means the prohibition is on). --no-overwrite=false (0 / no / n / off) cancels it; =true / 1 / yes / y / on means the same as giving no value. When repeated, the last one wins
 
 User preference configuration (Windows: ECAPTURE.ini next to the running program; Linux: the user configuration directory; nothing else is searched)
-  --config <path>                             read this INI instead (a relative path is made absolute against the current directory); a missing or unreadable file is an error, it does not fall back to the default one
-  --no-config                                 ignore the configuration file completely for this run and use built-in defaults plus this command line; the isolation entry for debugging and self-checks, it neither deletes nor rewrites the configuration
-  --portable                                  use data files beside the executable instead of the per-user configuration and state directories (Linux); Windows always uses the directory of the executable that is running
+  --config <path>                         read this INI instead (a relative path is made absolute against the current directory); a missing or unreadable file is an error, it does not fall back to the default one
+  --no-config                             ignore the configuration file completely for this run and use built-in defaults plus this command line; the isolation entry for debugging and self-checks, it neither deletes nor rewrites the configuration
+  --portable                              use data files beside the executable instead of the per-user configuration and state directories (Linux); Windows always uses the directory of the executable that is running
 
 Capability queries (read-only: no capture, no dialog, no file)
-  --capabilities                              Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
-  --diagnostics                               Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
-  --show-config                               read-only view of this run's configuration: which file was read, whether it was read, and which source each effective setting came from (no window selection, no pixels, no dialog, no directories created)
-  --screens                                   Read-only list of every screen: tool number, device name, primary flag, physical rect, DPI and rotation where they can be read, and which adapter drives it - plus how far each of those identities stays true. It reads no pixel, shows no dialog, writes no file and changes no display setting. The device:<name> and id:<path> it returns go straight into --monitor. Mutually exclusive with capture options (cli.query_conflict + exit code 1); a real full-screen capture still always asks and --yes cannot skip it
-  --list [<all>]                              List every top-level window satisfying all conditions as structured JSON (handle / PID / class / title / image name / rect / Z-order / identity constraint fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while the pick options are a conflict. Value all also lists minimized windows. The list expires - a later capture re-checks the identity (see the README)
-  --inspect [<path>]                          Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable fields say so (denied / failed plus the system error code); no elevation is suggested and no window is restored or activated
-  --offset <n>                                Skip the first n windows (decimal, from 0)
-  --limit <n>                                 At most n windows per batch (default 50)
+  --capabilities                          Print this machine's capability report as JSON: version, OS and session conditions, each backend as available / unavailable / unverified, formats, and what --yes actually covers. Read-only - no capture, no dialog, no file, and it never probes by taking a screenshot. "available" only means this build has the route and the environment checks did not reject it; it is not a guarantee for a given window. Accepts only --lang, -v and -q; with any capture option or an output path it is cli.query_conflict (exit 1)
+  --diagnostics                           Print the build report as JSON: version, a checkable build id (PE link timestamp, architecture, image size), platform and backend status - the same fields as --capabilities, not a second copy of them. It uploads nothing, captures no pixels, enumerates no user files and prints no usernames, environment variables or paths. --verbose adds the raw answer of every question. Same conflict rule
+  --show-config                           read-only view of this run's configuration: which file was read, whether it was read, and which source each effective setting came from (no window selection, no pixels, no dialog, no directories created)
+  --screens                               Read-only list of every screen: tool number, output name, primary flag and physical rect, plus DPI and rotation where they can be read, marking an answer that cannot be given as failed instead of guessing it. It reads no pixel, shows no dialog, writes no file and changes no display setting. The tool number goes straight into --monitor <n>, and a number can point at another screen after a replug or a mode change. Each monitor's output name also goes straight back in as --monitor device:<name>. This build answers no cross-session monitor identity question, so id:<monitor device path> is Windows-only and is refused here as cli.platform_unsupported. Mutually exclusive with capture options (cli.query_conflict + exit code 1)
+  --list [<all>]                          List every top-level client window satisfying all conditions as structured JSON (native id / PID / class / title / image name / client and frame geometry / Z-order / session-scoped identity fields). No capture, no dialog, no file, no output path needed; several matches are paged with --offset / --limit rather than reported as a capture ambiguity, while pick options are a conflict. Value all also lists minimized windows. On X11 the native id is an xid, valid only within the reported display-session scope; _NET_WM_PID is self-declared and attribution is reported as declared_unverified. The list expires - a later capture re-checks the identity (see the README)
+  --inspect [<path>]                      Read-only check of the one window the same pick policy selects. Several matches are reported as match.ambiguous_window + exit 5 instead of picking one for you. Value path also writes the full image path of the owning process (default: image name only). Unreadable or absent fields say so (readable / absent / denied / failed plus the native code); no elevation is suggested and no window is restored or activated. X11 geometry separates the WM frame from the client area, and logical coordinates are reported unknown rather than invented
+  --offset <n>                            Skip the first n windows (decimal, from 0)
+  --limit <n>                             At most n windows per batch (default 50)
 
 Miscellaneous
-  --dry-run, -d                               Parse and list candidate windows only - no capture, no file written
-  --json, -j                                  Deprecated compatibility switch, no effect: success and errors are already JSON
-  --verbose, -v                               Add the input section to the JSON (all input, normalized) and keep notes
-  --quiet, -q                                 Drop notes; errors are always returned whatever this says. --verbose wins when both are given
-  --lang, -l <language>                       Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
-  --history <on|off>                          whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
-  --integrity-hints <on|off>                  whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission
-  --notify <on|off>                           whether each delivered image hands the system notification platform one toast this run (on / off), overriding the configured one; whether it goes out never changes delivery facts or the exit code
-  --notify-merge <on|off>                     whether several targets become one notification or one each (on / off), overriding the configured one
-  --notify-detail <title|basic|minimal>       how much the notification spells out: title includes the window title, basic only the owner, minimal only where the file went. Content lands in the notification centre, readable on the lock screen
-  --purpose <text>                            one sentence saying why this capture happened; shown as the first body line of the notification. Read by humans only, it decides nothing, and it has a length limit
-  --help, -h                                  Print this text help
-  --version                                   Print version and stage
+  --dry-run, -d                           Parse and list candidate windows only - no capture, no file written
+  --json, -j                              Deprecated compatibility switch, no effect: success and errors are already JSON
+  --verbose, -v                           Add the input section to the JSON (all input, normalized) and keep notes
+  --quiet, -q                             Drop notes; errors are always returned whatever this says. --verbose wins when both are given
+  --lang, -l <language>                   Message language. auto (default, follows the system display language) / zh-CN / zh-TW / en / ja; unsupported system languages fall back to en
+  --history <on|off>                      whether this run keeps a history copy of every delivered image (on / off); overrides the configuration entry
+  --integrity-hints <on|off>              whether this run adds the integrity explanation text (on / off); codes, raw values and delivery facts are never affected, and turning it off fixes no permission
+  --notify <on|off>                       whether each delivered image hands the system notification platform one toast this run (on / off), overriding the configured one; whether it goes out never changes delivery facts or the exit code
+  --notify-merge <on|off>                 whether several targets become one notification or one each (on / off), overriding the configured one
+  --notify-detail <title|basic|minimal>   how much the notification spells out: title includes the window title, basic only the owner, minimal only where the file went. Content lands in the notification centre, readable on the lock screen
+  --purpose <text>                        one sentence saying why this capture happened; shown as the first body line of the notification. Read by humans only, it decides nothing, and it has a length limit
+  --help, -h                              Print this text help
+  --version                               Print version and stage
 
-Syntax: --opt=value / -opt / /opt all work; when a value itself starts with - write --title=-x, or end option parsing with --. Numbers are decimal only (--hwnd also takes 0x hexadecimal)
+Syntax: --opt=value / -opt both work (a leading / starts a path on this platform, not an option); when a value itself starts with - write --title=-x, or end option parsing with --. Numbers are decimal only
 Output: success and failure are both JSON, holding only captured / images (plus errors / notes, and input only with --verbose)
        --help / --version and the no-conditions case are plain text
 Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
         6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
-Current build: every --capture value is implemented (wgc / dwm / printwindow / bitblt / duplication, auto falls back wgc-dwm-printwindow-bitblt; a whole screen uses wgc-duplication-bitblt); the output directory must already exist; every delivered image also keeps a copy under history next to the program (never pruned automatically)
-Runtime: 64-bit Windows, declared floor build 18362 (Windows 10 version 1903), tested only on build 19045; a route this machine's version cannot offer is reported before any frame or dialog as env.os_too_old / env.channel_unsupported (the first does not improve with another channel). --verbose echoes input.osBuild and input.captureChain
+Current build: this Linux build implements X11 single-window capture (xcomposite, reading the target window's own storage) and read-only X11 window queries. It has no desktop-pixel backend, so a whole-screen target always reports capture.unsupported (exit 7) without delivering an image. --list / --inspect enumerate only X11 windows visible to this connection; native Wayland windows are not in that list. XIDs and the display-session scope are reported together and are not persistent identities. A window's _NET_WM_PID is self-declared, so process attribution is marked declared_unverified. Read-only commands never activate, move or unminimize a window. --help / --version / --show-config / --capabilities / --diagnostics run without a desktop. Windows-only switches (--hwnd / --class / --capture) are refused here as cli.platform_unsupported instead of being silently ignored
+Runtime: Linux. --capabilities / --diagnostics connect read-only to X11, Wayland, the session D-Bus (XDG Desktop Portal) and stat the PipeWire socket prerequisite. Environment variables and desktop names are clues only: they never prove a service is reachable or authorized
+Linux preflight: run --capabilities first. It reports the session kind (x11 / wayland / xwayland / headless) and each runtime as compiled / reachable / versionSatisfied / interactionRequired / implemented; a reachable display is not capture - only a backend that is really implemented (in this build the x11 xcomposite window route) is reported as available
 
 Examples:
-  ECAPTURE.EXE --process notepad.exe D:\shots\epad.png
-  ECAPTURE.EXE --title LocalSend --class UnityWndClass --out D:\shots\game.png
-  ECAPTURE.EXE --pid 12345 --title-contains Report --all D:\shots\rpt_%i.png
-  ECAPTURE.EXE --hwnd 0x001A0B4C --format png --no-overwrite out.png
-  ECAPTURE.EXE --process notepad.exe --out - > snap.png
-  ECAPTURE.EXE --monitor all D:\shots\screen_%i.png
-  ECAPTURE.EXE --process notepad.exe --yes D:\shots\epad.png
-  ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --consent-timeout-ms 60000 D:\shots\epad.png
-  ECAPTURE.EXE --capabilities  ask what this machine can do first, then choose --capture and the target
+  ecapture --process xterm ~/shots/term.png
+  ecapture --title LocalSend ~/shots/app.png
+  ecapture --pid 12345 --title-contains Report --all ~/shots/rpt_%i.png
+  ecapture --process xterm --format png --no-overwrite ~/shots/term.png
+  ecapture --process xterm --out - > snap.png
+  ecapture --monitor 1 --title xterm ~/shots/term.png   only the xterm window on screen 1
+  ecapture --process xterm --yes ~/shots/term.png
+  ecapture --process xterm --yes --timeout-ms 5000 --consent-timeout-ms 60000 ~/shots/term.png
+  ecapture --capabilities  ask this machine once, read-only, which routes it can take (session kind, is X11 reachable, does a portal need a person), then choose the target conditions
 ```
 <!-- END ECAPTURE-HELP -->
 
@@ -965,6 +961,20 @@ ECAPTURE.EXE --inspect --hwnd 0x001A0B4C                     # one window, fully
 ECAPTURE.EXE --inspect --process notepad.exe --topmost-match # disambiguate exactly like a capture would
 ```
 
+**X11 (Linux) scope of these two queries.** X11 has no portable process-owned handle like an `HWND`: an XID is a
+32-bit server object name that is only comparable inside one display-connection scope, and `_NET_WM_PID` is declared by
+the client itself. The X11 query therefore records the XID **together with** a display-session scope derived from the
+display name, server vendor/release, X11 protocol version and root XID, reports `identity.nativeId.form = "xid"`,
+`persistent: false` and the session block, and re-checks that the session scope still matches before accepting a
+capture target. A missing `_NET_WM_PID` is reported as `state: "absent"` (not PID 0), and process attribution is
+`unknown` or `declared_unverified`. Enumeration lists only X11 client windows actually visible to this connection:
+window-manager decorations are traversed through but never become targets, child windows are not promoted to
+top-level targets, an XID that is only exposed through XWayland is an X11 window, and native Wayland windows are not
+invented. Geometry deliberately separates the WM **frame** rectangle from the **client area** rectangle in X11 root
+pixel coordinates; X11 has no logical-coordinate question here, so `geometry.logical.known` is `false` instead of a
+guessed DPI-scaled rectangle. No query restores, activates, raises or moves a window. The whole list is still a
+snapshot, never a token.
+
 Five rules, and each one exists because the alternative was worse:
 
 - **Nothing is captured, nothing is asked, nothing is written.** No backend is called, no consent dialog is shown,
@@ -985,7 +995,8 @@ Five rules, and each one exists because the alternative was worse:
   identity before reading a pixel (that is `capture.target_gone` / `capture.target_changed` /
   `capture.target_unverifiable`), and consent is still decided by where the pixels come from: **`--yes` changes
   nothing here** (`authorization.yesAffectsResult: false`) - it neither unlocks a field nor skips a dialog that this
-  query never shows.
+  query never shows. On X11 the XID is additionally bound to the display-session scope; across a changed scope the
+  comparison is `capture.target_unverifiable`, not "same number, same window".
 - **An unreadable field says so.** Cross-process questions have three outcomes, written per field: `readable`,
   `denied` (the system refused this caller), `failed` (asked and it did not answer), each with the raw Win32 code.
   Unreadable values are sentinels (`0` / empty) plus that state, never silent absences, and the document does not
@@ -1001,7 +1012,7 @@ Fields per row (window inspect returns the same object as `window` instead of th
 ```json
 {
   "contract": "windowquery",
-  "contractVersion": 1,
+  "contractVersion": 2,
   "query": "list",
   "program": { "version": "1.0.0" },
   "authorization": {
@@ -1044,14 +1055,32 @@ Fields per row (window inspect returns the same object as `window` instead of th
       "minimized": false,
       "zOrder": 3,
       "readability": {
-        "process": { "state": "readable" },
+        "pid": { "state": "readable" },
+        "title": { "state": "readable" },
+        "class": { "state": "readable" },
+        "process": {
+          "state": "readable",
+          "attribution": "verified"
+        },
         "imagePath": { "state": "denied", "win32": 5 },
         "processStart": { "state": "readable" },
-        "rect": { "state": "readable" }
+        "rect": { "state": "readable" },
+        "frameRect": { "state": "readable" },
+        "session": { "state": "failed" }
       },
       "identity": {
+        "platform": "windows",
+        "backend": "win32",
+        "nativeId": {
+          "form": "hwnd",
+          "value": "0x001A0B4C",
+          "persistent": false,
+          "stableAcross": "one_window_lifetime"
+        },
         "hwnd": "0x001A0B4C",
+        "session": { "known": false, "state": "failed", "xwayland": false },
         "pid": 31468,
+        "processAttribution": "verified",
         "class": "CabinetWClass",
         "processStartTicks": 134351142668527401,
         "selectionNeedsRecheck": false,
@@ -1079,6 +1108,12 @@ Fields per row (window inspect returns the same object as `window` instead of th
 `query.window_list_limit` when the configuration sets one, instead of always echoing the built-in 50. `limitGiven`
 in the `--verbose` `input` section still answers only the narrower question whether *this command line* wrote
 `--limit`.
+
+On X11 the same object instead carries `xid` / `nativeId.form = "xid"`, `identity.session` with the display name,
+server vendor/release, protocol, root XID and `xwayland`, and `geometry` with separate `client` and `frame` objects in
+X11 root pixel coordinates. `rect` remains the compatibility field for the client rectangle on X11. `_NET_WM_PID`
+readability is reported separately, process attribution is `declared_unverified`, and an absent PID property is
+`absent`, not zero. See the X11 scope paragraph above.
 
 `title`, `class` and `image` are delivered verbatim - not truncated, not escaped into a prose line, not case-folded -
 so a caller reads fields instead of parsing a sentence. The full process path is **not** written unless
@@ -1503,6 +1538,15 @@ Failing the check reads no pixels at all and returns one of three stable codes:
 | `capture.target_unverifiable` | 7    | one of the questions could not be answered (process information unreadable, the condition re-evaluation did not finish) | check the execution environment (rights, policy, antivirus), or raise `--timeout-ms`     |
 
 A changed identity never becomes a licence to "relax the conditions and grab a look-alike" — same rule as `--yes`: consent is bound to the object that was listed for the human.
+
+**X11 is scoped differently.** There is no HWND to reuse and no system "window owner" question. The snapshot stores
+the XID plus a display-session scope (display name, server vendor/release, protocol version, root XID and whether the
+XWAYLAND extension is present). Every re-check first asks for that same scope again; if the scope changed, the XID is
+not comparable and the result is `capture.target_unverifiable`. Within the same scope the tool compares the declared
+`_NET_WM_PID` value, the PID's `/proc/<pid>/stat` start time and `WM_CLASS`, and `kFull` re-runs the original title /
+class / PID / process / path conditions. The declaration itself is not proof that the XID belongs to that process:
+the result labels attribution `declared_unverified`. The XID is never treated as a lasting identifier across
+`DISPLAY` changes, X server restarts, or an XWayland/native-Wayland transition.
 
 **How far that goes:** this re-check narrows the race window, it does not claim to close it. Checking and capturing are not one atomic operation, an `HWND` is not a waitable object, and there is no public API that pins a window into existence. A change in the instant between the check and the frame is still possible — it just no longer has a whole planning-plus-consent span of time to happen in.
 
@@ -2553,9 +2597,14 @@ development box's X11 desktop, but this project has not run it across the X11 im
 would meet in the field.
 
 That path frames the target's **client area** (no title bar or window frame), at the window's own
-size, and needs `_NET_WM_PID` on the target to re-check its identity before every frame: a window
-that does not set it (`xmessage`, for one) is listed but refused with `capture.target_unverifiable`
-rather than captured unverified. No window is ever raised, activated or restored.
+size. X11 window queries are implemented and exercised with self-created windows on the development
+box's X server: they report XID plus display-session scope, separate frame/client geometry and
+field-level readable/absent/denied/failed states. `_NET_WM_PID` is self-declared, so query output
+labels attribution `declared_unverified`; a window without that property can still be listed but
+cannot pass the PID-based capture identity re-check and is refused with
+`capture.target_unverifiable` rather than captured unverified. Native Wayland windows are outside
+the X11 list, and XWayland only exposes its X11 windows. No window is ever raised, activated or
+restored by a query.
 
 ### Directories and ownership
 
@@ -2592,7 +2641,7 @@ depends on this machine) - **unverified** (built, never tested by this project i
 
 | Capability | Windows | Linux X11 | Linux Wayland |
 | ---------- | ------- | --------- | ------------- |
-| Target selection (list and match windows and screens) | implemented | unverified (X11 window queries; under XWayland only X11 windows are visible, native Wayland windows are not) | not supported (compositors give clients no global window list; this tool will not fake one) |
+| Target selection (list and match windows and screens) | implemented | implemented for X11 windows; self-window integration tests pass on the development box, but the full real-WM / XWayland matrix remains unverified. Under XWayland only X11 windows are visible; native Wayland windows are not enumerated | not supported (compositors give clients no global window list; this tool will not fake one) |
 | Window capture (the selected window's own pixels) | implemented | unverified (XComposite `NameWindowPixmap`: the window's own storage, desktop pixels are never read) | planned (via Portal; window-scoped sources are a portal-implementation probe) |
 | Screen capture (desktop pixels of one output) | implemented, always behind a human confirm | planned (no Linux desktop-pixel path in this build: screen targets are rejected) | planned (Portal + PipeWire) |
 | Interactive grant | implemented (program dialog only; Windows has no per-call system screen grant) | planned (no program consent dialog on Linux yet; without `--yes` the capture is refused rather than silently allowed) | planned (program confirm **and** the system Portal grant; neither replaces the other) |

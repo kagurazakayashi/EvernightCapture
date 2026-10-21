@@ -459,7 +459,7 @@ void TestMachineWords() {
     Check(std::wstring(ReadStateName(ReadState::kDenied)) == L"denied", "denied 的机器名固定");
     Check(std::wstring(ReadStateName(ReadState::kFailed)) == L"failed", "failed 的机器名固定");
     Check(std::wstring(kWindowQueryContractName) == L"windowquery", "列表文档的契约名固定");
-    Check(kWindowQueryContractVersion == 1, "窗口查询文档的契约版本是 1");
+    Check(kWindowQueryContractVersion == 2, "窗口查询文档的契约版本是 2（X11 身份字段扩展）");
     // 契约名与环境查询那两份不同：四份文档各自演进，不共用一个名字。
     Check(std::wstring(kWindowQueryContractName) != L"capabilities" &&
               std::wstring(kWindowQueryContractName) != L"diagnostics",
@@ -621,8 +621,10 @@ void TestVisibilityPolicy() {
     // 最小化那两扇插在与可见同一根 Z 序轴上）。
     WindowInfo m1 = HealthyWindow(0x900, 3);
     m1.iconic = true;
+    m1.visible = false;
     WindowInfo m2 = HealthyWindow(0x901, 5);
     m2.iconic = true;
+    m2.visible = false;
     std::vector<WindowInfo> iconic = {m1, m2};
 
     const WindowQueryResult dflt =

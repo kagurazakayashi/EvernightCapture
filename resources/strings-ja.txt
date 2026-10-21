@@ -20,7 +20,7 @@ help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --
 help.exit2	        6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
 help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること；引き渡せた画像はプログラムがある場所の history にもコピーを1枚残します（自動消去はしません）
 help.system	実行環境: 64 ビット版 Windows、宣言上の下限はビルド 18362（Windows 10 version 1903）、実測はビルド 19045 のみ。この機のバージョンでは提供されない経路は、取得も確認表示も前に env.os_too_old / env.channel_unsupported として報告します（前者は経路を変えても変わりません）。--verbose の input.osBuild と input.captureChain に今回の利用可能な経路が出力されます
-help.status_linux	現在のビルド: この Linux ビルドが実装しているのは X11 の単一ウィンドウ キャプチャ（xcomposite、対象ウィンドウ自身のストレージを読む）だけです。デスクトップ画素のバックエンドを持たないため、画面ターゲットは必ず capture.unsupported（終了コード 7）を返し、画像は納品されません。--list / --inspect は X11 のウィンドウ照会として動作します。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで実行できます。Windows 専用のスイッチ（--hwnd / --class / --capture）はここでは cli.platform_unsupported として拒否され、黙って無視されることはありません
+help.status_linux	現在のビルド: この Linux ビルドは X11 の単一ウィンドウ キャプチャ（xcomposite、対象ウィンドウ自身のストレージを読む）と読み取り専用の X11 ウィンドウ照会を実装しています。デスクトップ画素のバックエンドを持たないため、画面ターゲットは必ず capture.unsupported（終了コード 7）を返し、画像は納品されません。--list / --inspect はこの接続で見える X11 ウィンドウだけを列挙し、ネイティブ Wayland ウィンドウは含みません。XID と表示セッション作用域は一緒に返され、XID はセッションをまたいで保存できる永久識別子ではありません。_NET_WM_PID はウィンドウの自己申告で、プロセス帰属は declared_unverified と表示します。読み取り専用照会はウィンドウをアクティブ化・移動・最小化解除しません。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで実行できます。Windows 専用スイッチ（--hwnd / --class / --capture）はここでは cli.platform_unsupported として拒否されます
 help.system_linux	実行環境: Linux。--capabilities / --diagnostics は X11・Wayland・セッション D-Bus（XDG Desktop Portal）へ読み取り専用で接続し、PipeWire ソケットの前提を確認します。環境変数とデスクトップ名は手がかりにすぎません: サービスが到達可能であることも、認可済みであることも証明しません
 help.linux_query	Linux の事前確認: まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各ランタイムの compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。表示サーバーに接続できても撮影できることにはなりません。実装済みのバックエンド（このビルドでは x11 の xcomposite ウィンドウ経路）だけが available と報告されます
 
@@ -99,8 +99,8 @@ opt.capabilities	この機の能力を JSON で返す（版数、OS とセッシ
 opt.diagnostics	ビルドと版数の診断を JSON で返す（検証可能なビルド識別子、プラットフォームと経路の状態）。フィールドは --capabilities と共通。送信・撮影・ユーザーファイル列挙はせず、ユーザー名・環境変数・パスも出さない。--verbose で各質問の回答を追加
 opt.screens	全モニタを読み取り専用で列挙する：ツール内の番号、デバイス名、メインかどうか、物理矩形、読み取れた場合の DPI と回転、帰属アダプタ。そしてこれらの識別子がそれぞれどこまで安定かも記す。ピクセルを読まず、確認ダイアログも出さず、ファイルも書かず、表示設定も変更しない。返す device:<名前> と id:<パス> はそのまま --monitor に書ける。スクリーンショット系のオプションとは排他（cli.query_conflict + 終了コード 1）；実際に画面全体を撮るときは必ず確認ダイアログを出し、--yes では省略できない
 opt.screens_linux	本機の各画面を読み取り専用で列挙します: ツール番号、出力名、メイン画面か、物理矩形、読める場合の DPI と回転。答えられない項目は推測せず failed と書きます。ピクセルを 1 つも読まず、ダイアログも出さず、ファイルも書かず、表示設定も変えません。ツール番号はそのまま --monitor <n> に書けます（抜き差しや解像度変更の後では同じ番号が別の画面を指すことがあります）。各画面の出力名もそのまま --monitor device:<出力名> として書き戻せます。このビルドはセッションをまたぐモニター識別子に答えられないため、id:<モニタのデバイスパス> は Windows 専用で、ここでは cli.platform_unsupported として拒否します。キャプチャ側のオプションとは排他（cli.query_conflict + 終了コード 1）
-opt.list	条件を満たす最上位ウィンドウを JSON で一覧化。撮影も確認も書き込みもせず、出力パスも不要。ページ送りは --offset / --limit、all で最小化ウィンドウも含める。結果はこの瞬間のスナップショットなので撮影前に身元を再確認する
-opt.inspect	選択戦略が定める 1 件のウィンドウを読取専用で検査。複数一致は match.ambiguous_window + 5 を返し、代わりに選ばない。path で完全パスも書く（既定はファイル名のみ）
+opt.list	条件を満たす最上位クライアントウィンドウを JSON で一覧化（ネイティブ識別子 / PID / クラス / タイトル / イメージ名 / クライアント領域と外枠のジオメトリ / Z 順 / セッション作用域内の身元フィールド）。撮影も確認も書き込みもせず、出力パスも不要。ページ送りは --offset / --limit、all で最小化ウィンドウも含める。X11 のネイティブ識別子は xid で、返された表示セッション作用域内でのみ有効です。_NET_WM_PID は自己申告で、帰属は declared_unverified と表示します。結果はこの瞬間のスナップショットなので撮影前に身元を再確認する
+opt.inspect	選択戦略が定める 1 件のウィンドウを読み取り専用で検査。複数一致は match.ambiguous_window + 5 を返し、代わりに選ばない。path で完全パスも書く（既定はファイル名のみ）。読めない・存在しない項目は readable / absent / denied / failed とネイティブコードで示し、権限昇格は提案せず、ウィンドウを復元・アクティブ化しない。X11 のジオメトリは WM の外枠とクライアント領域を分け、論理座標は推測せず unknown と表示する
 opt.offset	照会で先頭 n 件を飛ばす（10 進）
 opt.limit	照会の 1 回あたりの最大件数（既定 50）
 # 解析時の診断（src/CliOptions.cpp）
@@ -149,9 +149,9 @@ cli.conflicting_hint	例：--index 2 だけを残す
 cli.query_conflict	照会コマンドは撮影オプションと同時に指定できません。--capabilities / --diagnostics は環境を読み取りで問うだけで、撮影はしません
 cli.query_conflict_hint	照会が受け付けるのは --lang、-v/--verbose、-q/--quiet だけです。他のオプションと出力先を外すか、撮影を別の実行にしてください
 cli.list_value	--list に書ける値は all（最小化ウィンドウも含める）か、省略のみ
-cli.list_value_hint	--list=all と書いて件数の制限・ページ送りは --limit / --offset で
+cli.list_value_hint	--list=all と書き、件数の制限・ページ送りは --limit / --offset。X11 ではこのスナップショットのタイトル / クラス / PID / プロセス条件で対象を絞る。xid はセッションをまたぐハンドルではない
 cli.inspect_value	--inspect に書ける値は path（帰属イメージの完全パスも書く）か、省略のみ
-cli.inspect_value_hint	--inspect=path のように書く。特定の 1 件を指すなら --hwnd、複数一致ならまず絞り込んでください
+cli.inspect_value_hint	--inspect=path のように書く。Windows では --hwnd で 1 件を指定でき、X11 では --class / --process / --title で絞り、複数一致なら先に曖昧さを解消する
 cli.window_query_conflict	ウィンドウ照会（--list / --inspect）は画面取得用のオプションや環境照会と同時に指定できません：画像は生成されず、複数一致は画面取得の曖昧さではありません
 cli.window_query_conflict_hint	ウィンドウ照会は条件・--monitor・--offset / --limit・--timeout-ms・--yes・--lang / -v / -q を受けします（切り替えは --list=all / --inspect=path に書きます）。--out / --format / --quality / --capture / --dry-run / 確認ダイアログの期限 / --capabilities / --diagnostics を外すか、照会と画面取得を 2 回に分けてください
 cli.list_count_value	件数が不正です：10 進で 0 から %1
@@ -214,7 +214,7 @@ match.index_hint	候補は計 %1 件：%2
 match.ambiguous	複数のウィンドウに一致しました。区別が必要です
 match.ambiguous_hint	--index/--topmost-match/--bottommost-match/--all を使うか条件を追加してください。候補（Z 順）：%1
 match.untitled	(タイトルなし)
-match.inspect_ambiguous_hint	--inspect は 1 件の指定が必要です：--hwnd で指すか、--class / --process / --title で絞り込み、--index / --topmost-match / --bottommost-match で選んでください。代わりに 1 件を選ぶことも、似たウィンドウを先に取得することもしません。候補（Z 順）：%1
+match.inspect_ambiguous_hint	--inspect は 1 件の指定が必要です：Windows では --hwnd で指し、X11 では --class / --process / --title で絞り込み、--index / --topmost-match / --bottommost-match で選んでください。代わりに 1 件を選ぶことも、似たウィンドウを先に取得することもしません。候補（Z 順）：%1
 
 # ---------------------------------------------------------------------------
 # パイプラインとファイル書き出し（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）

@@ -8,6 +8,7 @@
 
 #include "Lang.h"
 #include "WindowMatch.h"   // WindowInfo 的完整定义（MakeWindowIdentity 读它的字段）
+#include "core/Platform.h" // 只为在没有平台层显式标注时给出本构建的中性命名词
 
 // 目标身份复核：确认「手上这个窗口现在还是当初选中的那一扇」。
 //
@@ -64,6 +65,27 @@ WindowIdentity MakeWindowIdentity(const WindowInfo& selected, const MatchOptions
     id.hwnd = selected.hwnd;
     id.pid = selected.pid;
     id.processStartTicks = selected.processStartTicks;
+    id.native = selected.native;
+    // 平台层没有显式写这一格时，只补"这种后端把标识叫什么"的机器词，不伪造会话已知。
+    // Linux 的 X11 source 会在枚举时填满 scope；若未来有别的 Linux 枚举入口忘了填，
+    // MakeWindowIdentity 仍要求会话作用域，复核会 fail-closed，而不是把 XID 当永久键。
+    if (id.native.backend.empty()) {
+        if (BuildPlatform() == PlatformKind::kWindows) {
+            id.native.backend = L"win32";
+            id.native.idForm = L"hwnd";
+        } else if (BuildPlatform() == PlatformKind::kLinuxX11) {
+            id.native.backend = L"x11";
+            id.native.idForm = L"xid";
+            id.native.scopeRequired = true;
+        } else {
+            id.native.backend = L"unknown";
+            id.native.idForm = L"unknown";
+        }
+    }
+    if (id.native.idForm.empty()) {
+        id.native.idForm = BuildPlatform() == PlatformKind::kWindows ? L"hwnd" : L"xid";
+    }
+    id.processAttribution = selected.processAttribution;
     id.className = selected.className;
     id.title = selected.title;
     // 看标题的那一类条件、以及"按屏过滤"那一条，都是会随时间变的：窗口改了标题、
@@ -90,19 +112,48 @@ IdentityVerdict CheckWindowIdentity(const WindowIdentity& id, const WindowQueryL
     };
 
     const bool recheckSelection = scope == IdentityScope::kFull && id.selectionNeedsRecheck;
+    const bool requireNativeScope = id.native.scopeRequired;
     if (!query.alive || !query.windowPid || !query.windowClass || !query.processStart ||
+        (requireNativeScope && !query.nativeIdentity) ||
         (recheckSelection && !query.selectionStillMatches)) {
         return fail(IdentityVerdict::kUnverifiable, "query layer is incomplete");
     }
 
     if (!query.alive(id.hwnd)) {
-        return fail(IdentityVerdict::kGone, "IsWindow(" + HwndText(id.hwnd) + ") = FALSE");
+        // Windows 的旧诊断文字保留 IsWindow 语义；X11 没有 IsWindow，用中性的 gone 描述。
+        if (id.native.backend.empty() || id.native.backend == L"win32") {
+            return fail(IdentityVerdict::kGone, "IsWindow(" + HwndText(id.hwnd) + ") = FALSE");
+        }
+        return fail(IdentityVerdict::kGone, "window " + HwndText(id.hwnd) + " is gone");
+    }
+
+    // XID 只在一次显示连接作用域里有意义。先证明"还是同一个后端会话"再比较同会话内
+    // 的 PID / 类名；否则同一个 32 位 XID 在新服务器上碰巧指到另一扇窗口时，后面的
+    // 属性比较可能看起来一致，给出错误的安全感。
+    if (requireNativeScope) {
+        if (!id.native.sessionKnown) {
+            return fail(IdentityVerdict::kUnverifiable,
+                        "the selected target has no X11 display-session scope baseline");
+        }
+        WindowNativeIdentity now;
+        if (!query.nativeIdentity(id.hwnd, &now) || !now.sessionKnown) {
+            return fail(IdentityVerdict::kUnverifiable,
+                        "current X11 display-session scope is unreadable");
+        }
+        if (now.backend != id.native.backend || now.idForm != id.native.idForm) {
+            return fail(IdentityVerdict::kUnverifiable,
+                        "window backend/native-id form changed; the ids are not comparable");
+        }
+        if (now.sessionScope != id.native.sessionScope) {
+            return fail(IdentityVerdict::kUnverifiable,
+                        "X11 display-session scope changed; XIDs cannot be compared across it");
+        }
     }
 
     uint32_t pid = 0;
     if (!query.windowPid(id.hwnd, &pid)) {
         // IsWindow 说还在、却问不到归属进程：正被销毁的那一瞬间，或者查询层被换掉了。
-        return fail(IdentityVerdict::kUnverifiable, "GetWindowThreadProcessId failed");
+        return fail(IdentityVerdict::kUnverifiable, "the window pid attribute is unreadable");
     }
     if (pid != id.pid) {
         return fail(IdentityVerdict::kChanged,
@@ -127,7 +178,7 @@ IdentityVerdict CheckWindowIdentity(const WindowIdentity& id, const WindowQueryL
 
     std::wstring className;
     if (!query.windowClass(id.hwnd, &className)) {
-        return fail(IdentityVerdict::kUnverifiable, "GetClassNameW failed");
+        return fail(IdentityVerdict::kUnverifiable, "the window class is unreadable");
     }
     // 忽略大小写：类名在注册时不区分大小写，而 --class 这条条件本来就是这么比的。
     if (ToLowerPlain(className) != ToLowerPlain(id.className)) {

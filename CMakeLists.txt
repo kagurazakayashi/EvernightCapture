@@ -486,6 +486,31 @@ if(NOT WIN32)
     Xrender
     Xrandr)
   set_target_properties(ecapture PROPERTIES OUTPUT_NAME "ecapture")
+
+  # ecapture-x11-window-tests —— X11 窗口查询、几何与身份复核的隔离判据。
+  #
+  # 它只创建本任务自己的 override-redirect 测试窗口：不读取屏幕像素、不弹确认框、
+  # 不激活 / 移动 / 恢复任何窗口。XID、显示会话作用域和 /proc 进程事实都走生产本体
+  # （X11Capture.cpp / PosixWindowSource.cpp），判据不另抄一份属性解析。
+  add_executable(ecapture-x11-window-tests
+    tests/x11_window_state.cpp
+    src/platform/linux/PosixWindowSource.cpp
+    src/platform/linux/X11Capture.cpp
+    src/WindowMatch.cpp
+    src/WindowMatchRun.cpp
+    src/WindowIdentity.cpp
+    src/WindowQuery.cpp
+    src/CliOptions.cpp
+    src/ScreenMatch.cpp
+    src/ScreenIdentity.cpp
+    src/Deadline.cpp
+    src/Json.cpp
+    src/core/TextCoding.cpp
+    ${ECAPTURE_HOST_SOURCES}
+    ${ECAPTURE_LANG_SOURCES})
+  ecapture_apply_common(ecapture-x11-window-tests)
+  target_link_libraries(ecapture-x11-window-tests PRIVATE Threads::Threads X11 Xcomposite Xrender Xrandr)
+  set_target_properties(ecapture-x11-window-tests PROPERTIES OUTPUT_NAME "ecapture-x11-window-tests")
 endif()
 
 # ===========================================================================
@@ -1558,12 +1583,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
+  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

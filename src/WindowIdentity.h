@@ -38,10 +38,10 @@
 #include <vector>
 
 #include "CliOptions.h"
+#include "WindowMatch.h"   // WindowInfo / WindowNativeIdentity / ProcessAttribution
 
 namespace ecapture {
 
-struct WindowInfo;      // WindowMatch.h：枚举出来的一条候选
 struct MatchOptions;    // CliOptions.h：用户给的那些条件
 
 // ---------------------------------------------------------------------------
@@ -52,10 +52,15 @@ struct MatchOptions;    // CliOptions.h：用户给的那些条件
 // 各平台的后端接进来时由适配层把这里的快照映射进那个形状 —— 而不是把 HWND 换成另一个名字
 // 继续当三家共用的身份。
 struct WindowIdentity {
-    uint64_t hwnd = 0;
+    uint64_t hwnd = 0;        // 中性承载：Windows 是 HWND，X11 是 XID；标签由 native.idForm 说明
     uint32_t pid = 0;
-    // 归属进程的创建时间（100 纳秒 ticks，FILETIME 原值）。0 = 选定当时读不到 -> 这一条整个跳过。
+    // 归属进程的创建时间（100 纳秒 ticks）。X11 上它来自 /proc/<pid>/stat 的 starttime，
+    // 只能证明"同一个 PID 映像是同一个进程"，不能证明 XID 属于该进程。
     uint64_t processStartTicks = 0;
+    // 后端原生身份与会话基线。X11 的 XID 只在同一次显示连接作用域内可比；跨 DISPLAY /
+    // 跨 XWayland 会话一律不能把相同 XID 当作同一对象。
+    WindowNativeIdentity native;
+    ProcessAttribution processAttribution = ProcessAttribution::kVerified;
     std::wstring className;
     std::wstring title;       // 只为诊断与人看的那一行留着，复核不逐字比它
     // 当初使它成为目标的判据里有没有看标题的那一条（--title / --title-contains / --title-regex，
@@ -80,6 +85,10 @@ struct WindowQueryLayer {
     std::function<bool(uint64_t hwnd, uint32_t* pid)> windowPid;
     std::function<bool(uint64_t hwnd, std::wstring* out)> windowClass;
     std::function<bool(uint32_t pid, uint64_t* outTicks)> processStart;
+    // 这一扇窗口此刻的后端原身份 / 会话作用域。X11 复核必须装上；问不出来按
+    // target_unverifiable 处理。Windows 现有复核不要求这一问（基线的 scopeRequired=false
+    // 时整条跳过），所以旧实现保持兼容。
+    std::function<bool(uint64_t hwnd, WindowNativeIdentity* out)> nativeIdentity;
     // kFull 那一问：拿当初那份条件重新求值，这个句柄还在不在命中列表里。
     // 返回值 = 问出来没有；*matched = 它是否仍然命中。问不出来时 *matched 无意义。
     std::function<bool(uint64_t hwnd, bool* matched)> selectionStillMatches;

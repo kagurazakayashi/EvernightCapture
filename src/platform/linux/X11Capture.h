@@ -67,6 +67,23 @@ private:
     XErrorHandler previous_ = nullptr;
 };
 
+// 一次 X11 显示连接作用域的事实。XID 只在"同一 X 服务端 + 同一 root + 同一显示名与
+// 协议作用域"内可直接比较；这里把可核对的会话证据一起记下，而不是把 XID 当永久键。
+struct DisplaySessionFacts {
+    bool known = false;
+    ReadState read = ReadState::kFailed;
+    std::wstring backend = L"x11";
+    std::wstring displayName;
+    std::wstring serverVendor;
+    int32_t serverRelease = 0;
+    int32_t protocolMajor = 0;
+    int32_t protocolMinor = 0;
+    uint64_t rootWindow = 0;
+    bool xwayland = false;
+    // ASCII、仅用于同后端内的逐字比较；不是可长期保存的标识，也不含本地化文案。
+    std::wstring scope;
+};
+
 // 一扇顶层客户端窗口在枚举那一刻的事实。字段语义与 WindowInfo 一一对应（这里不复制
 // WindowInfo，是因为平台层不该依赖共用层怎么排字段；转换在 PosixWindowSource.cpp）。
 struct ClientWindowFacts {
@@ -80,6 +97,7 @@ struct ClientWindowFacts {
     uint64_t processStartTicks = 0;
     ReadState startRead = ReadState::kFailed;
     uint32_t startErrno = 0;
+    ProcessAttribution processAttribution = ProcessAttribution::kDeclaredUnverified;
 
     std::wstring title;
     ReadState titleRead = ReadState::kFailed;
@@ -91,21 +109,43 @@ struct ClientWindowFacts {
     ReadState pathRead = ReadState::kFailed;
     uint32_t pathErrno = 0;
 
+    // 客户区：根坐标（XTranslateCoordinates）与客户区内部尺寸（XGetWindowAttributes）。
     int32_t x = 0;
     int32_t y = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t borderWidth = 0;   // 客户窗口自己的边框，不属于客户区内容
     ReadState rectRead = ReadState::kFailed;
     uint32_t rectErrno = 0;
+
+    // 装饰外框：优先 EWMH `_NET_FRAME_EXTENTS`；没有该属性时，若客户窗口被 WM reparent，
+    // 用它的父窗口几何；若客户端就是 root 的直系子窗口，外框与客户区同一块。
+    int32_t frameX = 0;
+    int32_t frameY = 0;
+    uint32_t frameWidth = 0;
+    uint32_t frameHeight = 0;
+    ReadState frameRectRead = ReadState::kFailed;
+    uint32_t frameRectErrno = 0;
+    std::wstring frameRectSource;
+
+    DisplaySessionFacts session;
 };
 
-// 按当前叠放次序枚举全部顶层客户端窗口（0 = 最前）。返回的是**客户端**窗口，不是窗口管理器
-// 的装饰框：装饰框没有 WM_CLASS / WM_STATE，递归下去找到真正的客户端。override-redirect
-// 的窗口（工具自己的测试图案窗口、菜单）也是顶层客户端，照样枚举。
+// 问一次当前显示连接的作用域。它只读 X 服务端事实（DisplayString / XServerVendor /
+// XProtocolVersion / root XID / XWAYLAND 扩展），不改窗口、不取像素。
+bool QueryDisplaySessionFacts(Display* display, DisplaySessionFacts* out);
+
+// 按当前叠放次序枚举全部顶层客户端窗口（0 = 最前）。选择原则：
+//   1. 有 EWMH `_NET_CLIENT_LIST_STACKING` 时优先信任 WM 交回的客户端清单；
+//   2. 没有清单时，root 的直系子窗口若带客户端线索（WM_CLASS / WM_STATE / _NET_WM_PID /
+//      _NET_WM_NAME / WM_NAME）就是客户端；否则只有递归后找到的客户端才算，装饰框本身不算；
+//   3. override-redirect 且实际映射的顶层窗口也是客户端（菜单、提示、无 WM 的自建窗口）；
+//   4. 子窗口不会因为自身有 WM_CLASS 就被当成独立顶层目标。
+// 这里只返回本连接真正看得见或标记为最小化的 X11 窗口，不做任何 Wayland 原生窗口推断。
 std::vector<ClientWindowFacts> EnumerateClientWindows(Display* display);
 
-// 只问一扇窗口的事实（不枚举列表）。失败时 *out 的对应 ReadState 是 kFailed，
-// 返回 false 仅表示"这扇窗口现在问不到"（多半是已经销毁）。
+// 只问一扇窗口的事实（不枚举列表）。属性缺失时对应 ReadState 为 kAbsent；读取失败为
+// kFailed / kDenied。返回 false 仅表示"这扇窗口现在问不到"（多半是已经销毁或不可访问）。
 bool QueryClientWindow(Display* display, Window window, ClientWindowFacts* out);
 
 // 进程创建时间（100ns ticks，与 ClientWindowFacts::processStartTicks 同一换算）。

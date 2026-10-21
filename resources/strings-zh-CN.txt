@@ -21,7 +21,7 @@ help.exit1	退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无
 help.exit2	        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
 help.status	当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在；每张成功交付的图另存一份到程序目录的 history 下（不自动清理）
 help.system	运行环境: 64 位 Windows，声明的最低内部版本 18362（Windows 10 版本 1903），只在内部版本 19045 上实测过；本机版本提供不了的路线在取帧、弹框之前就报 env.os_too_old / env.channel_unsupported（前者换通道也没用），--verbose 的 input.osBuild 与 input.captureChain 回显这一次能走哪几条
-help.status_linux	当前构建: 这个 Linux 构建只实现了 X11 单窗口采集（xcomposite，读目标窗口自己的存储），没有桌面像素采集后端，所以屏幕目标一律交回 capture.unsupported（退出码 7），不交付任何图像；--list / --inspect 走 X11 窗口查询，是能用的。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可运行。Windows 专属开关（--hwnd / --class / --capture）在这里报 cli.platform_unsupported，不会被悄悄忽略
+help.status_linux	当前构建: 这个 Linux 构建实现了 X11 单窗口采集（xcomposite，读目标窗口自己的存储）与只读 X11 窗口查询；没有桌面像素采集后端，所以屏幕目标一律交回 capture.unsupported（退出码 7），不交付任何图像。--list / --inspect 只枚举本连接能看到的 X11 窗口，原生 Wayland 窗口不在其中；结果把 XID 与显示会话作用域一起交付，XID 不是可跨会话保存的永久标识；_NET_WM_PID 是窗口自述，进程归属只标 declared_unverified。只读查询不激活、不移动、不恢复最小化窗口。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可运行。Windows 专属开关（--hwnd / --class / --capture）在这里报 cli.platform_unsupported，不会被悄悄忽略
 help.system_linux	运行环境: Linux。--capabilities / --diagnostics 只读连接 X11、Wayland 与会话 D-Bus（XDG Desktop Portal），并检查 PipeWire 套接字前提。环境变量与桌面名称只是线索：它们不证明服务可用，也不构成授权
 help.linux_query	Linux 预检: 先跑 --capabilities。它报告会话种类（x11 / wayland / xwayland / headless），以及每条运行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；显示服务器连得上不等于能截图，只有真正实现的后端（本构建是 x11 的 xcomposite 单窗口通道）才会被报成可用
 
@@ -104,8 +104,8 @@ opt.capabilities	输出本机能力报告（JSON）：版本、系统与会话�
 opt.diagnostics	输出诊断与版本报告（JSON）：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态，字段与 --capabilities 同源，不另立第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；--verbose 追加每一问的原始答案，便于核对后再提交。互斥规则与 --capabilities 相同
 opt.screens	只读地列出本机每块屏：工具编号、设备名、是否主屏、物理矩形、DPI 与旋转（问得到的话）、归属适配器关联，并标出这几种身份各稳到哪一层。不取一个像素、不弹框、不写文件、也不改任何显示设置。交回的 device:<设备名> 与 id:<监视器设备路径> 可以直接写进 --monitor。与截图那一级的选项互斥（cli.query_conflict + 退出码 1）；真去截整屏仍然一定弹框，--yes 跳不过
 opt.screens_linux	只读地列出本机每块屏：工具编号、输出名、是否主屏、物理矩形、问得到的 DPI 与旋转，答不上来的那一项标 failed 而不是猜一个数。不取一个像素、不弹框、不写文件、也不改任何显示设置。工具编号可以直接写进 --monitor <n>；插拔或改分辨率之后同一个编号可能指到另一块屏。每块屏的输出名也能直接写回 --monitor device:<输出名>。本构建答不上跨会话的监视器标识，id:<监视器设备路径> 只有 Windows 才有，这里按 cli.platform_unsupported 拒绝。与截图那一级的选项互斥（cli.query_conflict + 退出码 1）
-opt.list	只读地把满足全部条件的顶层窗口列成 JSON（句柄 / PID / 类名 / 标题 / 映像名 / 矩形 / Z 序 / 身份约束字段），不截图、不弹框、不写文件，也不需要输出路径。多匹配按 --offset / --limit 分页而不报截图歧义，配选择策略算冲突。取值 all = 也列最小化窗口。结果会过期，截图时仍要复核身份（详见 README）
-opt.inspect	只读地检查同一套选择策略定出的那一扇窗口；多匹配报 match.ambiguous_window + 退出码 5，不替你选一个。取值 path = 也写出归属映像的完整路径（默认只写文件名）。读不到的项写字段级 denied / failed，不建议改用管理员身份；不恢复或激活任何窗口
+opt.list	只读地把满足全部条件的顶层客户端窗口列成 JSON（原生标识 / PID / 类名 / 标题 / 映像名 / 客户区与外框几何 / Z 序 / 会话作用域内的身份字段），不截图、不弹框、不写文件，也不需要输出路径。多匹配按 --offset / --limit 分页而不报截图歧义，配选择策略算冲突。取值 all = 也列最小化窗口。X11 上原生标识是 xid，只在本连接的交回显示会话作用域内有效；_NET_WM_PID 是窗口自述，归属只写 declared_unverified。结果会过期，截图时仍要复核身份（详见 README）
+opt.inspect	只读地检查同一套选择策略定出的那一扇窗口；多匹配报 match.ambiguous_window + 退出码 5，不替你选一个。取值 path = 也写出归属映像的完整路径（默认只写文件名）。读不到或缺失的项写字段级 readable / absent / denied / failed 与原码，不建议改用管理员身份；不恢复或激活任何窗口。X11 几何把 WM 装饰外框与客户区分开，逻辑坐标明确写 unknown 而不是编一个
 opt.offset	窗口查询跳过开头 n 个（0 起）
 opt.limit	窗口查询本批最多 n 个（默认 50）
 
@@ -156,9 +156,9 @@ cli.conflicting_hint	例如只保留 --index 2
 cli.query_conflict	查询命令与截图选项不能同时给出：--capabilities / --diagnostics 只读地问环境，本身不截图
 cli.query_conflict_hint	查询只接受 --lang、-v/--verbose、-q/--quiet；请去掉其余选项与输出路径，或把截图另起一次
 cli.list_value	--list 的取值只接受 all（把最小化窗口也列进来），或整个省略
-cli.list_value_hint	写成 --list=all；要限制条数与翻页请用 --limit / --offset
+cli.list_value_hint	写成 --list=all；要限制条数与翻页请用 --limit / --offset。X11 上请用这份快照里的标题 / 类名 / PID / 进程条件收窄目标；xid 不是跨会话句柄
 cli.inspect_value	--inspect 的取值只接受 path（写出归属映像的完整路径），或整个省略
-cli.inspect_value_hint	写成 --inspect=path；点名某一扇窗口请用 --hwnd，多匹配时请先消歧
+cli.inspect_value_hint	写成 --inspect=path；Windows 可用 --hwnd 点名，X11 请用 --class / --process / --title 收窄，多匹配时先消歧
 cli.window_query_conflict	窗口查询（--list / --inspect）不能与截图那一级或环境查询同时给出：它不产图，多匹配也不是截图歧义
 cli.window_query_conflict_hint	窗口查询接受窗口条件、--monitor、--offset / --limit、--timeout-ms、--yes 与 --lang / -v / -q（取舍写在 --list=all / --inspect=path 里）；请去掉 --out / --format / --quality / --capture / --dry-run / 确认框期限 / --capabilities / --diagnostics，或把截图与查询分成两次
 cli.list_count_value	条数不合法：要写十进制，0 到 %1
@@ -221,7 +221,7 @@ match.index_hint	共 %1 个候选：%2
 match.ambiguous	匹配到多个窗口，需要消歧
 match.ambiguous_hint	用 --index/--topmost-match/--bottommost-match/--all 或补充条件。候选（按 Z 序）：%1
 match.untitled	(无标题)
-match.inspect_ambiguous_hint	--inspect 需要唯一目标：用 --hwnd 点名，或补 --class / --process / --title 把条件收窄到一扇，或用 --index / --topmost-match / --bottommost-match 选定。本工具不替你挑一个，也不因为另一扇"看起来一样"就先截它。候选（按 Z 序）：%1
+match.inspect_ambiguous_hint	--inspect 需要唯一目标：Windows 可用 --hwnd 点名；X11 请补 --class / --process / --title 把条件收窄到一扇；或用 --index / --topmost-match / --bottommost-match 选定。本工具不替你挑一个，也不因为另一扇“看起来一样”就先截它。候选（按 Z 序）：%1
 
 # ---------------------------------------------------------------------------
 # 流水线与写文件（src/Capture.cpp、src/OutputPlan.cpp、src/FileSave.cpp）

@@ -526,6 +526,10 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     AddUnique(&r.caveats, caveat::kDesktopNameNotEvidence);
     AddUnique(&r.caveats, caveat::kXwaylandNotNative);
     AddUnique(&r.caveats, caveat::kWaylandNoWindowList);
+    AddUnique(&r.caveats, caveat::kX11WindowScope);
+    AddUnique(&r.caveats, caveat::kX11XidNotPersistent);
+    AddUnique(&r.caveats, caveat::kX11PidNotOwnership);
+    AddUnique(&r.caveats, caveat::kX11GeometryScope);
     AddUnique(&r.caveats, caveat::kPortalNeedsInteraction);
     AddUnique(&r.caveats, caveat::kSshNotHeadless);
     AddUnique(&r.caveats, caveat::kUnknownIsNotNo);

@@ -45,14 +45,28 @@ void PutWindowInfo(std::vector<uint8_t>* b, const WindowInfo& w) {
     PutI32(b, w.height);
     PutI32(b, w.zOrder);
     b->push_back(w.iconic ? 1 : 0);
-    // 三条跨进程问句各自的下场。辅助进程里问出来的「读不到 / 被挡下」必须原样交到父进程，
+    b->push_back(w.visible ? 1 : 0);
+    // 跨进程问句各自的下场。辅助进程里问出来的「读不到 / 被挡下」必须原样交到父进程，
     // 否则结构化窗口查询只能把没答案写成空值 —— 那正是这一组字段要消灭的含糊。
+    PutU32(b, static_cast<uint32_t>(w.pidRead));
     PutU32(b, static_cast<uint32_t>(w.pathRead));
     PutU32(b, w.pathWin32);
     PutU32(b, static_cast<uint32_t>(w.startRead));
     PutU32(b, w.startWin32);
     PutU32(b, static_cast<uint32_t>(w.rectRead));
     PutU32(b, w.rectWin32);
+    PutU32(b, static_cast<uint32_t>(w.titleRead));
+    PutU32(b, static_cast<uint32_t>(w.classRead));
+    PutU32(b, static_cast<uint32_t>(w.processAttribution));
+    // 外框几何目前主要给 X11；Windows 这一格通常是 failed。仍然按同一份形状走线，
+    // 以后换辅助进程实现时不必再改一次协议。
+    PutI32(b, w.frameX);
+    PutI32(b, w.frameY);
+    PutI32(b, w.frameWidth);
+    PutI32(b, w.frameHeight);
+    PutU32(b, static_cast<uint32_t>(w.frameRectRead));
+    PutU32(b, w.frameRectWin32);
+    PutString(b, w.frameRectSource);
     PutString(b, w.title);
     PutString(b, w.className);
     PutString(b, w.imageName);
@@ -62,28 +76,50 @@ void PutWindowInfo(std::vector<uint8_t>* b, const WindowInfo& w) {
 bool TakeWindowInfo(const uint8_t** p, size_t* left, WindowInfo* out) {
     WindowInfo w;
     uint8_t iconic = 0;
+    uint8_t visible = 1;
+    uint32_t pidRead = 0;
     uint32_t pathRead = 0;
     uint32_t startRead = 0;
     uint32_t rectRead = 0;
+    uint32_t titleRead = 0;
+    uint32_t classRead = 0;
+    uint32_t processAttribution = 0;
+    uint32_t frameRectRead = 0;
     if (!TakeU64(p, left, &w.hwnd)) return false;
     if (!TakeU32(p, left, &w.pid)) return false;
     if (!TakeU64(p, left, &w.processStartTicks)) return false;
     if (!TakeI32(p, left, &w.x) || !TakeI32(p, left, &w.y)) return false;
     if (!TakeI32(p, left, &w.width) || !TakeI32(p, left, &w.height)) return false;
     if (!TakeI32(p, left, &w.zOrder)) return false;
-    if (*left < 1) return false;
+    if (*left < 2) return false;
     iconic = **p;
     *p += 1; *left -= 1;
+    visible = **p;
+    *p += 1; *left -= 1;
+    if (!TakeU32(p, left, &pidRead)) return false;
     if (!TakeU32(p, left, &pathRead)) return false;
     if (!TakeU32(p, left, &w.pathWin32)) return false;
     if (!TakeU32(p, left, &startRead)) return false;
     if (!TakeU32(p, left, &w.startWin32)) return false;
     if (!TakeU32(p, left, &rectRead)) return false;
     if (!TakeU32(p, left, &w.rectWin32)) return false;
-    // 问句的下场只有三个登记过的取值：别的数据说明两边不是同一份代码，整条作废。
-    if (pathRead > static_cast<uint32_t>(ReadState::kFailed) ||
-        startRead > static_cast<uint32_t>(ReadState::kFailed) ||
-        rectRead > static_cast<uint32_t>(ReadState::kFailed)) {
+    if (!TakeU32(p, left, &titleRead)) return false;
+    if (!TakeU32(p, left, &classRead)) return false;
+    if (!TakeU32(p, left, &processAttribution)) return false;
+    if (!TakeI32(p, left, &w.frameX) || !TakeI32(p, left, &w.frameY)) return false;
+    if (!TakeI32(p, left, &w.frameWidth) || !TakeI32(p, left, &w.frameHeight)) return false;
+    if (!TakeU32(p, left, &frameRectRead)) return false;
+    if (!TakeU32(p, left, &w.frameRectWin32)) return false;
+    if (!TakeString(p, left, &w.frameRectSource)) return false;
+    // 问句的下场只有登记过的取值：别的数据说明两边不是同一份代码，整条作废。
+    if (pidRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        pathRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        startRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        rectRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        titleRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        classRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        frameRectRead > static_cast<uint32_t>(ReadState::kAbsent) ||
+        processAttribution > static_cast<uint32_t>(ProcessAttribution::kUnknown)) {
         return false;
     }
     if (!TakeString(p, left, &w.title)) return false;
@@ -94,9 +130,15 @@ bool TakeWindowInfo(const uint8_t** p, size_t* left, WindowInfo* out) {
     // 在解码这一层就挡掉，比让 0 号窗口变成"一个目标"安全。
     if (w.hwnd == 0) return false;
     w.iconic = iconic != 0;
+    w.visible = visible != 0;
+    w.pidRead = static_cast<ReadState>(pidRead);
     w.pathRead = static_cast<ReadState>(pathRead);
     w.startRead = static_cast<ReadState>(startRead);
     w.rectRead = static_cast<ReadState>(rectRead);
+    w.titleRead = static_cast<ReadState>(titleRead);
+    w.classRead = static_cast<ReadState>(classRead);
+    w.processAttribution = static_cast<ProcessAttribution>(processAttribution);
+    w.frameRectRead = static_cast<ReadState>(frameRectRead);
     *out = std::move(w);
     return true;
 }

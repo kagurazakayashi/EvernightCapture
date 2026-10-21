@@ -63,14 +63,18 @@ MatchOutcome EnumerateMatches(const MatchRequest& req) {
     try {
         for (const WindowInfo& w : candidates) {
             if (fault.hit) break;   // 已经报废的求值不必再往下数
-            // 旧行为：不可见与零尺寸的顶层窗口根本不进候选；最小化的仍进（供 --list=all 与 hint）。
-            if (!w.visible) continue;
+            // 可见性与最小化是两个维度：最小化窗口经常已经被 WM 取消映射，所以
+            // "不可见"不能先于 iconic 被丢掉；--list=all 与截图 hint 都要能看见它。
+            // 真正不列的是既不可见、也没被标成最小化的窗口，以及零尺寸窗口。
+            if (!w.visible && !w.iconic) continue;
             if (w.width <= 0 || w.height <= 0) continue;
             if (!MatchesWindow(c, w, &fault)) continue;
-            // 最小化的窗口只为 hint 收集，屏幕限制只管真正的目标
-            if (!w.iconic && !OnAnyScreen(c, w)) continue;
-            if (w.iconic) outcome.iconic.push_back(w);
-            else outcome.hits.push_back(w);
+            if (w.iconic) {
+                outcome.iconic.push_back(w);
+                continue;
+            }
+            if (!OnAnyScreen(c, w)) continue;
+            outcome.hits.push_back(w);
         }
     } catch (...) {
         outcome.status = BlockedStatus::kInternal;
