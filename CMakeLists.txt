@@ -314,6 +314,7 @@ if(ECAPTURE_ENABLE_GUI)
       src/gui/WxGuiDialog.cpp
       src/gui/WxConsentDriver.cpp
       src/CaptureScope.cpp
+      src/ScreenMatch.cpp
       src/Deadline.cpp
       src/core/TextCoding.cpp
       ${ECAPTURE_GUI_HOST_PATH}
@@ -363,6 +364,7 @@ add_executable(ecapture-consent-tests
   src/Consent.cpp
   src/ConsentDialog.cpp   # 判据要直接检查弹框内容（来源标签 / 净化 / 截断），不链 wx
   src/CaptureScope.cpp
+  src/ScreenMatch.cpp
   src/Deadline.cpp
   src/CliOptions.cpp
   ${ECAPTURE_HOST_SOURCES}
@@ -461,6 +463,7 @@ if(NOT WIN32)
     src/ScreenIdentity.cpp
     src/ScreenQuery.cpp
     src/ScreenQueryRun.cpp
+    src/DesktopGeometry.cpp
     src/SystemCompat.cpp
     src/Capture.cpp
     src/CaptureScope.cpp
@@ -546,6 +549,7 @@ add_executable(ecapture
   src/ScreenIdentity.cpp
   src/ScreenQuery.cpp
   src/ScreenQueryRun.cpp
+  src/DesktopGeometry.cpp
   src/SystemCompat.cpp
   src/platform/windows/WinProcessIntegrity.cpp
   src/platform/windows/WinEnvReport.cpp
@@ -1454,6 +1458,15 @@ add_executable(ecapture-crop-tests
 ecapture_apply_common(ecapture-crop-tests)
 set_target_properties(ecapture-crop-tests PROPERTIES OUTPUT_NAME "ecapture-crop-tests")
 
+# ecapture-desktop-geometry-tests —— X11 显示器 / 全桌面 / 明确区域的纯几何与状态判据
+#（两个平台同一条定义；测试自己提供空的 EnumScreens 桩，不连接任何显示服务器、不取像素）。
+add_executable(ecapture-desktop-geometry-tests
+  tests/desktop_geometry_state.cpp
+  src/DesktopGeometry.cpp
+  src/ScreenMatch.cpp)
+ecapture_apply_common(ecapture-desktop-geometry-tests)
+set_target_properties(ecapture-desktop-geometry-tests PROPERTIES OUTPUT_NAME "ecapture-desktop-geometry-tests")
+
 # ecapture-image-tests —— 帧内存形状、单色判定、旋转裁取、等比缩小的离线判据（两个平台同一条定义）。
 #
 # 这一批判据测的是 src/ImageOps.cpp 的本体（CheckFrameShape / CropFrame / RotateCropFrame /
@@ -1583,12 +1596,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-desktop-geometry-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
+  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-desktop-geometry-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

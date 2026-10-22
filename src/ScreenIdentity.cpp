@@ -44,13 +44,6 @@ Diagnostic SelectorError(const wchar_t* code, const wchar_t* messageKey, const w
     return d;
 }
 
-// 矩形/编号/主屏归属有没有变（判据与 ScreenMatch.h 的 CompareScreen 同源）。
-bool SameGeometry(const ScreenInfo& a, const ScreenInfo& b) {
-    return a.bounds.left == b.bounds.left && a.bounds.top == b.bounds.top &&
-           a.bounds.right == b.bounds.right && a.bounds.bottom == b.bounds.bottom &&
-           a.ordinal == b.ordinal && a.primary == b.primary;
-}
-
 bool PathReadable(const ScreenCandidate& c) {
     return c.facts.monitorPathQ.read == ReadState::kReadable && !c.facts.monitorPath.empty();
 }
@@ -78,8 +71,10 @@ std::wstring MonitorSelectorLabel(const MonitorSelector& sel) {
     using Kind = MonitorSelector::Kind;
     switch (sel.kind) {
         case Kind::kAll: return L"all";
+        case Kind::kDesktop: return L"desktop";
         case Kind::kOrdinal: return std::to_wstring(sel.ordinal);
         case Kind::kDevice: return L"device:" + sel.id;
+        case Kind::kOutput: return L"output:" + sel.id;
         case Kind::kPath: return L"id:" + sel.id;
         case Kind::kPrimary: break;
     }
@@ -90,8 +85,10 @@ const wchar_t* MonitorSelectorKindName(const MonitorSelector& sel) {
     using Kind = MonitorSelector::Kind;
     switch (sel.kind) {
         case Kind::kAll: return L"all";
+        case Kind::kDesktop: return L"desktop";
         case Kind::kOrdinal: return L"ordinal";
         case Kind::kDevice: return L"device";
+        case Kind::kOutput: return L"output";
         case Kind::kPath: return L"id";
         case Kind::kPrimary: break;
     }
@@ -153,6 +150,20 @@ ScreenSelectResult SelectScreenCandidates(const MonitorSelector& sel,
                                              L"match.monitor_out_of_range_hint", sel, all, nullptr));
             return r;
         }
+        case Kind::kDesktop: {
+            // 全桌面不是候选屏：它必须由 DesktopGeometry 按根窗口范围解析。这里明确拒绝，
+            // 避免有人把"每块屏各一张"误当成"整个桌面一张"。
+            r.outcome = ScreenSelect::kNotAMonitor;
+            Diagnostic d;
+            d.code = codes::kMonitorDesktopNotAMonitor;
+            d.message = Msg(L"match.monitor_desktop_not_a_monitor");
+            d.option = L"--monitor";
+            d.value = sel.written.empty() ? MonitorSelectorLabel(sel) : sel.written;
+            d.hint = Msg(L"match.monitor_desktop_not_a_monitor_hint");
+            d.stage = stages::kMatch;
+            r.errors.push_back(std::move(d));
+            return r;
+        }
         case Kind::kDevice: {
             // 两边都先去前缀再比：解析层已经把用户写的那一条归一过一次，这里再判一次是幂等的
             // （同一个 inline 函数，形状只写一处），这样比对这一层收到的 id 带不带前缀都对得上，
@@ -162,6 +173,19 @@ ScreenSelectResult SelectScreenCandidates(const MonitorSelector& sel,
                 if (ScreenIdEquals(StripScreenDevicePrefix(all[i].screen.deviceName), want)) {
                     r.picked.push_back(i);
                 }
+            }
+            break;
+        }
+        case Kind::kOutput: {
+            // 物理输出名 -> 它所属的唯一逻辑显示器。镜像组里多个输出落到同一个逻辑范围，
+            // 这是同一个目标而不是歧义；同一个输出若出现在两个逻辑范围里才是真相不明。
+            const std::wstring want = sel.id;
+            for (size_t i = 0; i < all.size(); ++i) {
+                bool hit = false;
+                for (const ScreenOutputInfo& output : all[i].screen.outputs) {
+                    if (ScreenIdEquals(output.name, want)) { hit = true; break; }
+                }
+                if (hit) r.picked.push_back(i);
             }
             break;
         }
@@ -236,8 +260,10 @@ ScreenIdentityCheck CompareScreenIdentity(const ScreenCandidate& wanted,
         anyAnswer = true;
         if (!ScreenIdEquals(c.facts.monitorPath, wanted.facts.monitorPath)) continue;
         if (fresh) *fresh = c;
-        return SameGeometry(wanted.screen, c.screen) ? ScreenIdentityCheck::kSame
-                                                    : ScreenIdentityCheck::kMoved;
+        ScreenInfo probe{};
+        const ScreenCheck sameScreen = CompareScreen(wanted.screen, {c.screen}, &probe);
+        return sameScreen == ScreenCheck::kSame ? ScreenIdentityCheck::kSame
+                                                : ScreenIdentityCheck::kMoved;
     }
     // 这一次一个 devnode 都没问出来 —— 那不是"那块屏没了"，是"这一问没答案"。
     // 这时**不**退回按名字核：那个名字可能已经发给了另一块面板，照名字截就是截一块

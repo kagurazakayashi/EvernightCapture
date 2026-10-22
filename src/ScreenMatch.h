@@ -5,7 +5,8 @@
 // 不是系统「显示设置」里那个标识号：系统那边给每块屏编的号存在配置里、可以按设备重新
 // 排，而枚举顺序由驱动 / 显示服务决定，两者常常一致但不保证一致，热插拔或改分辨率
 // 之后也会变。所以这里不声称"--monitor 2 就是设置里写着 2 的那块屏"，要跨调用追踪同一块屏
-// 请认 --screens 交回的设备名（Windows 是 `\\.\DISPLAY1`、X11 是 `HDMI-1` 这种输出名）。
+// 请认 --screens 交回的设备名（Windows 是 `\\.\DISPLAY1`；X11 是逻辑显示器名，
+// 物理输出名再单独用 `output:` 点名）。
 // 给出这个顺序的枚举本身按平台分（core/Platform.h 的 MonitorOrdinalKind）：Windows 是
 // EnumDisplayMonitors，X11 是 XRRGetMonitors。
 // 矩形用的是虚拟屏幕坐标系的物理像素（进程已声明 per-monitor DPI v2）。
@@ -19,17 +20,44 @@
 
 namespace ecapture {
 
+// XRandR 的一个输出设备。它与逻辑显示器不是同一个概念：镜像模式下多个输出
+// 可以共享同一块桌面矩形。XID 只在同一个 X server 会话内可比较，不能存档跨会话使用。
+struct ScreenOutputInfo {
+    uint64_t outputId = 0;       // RROutput XID（本次 X server 会话）
+    uint64_t crtcId = 0;         // RRCrtc XID（0 = 没有活动 CRTC）
+    std::wstring name;           // XRandR 输出名（本次桌面连接）
+    bool connected = false;      // RandR ConnectionStatus；与"当前是否有画面"分开
+    bool active = false;         // 当前有活动 CRTC / 在 XRRGetMonitors 的组里
+    bool primary = false;        // XRandR 输出主屏标记
+    int rotationDegrees = -1;    // 输出在根窗口中的旋转变换；-1 = 没问出来
+    PhysRect bounds{};           // 该输出当前 CRTC 的根坐标矩形（未旋转前的范围以 RandR 为准）
+};
+
 struct ScreenInfo {
     // 拿它去采样的那块屏对象：Windows 是 HMONITOR（wgc 通道拿它建 GraphicsCaptureItem），
-    // X11 上只是本次枚举的序号（X11 那一路按 deviceName 找输出）。
+    // X11 上只是本次枚举的序号（X11 那一路按 deviceName 找逻辑显示器）。
     uint64_t monitor = 0;
     uint32_t ordinal = 0;     // 1 起的屏幕编号（本次枚举里的位置）
-    // 本次桌面连接里这块屏叫什么：Windows 是 `\\.\DISPLAY1`（duplication 通道按它挑 DXGI
-    // 输出），X11 是 XRandR 输出名（`HDMI-1`；取不到时是本工具编的 `X11-<编号>`）。
+    // 本次桌面连接里这块**逻辑显示器**叫什么：Windows 是 `\\.\DISPLAY1`，X11 是
+    // XRandR monitor 名；拿不到 monitor atom 时退回第一个输出名，再退回 `X11-<编号>`。
     std::wstring deviceName;
-    PhysRect bounds{};        // 该屏在虚拟屏幕上的矩形
+    PhysRect bounds{};        // 该逻辑显示器在根/虚拟屏幕上的矩形（已含旋转后的范围）
     bool primary = false;
+    // X11 的附加事实。Windows 上保持"没问过"的默认值，不拿占位值冒充。
+    std::wstring logicalName;  // XRandR monitor atom 名（与 deviceName 同值或为空）
+    std::vector<ScreenOutputInfo> outputs;
+    bool automatic = false;    // XRRMonitorInfo::automatic
+    bool mirrored = false;     // 这个逻辑显示器由多个输出共享（复制模式）
+    bool hasScreenIdentity = false;
+    uint64_t rootWindow = 0;
+    std::wstring displayScope; // 本次 X11 连接作用域（ASCII，仅同后端内比较）
+    bool desktopKnown = false;
+    PhysRect desktopBounds{};  // 根窗口范围；X11 根坐标，可能从 0,0 开始
 };
+
+// 拓扑指纹：数量、根窗口、逻辑显示器、输出设备、镜像、旋转与主屏归属全部纳入。
+// 只用于同一次进程内比较"人确认前后还是不是同一份布局"，不是可持久化的身份。
+uint64_t ScreenTopologyFingerprint(const std::vector<ScreenInfo>& screens);
 
 // 本机全部屏幕，按编号升序。
 // 【平台入口】实现见 src/platform/windows/WinScreenSource.cpp（EnumDisplayMonitors）与

@@ -1,6 +1,6 @@
 ---
 name: yashi-evernight-capture
-description: Capture window images on Windows or X11 Linux with EvernightCapture (ECAPTURE.EXE / ecapture) by selecting targets through conditions. Use when taking a screenshot, grabbing one specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), naming a monitor by a stable identifier (--screens), capturing several windows at once, capturing one whole monitor, or interpreting ECAPTURE's JSON result, exit codes and stable diagnostic codes. Prefer read-only queries over probing by capturing. Any route that samples desktop pixels (whole screen, bitblt, duplication, DWM's screen fallback) requires the user's own confirmation - present it to the user instead of answering for them.
+description: Capture window images on Windows or X11 Linux with EvernightCapture (ECAPTURE.EXE / ecapture) by selecting targets through conditions. Use when taking a screenshot, grabbing one specific app / window / dialog, discovering which windows match (--list / --inspect as structured JSON), naming a monitor by a stable identifier (--screens), capturing several windows at once, capturing one whole logical monitor, the whole X11 desktop, or an explicit --region, or interpreting ECAPTURE's JSON result, exit codes and stable diagnostic codes. Prefer read-only queries over probing by capturing. Any route that samples desktop pixels (whole screen or desktop, explicit region, bitblt, duplication, DWM's screen fallback, X11 root-window x11desktop) requires the user's own confirmation - present it to the user instead of answering for them.
 argument-hint: <window conditions> <output path>
 license: MulanPSL-2.0
 ---
@@ -15,17 +15,33 @@ stable exit codes and stable diagnostic `code` values, so it is meant to be driv
 `1.0.0`, stage `release` (`--version` prints both).
 
 **Linux build (`ecapture`, not `ECAPTURE.EXE`).** Everything above about JSON, exit codes and diagnostic `code` values
-holds unchanged; what differs is which routes exist. There is exactly one capture route - X11 XComposite single-window
-(`xcomposite`). It reads the target window's own redirected storage (`NameWindowPixmap`), so:
+holds unchanged; what differs is which routes exist. There are two independent X11 capture routes:
 
-- The frame is the **client area** (no title bar, no window frame), at the window's own size. Screen pixels, the panel
-  and any window overlapping the target are never read - overlapping the target with another window changes nothing.
-- `--monitor` / `--screens` style screen targets are refused (`capture.unsupported`, exit 7) and no image is delivered;
-  `--capabilities`, `--diagnostics`, `--show-config`, `--help`, `--version` work without a desktop. `--list` and
+- `xcomposite` reads the target window's own redirected storage (`NameWindowPixmap`). The frame is the **client area**
+  (no title bar, no window frame), at the window's own size. Screen pixels, the panel and any window overlapping the
+  target are never read - overlapping the target with another window changes nothing.
+- `x11desktop` reads an exact rectangle from the X11 root window for one logical monitor (`--monitor <n|primary|device:…|output:…>`),
+  all logical monitors one per image (`--monitor all`), the whole root window (`--monitor desktop`), or an explicit
+  `--region x,y,w,h`. These are all desktop pixels. `--region` coordinates are physical root/virtual-desktop pixels,
+  may be negative where the model allows it, and must fit completely inside the current root window; an out-of-range
+  request is refused before any dialog or pixel read and is never clipped, shifted, or replaced by the whole desktop.
+- The two routes never fall back to each other. A window-content failure never turns into a desktop grab, and an
+  x11desktop failure never turns into another capture tool.
+- `--screens` is read-only and distinguishes a logical monitor, its physical XRandR outputs, mirror groups, rotation
+  and the whole desktop root. Copy `device:<logical monitor>` or `output:<output>` into `--monitor`. Output names and
+  RROutput XIDs are desktop-attach/server-session facts, not cross-session identities.
+- **Every x11desktop target requires the wxWidgets consent dialog. `--yes` cannot skip it.** The dialog shows the exact
+  rectangle; after a human answers yes the tool waits for the dialog and its animation, re-enumerates the topology and
+  target, and invalidates the authorization (`capture.consent.stale` / `capture.monitor_changed` /
+  `capture.monitor_unverifiable`) if the root bounds, logical monitor, output/mirror group, rotation, target or range
+  changed. Only then may root pixels be read. Hotplug and range changes always invalidate the old permit.
+- `--capabilities`, `--diagnostics`, `--show-config`, `--help`, `--version` work without a desktop. `--list` and
   `--inspect` are read-only but still need a reachable X11 display; they enumerate only that connection's X11 windows.
-- `--yes` is honoured only for that window-storage route, and only after the target identity was re-checked.
-- `--cursor include` is refused (the pointer is composited by the server, never into window storage); `--cursor exclude`
-  is what you get either way.
+- `--yes` is honoured only for the xcomposite window-storage route, and only after target identity was re-checked.
+- `--cursor include` is refused on both X11 routes (the pointer is composited separately by the server, never in window
+  storage or the root XGetImage pixels); `--cursor exclude` is the source fact. The tool never draws a synthetic cursor.
+- X11 root pixels are 8-bit SDR only in this build: no HDR wide-gamut output and no pre-scaling/rotation. XRandR rotation
+  is already reflected in root pixels; `--scale` is applied once after capture and encoding/history reuse those bytes.
 - Identity re-check needs `_NET_WM_PID` on the target. A window that does not set it (e.g. `xmessage`) is listed, but
   capturing it is refused with `capture.target_unverifiable` instead of being captured unverified. `_NET_WM_PID` is
   self-declared: `/proc/<pid>` can prove that the PID exists, not that the XID belongs to it, so query output labels
@@ -49,8 +65,22 @@ Three kinds of call, and the difference matters:
   display setting, and never probe by capturing something. Use them to decide. They need no output path.
 - **A real capture of a window's own content** (`wgc` / `printwindow` / `dwm.thumbnail`) - runs unattended once you
   pass `--yes`.
-- **A real capture that samples desktop pixels** (any whole screen, `bitblt`, `duplication`, DWM's `dwm.screen`
-  fallback) - **a person has to answer the dialog**. Say what will be captured, start it, and wait for them.
+- **A real capture that samples desktop pixels** (any whole screen/desktop, explicit `--region`, `bitblt`,
+  `duplication`, DWM's `dwm.screen` fallback, X11 `x11desktop`) - **a person has to answer the wxWidgets dialog**.
+  Say what will be captured, start it, and wait for them. `--yes`, `--quiet`, environment variables, a previous
+  "yes", a portal token or a remembered desktop layout never replace this human answer.
+
+## Desktop-pixel privacy rule (all platforms)
+
+Before any route that samples desktop pixels, state exactly what range will be read and remind the user that the
+program's own dialog is mandatory. On Windows that covers whole-screen `wgc` / `bitblt` / `duplication` and DWM's
+screen fallback; on X11 it covers every `x11desktop` target (monitor, `--monitor desktop`, and `--region`). Do not
+click, script, send keystrokes to, or otherwise answer the confirmation for the user. Never treat `--yes` as consent
+for desktop pixels. After the dialog closes, the tool re-checks the target and display topology; if it reports
+`capture.consent.stale`, `capture.monitor_changed` or `capture.monitor_unverifiable`, stop and ask the user again
+with fresh `--screens` / target data instead of retrying another backend. Do not change display settings, create a
+virtual display, or switch to an undeclared capture tool. Capturing real user desktops for testing is allowed only on
+an isolated desktop or a range the user explicitly agreed to.
 
 ## Installing and deploying this skill
 

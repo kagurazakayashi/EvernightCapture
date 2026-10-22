@@ -96,8 +96,9 @@ inline bool ProcessNameAssumesExeSuffix() {
 // 在本平台成不成立。
 //
 //   device:<名字>  —— 这块屏在**本次桌面连接**里叫什么。Windows 是 GDI 的视图设备名
-//                    （`\\.\DISPLAY1`），X11 是 XRandR 输出名（`HDMI-1`；拿不到输出名时
-//                    退回 `X11-<编号>`）。两边都有这一层名字，所以两边都收：解析层只判形状，
+//                    （`\\.\DISPLAY1`），X11 是 XRandR 逻辑显示器名（拿不到时退回第一个
+//                    输出名或 `X11-<编号>`）。物理输出名另走 `output:`。两边都有这一层名字，
+//                    所以两边都收：解析层只判形状，
 //                    选屏那一步按枚举交回的 deviceName 逐字符比（ScreenIdentity.cpp）。
 //   id:<路径>      —— 监视器设备节点（devnode）的设备接口路径。只有 Windows 的显示配置
 //                    （QueryDisplayConfig）答得上来；Linux 构建里那一路整个不存在
@@ -111,6 +112,37 @@ inline bool MonitorDeviceSelectorSupported() {
     // 两个平台族都答得上来"本次连接里这块屏叫什么"，所以恒成立；写成函数是为了让读它的三处
     // 与下面那一条同形，不必在调用点上重新判断平台。
     return true;
+}
+
+// `--monitor desktop` 把整个根窗口 / 虚拟桌面当成一个目标。本构建只有 Linux X11 根窗口
+// 后端实现了它；Windows 的屏幕通道按单个 HMONITOR 取帧，不把这个选择器伪装成可用。
+inline bool MonitorDesktopSelectorSupported() {
+#if defined(__linux__) && !defined(_WIN32)
+    return true;
+#else
+    return false;
+#endif
+}
+
+// `--monitor output:<XRandR output>` 点物理输出设备。只有 X11 有这层名字；
+// Windows 上是 GDI 视图设备名（device:），不另造 output: 这一层。
+inline bool MonitorOutputSelectorSupported() {
+#if defined(__linux__) && !defined(_WIN32)
+    return true;
+#else
+    return false;
+#endif
+}
+
+// 独立的 --region 桌面区域目标由 X11 根窗口几何模型实现。Windows 当前的整屏后端按
+// HMONITOR / 单输出取帧，没有同一套"根窗口任意矩形"语义，因此本构建不在 Windows 上
+// 假装支持它；解析期就会报 cli.platform_unsupported，帮助里也不列。
+inline bool DesktopRegionTargetSupported() {
+#if defined(__linux__) && !defined(_WIN32)
+    return true;
+#else
+    return false;
+#endif
 }
 
 inline bool MonitorPathSelectorSupported() {
@@ -146,7 +178,7 @@ inline const wchar_t* MonitorDeviceNameKind() {
 #if defined(_WIN32)
     return L"gdi_view_device_name";
 #elif defined(__linux__)
-    return L"xrandr_output_name";
+    return L"xrandr_monitor_name";
 #else
     // 认不出来的平台不冒充任何一种名字的出处。
     return L"unspecified_device_name";

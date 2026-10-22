@@ -98,10 +98,53 @@ void WriteScreen(Json& j, const ScreenCandidate& c) {
     j.Key(L"selectors").Obj();
     j.Key(L"ordinal").Value(std::to_wstring(c.screen.ordinal));
     j.Key(L"device").Value(L"device:" + ScreenDisplayName(c.screen));
+    if (MonitorDesktopSelectorSupported()) j.Key(L"desktop").Value(L"desktop");
+    if (MonitorOutputSelectorSupported() && !c.screen.outputs.empty()) {
+        j.Key(L"outputs").Arr();
+        for (const ScreenOutputInfo& o : c.screen.outputs) {
+            if (!o.name.empty()) j.Value(L"output:" + o.name);
+        }
+        j.End();
+    }
     if (f.monitorPathQ.read == ReadState::kReadable && !f.monitorPath.empty()) {
         j.Key(L"id").Value(L"id:" + f.monitorPath);
     }
     j.End();
+
+    // 逻辑显示器与输出设备分两层写。镜像时一个逻辑显示器可有多个输出；每个输出名只在
+    // 本次桌面连接成立，XID 只在本 X server 会话内可比较。
+    j.Key(L"logicalMonitor").Obj();
+    if (!c.screen.logicalName.empty()) j.Key(L"name").Value(c.screen.logicalName);
+    j.Key(L"automatic").Value(c.screen.automatic);
+    j.Key(L"mirrored").Value(c.screen.mirrored);
+    j.Key(L"outputCount").Value(static_cast<long long>(c.screen.outputs.size()));
+    j.End();
+    if (!c.screen.outputs.empty()) {
+        j.Key(L"outputs").Arr();
+        for (const ScreenOutputInfo& o : c.screen.outputs) {
+            j.Obj();
+            OptStr(j, L"name", o.name);
+            if (o.outputId != 0) {
+                wchar_t buf[32];
+                swprintf(buf, 32, L"0x%08llX", static_cast<unsigned long long>(o.outputId));
+                j.Key(L"xid").Value(std::wstring(buf));
+            }
+            if (o.crtcId != 0) {
+                wchar_t buf[32];
+                swprintf(buf, 32, L"0x%08llX", static_cast<unsigned long long>(o.crtcId));
+                j.Key(L"crtc").Value(std::wstring(buf));
+            }
+            j.Key(L"connected").Value(o.connected);
+            j.Key(L"active").Value(o.active);
+            j.Key(L"primary").Value(o.primary);
+            if (o.rotationDegrees >= 0) {
+                j.Key(L"rotationDegrees").Value(static_cast<long long>(o.rotationDegrees));
+            }
+            WriteRect(j, L"rect", o.bounds);
+            j.End();
+        }
+        j.End();
+    }
 
     // 这两问与显示配置无关，各自独立：整块屏的 DPI 与用户看到的朝向
     j.Key(L"dpi").Obj();
@@ -207,6 +250,16 @@ ScreenQueryResult BuildScreenQuery(const std::vector<ScreenCandidate>& all) {
         r.virtualKnown = true;
     }
 
+    if (!all.empty()) {
+        const ScreenInfo& first = all.front().screen;
+        if (first.desktopKnown && !RectIsEmpty(first.desktopBounds)) {
+            r.desktopKnown = true;
+            r.desktopBounds = first.desktopBounds;
+            r.desktopRootWindow = first.rootWindow;
+            r.desktopDisplayScope = first.displayScope;
+        }
+    }
+
     for (const ScreenCandidate& c : all) {
         if (c.facts.hasFacts && !c.facts.hasPath) r.unmatchedPaths++;
         if (c.facts.pathsMatched > 1) r.clonedScreens++;
@@ -255,7 +308,8 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     // 编号这次枚举里的位置两个平台都有（`--monitor <n>` 两边都收），但给出这个顺序的枚举
     // 不是同一个东西（Windows 是 EnumDisplayMonitors，X11 是 XRRGetMonitors），所以 kind
     // 跟着平台走；device: 是“本次连接里这块屏叫什么”，两边都有（Windows 是 GDI 视图设备名，
-    // X11 是 XRandR 输出名）；id: 要监视器 devnode 路径，只有答得上显示配置的平台收——本平台
+    // X11 是 XRandR 逻辑显示器名，物理输出另用 output:）；id: 要监视器 devnode 路径，
+    // 只有答得上显示配置的平台收——本平台
     // 收不下来时，那一条照实写 usableAsSelector=false 且不写 selectorForm（不编一条照着敲一定
     // 失败的写法）。编号与 LUID 没有选择器写法是有意的：前者的作用域是“本次枚举”，后者是
     // “本次会话”，都能对上号却都不能拿去点名一块屏。
@@ -265,6 +319,14 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     WriteIdentityKind(j, L"deviceName", MonitorDeviceNameKind(), screen_stability::kThisAttach,
                       MonitorDeviceSelectorSupported(),
                       MonitorDeviceSelectorSupported() ? L"device:" : nullptr);
+    if (MonitorOutputSelectorSupported()) {
+        WriteIdentityKind(j, L"outputName", L"xrandr_output_name",
+                          screen_stability::kThisAttach, true, L"output:");
+        WriteIdentityKind(j, L"outputXid", L"x11_output_resource_id",
+                          screen_stability::kThisXServer, false, nullptr);
+    }
+    WriteIdentityKind(j, L"rootWindow", L"x11_root_window_id",
+                      screen_stability::kThisXServer, false, nullptr);
     WriteIdentityKind(j, L"monitorDevicePath", L"monitor_devnode_path",
                       screen_stability::kCrossSession, MonitorPathSelectorSupported(),
                       MonitorPathSelectorSupported() ? L"id:" : nullptr);
@@ -288,6 +350,18 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
         j.End();
     } else {
         j.Key(L"virtualScreenKnown").Value(false);
+    }
+    if (r.desktopKnown) {
+        j.Key(L"desktop").Obj();
+        WriteRect(j, L"rect", r.desktopBounds);
+        if (r.desktopRootWindow != 0) {
+            wchar_t buf[32];
+            swprintf(buf, 32, L"0x%08llX", static_cast<unsigned long long>(r.desktopRootWindow));
+            j.Key(L"rootWindow").Value(std::wstring(buf));
+        }
+        j.End();
+    } else {
+        j.Key(L"desktopKnown").Value(false);
     }
     if (r.unmatchedPaths != 0) {
         // 对不上活动路径的有几块。这一条不作"那几块屏不存在"的断言，
@@ -316,6 +390,8 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     caveats.push_back(screen_caveat::kCrossSessionUntested);
     caveats.push_back(screen_caveat::kScreenShotAlwaysAsks);
     caveats.push_back(screen_caveat::kNamesHardware);
+    caveats.push_back(screen_caveat::kDesktopRootSnapshot);
+    caveats.push_back(screen_caveat::kOutputsNotDisplays);
     if (r.config.read != ReadState::kReadable) {
         // 显示配置那一路整体没能回答：这一份里的身份字段因此全是 unknown，
         // 而"问不出来"绝不折叠成"这台机器上没有这样的屏"。
@@ -340,6 +416,7 @@ std::wstring RenderScreenQuery(const ScreenQueryResult& r, bool verbose, bool qu
     j.Key(L"limits").Obj();
     // --monitor 的编号上限与解析层、与 --capabilities 那份 limits 同源（数字只写一次）。
     j.Key(L"maxOrdinal").Value(static_cast<long long>(cli_limits::kMaxOrdinal));
+    j.Key(L"maxRegionSide").Value(static_cast<long long>(cli_limits::kRegionMaxSide));
     j.End();
 
     if (verbose) {

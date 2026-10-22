@@ -312,11 +312,15 @@ int main() {
     Check(ScopeOf(paths::kScreenWgc) == PixelScope::kDesktop, "整屏 wgc = 桌面（同样强制确认）");
     Check(ScopeOf(paths::kScreenBitBlt) == PixelScope::kDesktop, "screen.bitblt = 桌面");
     Check(ScopeOf(paths::kScreenDuplication) == PixelScope::kDesktop, "screen.duplication = 桌面");
+    Check(ScopeOf(paths::kX11Desktop) == PixelScope::kDesktop,
+          "x11.desktop 根窗口像素 = 桌面（显示器/全桌面/区域同源）");
     Check(ScopeOf(L"brand-new-channel") == PixelScope::kDesktop, "没登记过的路径默认按桌面处理");
     Check(ScopeOf(L"") == PixelScope::kDesktop, "空名字默认按桌面处理");
     Check(ScopeOf(static_cast<const wchar_t*>(nullptr)) == PixelScope::kDesktop,
           "nullptr 默认按桌面处理（漏登记不会变松）");
     Check(NeedsHumanConsent(paths::kBitBltScreen, true), "--yes 之下桌面路径仍要确认");
+    Check(NeedsHumanConsent(paths::kX11Desktop, true),
+          "X11 根窗口桌面像素在 --yes 之下仍必须人工确认");
     Check(!NeedsHumanConsent(paths::kWgc, true), "--yes 免掉窗口内容路径的确认");
     Check(NeedsHumanConsent(paths::kWgc, false), "没有 --yes 时窗口内容路径也要确认");
     Check(NeedsHumanConsent(L"unknown", true), "没有 --yes 也没有 --yes 之外的旁路");
@@ -1311,6 +1315,29 @@ int main() {
         Check(f.gate.WindowState() == ConsentState::kError, "状态 = error");
         Check(CodeIs(err, codes::kConsentUnavailable), "码 = consent_unavailable");
         Check(f.gate.Refused(), "机制失败也停批");
+    }
+
+    // =========================================================================
+    Section("19) X11 根窗口桌面路径：--yes 仍不能跳过人工确认");
+    // =========================================================================
+    {
+        g_screens = {MakeScreen(L"\\\\.\\DISPLAY1", R(0, 0, 1920, 1080), true)};
+        const PhysRect desktop = R(0, 0, 1920, 1080);
+        Fixture f(true, {Target(L"desktop", desktop, true)});
+        std::optional<DesktopPermit> permit;
+        Diagnostic err;
+        Check(f.gate.AuthorizeDesktop(paths::kX11Desktop, L"desktop", desktop, &permit, &err),
+              "x11.desktop 的桌面目标在人工确认后签发凭证");
+        Check(f.prompt.asks == 1, "--yes 为真时 x11.desktop 仍然弹了一次确认框");
+        Check(f.prompt.asked.size() == 1 &&
+                  f.prompt.asked.front().scope == PixelScope::kDesktop &&
+                  f.prompt.asked.front().path == paths::kX11Desktop,
+              "确认框记录的是 desktop scope 与 x11.desktop 内部路径");
+        Check(permit.has_value() && permit->Covers(desktop), "凭证只覆盖批准的全桌面范围");
+        Check(f.gate.DesktopState() == ConsentState::kGranted, "桌面确认状态 = granted");
+        Check(!f.gate.AuthorizeDesktop(paths::kX11Desktop, L"desktop",
+                                       R(0, 0, 2000, 1080), &permit, &err),
+              "超出批准范围的区域即使同一个目标也不放行");
     }
 
     // =========================================================================

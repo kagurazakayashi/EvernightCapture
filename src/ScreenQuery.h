@@ -48,6 +48,7 @@ namespace screen_stability {
 inline constexpr const wchar_t* kThisInvocation = L"this_invocation";       // 本次进程这一次枚举
 inline constexpr const wchar_t* kThisAttach = L"this_desktop_attach";       // 本次桌面连接
 inline constexpr const wchar_t* kThisSession = L"this_session";             // 本次登录会话 / 本次开机
+inline constexpr const wchar_t* kThisXServer = L"this_x_server_session";     // X11 连接作用域
 inline constexpr const wchar_t* kCrossSession = L"cross_session_expected";  // 由设备节点决定，跨会话
 }  // namespace screen_stability
 
@@ -71,6 +72,10 @@ inline constexpr const wchar_t* kScreenShotAlwaysAsks = L"screen_capture_always_
 inline constexpr const wchar_t* kConfigUnverifiable = L"display_topology_unavailable";
 // 读出来的是设备身份，不是人名：里面没有用户名与文件系统路径。
 inline constexpr const wchar_t* kNamesHardware = L"identifiers_name_hardware_not_users";
+// X11 的根窗口矩形通常从 0,0 开始；Windows 虚拟桌面可用负坐标。两种都只是本次快照。
+inline constexpr const wchar_t* kDesktopRootSnapshot = L"desktop_root_is_this_snapshot";
+// 逻辑显示器与输出设备不是同一层：镜像时多个输出共享一个逻辑范围。
+inline constexpr const wchar_t* kOutputsNotDisplays = L"outputs_are_not_logical_displays";
 }  // namespace screen_caveat
 
 // 一次屏幕枚举问答的结果（也是渲染器的唯一输入）。
@@ -87,6 +92,13 @@ struct ScreenQueryResult {
     uint32_t virtualWidth = 0;
     uint32_t virtualHeight = 0;
     bool virtualKnown = false;
+    // 平台能明确回答的根窗口/桌面范围。X11 这一格来自 DefaultRootWindow 的几何；
+    // 它与 virtualScreen 分开：后者是逻辑显示器 union，前者才决定 --monitor desktop /
+    // --region 能接受的坐标空间。
+    bool desktopKnown = false;
+    PhysRect desktopBounds{};
+    uint64_t desktopRootWindow = 0;
+    std::wstring desktopDisplayScope;
     // 有几块屏在显示配置里对不上任何一条活动路径（对不上不等于它不存在）。
     uint32_t unmatchedPaths = 0;
     // 有几块屏的同一个视图设备挂着多条路径（复制模式下两块面板共享一个桌面）。

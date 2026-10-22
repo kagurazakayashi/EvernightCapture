@@ -99,8 +99,11 @@ struct CapturedImage {
     std::wstring windowClass;
     std::wstring imageName;
     uint32_t elapsedMs = 0;
-    // 屏幕目标（--monitor 且无窗口条件）：没有窗口可归属，改带屏幕信息
+    // 屏幕目标（--monitor / --monitor desktop / --region）：没有窗口可归属，改带屏幕信息。
+    // screenKind 区分 monitor / desktop / region；只有 monitor 才有 monitorOrdinal / deviceName /
+    // primary，desktop 与 region 的几何事实在 rect / requestedRect / capturedRect。
     bool screen = false;
+    std::wstring screenKind;
     uint32_t monitorOrdinal = 0;
     std::wstring deviceName;
     bool primary = false;

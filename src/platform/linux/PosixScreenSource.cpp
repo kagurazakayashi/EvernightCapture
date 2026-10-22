@@ -1,15 +1,17 @@
-// 【平台层 · Linux】屏幕来源：X11 / XRandR 的监视器拓扑。
+// 【平台层 · Linux】屏幕来源：X11 / XRandR 的根窗口、逻辑显示器与输出设备拓扑。
 //
-// 与 Windows 的 EnumDisplayMonitors 对应：编号是**这一次枚举里的位置**（1 起），不是
-// 显示设置里那个可以重排的标识号。跨调用追踪同一块屏请认 deviceName（输出名，例如
-// "HDMI-1"；拿不到输出名时是 "X11-<编号>"）。
+// 三件事必须分开（调用方看到的字段也分开）：
+//   * 输出设备（RROutput）：物理连接这一层，有输出名、连接状态、活动 CRTC 与旋转；
+//   * 逻辑显示器（XRRMonitorInfo）：用户实际看到的一块桌面范围，镜像时可由多个输出共享；
+//   * 整个桌面（根窗口）：XGetImage 的完整坐标空间，也是 --monitor desktop / --region 的范围。
 //
-// 三条边界：
-//   * 只读：XRRGetMonitors / XGetWindowAttributes 都不改显示配置。
-//   * 问不出来就说问不出来：没有 X 连接时交回空表，由选择器写 match.monitor_out_of_range
-//     （而不是"那就用主屏"）。
-//   * 没有跨会话的 devnode 标识：ScreenFacts.hasFacts 恒为 false。按 id: 选屏会因此
-//     报 match.monitor_id_unverifiable —— 本构建不拿"看起来像"的设备名去冒充跨会话标识。
+// 边界：
+//   * 只读。只调用 XGetWindowAttributes / XRRGetMonitors / XRRGetOutputInfo /
+//     XRRGetCrtcInfo；不调用任何 XRRSet*，绝不为了看清旋转去改用户显示设置。
+//   * 问不出来就说问不出来：没有 X 连接或根窗口读取失败时交回空表，由选择器报真实错误；
+//     不拿"第一块屏"顶上。
+//   * XRandR 的 rotation 已经在根窗口像素里体现；这里只把它作为**事实**报出，下游不重复旋转。
+//   * 没有跨会话 devnode 标识：ScreenFacts.hasFacts 恒为 false；id: 在解析期就拒绝。
 
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
@@ -33,18 +35,111 @@ std::wstring WideAscii(const char* text) {
     return out;
 }
 
+int RotationDegrees(Rotation rotation) {
+    if (rotation & RR_Rotate_90) return 90;
+    if (rotation & RR_Rotate_180) return 180;
+    if (rotation & RR_Rotate_270) return 270;
+    if (rotation & RR_Rotate_0) return 0;
+    return -1;
+}
+
+// 一块逻辑显示器的输出事实。XRandR 的 monitor 列表可能只给 RROutput XID；资源表能拿到时
+// 再补名字、连接状态、CRTC 范围与旋转，拿不到就保留 XID + "没问出来"，不编名字。
+void FillOutputFacts(Display* display, XRRScreenResources* resources, RROutput primary,
+                     const XRRMonitorInfo& monitor, std::vector<ScreenOutputInfo>* outputs) {
+    if (!outputs) return;
+    outputs->clear();
+    // RandR 属性查询与热插拔并发时会返回 BadOutput / BadCrtc。用本工具的 trap 收住，
+    // 然后把这一组的输出事实整体降级成"只有 XID、其余没问出来"，不交半真半假的名字。
+    x11::ErrorTrap trap(display);
+    for (int i = 0; i < monitor.noutput; ++i) {
+        ScreenOutputInfo out;
+        out.outputId = static_cast<uint64_t>(monitor.outputs[i]);
+        out.active = true;
+        out.primary = primary != None && monitor.outputs[i] == primary;
+        out.bounds = PhysRect{monitor.x, monitor.y,
+                              monitor.x + static_cast<int32_t>(monitor.width),
+                              monitor.y + static_cast<int32_t>(monitor.height)};
+        if (resources) {
+            XRROutputInfo* info = XRRGetOutputInfo(display, resources, monitor.outputs[i]);
+            if (info) {
+                out.name = WideAscii(info->name);
+                out.connected = info->connection == RR_Connected;
+                out.crtcId = static_cast<uint64_t>(info->crtc);
+                if (info->crtc != None) {
+                    XRRCrtcInfo* crtc = XRRGetCrtcInfo(display, resources, info->crtc);
+                    if (crtc) {
+                        out.bounds = PhysRect{crtc->x, crtc->y,
+                                              crtc->x + static_cast<int32_t>(crtc->width),
+                                              crtc->y + static_cast<int32_t>(crtc->height)};
+                        out.rotationDegrees = RotationDegrees(crtc->rotation);
+                        XRRFreeCrtcInfo(crtc);
+                    }
+                }
+                XRRFreeOutputInfo(info);
+            }
+        }
+        outputs->push_back(std::move(out));
+    }
+    if (trap.Sync() != 0) {
+        outputs->clear();
+        for (int i = 0; i < monitor.noutput; ++i) {
+            ScreenOutputInfo out;
+            out.outputId = static_cast<uint64_t>(monitor.outputs[i]);
+            out.active = true;
+            outputs->push_back(std::move(out));
+        }
+    }
+}
+
 std::vector<ScreenInfo> EnumerateScreens(Display* display) {
     std::vector<ScreenInfo> screens;
     if (!display) return screens;
     const Window root = DefaultRootWindow(display);
 
+    XWindowAttributes rootAttrs{};
+    x11::ErrorTrap rootTrap(display);
+    const int rootOk = XGetWindowAttributes(display, root, &rootAttrs);
+    const int rootError = rootTrap.Sync();
+    if (rootOk == 0 || rootError != 0 || rootAttrs.width <= 0 || rootAttrs.height <= 0) {
+        return screens;
+    }
+
+    x11::DisplaySessionFacts session;
+    x11::QueryDisplaySessionFacts(display, &session);
+
+    const PhysRect desktop{0, 0, rootAttrs.width, rootAttrs.height};
+    const auto decorate = [&](ScreenInfo* info) {
+        info->hasScreenIdentity = session.known;
+        info->rootWindow = static_cast<uint64_t>(root);
+        info->displayScope = session.scope;
+        info->desktopKnown = true;
+        info->desktopBounds = desktop;
+    };
+
     int eventBase = 0;
     int errorBase = 0;
     if (XRRQueryExtension(display, &eventBase, &errorBase) != 0) {
+        int major = 0;
+        int minor = 0;
+        const bool monitorsApi = XRRQueryVersion(display, &major, &minor) != 0 &&
+                                 (major > 1 || (major == 1 && minor >= 5));
         int count = 0;
-        XRRMonitorInfo* monitors = XRRGetMonitors(display, root, True, &count);
+        XRRMonitorInfo* monitors = nullptr;
+        int monitorsError = 0;
+        if (monitorsApi) {
+            x11::ErrorTrap trap(display);
+            monitors = XRRGetMonitors(display, root, True, &count);
+            monitorsError = trap.Sync();
+            if (monitorsError != 0) {
+                if (monitors) XRRFreeMonitors(monitors);
+                monitors = nullptr;
+                count = 0;
+            }
+        }
         if (monitors && count > 0) {
             const RROutput primary = XRRGetOutputPrimary(display, root);
+            XRRScreenResources* resources = XRRGetScreenResourcesCurrent(display, root);
             screens.reserve(static_cast<std::size_t>(count));
             for (int i = 0; i < count; ++i) {
                 const XRRMonitorInfo& monitor = monitors[i];
@@ -54,43 +149,45 @@ std::vector<ScreenInfo> EnumerateScreens(Display* display) {
                 if (monitor.name != None) {
                     char* name = XGetAtomName(display, monitor.name);
                     if (name) {
-                        info.deviceName = WideAscii(name);
+                        info.logicalName = WideAscii(name);
                         XFree(name);
                     }
+                }
+                FillOutputFacts(display, resources, primary, monitor, &info.outputs);
+                info.deviceName = info.logicalName;
+                if (info.deviceName.empty() && !info.outputs.empty()) {
+                    info.deviceName = info.outputs.front().name;
                 }
                 if (info.deviceName.empty()) info.deviceName = L"X11-" + std::to_wstring(i + 1);
                 info.bounds.left = monitor.x;
                 info.bounds.top = monitor.y;
-                info.bounds.right = monitor.x + monitor.width;
-                info.bounds.bottom = monitor.y + monitor.height;
-                // XRandR 直接给了 primary 标志；没有它时再退回"第一个输出等于
-                // XRRGetOutputPrimary"这条判据。
+                info.bounds.right = monitor.x + static_cast<int32_t>(monitor.width);
+                info.bounds.bottom = monitor.y + static_cast<int32_t>(monitor.height);
                 info.primary = monitor.primary != 0 ||
                                (monitor.noutput > 0 && monitor.outputs != nullptr &&
                                 monitor.outputs[0] == primary);
+                info.automatic = monitor.automatic != 0;
+                info.mirrored = monitor.noutput > 1;
+                decorate(&info);
                 screens.push_back(std::move(info));
             }
+            if (resources) XRRFreeScreenResources(resources);
             XRRFreeMonitors(monitors);
             return screens;
         }
         if (monitors) XRRFreeMonitors(monitors);
     }
 
-    // 没有 RandR（或它说没有监视器）：整个根窗口就是唯一一块屏。编号仍然从 1 起。
-    XWindowAttributes attrs{};
-    x11::ErrorTrap trap(display);
-    const int ok = XGetWindowAttributes(display, root, &attrs);
-    const int error = trap.Sync();
-    if (ok == 0 || error != 0) return screens;
+    // 没有 RandR（或它说没有监视器）：整个根窗口就是唯一一块逻辑显示器。输出设备这一层
+    // 没有答案，outputs 留空；编号仍然从 1 起，设备名明确标成本工具合成，而不是输出名。
     ScreenInfo info;
     info.monitor = 1;
     info.ordinal = 1;
     info.deviceName = L"X11-1";
-    info.bounds.left = 0;
-    info.bounds.top = 0;
-    info.bounds.right = attrs.width;
-    info.bounds.bottom = attrs.height;
+    info.logicalName = info.deviceName;
+    info.bounds = desktop;
     info.primary = true;
+    decorate(&info);
     screens.push_back(std::move(info));
     return screens;
 }

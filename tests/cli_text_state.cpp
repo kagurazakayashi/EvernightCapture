@@ -488,6 +488,39 @@ void CheckPlatformGate() {
         const bool okOnBoth = !HasError(r, codes::kPlatformUnsupported);
         Check(okOnBoth, "--monitor <编号> 两种平台都说得通，不在这一条上拒");
     }
+    if (!windows) {
+        const auto r = Run({"--capture", "x11desktop", "--monitor", "1", "out.png"});
+        Check(r.ok && r.options.capture == CaptureMethod::kX11Desktop,
+              "Linux：--capture x11desktop 落到独立屏幕后端，不退化成 auto");
+        const auto wrong = Run({"--capture", "x11desktop", "--title", "x", "out.png"});
+        Check(HasError(wrong, codes::kUnsupported),
+              "Linux：x11desktop 用在窗口目标上按 capture.unsupported 拒绝");
+    }
+    {
+        const auto r = Run({"--monitor", "output:HDMI-1", "out.png"});
+        Check((HasError(r, codes::kPlatformUnsupported) == 0) ==
+                  MonitorOutputSelectorSupported(),
+              "--monitor output: 只在本平台真的有输出名这一层时收");
+        Check(MonitorOutputSelectorSupported() ==
+                      (r.ok && r.options.monitor.kind == MonitorSelector::Kind::kOutput &&
+                       r.options.monitor.id == W("HDMI-1")),
+              "收到的 output: 落到 kOutput 且不改写输出名");
+    }
+    {
+        const auto r = Run({"--region", "-1920,300,800,600", "out.png"});
+        Check(r.ok && r.options.region.given && r.options.region.x == -1920 &&
+                  r.options.region.y == 300 && r.options.region.width == 800 &&
+                  r.options.region.height == 600 && r.options.ScreenMode(),
+              "--region 接受负坐标并形成独立桌面目标");
+    }
+    {
+        const auto r = Run({"--region", "0,0,0,10", "out.png"});
+        Check(HasError(r, codes::kInvalidValue), "--region 零宽在解析期拒绝");
+    }
+    {
+        const auto r = Run({"--region", "0,0,10,10", "--monitor", "1", "out.png"});
+        Check(HasError(r, codes::kConflictingOptions), "--region 与 --monitor 冲突");
+    }
     {
         const auto r = Run({"--pid", "1234", "out.png"});
         Check(!HasError(r, codes::kPlatformUnsupported), "--pid 不是 Windows 专属说法");
@@ -507,13 +540,27 @@ void CheckPlatformGate() {
               "帮助里有没有 --hwnd 这一行，按平台定（正文提到它不算）");
         Check(OptionLine(help, W("--class")).empty() == !windows,
               "--class 与 --hwnd 同行同止");
-        Check(OptionLine(help, W("--capture")).empty() == !windows,
-              "--capture 的取值全是 Windows 的取图通道：非 Windows 那份不列");
+        {
+            // --capture 选项本身跨平台存在；Linux 只列本构建实现的两条 X11 通道。
+            const std::wstring captureLine = OptionLine(help, W("--capture"));
+            if (windows) {
+                Check(!captureLine.empty() && captureLine.find(W("wgc")) != std::wstring::npos,
+                      "Windows 帮助列出 --capture 与 wgc");
+            } else {
+                Check(!captureLine.empty() &&
+                          captureLine.find(W("xcomposite")) != std::wstring::npos &&
+                          captureLine.find(W("x11desktop")) != std::wstring::npos &&
+                          captureLine.find(W("wgc")) == std::wstring::npos,
+                      "Linux 帮助列 --capture、xcomposite 与 x11desktop，不列 Windows 取值");
+            }
+        }
         // 取值提示同样按平台收窄：本构建不收的标识写法一给就报 cli.platform_unsupported，
         // 印在选项行上就是在教人敲一条注定失败的命令。拼法读的是 core/Platform.h 那两条事实
         // （与解析期那条拒、与 --screens 的 usableAsSelector 同源），不在这里再判一次平台。
         std::wstring wantHead = W("  --monitor, -m [<n|primary|all");
+        if (MonitorDesktopSelectorSupported()) wantHead += W("|desktop");
         if (MonitorDeviceSelectorSupported()) wantHead += W("|device:");
+        if (MonitorOutputSelectorSupported()) wantHead += W("|output:");
         if (MonitorPathSelectorSupported()) wantHead += W("|id:");
         wantHead += W(">]");
         const std::wstring monitorLine = OptionLine(help, W("--monitor"));

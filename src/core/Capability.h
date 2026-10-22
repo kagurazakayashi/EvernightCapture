@@ -108,21 +108,21 @@ inline const MatrixCell* PlatformMatrixCells(uint32_t* count) {
         {PlatformKind::kWindows, MatrixFeature::kHeadlessSession, MatrixStatus::kImplemented,
          "help/version/config/capabilities run with no desktop; desktop pixel paths report unavailable"},
 
-        // ---- Linux X11：单窗口取帧已实现（XComposite），仍无桌面像素路径 ----
-        // 已实现不等于已验证跑遍：本项目只在开发机的 X11 桌面上实测过这一条，
-        // 所以只给 kUnverified，不写 kImplemented。
+        // ---- Linux X11：窗口存储 + 根窗口桌面两条独立后端已实现 ----
+        // 已实现不等于已在多屏 / 旋转 / 热插拔环境验证跑遍：本项目只在一台单屏 X11
+        // 开发机做过只读枚举与几何判据，所以相关格只给 kUnverified。
         {PlatformKind::kLinuxX11, MatrixFeature::kTargetListing, MatrixStatus::kUnverified,
          "implemented with X11 window queries; XWayland only sees X11 windows, native Wayland ones are invisible"},
         {PlatformKind::kLinuxX11, MatrixFeature::kWindowCapture, MatrixStatus::kUnverified,
          "implemented as xcomposite: reads the target window's own storage (NameWindowPixmap); desktop pixels are never read"},
-        {PlatformKind::kLinuxX11, MatrixFeature::kScreenCapture, MatrixStatus::kPlanned,
-         "planned; this build has no Linux desktop-pixel path, so screen targets are rejected at parse time"},
-        {PlatformKind::kLinuxX11, MatrixFeature::kInteractiveGrant, MatrixStatus::kPlanned,
-         "planned: no program consent dialog on Linux yet; without --yes the capture is refused instead of silently allowed"},
+        {PlatformKind::kLinuxX11, MatrixFeature::kScreenCapture, MatrixStatus::kUnverified,
+         "implemented as x11desktop: exact root-window rect for monitor/desktop/--region; always behind wx consent; multi-monitor/rotation/hotplug not verified on hardware"},
+        {PlatformKind::kLinuxX11, MatrixFeature::kInteractiveGrant, MatrixStatus::kUnverified,
+         "implemented with the shared wxWidgets dialog; desktop pixels always ask and --yes cannot skip; real human click path not verified in this step"},
         {PlatformKind::kLinuxX11, MatrixFeature::kMinimizedWindow, MatrixStatus::kNotSupported,
          "an unmapped X11 window has no viewable storage; the backend refuses instead of returning a stale pixmap"},
-        {PlatformKind::kLinuxX11, MatrixFeature::kCursorControl, MatrixStatus::kNotSupported,
-         "the pointer is composited by the X server, not written into window storage: exclude is inherent, include is refused"},
+        {PlatformKind::kLinuxX11, MatrixFeature::kCursorControl, MatrixStatus::kUnverified,
+         "both X11 paths exclude the independently composited pointer; include is refused rather than synthesised, and exact pixels are not claimed"},
         {PlatformKind::kLinuxX11, MatrixFeature::kHdr, MatrixStatus::kPlanned,
          "planned; no X11 wide-gamut path is implemented here, so nothing is asserted about HDR"},
         {PlatformKind::kLinuxX11, MatrixFeature::kHeadlessSession, MatrixStatus::kPlanned,

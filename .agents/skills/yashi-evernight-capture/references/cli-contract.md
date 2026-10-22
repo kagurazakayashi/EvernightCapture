@@ -8,7 +8,8 @@
 
 | 选项 | 短写 | 取值 | 说明 |
 | --- | --- | --- | --- |
-| `--monitor` | `-m` | `[<n>\|primary\|all\|device:..\|id:..]`，可省略（= 主屏） | 截哪块屏。编号**只认十进制**、1 起（1..65535）—— 它是**本次进程这一次 `EnumDisplayMonitors` 枚举里的位置**，不保证等于「显示设置」里写的标识号，插拔显示器或改分辨率之后同一个编号可能指到另一块屏，所以别把编号当跨调用的屏幕身份。**要点名某一块屏，先跑 `--screens` 列出本机此刻的标识，再原样写回来**：`--monitor device:DISPLAY1`（本次桌面连接的设备名，带不带 `\\.\` 前缀都认）或 `--monitor id:<监视器 devnode 设备接口路径>`（跨会话那一条，也是本工具推荐存下来做"同一块屏"的那一条）。前缀只认 `device` 与 `id` 这两个词，冒号后面不能空着（`cli.monitor_selector_empty`+1），前缀不认识报 `cli.monitor_selector_kind`+1；认不得的前缀**不算**这条选项的取值，所以 `--monitor D:\a.png` 里那条路径照旧是输出路径。标识定位不到唯一一块屏时三条码各归一种：本机没有 = `match.monitor_unknown_id`（4）、命中多块 = `match.monitor_ambiguous_id`（5，候选全列出、不替你挑）、那一问没答案 = `match.monitor_id_unverifiable`（7）——三条都不会退化成"那就用主屏"。`all` = 每块屏各一张。**给了它且没有窗口匹配条件 = 整屏截图（桌面像素，必弹确认框，`--yes` 跳不过）**；`--monitor <n>` 配窗口匹配条件 = 只算与该屏有重叠的窗口，出的是窗口像素，所以走窗口那一级（带 `--yes` 才不弹框，不给 `--yes` 照样问一次）。`all` 与任何窗口**匹配**条件互斥（`cli.monitor_conflict`+1），但 `--all`/`--index` 这类消歧选项不算匹配条件、可以搭配。省略取值时不吃后面的参数，判据与解析同源：`--monitor out.png` 里 `out.png` 仍是输出路径，而 `--monitor 1e3` 是写坏的编号，报 `cli.invalid_number` 而不会被改成输出文件名。屏幕目标在取帧之前会按**身份**重新核对那块屏（选定当时问得到跨会话标识就按它核，问不到才照旧按设备名核）：已经不在了、或者那个设备名已经发给了另一块面板，就整个不截（`capture.monitor_changed`），复核本身问不出答案时报 `capture.monitor_unverifiable` 而不是退回按名字截，尺寸或位置变了就以新矩形重新向人确认，旧授权不会被用在新尺寸的屏上 |
+| `--monitor` | `-m` | `[<n>\|primary\|all\|desktop\|device:..\|output:..\|id:..]`，可省略（= 主屏） | 截哪块屏。编号**只认十进制**、1 起（1..65535）——它是**本次进程这一次枚举里的位置**，插拔或改分辨率之后可能指到另一块屏。`primary` = 主屏；`all` = 每个逻辑显示器各一张（老语义不变）；`desktop` = 整个 X11 根窗口作为**一个**目标。**点名某一块屏先跑 `--screens`**：`device:<逻辑显示器名>`（本次桌面连接）、`output:<XRandR 输出名>`（物理输出，镜像时落到它所属的唯一逻辑显示器）或 Windows 的 `id:<监视器 devnode 路径>`。Linux 不提供跨会话 devnode 身份，`id:` 报 `cli.platform_unsupported`。标识定位不到唯一目标时 `match.monitor_unknown_id`(4) / `match.monitor_ambiguous_id`(5) / `match.monitor_id_unverifiable`(7)，绝不退化成主屏。**给了它且没有窗口条件 = 屏幕/桌面像素，必弹 wxWidgets 人工确认，`--yes` 跳不过**；配窗口条件时只算与该屏重叠的窗口，出窗口内容图。取帧前按逻辑显示器身份（devnode 或设备名）与桌面拓扑复核；热插拔、改名、旋转或范围变化使旧授权失效 |
+| `--region` | | `<x,y,w,h>` | **独立的桌面区域目标**（不是窗口内部 `--roi`）。坐标是 X11 根窗口 / 虚拟桌面物理像素，x、y 可带前导负号，宽高至少 1、至多 16384，右下边不含。区域必须完整落在当下根窗口内；空矩形、越界、坐标相加溢出或超帧上限在弹框与读像素之前拒绝，绝不裁边、平移、换成别的矩形或静默退回全桌面。与 `--monitor`、窗口条件、`--roi`、`--client-area` 互斥。它读取桌面像素，所以**一定弹 wxWidgets 人工确认，`--yes` 不生效**；确认后等待弹框关闭与动画，再复核根范围、逻辑显示器/输出/镜像/旋转拓扑、目标身份与批准区域，变化则报 `capture.consent.stale` / `capture.monitor_changed` / `capture.monitor_unverifiable`。结果 `screenKind=region`，`rect` / `requestedRect` / `capturedRect` 给出精确几何。`--scale` 在取帧后只应用一次，编码与历史副本复用同一份字节 |
 | `--hwnd` | | 句柄（十进制 / `0x…` / 含 `a-f`） | 纯数字按十进制，`0x` 前缀或含 `a-f` 按十六进制（Spy++ 那种写法），推荐写 `0x`。正负号、空白、超过 64 位与句柄 `0` 一律拒收（`--hwnd -1` 不会变成 `UINT64_MAX`）；下划线只在十六进制写法里合法，且必须夹在两位十六进制数字之间（`0x001A_0B4C` 可，`0x_1A`、`1A__0B4C`、`1A0B4C_`、`12_34` 不可） |
 | `--pid` | | 十进制 1..4294967295 | 进程 ID。**只认 `[0-9]+`**：正负号、空白、小数点、指数（`1e3`）、下划线、`0x`、非 ASCII 数字都不收，越界也不强转（`--pid 1e3` 不会变成 483） |
 | `--process` | `-p` | 映像文件名 | 不含路径，忽略大小写；无扩展名时按 `.exe` 处理 |
@@ -30,7 +31,7 @@
 | `--scale` | | `key=N[,...]` | **等比缩小**：把即将交付的这张图缩到天花板之内，**只缩不放**。三个键：`max-width=N` 限宽、`max-height=N` 限高、`max-pixels=N` 限总像素数（大小写不敏感；N 只认十进制，边长 1..16384（与 `--roi` 同一条线）、像素数 1..268435456）。可以只给一条，也可以一条里用逗号串几条；这一条写多次时每条天花板各记各的，重复给同一条时最后一个生效；一条都不给 = `cli.invalid_value`+1，**整条不生效**，不留下认得的那半。三条都按同一个比例缩（取最紧的那一条），宽高各自**向下取整**且各至少留 1 像素；本来就在天花板之内就原样交付（结果里 `scaleApplied: false`）。插值策略只有一种而且可预测：最近邻。顺序是**先裁（`--roi` / `--client-area`）后缩、再编码**，所以缩的是裁完的那一块；结果里 `scaleFromWidth` / `scaleFromHeight` 是缩之前的尺寸、`width` / `height` 是缩之后的。这一条**不改变授权与帧上限**：会从屏幕上取样的那几条照样一定弹框（`--yes` 不因为最后交的是小图而生效），`--roi` 的越界判据仍按未缩的那张图判。与任何环境查询（`cli.query_conflict`）或窗口查询（`cli.window_query_conflict`）同时给出都是冲突 |
 | `--no-crop` | | 开关 | **取消配置文件里那一整组裁剪**（`crop.mode` 与 `crop.roi`），本次一张都不裁。它与本次亲手写的裁剪参数同给就是 `cli.conflicting_options`+1（`value` 把 `--client-area, --no-crop, --roi` 三个一起列出，`hint` 说明这一条是取消**配置那一组**用的）；写成 `--no-crop=false` **也不解除**这个冲突——这条一写就算点名要取消，取消开关不吃 `=false` 那套语义。单独给（配置里本来没有裁剪组）没有副作用，也不会把图改成放大或换成别的模式。见「用户偏好配置」一节 |
 | `--no-scale` | | 开关 | **取消配置文件里那一整组缩放**（`scale.max_width` / `max_height` / `max_pixels`），本次不缩放。与本次 `--scale` 同给 = `cli.conflicting_options`+1（`value`=`--no-scale, --scale`）；`--no-scale=false` 同样不解除。不会把缩小改成放大 |
-| `--yes` | `-y` | 开关，可写 `=true/false` | **截图授权**：只免掉"只取所选窗口画面"那几条路径（`wgc` / `printwindow` / `dwm.thumbnail`）的确认框。裸写与 `=true/1/yes/y/on` = 开，`=false/0/no/n/off` = 关（它虽是正向开关，写 `=false` 却**有意义**：明确要问），重复给出时最后一个生效，最终结果由 `-v` 的 `input.yes` 回显；写成两头都不沾的取值（`--yes=maybe`）解析期就报 `cli.switch_takes_no_value`+1，不会当成"开了"。**其它一概不保证**：不保证目标真交出有效帧、不越过权限、不解除受保护内容、不吞掉任何错误，也不影响覆盖保护。凡是从屏幕上取像素的路径（`bitblt`、`duplication`、任何整屏、`dwm` 的屏幕退路）一定会弹框，这个开关跳不过 |
+| `--yes` | `-y` | 开关，可写 `=true/false` | **截图授权**：只免掉“只取所选窗口自身画面”的窗口内容路径（Windows 的 `wgc` / `printwindow` / `dwm.thumbnail`；X11 的 `xcomposite`），且必须同时满足目标是单窗口、能力闸门确认路径可用、目标身份已复核。任何桌面像素路径——Windows 整屏、`bitblt`、`duplication`、`dwm.screen`，X11 `x11desktop` 的单显示器 / `--monitor desktop` / `--region`——**一定弹程序确认框，`--yes` 不能跳过**。`--yes` 不影响系统授权层（Wayland Portal），不保证目标交出有效帧，不越过权限或覆盖保护。裸写与 `=true/1/yes/y/on` = 开，`=false/0/no/n/off` = 明确要问 |
 | `--timeout-ms` | | 毫秒，0–86400000 | **自动阶段的总预算**：从选定目标起，匹配（含 `--title-regex` 求值）、`auto` 的后端重试、等帧、编码、写文件 / 写 stdout 共用这一份剩余时间，整批只发一次，没有哪一步或哪个目标能另领一份。省略或 `0` = 不设总预算，此时被隔离进辅助进程执行的那几步（见「期限与阻塞隔离」）仍有内置 5000 ms 上限兜底，`--capture printwindow` / `dwm` 不再能无限期卡住；**给了 `--timeout-ms` 之后，隔离调用拿到的就是那一刻的剩余预算全额**——不再有第二道内置上限，辅助进程自己也不再挂一个与预算无关的固定秒表。预算耗尽时**还没开工的那一步被拒**，它那张图**不写**：按阶段报 `match.timeout`（`stage=match`）/ `capture.timeout`（等帧没等到是 `stage=capture`，预算死在编码器里是 `stage=encode`——同一个码，靠 `stage` 分这两种）/ `io.timeout`（`stage=write` / `stdout`，退出码 8）；剩下的目标不再开始，已经写好的图留着。**已经提交到一半的那个文件照样落地**（原子改名没有取消点），写完返回之后会**再复核一次期限**：这时若预算已经越过，就在交付记录之外**额外**记一条 `io.timeout`，而那张图仍在 `images` 里、`captured` 照旧计入，本次按部分成功报**退出码 `7`**（已交付 + 出错），不是那张都没落地时的 `8`。超时不回滚、也不删——盘上存在的文件是调用方自己要的，悄悄删掉等于再做一次没人要求的写。等人工确认**不计入**这条预算。只认十进制 `[0-9]+`（`0x…`、负号、下划线、指数、空白与非 ASCII 数字一律拒收），重复给出最后一个生效，最终结果由 `-v` 的 `input.timeoutMs` 回显 |
 | `--consent-timeout-ms` | | 毫秒，0–86400000 | 确认框最多等人回答多久；省略或 `0` = 一直等。超时按**拒绝**处理而绝不当作同意：报 `capture.consent_timeout` + 退出码 6、`stage=consent`。这一段单独计时，**不消耗** `--timeout-ms` 的预算（等人在读那份确认文案不算"这台机器慢"，暂停也不会把已经烧掉的预算回填）；点「是」之后那约 1 秒的关框动画缓冲属于人工阶段，不会为了赶预算被跳过，超时也绝不削减它。这是**轮询**到的期限（约 50 ms 一个切片），到点后另有约 3 秒关框宽限，所以框可能比这个数字晚一小会儿消失；期限先到就 latch，同切片里紧接着出现的「是」照样算拒绝（细节见「确认框与诊断」）。取值写法与回显同上（`input.consentTimeoutMs`） |
 | `--out` | `-o` | 路径或 `-` | `-` = 图片字节写标准输出。也可用位置参数；完全不给时等同 `--out -`。整批的最终绝对路径**在任何确认框与第一帧之前**一次算好（框上列的就是这些名字）：扩展名缺了就补，两个目标算出同一个名字就报 `io.output_collision`+8 且整批不作，绝不静默改名。`-` 不是路径，不参与展开与碰撞检测，而且**一次只交付一张图**：选中的目标多于一个而输出是 `-`（含没给输出路径）时，整批在确认框与取第一帧之前就报 `cli.stdout_multiple_targets`+1，一张都不截、一个文件都不写；判据是实际命中的目标数，所以 `--all` 只命中一个窗口时照样可以写 `-` |
@@ -51,7 +52,7 @@
 | `--notify-detail` | | `title` / `basic` / `minimal` | 通知里写多细，覆盖 `notification.detail`（默认 `title`）。`title` = 连**窗口标题本身**一起写；`basic` = 不写标题，只报归属进程 / 句柄 / 文件去向；`minimal` = 只报文件去向。判据在于"有多少内容离开本进程"：通知会进入系统通知中心，那块地方**在锁屏上也读得到**，所以这一档是使用者的明确选择而不是副作用。写错的档位 = `cli.invalid_value`+1，**不**退化成默认的 `title`（那等于把一次"我要少写点"的尝试变成"照旧把标题写上锁屏"，方向正好相反） |
 | `--purpose` | | 一句话（≤200 字符） | 调用方自己说明"这次为什么截图"，作为通知正文的第一行给人看。超过 200 字符 = `cli.purpose_too_long`+1（在解析期当场拒掉，而不是收下之后在展示层截断 —— 那会让人以为自己写的那句已经完整交出去了）。`-v` 原样回显成 `input.purpose`。**它不参与任何判据**：不选目标、不代替授权、不改变结果，也不写进配置文件（那是这一次的意图，与目标选择同一性质） |
 | `--capabilities` | | 开关 | **只读能力查询**，输出 JSON（见「只读的能力查询」一节）。问的是这台机器现在能走哪几条路线：版本与会话条件、每条通道的 `available` / `unavailable` / `unverified`、每种格式、`--yes` 实际管到哪几条内部路径、以及各种取值上限。一个像素都不取、不弹确认框、不写文件、不联网、不读环境变量，也不需要窗口条件。只接受 `--lang` / `-v` / `-q`，与截图那一套选项或输出路径同时给出 = `cli.query_conflict` + 退出码 1 |
-| `--screens` | | 开关 | **只读屏幕枚举**，输出 JSON（见「只读的屏幕枚举」一节）。列本机每块屏的编号、设备名、是否主屏、物理矩形、DPI 与旋转（问得到的话）、归属适配器关联，并写明这几种身份各自稳到哪一层；`screens[].selectors` 里的 `device:…` / `id:…` 可以直接写回 `--monitor`。一个像素都不取、不弹确认框、不写文件、不改任何显示设置。只接受 `--lang` / `-v` / `-q`，与截图那一套选项同时给出 = `cli.query_conflict` + 退出码 1 |
+| `--screens` | | 开关 | **只读屏幕/桌面枚举**，输出 JSON（`contract = screens`）。X11 上区分：**逻辑显示器**（编号、monitor 名、矩形、主屏标记）、**物理输出**（输出名、RROutput XID、CRTC、连接/活动、旋转、矩形、镜像组）与**整个根窗口桌面**（root XID、矩形）。不取像素、不弹框、不写文件、不改显示设置。`screens[].selectors.device` / `.outputs[]` 可原样写回 `--monitor`；`desktop` 表示全桌面。输出名由本次桌面连接分配，RROutput/root XID 只在本 X server 会话内可比较；跨会话 devnode 身份在 Linux 不存在，`id:` 按 `cli.platform_unsupported` 拒绝。与截图选项互斥（`cli.query_conflict` + 1） |
 | `--diagnostics` | | 开关 | **只读诊断/版本查询**，输出 JSON：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态。字段与 `--capabilities` 出自同一个判据函数，不是第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；`-v` 追加每一问的原始答案。互斥规则同上 |
 | `--show-config` | | 开关 | **只读的配置视图**，输出 JSON（`contract = configview`，字段全集见「用户偏好配置」一节）：这次点名的是哪一份、读没读到、每一项最终由哪一档定下来。不选窗口、不取像素、不弹框、不建输出目录也不建历史目录，不泄露无关文件内容。允许带着 `--config` / `--no-config` 与**要观察的那几条偏好覆盖参数**一起跑（`--lang` / `-v` / `-q` / `--capture` / `--cursor` / `--hdr` / `--out` / `--format` / `--quality` / `--no-overwrite` / `--roi` / `--client-area` / `--no-crop` / `--scale` / `--no-scale` / 两条期限 / `--history` / `--integrity-hints` / `--limit`）；与**截图意图**（窗口条件、`--monitor`、`--dry-run`、选择策略、`--yes`）、窗口查询（`--list` / `--inspect`）或环境查询（`--capabilities` / `--diagnostics` / `--screens`）同时给出 = `cli.config_view_conflict`+1。与环境查询那一条冲突码**分开给**：这一路的允许清单本来就宽（要观察的偏好都得能带着跑），拿"查询只接受 `--lang` / `-v` / `-q`"去解释它会把人引向"那我删掉 `--history`"这种与本意相反的下一步。成功时退出码 `0`、结果在 stdout |
 | `--list` | | `[<all>]`，可省略 | **只读的窗口发现**：把满足全部条件的顶层窗口列成结构化 JSON（见「只读的窗口查询」一节）。取值可省略，省略时不吃后面的参数（`--list out.png` 里 `out.png` 仍是位置参数并因此算冲突）；写 `--list=all` 时把最小化窗口也并进同一根 Z 序轴。取值只认 `all`，写成别的（`--list=allx`）报 `cli.invalid_value`+1 而不退化成默认策略 |
@@ -1530,3 +1531,40 @@ ECAPTURE.EXE --process notepad.exe --yes --out D:\shots\a.png --lang en
 ECAPTURE.EXE --process notepad.exe --yes --timeout-ms 5000 --out D:\shots\epad.png
 ECAPTURE.EXE --monitor primary --consent-timeout-ms 60000 --out D:\shots\screen.png
 ```
+
+## X11 显示器 / 全桌面 / 明确区域（Linux 构建）
+
+```bash
+# 只读：列出逻辑显示器、物理输出、镜像组、旋转与整个根窗口
+ecapture --lang zh-CN --screens
+
+# 目标层级要分清：
+#   --monitor <n|primary|device:HDMI-1|output:VGA-1>  一个逻辑显示器（一张图）
+#   --monitor all                                     每个逻辑显示器各一张（老语义）
+#   --monitor desktop                                 整个 X11 根窗口作为一张图
+#   --region x,y,w,h                                  根坐标里一块精确区域
+ecapture --monitor device:HDMI-1 --dry-run
+ecapture --monitor desktop --dry-run
+ecapture --region -1280,0,1280,720 --dry-run
+
+# 真实桌面截图一定会弹 wxWidgets 确认框；--yes 跳不过，--quiet 也不影响。
+ecapture --monitor desktop --out ~/shots/desktop.png
+ecapture --region 0,0,800,600 --scale max-width=400 --out ~/shots/region.png
+```
+
+- 坐标是根窗口/虚拟桌面**物理像素**，右下边不含。X11 根坐标通常从 `0,0` 起；共用模型仍校验负坐标。
+  区域必须完整落在当前根窗口内；空矩形、越界、坐标相加溢出、超过帧上限一律拒绝，不裁边、不平移、
+  不换成全桌面、也不改用别的抓屏工具。
+- `--screens` 的 `device:` 指逻辑显示器，`output:` 指物理输出（镜像时多个输出共享一个逻辑显示器，
+  仍落到唯一目标）。输出名由本次桌面连接分配，RROutput XID 与 root XID 只在本 X server 会话内可比较；
+  跨会话 devnode 身份在 Linux 不存在。不要保存 XID 当永久标识。
+- 确认前展示精确 `rect`；确认后等待弹框关闭与动画，再复核根范围、逻辑显示器/输出/镜像/旋转拓扑、
+  目标身份与批准区域。变化时 `capture.consent.stale` / `capture.monitor_changed` /
+  `capture.monitor_unverifiable`，旧授权不追认到新布局，也不自动换一条后端重试。
+- `images[].screenKind` 为 `monitor` / `desktop` / `region`；`rect`、`requestedRect`、`capturedRect`
+  给出实际授权与采样几何。`--scale` 在取像后只应用一次；编码与历史副本复用同一份字节，
+  主图成功而历史副本失败时保留部分成功语义。
+- X11 根图像不含由服务器独立合成的鼠标指针：`--cursor exclude` 是来源事实，`--cursor include`
+  明确拒绝而不是把指针形状画进图里。这条 8 位路径没有 HDR 广色域输出，也不预旋转/预缩放。
+- 真实多屏、旋转、热插拔与人工点框路径在本开发机未验证。测试只能使用隔离桌面或用户明确同意的范围；
+  AI 不得代点确认框、不得自动批准、不得修改显示设置或创建隐藏虚拟显示器。

@@ -253,18 +253,24 @@ void CheckMatrix() {
             Check(s != MatrixStatus::kUnknown, "每格都必须明确登记，kUnknown 不许当兜底值");
         }
     }
-    // Linux X11 这一列只有窗口枚举与窗口截图两格编译进了构建（xcomposite 单窗口通道）：
-    // 其余六格一格都不许声称已实现，Wayland 那一列整列都不许。
+    // Linux X11 这一列已编译窗口枚举、窗口存储截图、根窗口桌面截图与 wx 确认四格；
+    // 其余格不许声称已实现，Wayland 那一列整列都不许。
     Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kTargetListing)),
           "Linux X11 的窗口枚举接了进来");
     Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kWindowCapture)),
           "Linux X11 的窗口截图接了进来（xcomposite）");
+    Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kScreenCapture)),
+          "Linux X11 的根窗口桌面截图接了进来（x11desktop）");
+    Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kInteractiveGrant)),
+          "Linux X11 的程序确认接了进来（wxWidgets，桌面像素不可用 --yes 跳过）");
     for (MatrixFeature f : features) {
         const bool implemented =
-            f == MatrixFeature::kTargetListing || f == MatrixFeature::kWindowCapture;
+            f == MatrixFeature::kTargetListing || f == MatrixFeature::kWindowCapture ||
+            f == MatrixFeature::kScreenCapture || f == MatrixFeature::kInteractiveGrant ||
+            f == MatrixFeature::kCursorControl;
         if (!implemented) {
             Check(!MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, f)),
-                  "Linux X11 除窗口枚举与窗口截图外都没实现（不许把计划写成事实）");
+                  "Linux X11 除已登记的窗口/屏幕/交互授权外都不许写成已实现");
         }
         Check(!MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxWayland, f)),
               "Wayland 那一列本构建一格都没实现");

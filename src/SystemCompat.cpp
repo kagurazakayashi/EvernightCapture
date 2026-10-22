@@ -58,7 +58,8 @@ Capability AssessChannel(CaptureMethod method, bool screenMode, const OsVersion&
         case CaptureMethod::kBitBlt:
         // X11 的窗口存储与 Windows 版本无关：那一列门槛在这里不适用（0 = 没有门槛）。
         case CaptureMethod::kXComposite:
-        case CaptureMethod::kAuto: minBuild = 0; break;  // GDI 与"整条链"本身没有版本门槛
+        case CaptureMethod::kX11Desktop:
+        case CaptureMethod::kAuto: minBuild = 0; break;  // X11 后端与"整条链"本身没有版本门槛
     }
     return {Judge(os, minBuild), minBuild};
 }
@@ -77,11 +78,12 @@ const std::vector<CaptureMethod>& AutoChain(bool screenMode) {
         CaptureMethod::kWgc, CaptureMethod::kDuplication, CaptureMethod::kBitBlt};
     return screenMode ? kScreen : kWindow;
 #else
-    // Linux 本构建只有 X11 单窗口一条：auto 就是它，没有"另一条屏幕路线"可回退。
-    // 屏幕目标（--monitor 且无窗口条件）在解析期就报 capture.unsupported，不走这里。
-    (void)screenMode;
+    // Linux 的 auto 按**目标种类**分开：窗口目标只读窗口自己的重定向存储；屏幕 / 全桌面 /
+    // 明确区域目标只走 X11 根窗口后端。两条链不互相回退 —— 尤其不允许窗口内容失败后
+    // 悄悄改读桌面像素。
     static const std::vector<CaptureMethod> kWindow = {CaptureMethod::kXComposite};
-    return kWindow;
+    static const std::vector<CaptureMethod> kScreen = {CaptureMethod::kX11Desktop};
+    return screenMode ? kScreen : kWindow;
 #endif
 }
 
@@ -105,6 +107,22 @@ ChannelGate GateChannels(CaptureMethod requested, bool screenMode, const OsVersi
     // 本构建编进来的那一条通道给链。显式点名的通道若没有实现，运行期会交回
     // capture.unsupported —— 不在这里替它换一条。
     (void)os;
+    // 显式点名的通道不能跨目标种类：xcomposite 只拍窗口，x11desktop 只拍根窗口。
+    // auto 已经按 screenMode 选好链；显式错配在取帧 / 弹框之前就报，绝不偷换后端。
+    if (requested != CaptureMethod::kAuto) {
+        const bool windowOnly = requested == CaptureMethod::kXComposite;
+        const bool screenOnly = requested == CaptureMethod::kX11Desktop;
+        if ((windowOnly && screenMode) || (screenOnly && !screenMode)) {
+            Diagnostic d = EnvBase(codes::kUnsupported, L"cap.unsupported_for_screen_hint");
+            d.message = windowOnly
+                            ? Msgf(L"cap.unsupported_for_screen", CaptureMethodName(requested))
+                            : Msg(L"cap.x11.desktop_window_unsupported");
+            d.value = CaptureMethodName(requested);
+            d.backend = CaptureMethodName(requested);
+            gate.error = std::move(d);
+            return gate;
+        }
+    }
     gate.chain = requested == CaptureMethod::kAuto ? full
                                                    : std::vector<CaptureMethod>{requested};
     return gate;

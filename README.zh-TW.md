@@ -116,87 +116,89 @@ EvernightCapture (ecapture) —— 依條件擷取視窗，基於 X11（XComposi
       ecapture [條件...]                   不給輸出路徑 => 圖片按 png 寫標準輸出
       ecapture --monitor [n] <路徑>       給了 --monitor 且無視窗條件 => 該螢幕整幅截圖
 
-截圖目標（不給 --monitor 就只按下面的視窗條件尋找）
-  --monitor, -m [<n|primary|all|device:>] 目標螢幕的編號，從 1 開始、只認十進位（本次 XRandR 列舉的順序，不是穩定的身分；重新插拔或改解析度之後同一個編號可能指到另一塊螢幕）；primary = 主螢幕，all = 每塊螢幕各算一筆（用於依螢幕過濾視窗）。不給視窗條件時要求的是整個螢幕，本建置沒有桌面像素後端，一律回報 capture.unsupported；給了視窗條件時只算與該螢幕重疊的視窗，交回的仍是視窗影像。取值可省略（= 主螢幕），省略時不會吃掉後面的參數，所以 --monitor out.png 仍然可用。要點名某一個螢幕請用 --screens 交回的 device:<輸出名>（本次桌面連線裡這塊螢幕的名字，例如 HDMI-1；重新插拔或改解析度之後同一個編號可能指到另一塊螢幕）。本建置答不上跨工作階段的螢幕識別，id:<螢幕裝置路徑> 只有 Windows 才有，這裡以 cli.platform_unsupported 拒絕
+截圖目標（視窗條件，--monitor 選單塊/全部/整個桌面，或用獨立的 --region 指定明確桌面矩形）
+  --monitor, -m [<n|primary|all|desktop|device:|output:>] 目標螢幕的編號，從 1 開始、只認十進位（本次 XRandR 列舉的順序，不是穩定身分）；primary = 主螢幕，all = 每個邏輯螢幕各一筆，desktop = 整個 X11 根視窗作為一個目標。不給視窗條件時，螢幕/桌面目標讀取桌面像素，必定彈 wxWidgets 人工確認，--yes 不能跳過；給了視窗條件時只算與該螢幕重疊的視窗，交回的仍是視窗內容。取值可省略（= 主螢幕）。可用 --screens 交回的 device:<邏輯螢幕名> 或 output:<XRandR 輸出名> 點名；output: 會落到該實體輸出所屬的唯一邏輯螢幕。id:<螢幕裝置路徑> 在本平台沒有，按 cli.platform_unsupported 拒絕。明確桌面區域請用 --region，絕不把 --roi 當桌面絕對座標
+  --region <x,y,w,h>                                      明確 X11 桌面區域：x,y,width,height，單位是根視窗實體像素。X11 根座標通常從 0,0 起，但共用幾何模型仍允許負座標；任何不在根視窗內的請求會在彈框與讀取像素之前拒絕，絕不裁邊或平移，也絕不會把這些座標改讀成視窗相對裁切。這是獨立的螢幕目標，不能與 --monitor、視窗條件、--roi 或 --client-area 混用。它讀取桌面像素，所以一定由人確認，--yes 不能跳過
 
 視窗匹配條件（同一選項多次出現取並集，不同選項必須同時命中）
-  --pid <pid>                             處理程序 ID，只認十進位且大於 0
-  --process, -p <image-name>              行程映像名稱（不含路徑），忽略大小寫；依原樣比對，不會替你補副檔名——本平台的行程名稱取自 /proc/<pid>/exe 的檔名，本來就不帶副檔名（例如 xterm）
-  --exe <full-path>                       映像完整路徑，忽略大小寫
-  --title, -t <exact-title>               視窗標題精確匹配
-  --title-contains, -T <text>             視窗標題包含子字串
-  --title-regex, -R <regex>               視窗標題正則匹配，ECMAScript 語法，匹配期即校驗
+  --pid <pid>                                             處理程序 ID，只認十進位且大於 0
+  --process, -p <image-name>                              行程映像名稱（不含路徑），忽略大小寫；依原樣比對，不會替你補副檔名——本平台的行程名稱取自 /proc/<pid>/exe 的檔名，本來就不帶副檔名（例如 xterm）
+  --exe <full-path>                                       映像完整路徑，忽略大小寫
+  --title, -t <exact-title>                               視窗標題精確匹配
+  --title-contains, -T <text>                             視窗標題包含子字串
+  --title-regex, -R <regex>                               視窗標題正則匹配，ECMAScript 語法，匹配期即校驗
 
 匹配到多個視窗時（互斥）
-  --index, -i <n>                         取第 n 個視窗，從 1 開始（十進位），按可見性/疊放次序排序
-  --topmost-match                         取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
-  --bottommost-match                      取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
-  --newest                                --topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
-  --oldest                                --bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
-  --all, -a                               每個匹配視窗各存一張
+  --index, -i <n>                                         取第 n 個視窗，從 1 開始（十進位），按可見性/疊放次序排序
+  --topmost-match                                         取 Z 序最靠前的相符視窗（此刻蓋在最上面的那一個；與建立時間無關）
+  --bottommost-match                                      取 Z 序最靠後的相符視窗（此刻被壓在最下面的那一個；與建立時間無關）
+  --newest                                                --topmost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間（視窗建立時間沒有公開 API 可取），保留只為相容
+  --oldest                                                --bottommost-match 的舊名字。它選的一直是當下的 Z 序位置而不是建立時間，保留只為相容
+  --all, -a                                               每個匹配視窗各存一張
 
-交付影像的游標與 HDR 處理（本建置只有一條擷取通道：X11 XComposite 單一視窗擷取；--capture 本身是 Windows 專屬開關，在這裡會被拒絕）
-  --cursor <default|include|exclude>      畫面裡要不要滑鼠指標：default(預設，本工具一個字都不改，結果裡也不出現游標那三個鍵) / include(要) / exclude(不要)。本建置唯一的擷取通道讀的是目標視窗自己的儲存內容，那裡本來就沒有指標，也沒有能設進去也讀回來的開關，所以 include 回報 capture.cursor_unsupported，而 exclude 並不額外做什麼（那幀裡本來就沒有指標）；--cursor default 照舊交圖而 cursorEffective 寫 unverified。這一條不改變授權
-  --hdr <auto|tonemap|refuse>             HDR 來源怎麼處理：auto(預設值，本工具對色彩一個字都不改；這條選項整個沒寫時結果裡不出現色彩那組鍵) / tonemap / refuse。本建置唯一的擷取通道讀不出來源的色彩空間，所以 tonemap 與 refuse 在解析期就回報 capture.hdr_unsupported，絕不交一張被硬壓成 BGRA8 的發白圖；auto 依視窗儲存內容讀到的原樣交付，不寫色彩那組鍵。這一條不改變授權
+交付影像的游標與 HDR 處理（兩條獨立 X11 通道：xcomposite 讀視窗儲存，x11desktop 讀根視窗桌面矩形；本平台 --capture 接受 xcomposite / x11desktop / auto）
+  --capture, -C <method>                                  xcomposite（視窗內容擷取：讀目標視窗自己的重定向儲存）/ x11desktop（根視窗桌面像素，用於單一邏輯螢幕、--monitor desktop 或明確 --region）/ auto（視窗目標走 xcomposite，螢幕/桌面目標走 x11desktop，兩條路徑絕不互相回退）。Windows 專屬取值在這裡報 cli.platform_unsupported；視窗目標指定 x11desktop 或螢幕目標指定 xcomposite 報 capture.unsupported。桌面像素一定彈人工確認，--yes 不能跳過
+  --cursor <default|include|exclude>                      畫面裡要不要滑鼠游標：default（預設，本工具一個字都不改，結果裡也不出現游標那三個鍵）/ include（要）/ exclude（不要）。X11 兩條路徑都不含由 X 伺服器單獨合成的游標：xcomposite 讀視窗儲存，x11desktop 用 XGetImage(root)，兩者都沒有游標像素。所以 exclude 是來源事實，include 報 capture.cursor_unsupported；本工具絕不繪製或擦除游標形狀。--cursor default 照常交圖並寫 cursorEffective=exclude 與對應依據。這一條不改變授權
+  --hdr <auto|tonemap|refuse>                             HDR 來源怎麼處理：auto（預設值，本工具對色彩一個字都不改；這條選項整個沒寫時結果裡不出現色彩那組鍵）/ tonemap / refuse。本建置只有 8 位元 SDR 的 X11 路徑（xcomposite 視窗儲存與 x11desktop 根視窗像素），也不探測或解碼廣色域桌面來源。tonemap 與 refuse 在解析期就報 capture.hdr_unsupported，絕不交一張被硬壓成 BGRA8 的發白圖；auto 按取回位元組原樣交付，不寫色彩那組鍵。這一條不改變授權或顯示設定
 
 視窗內部裁剪與等比縮小（對交付的整張視窗畫面，依畫面自己的像素座標再裁一次；不是桌面絕對座標；順序是先裁後縮，--roi 與 --client-area 兩條互斥）
-  --roi <x,y,w,h>                         從交付的視窗整體影像裡裁出 x,y 起點、w×h 大小的一塊。原點 (0,0) 是這張影像自己的左上角像素（影像就是使用者看到的那扇視窗本身，視窗管理員畫的裝飾是另一個視窗、不在裡面），單位是實體像素且不縮放——X11 報的就是實體像素，所以這四個數永遠不會被當成桌面絕對座標。四個數只認十進位、逗號分隔；x 與 y 可為 0，w 與 h 至少 1，都不超過 16384。放不下就整張不落地：取幀之前就看得出放不下回報 match.roi_out_of_range（不彈框、不寫檔），取到幀之後才發現回報 capture.roi_invalid——不往裡挪、不裁到邊上為止、也不退回整窗交出。裁剪排在取幀之後，所以它不改變授權。結果裡 cropRect 是影像像素座標，cropScreenRect 是同一塊矩形的螢幕座標（核實得出影像原點時才寫），裁前尺寸在 fullWidth/fullHeight、裁後就是 width/height。與 --client-area 互斥
-  --client-area                           只交回視窗客戶區那一塊。本平台的交付影像本來就是這扇視窗自己的儲存內容，視窗管理員畫的裝飾是另一個（父）視窗、不在裡面，所以客戶區通常就等於整張影像，這一條通常什麼也不改；量不出幾何、或與交付影像對不上時照實回報 capture.roi_unmeasurable / capture.roi_invalid，不退回整窗交出，也不猜一個偏移。與 --roi 互斥
-  --no-crop                               取消設定檔裡那一組裁剪（本次一個裁剪都不做）；與本次的 --roi / --client-area 同時給出算衝突
-  --no-scale                              取消設定檔裡那一組縮放（本次不縮放）；與本次的 --scale 同時給出算衝突
-  --scale <key=N>                         把交付的這張圖等比縮小到上限之內：max-width=N 限寬、max-height=N 限高、max-pixels=N 限總像素數（N 都是十進位；邊長 1..16384，像素數 1..268435456）。三條互相獨立，可只給一條、也可一條裡用逗號串幾條（如 max-width=1920,max-pixels=2073600）；這一條寫多次時每條上限各記各的，重複給同一條時最後一個生效。三條都按同一個比例縮（取最緊的那一條），寬高各自向下取整；預設不放大，圖本來就在上限之內就原樣交付（結果裡 scaleApplied=false）。插值策略只有一個，而且是可預測的整數映射：最近鄰。順序是先裁（--roi / --client-area）後縮、再編碼，所以縮的是裁完的那一塊；結果裡 scaleFromWidth/scaleFromHeight 是縮之前的尺寸、width/height 是縮之後的，scaleMethod 是插值策略，映射按這個順序閉合。這一條不改變授權與影格上限：會讀桌面像素的路徑照樣一定彈框問人（--yes 不會因為最後交的是張小圖而生效），影格大到過不了影格形狀檢查的縮不回來，--roi 的越界判據也仍按原圖判
+  --roi <x,y,w,h>                                         從交付的視窗整體影像裡裁出 x,y 起點、w×h 大小的一塊。原點 (0,0) 是這張影像自己的左上角像素（影像就是使用者看到的那扇視窗本身，視窗管理員畫的裝飾是另一個視窗、不在裡面），單位是實體像素且不縮放——X11 報的就是實體像素，所以這四個數永遠不會被當成桌面絕對座標。四個數只認十進位、逗號分隔；x 與 y 可為 0，w 與 h 至少 1，都不超過 16384。放不下就整張不落地：取幀之前就看得出放不下回報 match.roi_out_of_range（不彈框、不寫檔），取到幀之後才發現回報 capture.roi_invalid——不往裡挪、不裁到邊上為止、也不退回整窗交出。裁剪排在取幀之後，所以它不改變授權。結果裡 cropRect 是影像像素座標，cropScreenRect 是同一塊矩形的螢幕座標（核實得出影像原點時才寫），裁前尺寸在 fullWidth/fullHeight、裁後就是 width/height。與 --client-area 互斥
+  --client-area                                           只交回視窗客戶區那一塊。本平台的交付影像本來就是這扇視窗自己的儲存內容，視窗管理員畫的裝飾是另一個（父）視窗、不在裡面，所以客戶區通常就等於整張影像，這一條通常什麼也不改；量不出幾何、或與交付影像對不上時照實回報 capture.roi_unmeasurable / capture.roi_invalid，不退回整窗交出，也不猜一個偏移。與 --roi 互斥
+  --no-crop                                               取消設定檔裡那一組裁剪（本次一個裁剪都不做）；與本次的 --roi / --client-area 同時給出算衝突
+  --no-scale                                              取消設定檔裡那一組縮放（本次不縮放）；與本次的 --scale 同時給出算衝突
+  --scale <key=N>                                         把交付的這張圖等比縮小到上限之內：max-width=N 限寬、max-height=N 限高、max-pixels=N 限總像素數（N 都是十進位；邊長 1..16384，像素數 1..268435456）。三條互相獨立，可只給一條、也可一條裡用逗號串幾條（如 max-width=1920,max-pixels=2073600）；這一條寫多次時每條上限各記各的，重複給同一條時最後一個生效。三條都按同一個比例縮（取最緊的那一條），寬高各自向下取整；預設不放大，圖本來就在上限之內就原樣交付（結果裡 scaleApplied=false）。插值策略只有一個，而且是可預測的整數映射：最近鄰。順序是先裁（--roi / --client-area）後縮、再編碼，所以縮的是裁完的那一塊；結果裡 scaleFromWidth/scaleFromHeight 是縮之前的尺寸、width/height 是縮之後的，scaleMethod 是插值策略，映射按這個順序閉合。這一條不改變授權與影格上限：會讀桌面像素的路徑照樣一定彈框問人（--yes 不會因為最後交的是張小圖而生效），影格大到過不了影格形狀檢查的縮不回來，--roi 的越界判據也仍按原圖判
 
 擷取授權（實際擷取預設先詢問；--yes 只在能力閘門確認這條路可用之後，免除單一視窗自身畫面的確認；系統授權層（例如 Wayland 的 Portal）是獨立的一層，--yes 既不能取消它，也不能讓它算完成）
-  --yes, -y                               只在「目標是單扇視窗自身畫面、能力閘門確認這條路徑可用、目標身分已複核」三條同時成立時，才免除這一次程式確認。本建置不從桌面像素取樣，這裡沒有哪條路徑是因為「讀螢幕」而免確認的；一次確認只覆蓋彈框裡列出的那批目標：之後才加入的目標不會沿用先前那句「是」，要嘛重新確認，要嘛拒絕。系統授權層（例如 Wayland 的 Portal）是獨立的一層：--yes 既不能取消它，也不能讓它算完成。寫 --yes=false 表示明確要問
+  --yes, -y                                               只在「目標是單一視窗自身畫面、能力閘門確認這條路徑可用、目標身分已複核」三條同時成立時，才免掉這一次程式確認。X11 兩條會讀取桌面像素的路徑（x11desktop 的螢幕 / 全桌面 / --region）一定彈框，--yes 跳不過。一次確認只覆蓋彈框裡列出的那批目標；之後才加入的目標要重新確認或被拒絕。系統授權層（例如 Wayland Portal）是獨立一層：--yes 既不取消也不滿足它。寫 --yes=false 表示明確要問
 
 執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
-  --timeout-ms <ms>                       自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時，尚未開始的階段被拒絕、那一張不落地（已經提交完成的檔案不會被回滾），依階段報 match.timeout / capture.timeout / io.timeout
-  --consent-timeout-ms <ms>               確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout；期限之後才落地的「是」也不會改判成同意。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
+  --timeout-ms <ms>                                       自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時，尚未開始的階段被拒絕、那一張不落地（已經提交完成的檔案不會被回滾），依階段報 match.timeout / capture.timeout / io.timeout
+  --consent-timeout-ms <ms>                               確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout；期限之後才落地的「是」也不會改判成同意。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
 
 輸出
-  --out, -o <path|->                      輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
-  --format, -f <name>                     強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
-  --quality <1-100>                       JPEG 品質，十進位 1..100，預設 100
-  --no-overwrite                          目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
+  --out, -o <path|->                                      輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
+  --format, -f <name>                                     強制編碼格式；不給則由輸出檔案副檔名判定，副檔名也判不出時用 png
+  --quality <1-100>                                       JPEG 品質，十進位 1..100，預設 100
+  --no-overwrite                                          目標已存在時不覆蓋，報錯退出（不給取值就是禁止覆蓋）；寫 --no-overwrite=false（0 / no / n / off）取消這條禁令，=true / 1 / yes / y / on 與不給取值同義。重複給出時最後一個生效
 
 使用者偏好設定（Windows 預設讀程式同目錄的 ECAPTURE.ini；Linux 預設讀使用者設定目錄；不搜目前目錄與別處）
-  --config <path>                         本次改用指定的那份 INI（相對路徑按目前目錄定絕對路徑）；檔案不在或讀不出就報錯，不回退到預設那份
-  --no-config                             本次完全忽略設定檔，只用內建預設與本次命令列；排障與自檢的隔離入口，不刪除也不改寫設定
-  --portable                              設定與歷史使用程式旁目錄，而不是 Linux 的使用者設定／狀態目錄；Windows 本來就跟著實際執行的 exe
+  --config <path>                                         本次改用指定的那份 INI（相對路徑按目前目錄定絕對路徑）；檔案不在或讀不出就報錯，不回退到預設那份
+  --no-config                                             本次完全忽略設定檔，只用內建預設與本次命令列；排障與自檢的隔離入口，不刪除也不改寫設定
+  --portable                                              設定與歷史使用程式旁目錄，而不是 Linux 的使用者設定／狀態目錄；Windows 本來就跟著實際執行的 exe
 
 查詢（唯讀：不截圖、不彈框、不寫檔案）
-  --capabilities                          輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
-  --diagnostics                           輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
-  --show-config                           唯讀地交出本次這份設定：讀的是哪個檔案、有沒有讀到、每一項生效偏好各來自哪個來源（不選視窗、不取像素、不彈框、不建目錄）
-  --screens                               唯讀列出本機每塊螢幕：工具編號、輸出名稱、是否主螢幕、實體矩形、問得到的 DPI 與旋轉，答不上來的那一項標 failed 而不是猜一個數。不取一個像素、不彈框、不寫檔、也不改任何顯示設定。工具編號可以直接寫進 --monitor <n>；重新插拔或改解析度之後同一個編號可能指到另一塊螢幕。每塊螢幕的輸出名也能直接寫回 --monitor device:<輸出名>。本建置答不上跨工作階段的螢幕識別，id:<螢幕裝置路徑> 只有 Windows 才有，這裡以 cli.platform_unsupported 拒絕。與擷取那一級的選項互斥（cli.query_conflict + 結束碼 1）
-  --list [<all>]                          唯讀地把滿足全部條件的頂層用戶端視窗列成 JSON（原生識別 / PID / 類名 / 標題 / 映像名 / 客戶區與外框幾何 / Z 序 / 工作階段作用域內的身分欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。X11 上原生識別是 xid，只在本連線交回的顯示工作階段作用域內有效；_NET_WM_PID 是視窗自述，歸屬只寫 declared_unverified。結果會過期，截圖時仍要複核身分
-  --inspect [<path>]                      唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到或缺失的項寫欄位級 readable / absent / denied / failed 與原碼，不建議改用管理員身分；不恢復或啟用任何視窗。X11 幾何把 WM 裝飾外框與客戶區分開，邏輯座標明確寫 unknown 而不編一個
-  --offset <n>                            視窗查詢跳過開頭 n 個（0 起）
-  --limit <n>                             視窗查詢本批最多 n 個（預設 50）
+  --capabilities                                          輸出本機能力報告（JSON）：版本、系統與工作階段條件、各條取圖路徑的 available / unavailable / unverified、格式與 --yes 的適用範圍。唯讀：不截圖、不彈確認框、不寫檔案，也不靠實際截圖來探測能力。available 只說明「這個建置里有這條路徑，且這次問出來的環境判準沒有擋掉它」，不保證某個視窗一定截得到。只接受 --lang / -v / -q，與任何截圖選項或輸出路徑同時給出 = cli.query_conflict + 結束代碼 1，一張都不截
+  --diagnostics                                           輸出診斷與版本報告（JSON）：建置版本、可核對的建置識別碼（PE 連結時間戳 + 架構 + 映像大小）、平台與後端狀態，欄位與 --capabilities 同源，不另立第二份環境資訊。預設不上傳、不擷取畫面、不列舉使用者檔案，也不輸出使用者名、環境變數與任何路徑；--verbose 追加每一問的原始答案，便於核對後再提交。互斥規則與 --capabilities 相同
+  --show-config                                           唯讀地交出本次這份設定：讀的是哪個檔案、有沒有讀到、每一項生效偏好各來自哪個來源（不選視窗、不取像素、不彈框、不建目錄）
+  --screens                                               只讀地列出本機每個邏輯螢幕及其實體輸出：工具編號、邏輯螢幕名、輸出名、主螢幕標記、根視窗實體矩形、鏡像分組與問得到的旋轉；答不上來的項標 failed 而不是猜。不取一個像素、不彈框、不寫檔案、也不改任何顯示設定。工具編號可直接寫回 --monitor <n>；device:<邏輯螢幕名>、output:<輸出名> 可原樣抄回 --monitor，desktop 表示整個根視窗。輸出 XID 與根視窗 XID 只在本 X server 工作階段內可比較。本建置沒有跨工作階段螢幕 devnode 身分，id:<路徑> 按 cli.platform_unsupported 拒絕。真實桌面截圖仍一定彈框，--yes 跳不過；與截圖選項互斥（cli.query_conflict + 退出碼 1）
+  --list [<all>]                                          唯讀地把滿足全部條件的頂層用戶端視窗列成 JSON（原生識別 / PID / 類名 / 標題 / 映像名 / 客戶區與外框幾何 / Z 序 / 工作階段作用域內的身分欄位），不截圖、不彈框、不寫檔案，也不需要輸出路徑。命中多個按 --offset / --limit 分頁而不報截圖歧義，配選擇策略算衝突。取值 all = 也列最小化視窗。X11 上原生識別是 xid，只在本連線交回的顯示工作階段作用域內有效；_NET_WM_PID 是視窗自述，歸屬只寫 declared_unverified。結果會過期，截圖時仍要複核身分
+  --inspect [<path>]                                      唯讀地檢查同一套選擇策略定出的那一扇視窗；多匹配報 match.ambiguous_window + 退出碼 5，不替你選一個。取值 path = 也寫出歸屬映像的完整路徑（預設只寫檔案名）。讀不到或缺失的項寫欄位級 readable / absent / denied / failed 與原碼，不建議改用管理員身分；不恢復或啟用任何視窗。X11 幾何把 WM 裝飾外框與客戶區分開，邏輯座標明確寫 unknown 而不編一個
+  --offset <n>                                            視窗查詢跳過開頭 n 個（0 起）
+  --limit <n>                                             視窗查詢本批最多 n 個（預設 50）
 
 其他
-  --dry-run, -d                           只解析並列出候選視窗，不截圖不寫檔案
-  --json, -j                              已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
-  --verbose, -v                           JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
-  --quiet, -q                             省略 notes；errors 無論如何都會返回；與 --verbose 同時給出時按 --verbose 處理
-  --lang, -l <language>                   文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
-  --history <on|off>                      本次要不要為每張完成交付的圖另存一份歷史副本（on / off），覆蓋設定裡那條
-  --integrity-hints <on|off>              本次要不要附完整性方面的解釋文字（on / off）；錯誤碼、原值與交付事實從來不受它影響，關掉它也修不好權限
-  --notify <on|off>                       本次每張交付完成後要不要交一條桌面通知（on / off），覆蓋配置裡那條；彈不彈都不改交付事實與退出碼
-  --notify-merge <on|off>                 本次多個目標是合併成一條通知還是每個目標一條（on / off），覆蓋配置裡那條
-  --notify-detail <title|basic|minimal>   通知裡寫多細：title 帶視窗標題、basic 只報歸屬、minimal 只報落點。通知會進系統通知中心，鎖屏上也讀得到
-  --purpose <text>                        本次截圖用途的一句話，寫進通知正文第一行；只給人讀，不參與任何判據，長度有上限
-  --help, -h                              輸出文字說明（本段）
-  --version                               輸出版本與階段
+  --dry-run, -d                                           只解析並列出候選視窗，不截圖不寫檔案
+  --json, -j                                              已廢棄的相容開關，無副作用：成功與錯誤本來就輸出 JSON
+  --verbose, -v                                           JSON 中追加 input 段（正規化後的全部輸入），並保留 notes
+  --quiet, -q                                             省略 notes；errors 無論如何都會返回；與 --verbose 同時給出時按 --verbose 處理
+  --lang, -l <language>                                   文案語言。auto(預設，跟隨系統顯示語言) / zh-CN / zh-TW / en / ja；系統語言不受支援時用 en
+  --history <on|off>                                      本次要不要為每張完成交付的圖另存一份歷史副本（on / off），覆蓋設定裡那條
+  --integrity-hints <on|off>                              本次要不要附完整性方面的解釋文字（on / off）；錯誤碼、原值與交付事實從來不受它影響，關掉它也修不好權限
+  --notify <on|off>                                       本次每張交付完成後要不要交一條桌面通知（on / off），覆蓋配置裡那條；彈不彈都不改交付事實與退出碼
+  --notify-merge <on|off>                                 本次多個目標是合併成一條通知還是每個目標一條（on / off），覆蓋配置裡那條
+  --notify-detail <title|basic|minimal>                   通知裡寫多細：title 帶視窗標題、basic 只報歸屬、minimal 只報落點。通知會進系統通知中心，鎖屏上也讀得到
+  --purpose <text>                                        本次截圖用途的一句話，寫進通知正文第一行；只給人讀，不參與任何判據，長度有上限
+  --help, -h                                              輸出文字說明（本段）
+  --version                                               輸出版本與階段
 
 寫法: --opt=value / -opt 都接受（本平台以 / 起手的是路徑，不是選項）；取值本身以 - 開頭時寫成 --title=-x，或用 -- 結束選項解析。數字取值只認十進位
 輸出: 成功與錯誤都是 JSON，只含 captured / images（另有 errors / notes，--verbose 才有 input）
       --help / --version 以及不給條件時是文字
 退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
         6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
-目前建置: 這個 Linux 建置實作了 X11 單一視窗擷取（xcomposite，讀取目標視窗自己的儲存內容）與唯讀 X11 視窗查詢；沒有桌面像素擷取後端，所以螢幕目標一律交回 capture.unsupported（結束碼 7），不交付任何影像。--list / --inspect 只列舉本連線看得到的 X11 視窗，原生 Wayland 視窗不在其中；結果把 XID 與顯示工作階段作用域一起交付，XID 不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，行程歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不恢復最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。Windows 專屬開關（--hwnd / --class / --capture）在這裡會報 cli.platform_unsupported，不會被默默忽略
+目前建置: 這個 Linux 建置有兩條獨立 X11 取像路徑。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。建置同時提供唯讀的 X11 視窗、螢幕與能力查詢。--list / --inspect 只列舉本連線看得到的 X11 視窗，原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，行程歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不恢復最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡會報 cli.platform_unsupported，不會被默默忽略
 執行環境: Linux。--capabilities / --diagnostics 以唯讀方式連線 X11、Wayland 與工作階段 D-Bus（XDG Desktop Portal），並檢查 PipeWire 套接字前提。環境變數與桌面名稱只是線索：它們不證明服務可用，也不構成授權
-Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於可以截圖，只有真正實作的後端（本建置是 x11 的 xcomposite 單視窗通道）才會被報成可用
+Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於可以截圖，只有真正實作的後端（本建置是視窗用 xcomposite、根視窗桌面矩形用 x11desktop）才會被報成可用；backends 也會寫出內部路徑與其授權範圍
 
 示例:
   ecapture --process xterm ~/shots/term.png
@@ -210,6 +212,17 @@ Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / waylan
   ecapture --capabilities  先唯讀問一次這台機器能走哪幾條路線（工作階段種類、X11 連不連得上、Portal 要不要人確認），再決定目標條件
 ```
 <!-- END ECAPTURE-HELP -->
+
+### X11 螢幕、整個桌面與明確區域
+
+`--screens` 把三個層次分開：**邏輯螢幕**（使用者看到的一塊螢幕，`device:<名字>` 在本次桌面連線裡點名，ordinal 只是本次列舉位置）、**實體輸出**（例如 `HDMI-1`，`output:<名字>` 會沿該輸出路徑落到唯一邏輯螢幕；鏡像輸出共享同一邏輯螢幕時仍是一個目標，輸出名由本次桌面連線分配，RROutput XID 只在本 X server 工作階段內可比較）、以及**整個桌面**（X11 根視窗，`--monitor desktop` 一張圖，`--region x,y,w,h` 取精確矩形；`--monitor all` 仍是每個邏輯螢幕各一張）。
+
+座標是根視窗/虛擬桌面實體像素，右下邊不含。X11 根座標通常從 `0,0` 起，但共用幾何模型仍校驗負座標。區域必須完整落在目前根視窗內；空矩形、越界、相加溢位或超過影格上限都會在確認框與讀取像素之前拒絕，不裁邊、不平移、不換成另一塊矩形，也不靜默退回全桌面。XRandR 的旋轉已反映在根視窗像素中，因此 x11desktop 不二次旋轉、不預先縮放；`--scale` 只在取像後套用一次，編碼與歷史副本共用同一份位元組。
+
+確認框列出精確 `rect` 與內部路徑 `x11.desktop`。人答「是」後，程式等待彈框關閉與動畫結束，再重新列舉桌面拓撲與目標；布局、鏡像組、旋轉、根範圍、目標或身分有變化時，以 `capture.consent.stale` / `capture.monitor_changed` / `capture.monitor_unverifiable` 拒絕。熱插拔與範圍改變會使授權失效；不回退到其他抓圖工具、不改顯示設定、不設定隱藏虛擬顯示器。`images[].screenKind` 寫 `monitor` / `desktop` / `region`，`rect`、`requestedRect`、`capturedRect` 記錄實際幾何。X11 根畫素本來不含由伺服器獨立合成的游標，所以 `--cursor exclude` 是來源事實、`--cursor include` 明確拒絕；這條 8 位路徑沒有 HDR 廣色域輸出。
+
+合成布局判據涵蓋負座標、跨螢幕區域、鏡像組、旋轉指紋、邊界/溢位拒絕與確認期間布局失效。本開發機沒有多螢幕或旋轉環境，因此真實多螢幕/旋轉截圖仍記為未驗證；任何真實桌面截圖仍必須由人親自確認，真實捕獲只允許在隔離桌面或使用者明確同意的測試範圍內進行。
+
 
 ## 引數寫法
 
@@ -1910,7 +1923,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | 位置 | 是什麼 | 相依約束 |
 | ---- | ------ | -------- |
 | `src/core/` | 平台無關的模型與判據：`Platform.h` 平台身分、`Geometry.h` 座標、`Frame.h` 圖像影格、`Status.h` 卡住的原因碼、`Target.h` 目標描述、`Error.h` 錯誤碼與三值結果、`Authorization.h` 像素範圍與授權層、`Capability.h` 功能矩陣 | 一條都不 include `windows.h`，也不出現 HWND / RECT / HANDLE / HRESULT / WinRT |
-| `src/` 裡這幾份共用模型與策略頭 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 與上面同一條：這些頭說的是「截什麼、批准了什麼、這一影格長成什麼樣」，與用哪家 API 弄到手無關 |
+| `src/` 裡這幾份共用模型與策略頭 | `CliOptions.h`、`Config.h`、`CaptureScope.h`、`Consent.h`、`Capture.h`、`CropGeometry.h`、`DesktopGeometry.h`、`ImageOps.h`、`ScreenMatch.h`、`ScreenIdentity.h`、`WindowMatch.h`、`WindowIdentity.h`、`DupGeometry.h`、`EnvReport.h`、`Delivery.h`、`Report.h`、`Notification.h`、`Deadline.h` | 與上面同一條：這些頭說的是「截什麼、批准了什麼、這一影格長成什麼樣」，與用哪家 API 弄到手無關 |
 | `src/platform/windows/WinBridge.h` | 核心與 Win32 之間**唯一**的轉換處：`RECT ↔ PhysRect`（單個與整批）與 `Deadline → 等待毫秒` | 只允許平台層的 `.cpp` include 它。轉換呼叫出現的那一行，就是審查看得見「這裡跨了一次平台界線」的那一行 |
 | `src/gui/` | 跨平台自有 GUI 的唯一去處，走 wxWidgets：公用對話框、按需初始化的 GUI 執行階段、授權驅動與統一通知入口都在這裡；`WxGuiProbe.cpp` 仍保留為相依探針 | 只有這一層碰 wxWidgets；`src/core/`、`Consent.cpp` 與共用模型不許 include 它，也不許被它反向定義授權判定。GUI 目標與離線判定互不相依 |
 | `src/platform/windows/`（`CaptureCommon.*`、五條通道實作、`Worker*`、`D3dDevice`、`WinrtApartment`、`Win{Window,Screen}Source`、`Win{ProcessIntegrity,SystemCompat,ErrorText,CaptureFault,CaptureBackends}`、`WinEnvReport`、`WinHdrDetect` 等 `Win*` 服務） | 【平台層 · Windows】GDI / D3D / WinRT / 命名管道 / 字串資源，以及視窗、螢幕與行程完整性問答的真實使用者 | 每個檔案開頭就寫明自己是平台層；共用核心反向 include 它們就是破界。平台檔案之間按裸檔名互相 include（Windows 建置把這一目錄加進 include 路徑） |
@@ -1940,17 +1953,14 @@ Windows 那側的原生型別，只在通道內部與輔助進程管道的線上
 | ---- | ------- | --------- | ------------- |
 | 目標選擇（列出視窗與螢幕並按條件命中） | 已實作 | 未驗證（走 X11 視窗查詢；XWayland 下只看得到 X11 視窗，原生 Wayland 視窗看不到） | 明確不做（合成器不給用戶端全域視窗清單，本工具不虛構一個） |
 | 視窗截圖（只含所選視窗自己的畫面） | 已實作 | 未驗證（XComposite 的 `NameWindowPixmap`：讀視窗自己的儲存，絕不讀桌面像素） | 計畫支援（走 Portal；能不能按視窗取要探測入口實作） |
-| 螢幕截圖（整塊輸出的桌面像素） | 已實作，必人工確認 | 計畫支援（本構建沒有 Linux 桌面像素路徑：螢幕目標在解析期就拒掉） | 計畫支援（Portal + PipeWire） |
-| 互動授權 | 已實作（只有程式確認框；Windows 沒有每次呼叫的系統截屏授權） | 計畫支援（Linux 還沒有程式確認框；不給 `--yes` 就拒絕，而不是悄悄放行） | 計畫支援（程式確認 + 系統授權**兩層都要**，誰也不替代誰） |
+| 螢幕截圖（單塊輸出、整個桌面或明確區域的桌面像素） | 已實作，必人工確認 | 未驗證（已實作 `x11desktop`：`--monitor`、`--monitor desktop` 與 `--region` 都讀根視窗精確矩形；合成幾何與授權狀態已判，真實多螢幕/旋轉/熱插拔未驗證） | 計畫支援（Portal + PipeWire） |
+| 互動授權 | 已實作（只有程式確認框；Windows 沒有每次呼叫的系統截屏授權） | 未驗證（共用 wxWidgets 確認框已接上；桌面像素一定問人、`--yes` 不能跳過；本步沒有真人點擊紀錄） | 計畫支援（程式確認 + 系統授權**兩層都要**，誰也不替代誰） |
 | 最小化視窗的畫面 | 明確不做（`--list=all` 能列出來，但不截取） | 明確不做（未映射視窗沒有可看的儲存；後端如實拒絕，不回一張舊 pixmap） | 明確不做（沒有視窗清單也沒有視窗代碼，沒有可指的對象） |
-| 游標（`--cursor`） | 執行期探測（WGC 那個開關有版本門檻；桌面複製那兩條登錄為不可核實） | 明確不做（游標由 X 伺服器合成，從不寫進視窗儲存：`exclude` 天然成立，`include` 直接拒絕） | 計畫支援（取決於入口給不給游標中繼資料） |
+| 游標（`--cursor`） | 執行期探測（WGC 那個開關有版本門檻；桌面複製那兩條登錄為不可核實） | 未驗證（`xcomposite` 與 `x11desktop` 的來源都不含 X 伺服器單獨合成的游標：`exclude` 成立，`include` 明確拒絕且不合成） | 計畫支援（取決於入口給不給游標中繼資料） |
 | HDR（`--hdr`） | 未驗證（tone mapping 已實作並離線逐點判過，但本專案沒有能開 HDR 的顯示器實測過） | 計畫支援（對 X11 廣色域不作任何斷言） | 計畫支援 |
 | 無圖形工作階段 | 已實作（說明 / 版本 / 設定 / 能力查詢照跑；桌面像素那幾條如實報 unavailable） | 計畫支援（說明 / 版本 / 設定 / 能力查詢必須能在沒有 `DISPLAY` 時跑；截圖要如實報出限制） | 計畫支援 |
 
-`--capabilities` 已經如實報出本構建實際帶著的 Linux X11 後端（`backends[]` 是 `xcomposite`，
-`autoChainWindow` 是 `xcomposite`，`autoChainScreen` 為空），`runtime[]` 裡 `x11` 那一格也來自同
-一份工作階段探測。上面剩下的「計畫支援」格暫時**不**寫進那份 JSON —— 現在報一堆「計畫支援」只會讓
-呼叫方誤判。矩陣、本節與 README 必須一起改。
+`--capabilities` 已經如實報出本建置實際帶著的兩條 Linux X11 後端（`backends[]`：視窗內容 `xcomposite`、根視窗桌面像素 `x11desktop`；`autoChainWindow` 是 `xcomposite`，`autoChainScreen` 是 `x11desktop`），`runtime[]` 裡 `x11` 那一格也來自同一份工作階段探測。上面剩下的「計畫支援」格暫時**不**寫進那份 JSON。矩陣、本節與原始碼登錄表必須一起改。
 
 ### 隱私界線（寫進判據，不只是寫在文件裡）
 
@@ -1961,6 +1971,11 @@ Windows 那側的原生型別，只在通道內部與輔助進程管道的線上
 3. 程式自己的確認框與作業系統的授權介面是兩層。Wayland 那一層（XDG Desktop Portal 的授權與來源選擇）
    屬於桌面服務，本程式不仿製、不替代、不自動批准；反過來 Portal 記住了工作階段也不能省掉程式那一次確認。
    `RequiredGrantLayers()` 把這一條寫成判據，`tests\core-boundary.ps1` 逐條釘住「少一層就不放行」。
+4. X11 根視窗路徑（`x11.desktop`）恆為 `PixelScope::kDesktop`：單一螢幕、全桌面與 `--region` 目標都要先過
+   wxWidgets 確認框，`XGetImage` 才可能執行；`--yes` 永遠不能豁免。確認框顯示精確批准矩形；人回答之後，
+   程式等待彈框關閉與動畫結束，再複核根範圍、邏輯螢幕/輸出/鏡像/旋轉拓撲、目標身分與批准區域。任何
+   變化都會使授權失效，一個像素都不讀。本工具不會改用其他抓圖工具、不改顯示設定、不建立隱藏虛擬顯示器。
+   X11 根視窗影像不含由伺服器獨立合成的游標，因此 `--cursor include` 明確拒絕，而不是把合成游標畫進交付圖。
 
 ### 命令列文字處理與多語資源（2026-10 遷移）
 

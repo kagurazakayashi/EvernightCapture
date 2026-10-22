@@ -8,10 +8,10 @@
 //   * diagnostics：缺少库、服务不存在、会话无法访问、连接失败、能力未实现各一条，
 //     带稳定的 detail 与下一步 hint。
 //
-// 本构建只有一条采集通道：X11 单窗口取帧（xcomposite，读窗口自己的重定向存储）。
-// 所以 backends 恰好一条、autoChainWindow 恰好一条、autoChainScreen 为空（没有桌面像素路径）。
-// 那条通道的 status 由三问算出来（X11 连上没有、服务端有没有 Composite 与 RENDER），
-// 不会因为"X11 连上了"就直接回答"可以截图"，也不会把计划能力写成运行事实。
+// 本构建有两条独立采集通道：xcomposite（窗口存储）与 x11desktop（根窗口桌面像素）。
+// autoChainWindow 与 autoChainScreen 各一条，且不互相回退。窗口通道的 status 由
+// X11 连接、Composite 与 RENDER 三问算出来；桌面通道只要求 X11 连接。两条都不会因为
+// "X11 连上了"就直接回答"某个目标一定截得到"。
 
 #include "EnvReport.h"
 
@@ -454,8 +454,37 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
         b.verifiedOnThisMachine = Tri::kUnknown;
         r.autoChainWindow.push_back(b.name);
         r.backends.push_back(std::move(b));
-        // autoChainScreen 留空：本构建没有桌面像素路径，--monitor 在解析期就报
-        // capture.unsupported，这里不把窗口通道冒充成屏幕链。
+    }
+
+    // ---- X11 根窗口桌面后端：屏幕 / 全桌面 / 明确区域 ----
+    {
+        BackendReport b;
+        b.method = CaptureMethod::kX11Desktop;
+        b.name = CaptureMethodName(b.method);
+        b.compiled = true;
+        const wchar_t* const screenPath = ScreenPathOf(b.method);
+        ConsentPathReport path;
+        path.target = L"screen";
+        path.path = screenPath;
+        path.scope = ScopeName(ScopeOf(screenPath));
+        path.consentWithoutYes = NeedsHumanConsent(screenPath, false);
+        path.consentWithYes = NeedsHumanConsent(screenPath, true);
+        b.paths.push_back(std::move(path));
+
+        const X11Facts& x11 = probe.session.x11;
+        if (!x11.compiled) {
+            b.status = CapStatus::kUnavailable;
+            b.reason = cap_reason::kNotCompiled;
+        } else if (!x11.attempted || !x11.connected) {
+            b.status = CapStatus::kUnavailable;
+            b.reason = cap_reason::kNoDisplayTopology;
+        } else {
+            b.status = CapStatus::kAvailable;
+            b.reason = cap_reason::kNone;
+        }
+        b.verifiedOnThisMachine = Tri::kUnknown;
+        r.autoChainScreen.push_back(b.name);
+        r.backends.push_back(std::move(b));
     }
 
     // ---- 光标（--cursor）----
@@ -481,6 +510,15 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
         p.excludeState = TriWord(Tri::kYes);
         r.cursor.paths.push_back(std::move(p));
     }
+    {
+        CursorPathReport p;
+        p.path = paths::kX11Desktop;
+        p.capability = CursorCapabilityName(CursorCapabilityOfPath(p.path.c_str()));
+        p.reason = CursorReasonOfPath(p.path.c_str());
+        p.includeState = TriWord(Tri::kNo);
+        p.excludeState = TriWord(Tri::kYes);
+        r.cursor.paths.push_back(std::move(p));
+    }
 
     // ---- HDR 色彩处理（--hdr）----
     r.hdr.option = L"--hdr";
@@ -500,6 +538,14 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     {
         HdrPathReport p;
         p.path = paths::kXComposite;
+        p.capability = HdrCapabilityName(HdrCapabilityOfPath(p.path.c_str()));
+        p.reason = HdrReasonOfPath(p.path.c_str());
+        p.honorsExplicitPolicy = HdrPathHonorsPolicy(p.path.c_str());
+        r.hdr.paths.push_back(std::move(p));
+    }
+    {
+        HdrPathReport p;
+        p.path = paths::kX11Desktop;
         p.capability = HdrCapabilityName(HdrCapabilityOfPath(p.path.c_str()));
         p.reason = HdrReasonOfPath(p.path.c_str());
         p.honorsExplicitPolicy = HdrPathHonorsPolicy(p.path.c_str());

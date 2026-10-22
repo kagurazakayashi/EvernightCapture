@@ -64,7 +64,7 @@ EOF
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
 SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text session-probe save-paths worker-ipc consent-state \
- image-ops crop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
+ image-ops crop-geometry desktop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -131,6 +131,12 @@ SUITE_KIND[crop-geometry]="cmake"
 SUITE_TARGET[crop-geometry]="ecapture-crop-tests"
 SUITE_NOTE[crop-geometry]="窗口内部裁剪判据（--roi / --client-area：越界拒绝不自动裁短、问不出来与放不下分两档、相加绕回在 64 位里判）"
 SUITE_PREREQ[crop-geometry]=""
+
+SUITE_LAYER[desktop-geometry]="offline"
+SUITE_KIND[desktop-geometry]="cmake"
+SUITE_TARGET[desktop-geometry]="ecapture-desktop-geometry-tests"
+SUITE_NOTE[desktop-geometry]="X11 显示器/全桌面/明确区域纯几何与状态判据（负坐标、跨屏、镜像、旋转指纹、边界/溢出拒绝、确认后布局失效；不取像素）"
+SUITE_PREREQ[desktop-geometry]=""
 
 SUITE_LAYER[codec-encode]="offline"
 SUITE_KIND[codec-encode]="cmake"

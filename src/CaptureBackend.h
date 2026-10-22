@@ -27,6 +27,7 @@
 #include "CliOptions.h"      // CaptureMethod / CursorRequest / HdrRequest / Diagnostic
 #include "Consent.h"         // ConsentGate / DesktopPermit
 #include "Deadline.h"
+#include "DesktopGeometry.h"  // DesktopTargetKind / 明确桌面区域
 #include "core/Frame.h"      // CapturedFrame（共用帧形状，后端只往这里填像素）
 #include "ScreenMatch.h"     // ScreenInfo
 #include "WindowIdentity.h"  // WindowTarget
@@ -51,7 +52,11 @@ struct CaptureWindowRequest {
 
 // 一次屏幕目标取帧的请求。dwm / printwindow 只拍窗口，屏幕目标上不存在这两种通道。
 struct CaptureScreenRequest {
-    const ScreenInfo* screen = nullptr;   // 采样对象 = 授权后复核出来的**当下**那块屏
+    // monitor 目标为授权后复核出来的**当下**那块屏；desktop / region 目标没有单屏身份，
+    // 这里为空，采样范围只看 area。后端不得在 area 之外自行扩边或挑另一块屏。
+    const ScreenInfo* screen = nullptr;
+    DesktopTargetKind targetKind = DesktopTargetKind::kMonitor;
+    PhysRect area{};                       // 精确请求的根/桌面像素矩形（右下不含）
     uint32_t timeoutMs = 0;
     const DesktopPermit* permit = nullptr;  // 屏幕路径恒为桌面像素，凭证必需
     const CursorRequest* cursor = nullptr;

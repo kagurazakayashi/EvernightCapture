@@ -28,7 +28,7 @@ usage() {
   --target <名字>                          只构建某个目标，可重复给
                                           可选：ecapture ecapture-x11-window-tests
                                                 ecapture-session-tests core-tests wgc-tests
-                                                cli-text-tests save-tests ipc-tests crop-tests
+                                                cli-text-tests save-tests ipc-tests crop-tests desktop-geometry-tests
                                                 image-tests encode-tests consent-tests
                                                 gui-probe gui-tests
   --list-targets                          打印当前平台可构建与暂不可构建的目标清单，不构建
@@ -111,7 +111,7 @@ if [ "$LIST_ONLY" -eq 1 ]; then
     else
         ec_note "这一份构建目录还没配置过，先跑一次 ./build.sh 再 --list-targets 才有清单。"
         ec_note "按 CMakeLists.txt 当前的划分，Linux 可构建：ecapture（只读查询）、ecapture-session-tests、"
-        ec_note "core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests、crop-tests、image-tests、encode-tests、consent-tests；"
+        ec_note "core-tests、wgc-tests、cli-text-tests、save-tests、ipc-tests、crop-tests、desktop-geometry-tests、image-tests、encode-tests、consent-tests；"
         ec_note "装了 wxWidgets 再加 gui-probe 与 gui-tests。"
         ec_note "Linux 采集后端仍未实现：ecapture 对截图请求返回 capture.unsupported（退出码 7）。"
     fi

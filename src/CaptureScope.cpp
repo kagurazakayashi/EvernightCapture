@@ -16,6 +16,9 @@ constexpr PathScopeEntry kTable[] = {
     {paths::kDwmThumbnail, PixelScope::kWindowContent},
     // XComposite 读的是目标窗口（及其子窗口）各自的存储，屏幕上别的东西进不了图。
     {paths::kXComposite, PixelScope::kWindowContent},
+    // X11 根窗口读取桌面/屏幕/明确区域像素：即使最终只交付一小块，也是桌面像素，
+    // --yes 对它一律不生效。
+    {paths::kX11Desktop, PixelScope::kDesktop},
     // 下面这几条都会读到屏幕上那一块区域的像素：bitblt 与 duplication 即使最终裁成窗口
     // 大小，取的仍然是"显示器上此刻的样子"；dwm.screen 是 DWM 通道内部的屏幕退路。
     {paths::kBitBltScreen, PixelScope::kDesktop},
@@ -61,6 +64,7 @@ const wchar_t* WindowPathOf(CaptureMethod method) {
         case CaptureMethod::kBitBlt: return paths::kBitBltScreen;
         case CaptureMethod::kDuplication: return paths::kDuplicationFrame;
         case CaptureMethod::kXComposite: return paths::kXComposite;
+        case CaptureMethod::kX11Desktop: return paths::kUnknown;  // 没有窗口目标路径
         case CaptureMethod::kAuto: break;  // auto 由回退链逐条展开，每条各有自己的路径名
     }
     return paths::kUnknown;
@@ -71,7 +75,8 @@ const wchar_t* ScreenPathOf(CaptureMethod method) {
         case CaptureMethod::kWgc: return paths::kScreenWgc;
         case CaptureMethod::kBitBlt: return paths::kScreenBitBlt;
         case CaptureMethod::kDuplication: return paths::kScreenDuplication;
-        // X11 本构建只做单窗口：没有"整块屏"的像素路径（那要走桌面像素与人工确认）。
+        // X11 根窗口后端只认屏幕/桌面/区域目标；不会拿窗口内容冒充桌面。
+        case CaptureMethod::kX11Desktop: return paths::kX11Desktop;
         case CaptureMethod::kXComposite: break;
         case CaptureMethod::kAuto: break;
         default: break;  // dwm / printwindow 在屏幕目标上没有可用路径，解析期已挡掉

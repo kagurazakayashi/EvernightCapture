@@ -78,6 +78,7 @@ NEUTRAL_HEADERS=(
     Config.h
     Consent.h
     CropGeometry.h
+    DesktopGeometry.h
     CaptureDiag.h
     Encoder.h
     CursorControl.h

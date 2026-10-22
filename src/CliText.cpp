@@ -69,6 +69,7 @@ std::wstring HelpText() {
     // --class / --capture 在非 Windows 构建里一给就报 cli.platform_unsupported（判据与解析层
     // 是同一个 IsWindowsOnlyOption）。省掉而不是标一句"不可用"：一行注定失败的写法不算选项。
     const auto listed = [](const OptionInfo& o) {
+        if (o.name == L"region" && !DesktopRegionTargetSupported()) return false;
         return BuildPlatform() == PlatformKind::kWindows || !IsWindowsOnlyOption(o.name);
     };
     size_t width = 0;

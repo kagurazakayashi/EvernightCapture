@@ -18,6 +18,7 @@
 #include "Consent.h"
 #include "CropGeometry.h"
 #include "CursorControl.h"   // 光标能力的闸门与 requested/effective/basis 那三个键的合成（判据在那个头文件）
+#include "DesktopGeometry.h" // 单逻辑显示器 / 整个桌面 / 明确区域的纯几何与采样前复核
 #include "Deadline.h"
 #include "Delivery.h"   // 交付那一步的接缝与记账（开工前判预算、完工后核预算，两件事分开）
 #include "Encoder.h"
@@ -50,39 +51,68 @@ constexpr uint32_t kFrameTimeoutMs = 2000;
 
 // 流水线阶段名统一用 CliOptions.h 的 stages::，这里不再另写一份字面量。
 
+std::wstring AsciiWide(const char* text) {
+    std::wstring out;
+    if (!text) return out;
+    for (const char* p = text; *p; ++p) out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(*p)));
+    return out;
+}
+
 std::wstring HwndHexOf(uint64_t hwnd) {
     wchar_t buf[24];
     swprintf(buf, 24, L"0x%08X", static_cast<unsigned>(hwnd));
     return buf;
 }
 
-// 一次截图的目标：一个窗口，或一整块屏幕。
+// 一次截图的目标：一扇窗口、一个逻辑显示器、整个桌面，或一个明确桌面区域。
 struct Target {
     bool isScreen = false;
+    DesktopTargetKind screenKind = DesktopTargetKind::kMonitor;
     WindowInfo window;
     // 选定那一刻的身份快照 + 复核要用的查询层。窗口目标在每一次真正读像素之前都要照它复核
-    //（WindowIdentity.h）；屏幕目标没有窗口身份，那边靠 ScreenIdentity.h 的
-    // CompareScreenIdentity（弹框前）与 RecheckScreenSampling（拿到桌面凭证之后、采样之前）
-    // 重新核对那块屏，win 在这里留空、也永远不会被用到。
+    //（WindowIdentity.h）；屏幕目标没有窗口身份，monitor 靠 ScreenIdentity.h 的
+    // CompareScreenIdentity / RecheckScreenSampling，desktop/region 靠 DesktopGeometry.h 的
+    // 桌面布局快照比较。win 在屏幕目标上留空、永远不会被用到。
     WindowTarget win;
     ScreenInfo screen;
     // 选定那一刻问到的屏幕身份（按标识选屏那一路才有答案）。取帧之前的复核靠它分辨
     // "还是那块屏"与"这个设备名已经发给另一块面板了"—— 只看名字的话后者看不出来。
     ScreenFacts screenFacts;
-    PhysRect area{};  // 授权与 JSON 都用它：窗口 = 整窗外框矩形，屏幕 = 该屏矩形
+    DesktopLayout layout;      // desktop/region 的确认前拓扑快照；monitor 也可用于辅助诊断
+    RegionRequest region;      // screenKind == kRegion 时的原始请求
+    PhysRect area{};           // 授权与 JSON 都用它：窗口外框 / 显示器 / 桌面 / 区域矩形
 
     // %n 用的名字
-    std::wstring Name() const { return isScreen ? ScreenDisplayName(screen) : window.title; }
+    std::wstring Name() const {
+        if (!isScreen) return window.title;
+        if (screenKind == DesktopTargetKind::kDesktop) return L"desktop";
+        if (screenKind == DesktopTargetKind::kRegion) {
+            return L"region_" + std::to_wstring(area.left) + L"_" + std::to_wstring(area.top) +
+                   L"_" + std::to_wstring(area.right - area.left) + L"x" +
+                   std::to_wstring(area.bottom - area.top);
+        }
+        return ScreenDisplayName(screen);
+    }
     // 诊断里标识"是哪个目标"：与 images[].hwnd / images[].device 同源，调用方能对上号
     std::wstring Tag() const {
-        return isScreen ? ScreenDisplayName(screen) : HwndHexOf(window.hwnd);
+        if (!isScreen) return HwndHexOf(window.hwnd);
+        if (screenKind == DesktopTargetKind::kDesktop) return L"desktop";
+        if (screenKind == DesktopTargetKind::kRegion) {
+            return L"region:" + std::to_wstring(area.left) + L"," + std::to_wstring(area.top) +
+                   L"," + std::to_wstring(area.right - area.left) + L"x" +
+                   std::to_wstring(area.bottom - area.top);
+        }
+        return ScreenDisplayName(screen);
     }
     // 给人看的那一行（弹框与 hint 用）：只有身份那一段，区域由授权判定器在弹框那一刻
     // 与它冻结的区域一起渲染 —— 文案与实际批准的范围不会有先后之差。
     std::wstring Describe() const {
-        return isScreen ? DescribeScreen(screen) : DescribeWindow(window);
+        if (!isScreen) return DescribeWindow(window);
+        if (screenKind == DesktopTargetKind::kDesktop) return DescribeDesktopLayout(layout);
+        if (screenKind == DesktopTargetKind::kRegion) return DescribeDesktopArea(area);
+        return DescribeScreen(screen);
     }
-    // 屏幕目标的"身份 + 当下值"一份快照：整屏链路的采样入口复核拿它比对（见 ScreenIdentity.h）。
+    // 逻辑显示器目标的"身份 + 当下值"快照；desktop/region 不调用它。
     ScreenCandidate Candidate() const { return ScreenCandidate{screen, screenFacts}; }
 };
 
@@ -225,10 +255,16 @@ bool CaptureOneChannel(ConsentGate& gate, const std::wstring& targetKey, const P
 // wanted 是授权快照那一刻的身份 + 当下值：授权之后、读像素之前按它再核一次那块屏还在不在、
 // 还是不是人批准时的样子（RecheckScreenSampling），采样对象换成复核答复里的**当下**候选 ——
 // 热插拔之后旧 HMONITOR 句柄可能已经不作废地指向别的面板，拿选定那一刻的句柄直接采是错的。
-bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
-                             const ScreenCandidate& wanted, CaptureMethod method,
+const wchar_t* ScreenTargetOption(const Target& t) {
+    if (t.screenKind == DesktopTargetKind::kRegion) return L"--region";
+    if (t.screenKind == DesktopTargetKind::kDesktop) return L"--monitor";
+    return L"--monitor";
+}
+
+bool CaptureScreenOneChannel(ConsentGate& gate, const Target& t, CaptureMethod method,
                              uint32_t timeoutMs, const Deadline& dl, const CursorRequest& cursor,
                              const HdrRequest& hdr, CapturedFrame* out, Diagnostic* err) {
+    const std::wstring targetKey = t.Tag();
     const CaptureBackend* backend = FindCaptureBackend(method);
     if (!backend || !backend->supportsScreen || !backend->screenPath) {
         if (err) {
@@ -242,45 +278,80 @@ bool CaptureScreenOneChannel(ConsentGate& gate, const std::wstring& targetKey,
     }
 
     // 屏幕路径永远是桌面像素：--yes 的资格与绑定核实回调在这里都没有意义（判定器内部
-    // 用拓扑快照做绑定核实），所以两项都交空。
-    AttemptAuth auth = AuthorizeAttempt(gate, backend->screenPath, targetKey,
-                                        wanted.screen.bounds, YesEligibility{},
-                                        ConsentBindingVerifier{}, err);
+    // 用拓扑快照做绑定核实），所以两项都交空。area 的精确范围就是人看到的范围。
+    AttemptAuth auth = AuthorizeAttempt(gate, backend->screenPath, targetKey, t.area,
+                                        YesEligibility{}, ConsentBindingVerifier{}, err);
     if (!auth.ok) {
         if (err && err->backend.empty()) err->backend = backend->name;
-        return false;   // 没通过授权：整块屏幕一个像素都不读
+        return false;   // 没通过授权：一个像素都不读
     }
 
-    // 凭证到手 != 那块屏还是人点头时看到的那块屏。采样入口这一问用当下的枚举结果回答：
-    // 没了 / 问不出身份 / 换了样子 / 当下矩形越出批准区域 —— 都停在这里，一个像素不读，
-    // 也不替它挑另一块屏、不把旧授权追认到新布局上（诊断沿用既有稳定码）。
-    ScreenCandidate live{};
-    const SamplingRecheck rc =
-        RecheckScreenSampling(wanted, auth.permit->Approved(),
-                              EnumScreenCandidates(wanted.facts.hasFacts), &live);
-    if (rc != SamplingRecheck::kOk) {
-        const wchar_t* backendName = CaptureMethodName(method);
-        if (rc == SamplingRecheck::kStale) {
-            CaptureDiag(err, backendName, Msg(L"cap.consent.stale"), Msg(L"cap.consent.stale_hint"),
-                        codes::kConsentStale);
-        } else if (rc == SamplingRecheck::kGone) {
-            Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"), L"--monitor",
-                         wanted.screen.deviceName, Msg(L"cap.monitor_changed_hint"), targetKey,
-                         backendName, stages::kCapture};
-            if (err) *err = std::move(d);
-        } else {
-            Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"), L"--monitor",
-                         wanted.screen.deviceName, Msg(L"cap.monitor_unverifiable_hint"), targetKey,
-                         backendName, stages::kCapture};
-            if (err) *err = std::move(d);
+    // 凭证到手 != 目标还是人点头时看到的那一份。采样入口复核分两种身份模型：
+    //   * monitor：按逻辑显示器身份、矩形与批准范围复核（热插拔 / 改分辨率 / 名字换主）；
+    //   * desktop / region：按整张桌面布局指纹 + 根窗口范围 + 目标矩形是否仍完整复核。
+    // 任何变化都停在这里，不读像素、不换目标、不把旧授权追认到新布局。
+    ScreenInfo liveScreen{};
+    bool haveLiveScreen = false;
+    if (t.screenKind == DesktopTargetKind::kMonitor) {
+        const ScreenCandidate wanted = t.Candidate();
+        ScreenCandidate live{};
+        const SamplingRecheck rc =
+            RecheckScreenSampling(wanted, auth.permit->Approved(),
+                                  EnumScreenCandidates(wanted.facts.hasFacts), &live);
+        if (rc != SamplingRecheck::kOk) {
+            const wchar_t* backendName = CaptureMethodName(method);
+            if (rc == SamplingRecheck::kStale) {
+                CaptureDiag(err, backendName, Msg(L"cap.consent.stale"),
+                            Msg(L"cap.consent.stale_hint"), codes::kConsentStale);
+            } else if (rc == SamplingRecheck::kGone) {
+                Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
+                             ScreenTargetOption(t), t.screen.deviceName,
+                             Msg(L"cap.monitor_changed_hint"), targetKey, backendName,
+                             stages::kCapture};
+                if (err) *err = std::move(d);
+            } else {
+                Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"),
+                             ScreenTargetOption(t), t.screen.deviceName,
+                             Msg(L"cap.monitor_unverifiable_hint"), targetKey, backendName,
+                             stages::kCapture};
+                if (err) *err = std::move(d);
+            }
+            return false;
         }
-        return false;
+        liveScreen = live.screen;
+        haveLiveScreen = true;
+    } else {
+        const DesktopLayout current = QueryDesktopLayout();
+        const DesktopAreaCheck rc =
+            RecheckDesktopAreaSampling(t.layout, auth.permit->Approved(), current);
+        if (rc != DesktopAreaCheck::kOk) {
+            const wchar_t* backendName = CaptureMethodName(method);
+            if (rc == DesktopAreaCheck::kStale) {
+                CaptureDiag(err, backendName, Msg(L"cap.consent.stale"),
+                            Msg(L"cap.consent.stale_hint"), codes::kConsentStale);
+            } else if (rc == DesktopAreaCheck::kGone) {
+                Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
+                             ScreenTargetOption(t), targetKey,
+                             Msg(L"cap.monitor_changed_hint"), targetKey, backendName,
+                             stages::kCapture};
+                if (err) *err = std::move(d);
+            } else {
+                Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"),
+                             ScreenTargetOption(t), targetKey,
+                             Msg(L"cap.monitor_unverifiable_hint"), targetKey, backendName,
+                             stages::kCapture};
+                if (err) *err = std::move(d);
+            }
+            return false;
+        }
     }
 
     const uint32_t wait = dl.ClampWait(timeoutMs);
 
     CaptureScreenRequest request;
-    request.screen = &live.screen;   // 采样对象 = 当下问到的那块屏（句柄与矩形都是）
+    request.screen = haveLiveScreen ? &liveScreen : nullptr;
+    request.targetKind = t.screenKind;
+    request.area = t.area;   // 精确请求：后端不许裁边、平移或换屏
     request.timeoutMs = wait;
     request.permit = &*auth.permit;
     request.cursor = &cursor;
@@ -331,8 +402,7 @@ bool CaptureWithMethod(ConsentGate& gate, const std::wstring& targetKey, const P
         });
 }
 
-bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
-                             const ScreenCandidate& wanted, CaptureMethod method,
+bool CaptureScreenWithMethod(ConsentGate& gate, const Target& target, CaptureMethod method,
                              const std::vector<CaptureMethod>& chain, uint32_t timeoutMs,
                              const Deadline& dl, const CursorRequest& cursor, const HdrRequest& hdr,
                              CapturedFrame* out, Diagnostic* err, std::vector<Diagnostic>* notes,
@@ -340,9 +410,8 @@ bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
     if (method != CaptureMethod::kAuto) {
         return CallBackend(stages::kCapture, CaptureMethodName(method),
                            [&] {
-                               return CaptureScreenOneChannel(gate, targetKey, wanted, method,
-                                                              timeoutMs, dl, cursor, hdr, out,
-                                                              err);
+                               return CaptureScreenOneChannel(gate, target, method, timeoutMs, dl,
+                                                              cursor, hdr, out, err);
                            },
                            err, fatal);
     }
@@ -352,8 +421,8 @@ bool CaptureScreenWithMethod(ConsentGate& gate, const std::wstring& targetKey,
             return CallBackend(
                 stages::kCapture, CaptureMethodName(m),
                 [&] {
-                    return CaptureScreenOneChannel(gate, targetKey, wanted, m, timeoutMs, dl,
-                                                   cursor, hdr, frame, e);
+                    return CaptureScreenOneChannel(gate, target, m, timeoutMs, dl, cursor, hdr,
+                                                   frame, e);
                 },
                 e, fat);
         });
@@ -632,15 +701,72 @@ CaptureOutcome RunCapture(const Options& opt) {
 
     std::vector<Target> targets;
     if (opt.ScreenMode()) {
-        // 屏幕目标连身份一起选定：按标识选屏那一路问到的那条跨会话标识，下面每一次取帧之前
-        // 都要拿它再核一次（只按设备名核的话，"名字被系统重新发给另一块面板"这种现场看不出来）。
-        for (const ScreenCandidate& c : SelectScreenCandidatesOf(opt.monitor, &outcome.errors)) {
-            Target t;
-            t.isScreen = true;
-            t.screen = c.screen;
-            t.screenFacts = c.facts;
-            t.area = c.screen.bounds;
-            targets.push_back(std::move(t));
+        if (opt.region.given) {
+            // 明确区域是独立的桌面目标：先问根窗口范围，再判请求是否完整落在里面。
+            // 越界在这里就拒绝，不弹框、不规划输出、不读像素。
+            const DesktopLayout layout = QueryDesktopLayout();
+            const DesktopRegionResult resolved = ResolveDesktopRegion(opt.region, layout);
+            if (resolved.status != DesktopRegionStatus::kOk) {
+                const bool layoutUnknown =
+                    resolved.status == DesktopRegionStatus::kLayoutUnavailable;
+                Diagnostic d;
+                d.code = layoutUnknown ? codes::kRegionLayoutUnavailable
+                                       : codes::kRegionOutOfRange;
+                d.message = layoutUnknown
+                                ? Msg(L"match.region_layout_unavailable")
+                                : Msgf(L"match.region_out_of_range", opt.region.written,
+                                       static_cast<unsigned long long>(opt.region.width),
+                                       static_cast<unsigned long long>(opt.region.height),
+                                       layout.known ? static_cast<long long>(layout.bounds.left) : 0,
+                                       layout.known ? static_cast<long long>(layout.bounds.top) : 0,
+                                       layout.known ? static_cast<long long>(layout.bounds.right) : 0,
+                                       layout.known ? static_cast<long long>(layout.bounds.bottom) : 0);
+                d.option = L"--region";
+                d.value = opt.region.written;
+                d.hint = layoutUnknown ? Msg(L"match.region_layout_unavailable_hint")
+                                       : Msg(L"match.region_out_of_range_hint");
+                d.stage = stages::kMatch;
+                outcome.errors.push_back(std::move(d));
+            } else {
+                Target t;
+                t.isScreen = true;
+                t.screenKind = DesktopTargetKind::kRegion;
+                t.layout = layout;
+                t.region = opt.region;
+                t.area = resolved.area;
+                targets.push_back(std::move(t));
+            }
+        } else if (opt.monitor.kind == MonitorSelector::Kind::kDesktop) {
+            // 全桌面按根窗口范围作为**一个**目标；这里的范围不是所有逻辑显示器简单拼出来的
+            // 最小外接矩形（屏间可能有空洞，见 DesktopGeometry.h）。
+            const DesktopLayout layout = QueryDesktopLayout();
+            if (!layout.known || RectIsEmpty(layout.bounds)) {
+                Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"),
+                             L"--monitor", L"desktop",
+                             Msg(L"cap.monitor_unverifiable_hint"), L"desktop"};
+                d.stage = stages::kMatch;
+                outcome.errors.push_back(std::move(d));
+            } else {
+                Target t;
+                t.isScreen = true;
+                t.screenKind = DesktopTargetKind::kDesktop;
+                t.layout = layout;
+                t.area = layout.bounds;
+                targets.push_back(std::move(t));
+            }
+        } else {
+            // 逻辑显示器目标连身份一起选定：按标识选屏那一路问到的那条跨会话标识，下面每一次
+            // 取帧之前都要拿它再核一次（只按设备名核的话，"名字被系统重新发给另一块面板"这种
+            // 现场看不出来）。
+            for (const ScreenCandidate& c : SelectScreenCandidatesOf(opt.monitor, &outcome.errors)) {
+                Target t;
+                t.isScreen = true;
+                t.screenKind = DesktopTargetKind::kMonitor;
+                t.screen = c.screen;
+                t.screenFacts = c.facts;
+                t.area = c.screen.bounds;
+                targets.push_back(std::move(t));
+            }
         }
     } else {
         const WindowSelection sel = PickWindows(opt, dl, &outcome.errors);
@@ -672,10 +798,12 @@ CaptureOutcome RunCapture(const Options& opt) {
         outcome.exitCode = code == codes::kAmbiguousWindow || code == codes::kMonitorAmbiguousId
                              ? EX_AMBIGUOUS
                          : code == codes::kIndexOutOfRange || code == codes::kMonitorOutOfRange ||
-                                 code == codes::kInvalidRegex
+                                 code == codes::kInvalidRegex || code == codes::kRegionOutOfRange ||
+                                 code == codes::kMonitorDesktopNotAMonitor
                              ? EX_USAGE
                          : code == codes::kMatchTimeout || code == codes::kCaptureTimeout ||
-                                 code == codes::kMonitorIdUnverifiable
+                                 code == codes::kMonitorIdUnverifiable ||
+                                 code == codes::kRegionLayoutUnavailable
                              ? EX_CAPTURE_FAILED
                              : EX_NO_MATCH;
         return outcome;
@@ -685,7 +813,7 @@ CaptureOutcome RunCapture(const Options& opt) {
         std::wstring list;
         for (const Target& t : targets) {
             if (!list.empty()) list += L" | ";
-            list += t.isScreen ? DescribeScreen(t.screen) : DescribeWindow(t.window);
+            list += t.isScreen ? t.Describe() : DescribeWindow(t.window);
         }
         const wchar_t* key = targets.front().isScreen ? L"note.dry_run_monitor" : L"note.dry_run";
         outcome.notes.push_back(Diagnostic{codes::kDryRun, Msgf(key, targets.size()), L"--dry-run",
@@ -869,41 +997,66 @@ CaptureOutcome RunCapture(const Options& opt) {
                 continue;   // 这一张一个像素都不读，也不替它另找一个"看起来一样"的目标
             }
         }
-        // 屏幕目标另外要按**身份**重新核对一次：编号只是枚举位置，而设备名是系统按连接顺序发
-        // 出去的 —— 当初问得到那条跨会话标识（devnode 路径）就按它核，名字被重新发给另一块面板
-        // 时只有这条发现得了；当初问不到就照旧按名字核，不新增失败。
-        // 那块屏拔掉了就一个像素都不读；改了分辨率或位置就换成新矩形交给判定器 —— 这一问定下
-        // 弹框快照的基线。弹框之后到采样之前再变的，由判定器的确认后拓扑复核与采样入口的
-        // RecheckScreenSampling 拦下（旧的不再追认，新的必须重新给人看过）。
+        // 屏幕目标开工前按**当下**拓扑重新定一遍基线：
+        //   * monitor：身份 + 矩形（热插拔 / 改名 / 改分辨率）；
+        //   * desktop / region：整张桌面布局指纹 + 根窗口范围；desktop 的全桌面范围可以随
+        //     新根窗口更新，region 的坐标**不会**被平移或裁短，只重新判是否仍完整落在根内。
+        // 这一段发生在弹框之前，所以问的是新范围；弹框之后到采样前若再变，由授权判定器的拓扑
+        // 快照与 CaptureScreenOneChannel 的采样前复核拦下。
         if (t.isScreen) {
-            ScreenCandidate fresh{};
-            ScreenCandidate wanted{};
-            wanted.screen = t.screen;
-            wanted.facts = t.screenFacts;
-            const ScreenIdentityCheck check =
-                CompareScreenIdentity(wanted, EnumScreenCandidates(wanted.facts.hasFacts), &fresh);
-            if (check == ScreenIdentityCheck::kUnverifiable) {
-                // 这一次那一路一个标识都没问出来。这时**不**退回按名字截：那个名字可能已经
-                // 发给别的面板了，照它截就是一张没人批准过的画面。
+            const DesktopLayout current = QueryDesktopLayout();
+            if (!current.known || RectIsEmpty(current.bounds)) {
                 Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"),
-                             L"--monitor", t.screen.deviceName,
+                             ScreenTargetOption(t), t.Tag(),
                              Msg(L"cap.monitor_unverifiable_hint"), t.Tag()};
                 d.stage = stages::kCapture;
                 outcome.errors.push_back(std::move(d));
-                continue;   // 一个像素都不读，也不替它挑另一块屏
+                continue;
             }
-            if (check == ScreenIdentityCheck::kGone) {
-                Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
-                             L"--monitor", t.screen.deviceName,
-                             Msg(L"cap.monitor_changed_hint"), t.Tag()};
-                d.stage = stages::kCapture;
-                outcome.errors.push_back(std::move(d));
-                continue;   // 这一张不取帧，也不替它挑另一块屏
-            }
-            if (check == ScreenIdentityCheck::kMoved) {
-                t.screen = fresh.screen;
-                t.screenFacts = fresh.facts;
-                t.area = fresh.screen.bounds;
+            if (t.screenKind == DesktopTargetKind::kMonitor) {
+                ScreenCandidate fresh{};
+                ScreenCandidate wanted{};
+                wanted.screen = t.screen;
+                wanted.facts = t.screenFacts;
+                const ScreenIdentityCheck check =
+                    CompareScreenIdentity(wanted, EnumScreenCandidates(wanted.facts.hasFacts), &fresh);
+                if (check == ScreenIdentityCheck::kUnverifiable) {
+                    Diagnostic d{codes::kMonitorUnverifiable, Msg(L"cap.monitor_unverifiable"),
+                                 L"--monitor", t.screen.deviceName,
+                                 Msg(L"cap.monitor_unverifiable_hint"), t.Tag()};
+                    d.stage = stages::kCapture;
+                    outcome.errors.push_back(std::move(d));
+                    continue;
+                }
+                if (check == ScreenIdentityCheck::kGone) {
+                    Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
+                                 L"--monitor", t.screen.deviceName,
+                                 Msg(L"cap.monitor_changed_hint"), t.Tag()};
+                    d.stage = stages::kCapture;
+                    outcome.errors.push_back(std::move(d));
+                    continue;
+                }
+                if (check == ScreenIdentityCheck::kMoved) {
+                    t.screen = fresh.screen;
+                    t.screenFacts = fresh.facts;
+                    t.area = fresh.screen.bounds;
+                }
+                t.layout = current;
+            } else if (t.screenKind == DesktopTargetKind::kDesktop) {
+                t.layout = current;
+                t.area = current.bounds;
+            } else {
+                const DesktopRegionResult resolved = ResolveDesktopRegion(t.region, current);
+                if (resolved.status != DesktopRegionStatus::kOk) {
+                    Diagnostic d{codes::kMonitorChanged, Msg(L"cap.monitor_changed"),
+                                 L"--region", t.region.written,
+                                 Msg(L"cap.monitor_changed_hint"), t.Tag()};
+                    d.stage = stages::kCapture;
+                    outcome.errors.push_back(std::move(d));
+                    continue;
+                }
+                t.layout = current;
+                t.area = resolved.area;   // 同一请求坐标的精确映射；不做平移/裁边
             }
         }
         gate.SetTargetArea(t.Tag(), t.area);
@@ -914,9 +1067,12 @@ CaptureOutcome RunCapture(const Options& opt) {
         img.rect = t.area;            // 授权与实际取样的那块屏幕矩形
         if (t.isScreen) {
             img.screen = true;
-            img.monitorOrdinal = t.screen.ordinal;
-            img.deviceName = t.screen.deviceName;
-            img.primary = t.screen.primary;
+            img.screenKind = AsciiWide(DesktopTargetKindName(t.screenKind));
+            if (t.screenKind == DesktopTargetKind::kMonitor) {
+                img.monitorOrdinal = t.screen.ordinal;
+                img.deviceName = t.screen.deviceName;
+                img.primary = t.screen.primary;
+            }
         } else {
             img.hwndHex = HwndHexOf(t.window.hwnd);
             img.pid = t.window.pid;
@@ -943,12 +1099,11 @@ CaptureOutcome RunCapture(const Options& opt) {
             ok = CallBackend(stages::kCapture, CaptureMethodName(opt.capture),
                              [&] {
                                  return t.isScreen
-                                            ? CaptureScreenWithMethod(gate, t.Tag(), t.Candidate(),
-                                                                      opt.capture, caps.chain,
-                                                                      kFrameTimeoutMs, dl,
-                                                                      opt.cursor, opt.hdr, &frame,
-                                                                      &targetErr, &outcome.notes,
-                                                                      &fatal)
+                                            ? CaptureScreenWithMethod(gate, t, opt.capture,
+                                                                      caps.chain, kFrameTimeoutMs,
+                                                                      dl, opt.cursor, opt.hdr,
+                                                                      &frame, &targetErr,
+                                                                      &outcome.notes, &fatal)
                                             : CaptureWithMethod(gate, t.Tag(), t.area, t.win,
                                                                 opt.capture, caps.chain,
                                                                 kFrameTimeoutMs, dl, opt.cursor,

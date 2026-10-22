@@ -1496,5 +1496,135 @@ bool CaptureWindowStorage(Display* display, Window window, uint32_t timeoutMs,
     return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// 根窗口桌面区域
+// ---------------------------------------------------------------------------
+
+bool CaptureRootArea(Display* display, const DesktopPermit& permit, const PhysRect& area,
+                     uint32_t timeoutMs, const Deadline& deadline, CapturedFrame* out,
+                     Diagnostic* err) {
+    if (!display || !out) return false;
+    if (!permit.Covers(area)) {
+        SetFailure(err, codes::kConsentStale, L"cap.consent.stale", L"cap.consent.stale_hint",
+                   L"x11desktop", "desktop permit does not cover the requested area");
+        return false;
+    }
+    (void)timeoutMs;  // XGetImage 不可中断；这里只把预算用于读前/读后判定。
+
+    const int32_t width = RectWidth(area);
+    const int32_t height = RectHeight(area);
+    if (width <= 0 || height <= 0) {
+        SetFailure(err, codes::kFrameInvalid, L"cap.x11.root_area_invalid", nullptr,
+                   L"x11desktop", "empty desktop area");
+        return false;
+    }
+    if (static_cast<uint32_t>(width) > kFrameMaxSide ||
+        static_cast<uint32_t>(height) > kFrameMaxSide ||
+        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4ull > kFrameMaxBytes) {
+        SetFailure(err, codes::kFrameInvalid, L"cap.x11.root_area_invalid", nullptr,
+                   L"x11desktop", "desktop area exceeds frame limits");
+        return false;
+    }
+    if (deadline.Spent()) {
+        SetFailure(err, codes::kFrameTimeout, L"cap.no_detail", nullptr, L"x11desktop",
+                   "deadline spent before root capture");
+        return false;
+    }
+
+    const Window root = DefaultRootWindow(display);
+    const auto read_root = [&](XWindowAttributes* attrs) {
+        if (!attrs) return 0;
+        ErrorTrap trap(display);
+        const int ok = XGetWindowAttributes(display, root, attrs);
+        return ok == 0 || trap.Sync() != 0 ? 0 : 1;
+    };
+
+    XWindowAttributes before{};
+    if (!read_root(&before) || before.width <= 0 || before.height <= 0 ||
+        static_cast<uint64_t>(before.width) > static_cast<uint64_t>(INT32_MAX) ||
+        static_cast<uint64_t>(before.height) > static_cast<uint64_t>(INT32_MAX)) {
+        SetFailure(err, codes::kCaptureFailed, L"cap.x11.root_unavailable", nullptr,
+                   L"x11desktop", "XGetWindowAttributes(root) failed");
+        return false;
+    }
+
+    // 源像素坐标 = 桌面坐标 - 根窗口原点。完整包含判据在 64 位里做；不把越界请求
+    // 裁到根窗口边上，也不平移。XGetImage 的宽高是 unsigned，必须是真实请求尺寸。
+    const int64_t x = static_cast<int64_t>(area.left);
+    const int64_t y = static_cast<int64_t>(area.top);
+    const int64_t right = static_cast<int64_t>(area.right);
+    const int64_t bottom = static_cast<int64_t>(area.bottom);
+    if (x < 0 || y < 0 || right > before.width || bottom > before.height ||
+        right < x || bottom < y) {
+        SetFailure(err, codes::kFrameInvalid, L"cap.x11.root_area_invalid", nullptr,
+                   L"x11desktop", "desktop area is not fully inside the root window");
+        return false;
+    }
+
+    XImage* image = nullptr;
+    {
+        ErrorTrap trap(display);
+        image = XGetImage(display, root, static_cast<int>(x), static_cast<int>(y),
+                          static_cast<unsigned>(width), static_cast<unsigned>(height),
+                          AllPlanes, ZPixmap);
+        const int error = trap.Sync();
+        if (!image || error != 0) {
+            if (image) XDestroyImage(image);
+            SetFailure(err, codes::kCaptureFailed, L"cap.x11.read_pixels_failed", nullptr,
+                       L"x11desktop", std::string("XGetImage(root): ") + XErrorToken(error));
+            return false;
+        }
+        // 服务端若给了另一尺寸，不能拿请求尺寸硬标这一帧；立即拒绝，避免后续越界解释。
+        if (image->width != width || image->height != height) {
+            XDestroyImage(image);
+            SetFailure(err, codes::kMonitorChanged, L"cap.x11.root_changed", nullptr,
+                       L"x11desktop", "XImage dimensions differ from the requested desktop rect");
+            return false;
+        }
+    }
+
+    std::vector<uint8_t> pixels;
+    uint32_t stride = 0;
+    std::string detail;
+    const bool converted = ConvertXImageToBgra8(*image, &pixels, &stride, &detail);
+    XDestroyImage(image);
+    if (!converted) {
+        SetFailure(err, codes::kFrameInvalid, L"cap.x11.convert_failed", nullptr, L"x11desktop",
+                   detail);
+        return false;
+    }
+    if (deadline.Spent()) {
+        SetFailure(err, codes::kFrameTimeout, L"cap.no_detail", nullptr, L"x11desktop",
+                   "deadline spent during root pixel conversion");
+        return false;
+    }
+
+    // 读取前后根窗口必须还是同一块桌面。热插拔 / 改分辨率发生在 XGetImage 期间时，
+    // 这一帧可能跨两个布局；宁可让调用方重新枚举并重新确认，也不交付混帧。
+    XWindowAttributes after{};
+    if (!read_root(&after) || after.width != before.width || after.height != before.height) {
+        SetFailure(err, codes::kMonitorChanged, L"cap.x11.root_changed", nullptr, L"x11desktop",
+                   "root window changed during desktop capture");
+        return false;
+    }
+
+    CapturedFrame frame;
+    frame.pixels = std::move(pixels);
+    frame.width = static_cast<uint32_t>(width);
+    frame.height = static_cast<uint32_t>(height);
+    frame.stride = stride;
+    frame.reportsCrop = true;
+    frame.requestedRect = area;
+    frame.capturedRect = area;  // 精确请求；越界在上面已拒，绝不报一个裁短后的矩形
+    frame.clipped = false;
+    frame.rotation = 0;         // 根窗口像素已是最终朝向；此处再转就是重复旋转
+    frame.sourceColorSpace = FrameColorSpace::kSrgbBgra8;
+    frame.toneMapped = false;
+    frame.displayHdrState = DisplayHdrState::kUnknown;
+    *out = std::move(frame);
+    return true;
+}
+
 }  // namespace x11
 }  // namespace ecapture

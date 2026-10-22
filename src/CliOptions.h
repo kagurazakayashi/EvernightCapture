@@ -70,7 +70,12 @@ enum class CaptureMethod {
     // 合成整扇窗口。被遮挡也能截，且屏幕上别的东西进不了图 —— 所以它是窗口内容路径。
     // 只在 Linux 构建里可用；Windows 上既不接受这个取值，也没有对应实现。
     kXComposite,
-    kAuto,          // 按 wgc -> dwm -> printwindow -> bitblt 依次回退
+    // X11 根窗口：只用于屏幕 / 全桌面 / 明确区域目标。读的是 X server 根窗口当前像素，
+    // 和 xcomposite 一样会在路径登记表里判成桌面像素；它不会拿窗口内容冒充桌面，
+    // 也不会在窗口目标上被当作回退通道。XRandR 已经把旋转反映在根窗口坐标里，本通道
+    // 不重复旋转、不预缩放。
+    kX11Desktop,
+    kAuto,          // 按本平台的目标种类选择已登记链（窗口 xcomposite；屏幕 x11desktop）
 };
 
 // --monitor 的取值域：给了这个选项就有屏幕目标。
@@ -91,13 +96,29 @@ enum class CaptureMethod {
 //             "我要那一块屏"的写法。
 // 取值语法与"下一个参数要不要被吃掉"写在同一处（CliOptions.cpp 的 LooksLikeMonitorValue）。
 struct MonitorSelector {
-    enum class Kind { kPrimary, kOrdinal, kAll, kDevice, kPath };
+    // kDesktop 不是"某一块屏"：它把整个根窗口（虚拟桌面）作为一个目标。
+    // kOutput 点的是物理输出设备；镜像时多个输出共享同一个逻辑显示器，选到一个输出
+    // 仍会落到它所属的唯一逻辑显示器范围；一个输出若对不上唯一范围就报歧义。
+    enum class Kind { kPrimary, kOrdinal, kAll, kDesktop, kDevice, kOutput, kPath };
 
     bool given = false;
     Kind kind = Kind::kPrimary;
     uint32_t ordinal = 0;      // Kind::kOrdinal
-    std::wstring id;           // Kind::kDevice：不含前缀的设备名（"DISPLAY1"）；Kind::kPath：devnode 路径原样
+    std::wstring id;           // kDevice：逻辑显示器名；kOutput：输出名；kPath：devnode 路径原样
     std::wstring written;      // 用户实际敲下去的那一条取值（诊断的 value 与 -v 回显都用它）
+};
+
+// --region：明确指定根窗口/桌面坐标里的一块矩形。它是**独立的屏幕目标**，不与窗口条件、
+// --monitor、--roi / --client-area 混用。坐标允许为负（模型支持虚拟桌面负原点），
+// 但必须完整落在当下根窗口范围内；越界、空矩形、超过帧上限都在取帧前拒绝，
+// 绝不静默裁到边界或平移到别处。
+struct RegionRequest {
+    bool given = false;
+    int32_t x = 0;
+    int32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::wstring written;   // 用户原文，用于诊断与 -v 回显
 };
 
 // 只读的结构化窗口发现与检查（--list / --inspect）。两条都不取一个像素、不弹框、不写文件，
@@ -273,7 +294,7 @@ inline constexpr const wchar_t* kCapture[] = {L"wgc", L"dwm", L"printwindow", L"
 #else
 // Linux 构建只带 X11 单窗口后端：显式点名 xcomposite 或 auto（只有这一条）。
 // 其余 Windows 通道名在这里如实报"未知取值"，而不是解析通过之后到运行期才说不支持。
-inline constexpr const wchar_t* kCapture[] = {L"xcomposite", L"auto", nullptr};
+inline constexpr const wchar_t* kCapture[] = {L"xcomposite", L"x11desktop", L"auto", nullptr};
 #endif
 inline constexpr const wchar_t* kCursor[] = {L"default", L"include", L"exclude", nullptr};
 inline constexpr const wchar_t* kHdr[] = {L"auto", L"tonemap", L"refuse", nullptr};
@@ -292,6 +313,7 @@ inline constexpr const wchar_t* kNotifyDetail[] = {L"title", L"basic", L"minimal
 struct Options {
     MatchOptions match;
     MonitorSelector monitor;    // --monitor / -m
+    RegionRequest region;       // --region x,y,w,h（独立的桌面区域目标）
 
     std::wstring output;              // 位置参数或 --out；"-" 表示写标准输出
     bool outputImplicitStdout = false;  // 未给输出路径 => 按 "--out -" 处理，PNG 写标准输出
@@ -315,7 +337,9 @@ struct Options {
 #if defined(_WIN32)
     CaptureMethod capture = CaptureMethod::kWgc;   // --capture，默认 Windows.Graphics.Capture
 #else
-    CaptureMethod capture = CaptureMethod::kXComposite;  // --capture，默认 X11 窗口存储
+    // 默认 auto：窗口目标由 AutoChain 落到 xcomposite，屏幕目标落到 x11desktop。
+    // 这不改变显式 --capture 的语义，也不让一条通道偷偷跨目标种类。
+    CaptureMethod capture = CaptureMethod::kAuto;
 #endif
     bool captureExplicit = false;                  // 是否显式指定过 --capture
 
@@ -434,8 +458,9 @@ struct Options {
     bool portable = false;
 
     bool HasAnyCondition() const { return !match.IsEmpty(); }
+    bool DesktopRegionMode() const { return region.given; }
     // 屏幕目标模式：截整块屏幕，而不是某个窗口的画面
-    bool ScreenMode() const { return monitor.given && match.IsEmpty(); }
+    bool ScreenMode() const { return (monitor.given || region.given) && match.IsEmpty(); }
     // 这一次是查询而不是截图（任意一条查询命令给出即为真）
     bool QueryMode() const { return capabilities || diagnostics || screens || showConfig ||
                                     windowAction != WindowAction::kNone; }
@@ -668,6 +693,13 @@ inline constexpr const wchar_t* kRoiOutOfRange = L"match.roi_out_of_range";
 inline constexpr const wchar_t* kMonitorUnknownId = L"match.monitor_unknown_id";
 inline constexpr const wchar_t* kMonitorAmbiguousId = L"match.monitor_ambiguous_id";
 inline constexpr const wchar_t* kMonitorIdUnverifiable = L"match.monitor_id_unverifiable";
+// --monitor desktop 不是候选屏列表里的一项：调用方必须按整张桌面布局解析它。
+// 这条码只防内部误用，正常 CLI 不会走到。
+inline constexpr const wchar_t* kMonitorDesktopNotAMonitor = L"match.monitor_desktop_not_a_monitor";
+// --region 的三种取帧前下场：语法已在解析期判完，这里只判"能否完整落在当下桌面"。
+// 越界/空矩形与"桌面布局问不出来"分开，因为下一步一个是改坐标、一个是查显示服务。
+inline constexpr const wchar_t* kRegionOutOfRange = L"match.region_out_of_range";
+inline constexpr const wchar_t* kRegionLayoutUnavailable = L"match.region_layout_unavailable";
 inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
 // 确认框弹不出来（服务会话、计划任务、锁屏：那里没有人能答"是"）。它与"人答了否"分开给码，
 // 调用方才知道该换会话再来，而不是把这次失败当成"用户不让"再问一遍。退出码同样算 6。
@@ -857,6 +889,8 @@ inline constexpr uint64_t kDefaultWindowListLimit = 50ull;
 // 成立。两份数字不许各写一套 —— 相等那条判据写在 tests\crop_state.cpp 里现场核对
 //（CliOptions.h 不去 include 取帧公共件，那会把 Consent / ScreenMatch 全拖进解析层）。
 inline constexpr uint64_t kRoiMaxValue = 16384ull;
+// --region 的宽高与 --roi 共用帧单边上限；坐标本身另外按 int32 判，并允许负值。
+inline constexpr uint64_t kRegionMaxSide = kRoiMaxValue;
 // ---- --scale 的三条天花板的上限 ----
 // 边长上限与 --roi 用**同一个数**（= 帧的单边上限 kFrameMaxSide，理由同上：一条比交付图像还能宽的
 // 天花板本来就不成立）。像素数上限就是那条单边上限的平方 —— 上限之内最大的一帧有多少个像素，

@@ -21,9 +21,9 @@ help.exit1	退出码: 0 成功 / 1 参数错 / 2 未给条件 / 3 --help / 4 无
 help.exit2	        6 目标受保护或被拒绝 / 7 截图失败 / 8 写文件失败 / 9 内部异常
 help.status	当前构建: --capture 的取值全部已实现（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 回退，整屏目标按 wgc-duplication-bitblt）；输出目录必须已存在；每张成功交付的图另存一份到程序目录的 history 下（不自动清理）
 help.system	运行环境: 64 位 Windows，声明的最低内部版本 18362（Windows 10 版本 1903），只在内部版本 19045 上实测过；本机版本提供不了的路线在取帧、弹框之前就报 env.os_too_old / env.channel_unsupported（前者换通道也没用），--verbose 的 input.osBuild 与 input.captureChain 回显这一次能走哪几条
-help.status_linux	当前构建: 这个 Linux 构建实现了 X11 单窗口采集（xcomposite，读目标窗口自己的存储）与只读 X11 窗口查询；没有桌面像素采集后端，所以屏幕目标一律交回 capture.unsupported（退出码 7），不交付任何图像。--list / --inspect 只枚举本连接能看到的 X11 窗口，原生 Wayland 窗口不在其中；结果把 XID 与显示会话作用域一起交付，XID 不是可跨会话保存的永久标识；_NET_WM_PID 是窗口自述，进程归属只标 declared_unverified。只读查询不激活、不移动、不恢复最小化窗口。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可运行。Windows 专属开关（--hwnd / --class / --capture）在这里报 cli.platform_unsupported，不会被悄悄忽略
+help.status_linux	当前构建: 这个 Linux 构建有两条独立 X11 取帧路径。xcomposite 只读目标窗口自己的重定向存储；x11desktop 从 X11 根窗口读取精确矩形，用于单逻辑显示器、--monitor desktop 全桌面与明确的 --region。任何根窗口路径都属于桌面像素：一定弹出 wxWidgets 人工确认，--yes 跳不过。构建同时提供只读的 X11 窗口、显示器与能力查询。--list / --inspect 只枚举本连接能看到的 X11 窗口，原生 Wayland 窗口不在其中；XID、XRandR 输出 XID 与显示会话作用域都是快照，不是可跨会话保存的永久标识；_NET_WM_PID 是窗口自述，进程归属只标 declared_unverified。只读查询不激活、不移动、不恢复最小化窗口。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可运行。--capture 里只属于 Windows 的取值以及 --hwnd / --class 在这里报 cli.platform_unsupported，不会被悄悄忽略
 help.system_linux	运行环境: Linux。--capabilities / --diagnostics 只读连接 X11、Wayland 与会话 D-Bus（XDG Desktop Portal），并检查 PipeWire 套接字前提。环境变量与桌面名称只是线索：它们不证明服务可用，也不构成授权
-help.linux_query	Linux 预检: 先跑 --capabilities。它报告会话种类（x11 / wayland / xwayland / headless），以及每条运行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；显示服务器连得上不等于能截图，只有真正实现的后端（本构建是 x11 的 xcomposite 单窗口通道）才会被报成可用
+help.linux_query	Linux 预检: 先跑 --capabilities。它报告会话种类（x11 / wayland / xwayland / headless），以及每条运行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；显示服务器连得上不等于能截图，只有真正实现的后端（本构建是窗口用 xcomposite、根窗口桌面矩形用 x11desktop）才会被报成可用；backends 里同时写出内部路径与它的授权范围
 
 help.examples	示例:
 help.example1	%exe% --process notepad.exe D:\shots\epad.png
@@ -45,11 +45,11 @@ help.example8_linux	%exe% --process xterm --yes --timeout-ms 5000 --consent-time
 help.example9	%exe% --capabilities  先只读问一次这台机器能走哪几条路线，再决定 --capture 与目标条件
 help.example9_linux	%exe% --capabilities  先只读问一次这台机器能走哪几条路线（会话种类、X11 连不连得上、Portal 要不要人确认），再决定目标条件
 help.no_condition	未指定任何匹配条件，因此显示帮助。
-grp.target	截图目标（不给 --monitor 就只按下面的窗口条件找）
+grp.target	截图目标（窗口条件，--monitor 选单块/全部/整个桌面，或用独立的 --region 指定明确桌面矩形）
 grp.match	窗口匹配条件（同一选项多次出现取并集，不同选项必须同时命中）
 grp.pick	匹配到多个窗口时（互斥）
 grp.capture	取图方式（默认 wgc；受系统版本或窗口性质限制时会失败）
-grp.capture_linux	交付图像的光标与 HDR 处理（本构建只有一条采集通道：X11 XComposite 单窗口采集；--capture 本身是 Windows 专属开关，在这里会被拒绝）
+grp.capture_linux	交付图像的光标与 HDR 处理（两条独立 X11 通道：xcomposite 读窗口存储，x11desktop 读根窗口桌面矩形；本平台 --capture 接受 xcomposite / x11desktop / auto）
 grp.crop	窗口内部裁剪与等比缩小（对交付的整窗图像按图像自己的像素坐标再裁一次；不是桌面绝对坐标；顺序是先裁后缩，--roi 与 --client-area 两条互斥）
 grp.consent	截图授权（真实截图默认先问人；--yes 只在能力与目标核实后免掉单窗口自身画面的确认；桌面 / 屏幕 / 区域像素一律人工确认）
 grp.consent_linux	截图授权（真实截图默认先问人；--yes 只在能力闸门确认这条路可用之后，免掉单窗口自身画面的确认；系统授权层（例如 Wayland 的 Portal）是独立的一层，--yes 既不能取消它，也不能让它算已完成）
@@ -63,7 +63,7 @@ grp.query	查询（只读：不截图、不弹框、不写文件）
 # 选项说明（kOptions 目录，按选项名取 key）
 # ---------------------------------------------------------------------------
 opt.monitor	截图目标屏的编号，从 1 开始、只认十进制（本次枚举的顺序，不保证等于「显示设置」里写的标识号；要认屏请看结果里的 device）；primary = 主屏，all = 每块屏各一张。不给窗口条件时 = 整块屏幕截图，给窗口条件时 = 只算与该屏有重叠的窗口。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。整块屏幕拍的是桌面像素，一定要先弹框问人，--yes 也跳不过；按屏过滤窗口出的仍是窗口图；要点名某一块屏请用 --screens 交回的标识：device:<设备名>（本次桌面连接的名字）或 id:<监视器设备路径>（跨会话那一条）。编号在插拔或改分辨率之后可能指到另一块屏
-opt.monitor_linux	目标屏的编号，从 1 开始、只认十进制（本次 XRandR 枚举的顺序，不是稳定的身份；插拔或改分辨率之后同一个编号可能指到另一块屏）；primary = 主屏，all = 每块屏各算一条（用于按屏过滤窗口）。不给窗口条件时请求的是整块屏幕，本构建没有桌面像素后端，一律报 capture.unsupported；给了窗口条件时只算与该屏有重叠的窗口，交回的仍是窗口图。取值可省略（= 主屏），省略时不吃后面的参数，所以 --monitor out.png 仍然可用。要点名某一块屏请用 --screens 交回的 device:<输出名>（本次桌面连接里这块屏的名字，例如 HDMI-1；插拔或改分辨率之后同一个编号可能指到另一块屏）。本构建答不上跨会话的监视器标识，id:<监视器设备路径> 只有 Windows 才有，这里按 cli.platform_unsupported 拒绝
+opt.monitor_linux	目标屏的编号，从 1 开始、只认十进制（本次 XRandR 枚举的顺序，不是稳定身份）；primary = 主屏，all = 每个逻辑显示器各一条，desktop = 整个 X11 根窗口作为一个目标。不给窗口条件时，显示器/桌面目标读取桌面像素，必定弹 wxWidgets 人工确认，--yes 不能跳过；给了窗口条件时只算与该屏重叠的窗口，交回的仍是窗口内容。取值可省略（= 主屏）。可用 --screens 交回的 device:<逻辑显示器名> 或 output:<XRandR 输出名> 点名；output: 会落到该物理输出所属的唯一逻辑显示器，镜像组里不会硬拆成另一块屏。id:<监视器设备路径> 在本平台没有，按 cli.platform_unsupported 拒绝。明确的桌面区域请用 --region，绝不把 --roi 当桌面绝对坐标
 opt.hwnd	窗口句柄。纯数字按十进制，0x 前缀或含 a-f 按十六进制；推荐写 0x。不接受正负号与空白，下划线只能夹在两位十六进制数字之间
 opt.pid	进程 ID，只认十进制且大于 0
 opt.process	映像文件名（不含路径），忽略大小写；无扩展名时按 .exe 处理
@@ -86,7 +86,7 @@ opt.client-area	只交回窗口客户区那一块：在交付的整窗图像里�
 opt.client-area_linux	只交回窗口客户区那一块。本平台的交付图像本来就是这扇窗口自己的存储，窗口管理器画的装饰是另一个（父）窗口、不在里面，所以客户区通常就等于整张图像，这一条一般什么也不改；量不出几何、或与交付图像对不上时照实报 capture.roi_unmeasurable / capture.roi_invalid，不退回整窗交出，也不猜一个偏移。与 --roi 互斥
 opt.scale	把交付的这张图等比缩小到天花板之内：max-width=N 限宽、max-height=N 限高、max-pixels=N 限总像素数（N 都是十进制；边长 1..16384，像素数 1..268435456）。三条互相独立，可只给一条、也可一条里用逗号串几条（如 max-width=1920,max-pixels=2073600）；这一条写多次时每条天花板各记各的，重复给同一条时最后一个生效。三条都按同一个比例缩（取最紧的那一条），宽高各自向下取整；默认不放大，图本来就在天花板之内就原样交付（结果里 scaleApplied=false）。插值策略只有一个，而且是可预测的整数映射：最近邻。顺序是先裁（--roi / --client-area）后缩、再编码，所以缩的是裁完的那一块；结果里 scaleFromWidth/scaleFromHeight 是缩之前的尺寸、width/height 是缩之后的，scaleMethod 是插值策略，映射按这个顺序闭合。这一条不改变授权与帧上限：会读桌面像素的路径照样一定弹框问人（--yes 不会因为最后交的是张小图而生效），一帧大到过不了帧形状检查的缩不回来，--roi 的越界判据也仍按原图判
 opt.yes	只在“目标是单扇窗口自身画面、能力闸门确认这条路径可用、目标身份已复核”三条同时成立时，才免掉这一次程序确认；目标不是窗口（屏幕 / 区域），或者任一条核实没有通过，都退回正常确认。任何会从屏幕上取样的路径（bitblt、duplication、整屏任何通道、dwm 的屏幕退路）一定会弹框，这个开关跳不过。一次确认只覆盖弹框里列出的那批目标：之后才加入的目标不会沿用先前那句“是”，要么重新确认，要么拒绝。系统授权层（例如 Wayland 的 Portal）是独立的一层：--yes 既不能取消它，也不能让它算已完成。写 --yes=false 表示明确要问
-opt.yes_linux	只在“目标是单扇窗口自身画面、能力闸门确认这条路径可用、目标身份已复核”三条同时成立时，才免掉这一次程序确认。本构建不从桌面像素取样，这里没有哪条路径是因为“读屏幕”而免确认的；一次确认只覆盖弹框里列出的那批目标：之后才加入的目标不会沿用先前那句“是”，要么重新确认，要么拒绝。系统授权层（例如 Wayland 的 Portal）是独立的一层：--yes 既不能取消它，也不能让它算已完成。写 --yes=false 表示明确要问
+opt.yes_linux	只在“目标是单扇窗口自身画面、能力闸门确认这条路径可用、目标身份已复核”三条同时成立时，才免掉这一次程序确认。X11 两条会读取桌面像素的路径（x11desktop 的显示器 / 全桌面 / --region）一定弹框，--yes 跳不过。一次确认只覆盖弹框里列出的那批目标：之后才加入的目标要重新确认或被拒绝。系统授权层（例如 Wayland Portal）是独立一层：--yes 既不取消也不满足它。写 --yes=false 表示明确要问
 opt.timeout-ms	自动处理阶段的总预算（毫秒）：从选定目标开始，条件求值、后端重试、取帧、编码、写文件共用这一份剩余时间，任何一步都不会重新领一份完整预算。不给或写 0 = 不设总预算，此时每次隔离调用仍受内置上限（5000 毫秒）约束。人工确认的等待不算在这里，见 --consent-timeout-ms。预算用尽时，尚未开始的阶段被拒绝、那一张不落地（已经提交完成的文件不会被回滚），按阶段报 match.timeout / capture.timeout / io.timeout
 opt.consent-timeout-ms	确认框最多等多久（毫秒）。不给或写 0 = 一直等人回答。到点按“拒绝”处理，绝不按“默认同意”处理，报 capture.consent_timeout；期限之后才落地的“是”也不会改判成同意。这段等待单独计时，不占 --timeout-ms 那份自动预算；点“是”之后那约 1 秒的关闭动画缓冲也算在这一级，不会为了赶期限而省掉
 opt.out	输出路径；特殊值 - 表示把图片字节写到标准输出。也可用位置参数；完全不给时等同 --out -。整批输出名在取帧之前一次算好，两个目标算出同一个名字时整批报错，不会静默覆盖。标准输出一次只能交付一张图，命中多个目标时整批报参数错误、一张都不截
@@ -103,7 +103,7 @@ opt.version	输出版本与阶段
 opt.capabilities	输出本机能力报告（JSON）：版本、系统与会话条件、各条取图路线的 available / unavailable / unverified、格式与 --yes 的适用范围。只读：不截图、不弹确认框、不写文件，也不靠实际截屏来探测能力。available 只说明"这个构建里有这条路线，且这次问出来的环境判据没挡掉它"，不保证某个窗口一定截得到。只接受 --lang / -v / -q，与任何截图选项或输出路径同时给出 = cli.query_conflict + 退出码 1，一张都不截
 opt.diagnostics	输出诊断与版本报告（JSON）：构建版本、可核对的构建标识（PE 链接时间戳 + 架构 + 映像大小）、平台与后端状态，字段与 --capabilities 同源，不另立第二份环境信息。默认不上传、不采集画面、不枚举用户文件，也不输出用户名、环境变量与任何路径；--verbose 追加每一问的原始答案，便于核对后再提交。互斥规则与 --capabilities 相同
 opt.screens	只读地列出本机每块屏：工具编号、设备名、是否主屏、物理矩形、DPI 与旋转（问得到的话）、归属适配器关联，并标出这几种身份各稳到哪一层。不取一个像素、不弹框、不写文件、也不改任何显示设置。交回的 device:<设备名> 与 id:<监视器设备路径> 可以直接写进 --monitor。与截图那一级的选项互斥（cli.query_conflict + 退出码 1）；真去截整屏仍然一定弹框，--yes 跳不过
-opt.screens_linux	只读地列出本机每块屏：工具编号、输出名、是否主屏、物理矩形、问得到的 DPI 与旋转，答不上来的那一项标 failed 而不是猜一个数。不取一个像素、不弹框、不写文件、也不改任何显示设置。工具编号可以直接写进 --monitor <n>；插拔或改分辨率之后同一个编号可能指到另一块屏。每块屏的输出名也能直接写回 --monitor device:<输出名>。本构建答不上跨会话的监视器标识，id:<监视器设备路径> 只有 Windows 才有，这里按 cli.platform_unsupported 拒绝。与截图那一级的选项互斥（cli.query_conflict + 退出码 1）
+opt.screens_linux	只读地列出本机每个逻辑显示器及其物理输出：工具编号、逻辑显示器名、输出名、主屏标记、根窗口物理矩形、镜像分组与问得到的旋转；答不上来的项标 failed 而不是猜。不取一个像素、不弹框、不写文件、也不改任何显示设置。工具编号可直接写回 --monitor <n>；device:<逻辑显示器名>、output:<输出名> 可原样抄回 --monitor，desktop 表示整个根窗口。输出 XID 与根窗口 XID 只在本 X server 会话内可比较。本构建没有跨会话监视器 devnode 身份，id:<路径> 按 cli.platform_unsupported 拒绝。真实桌面截图仍一定弹框，--yes 跳不过；与截图选项互斥（cli.query_conflict + 退出码 1）
 opt.list	只读地把满足全部条件的顶层客户端窗口列成 JSON（原生标识 / PID / 类名 / 标题 / 映像名 / 客户区与外框几何 / Z 序 / 会话作用域内的身份字段），不截图、不弹框、不写文件，也不需要输出路径。多匹配按 --offset / --limit 分页而不报截图歧义，配选择策略算冲突。取值 all = 也列最小化窗口。X11 上原生标识是 xid，只在本连接的交回显示会话作用域内有效；_NET_WM_PID 是窗口自述，归属只写 declared_unverified。结果会过期，截图时仍要复核身份（详见 README）
 opt.inspect	只读地检查同一套选择策略定出的那一扇窗口；多匹配报 match.ambiguous_window + 退出码 5，不替你选一个。取值 path = 也写出归属映像的完整路径（默认只写文件名）。读不到或缺失的项写字段级 readable / absent / denied / failed 与原码，不建议改用管理员身份；不恢复或激活任何窗口。X11 几何把 WM 装饰外框与客户区分开，逻辑坐标明确写 unknown 而不是编一个
 opt.offset	窗口查询跳过开头 n 个（0 起）
@@ -448,11 +448,11 @@ match.monitor_id_unverifiable	屏幕身份没能问出来，无法按标识点�
 match.monitor_id_unverifiable_hint	显示配置那一路（QueryDisplayConfig）这次没给出答案，本机此刻有 %1 块屏幕：%2。下一步是查这台机器的显示拓扑（换一个能问出来的会话再跑 --screens），不是换 --capture——这一路一个像素都没取，没有通道可换
 match.no_window_monitor_hint	已按 --monitor %1 限缩范围；确认窗口确实与那块屏幕有重叠
 cap.unsupported_for_screen	%1 通道取的是窗口自己的画面，整屏截图用不了
-cap.unsupported_for_screen_hint	整屏截图请用 wgc / duplication / bitblt，或者 auto
+cap.unsupported_for_screen_hint	Linux 上显示器 / 全桌面 / --region 请用 x11desktop 或 auto；xcomposite 只拍窗口自己的画面。绝不为了绕过一次失败就把窗口请求改读桌面像素
 cap.screen_rect_broken	这块屏幕的矩形为空，取不到像素
 cap.wgc.step.item_monitor	GraphicsCaptureItem.CreateForMonitor
 cap.dup.no_output_for_screen_hint	这块屏幕找不到对应的 DXGI 输出（远程会话与虚拟显卡上常见，也可能那块屏由另一块显卡驱动而当前枚举不到它），改用 wgc 或 bitblt
-note.dry_run_monitor	--dry-run：已选出 %1 块屏幕，未截图也未写文件
+note.dry_run_monitor	--dry-run：已选出 %1 个屏幕/桌面目标，未截图也未写文件
 
 # ---------------------------------------------------------------------------
 # 整屏截图的人工确认（src/Consent.cpp）
@@ -521,7 +521,7 @@ note.screen_query_stale_hint	本机此刻 %1 块屏幕。编号只在本次枚�
 # env.cursor_unsupported 说的是"这台机器的版本给不了那个开关"（7），
 # cap.cursor_unverifiable 说的是"设过之后读回来不是那一件事 / 那一问没答案"（7）。
 opt.cursor	画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。只有 wgc 有能设进去也读回来的开关（要内部版本 19041 起）；printwindow / dwm / bitblt 的来源本来就没有光标，duplication 的桌面帧却可能已经把指针画在里面、又没有开关，所以 include 配这四条、exclude 配 duplication 都报 capture.cursor_unsupported（两种文案），--cursor default 照旧交图而 cursorEffective 写 unverified；绝不改走读桌面像素的通道，auto 时做不到的那几条从链里摘掉并各留一条 note.cursor_channel_skipped。这一条不改变授权；requested / effective / basis 三件事见 README
-opt.cursor_linux	画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。本构建唯一的采集通道读的是目标窗口自己的存储，那里本来就没有指针，也没有能设进去也读回来的开关，所以 include 报 capture.cursor_unsupported，而 exclude 并不额外做什么（那帧里本来就没有指针）；--cursor default 照旧交图而 cursorEffective 写 unverified。这一条不改变授权
+opt.cursor_linux	画面里要不要鼠标指针：default(默认，本工具一个字都不改，结果里也不出现光标那三个键) / include(要) / exclude(不要)。X11 两条路径都不含由 X 服务器单独合成的指针：xcomposite 读窗口存储，x11desktop 用 XGetImage(root)，两者都没有指针像素。所以 exclude 是来源事实，include 报 capture.cursor_unsupported；本工具绝不绘制或擦除指针形状。--cursor default 照常交图并写 cursorEffective=exclude 与对应依据。这一条不改变授权
 cli.cursor_value	--cursor 只能写 default / include / exclude
 cap.cursor_unsupported	%1 光标做不到：--capture %2 这条路径的来源像素里没有光标可画；做得到的是 %3
 cap.cursor_unsupported_unprovable	%1 光标做不到：--capture %2 交回的是显示器合成分，指针可能已经画在那幅桌面图像里，而这条路径没有能设进去也读得回来的开关；在这一问上说得上话的是 %3
@@ -541,7 +541,7 @@ note.cursor_channel_skipped	auto 链里的 %1 兑现不了 %2 光标，已摘掉
 # cap.hdr_unverifiable 说的是"带回一个本构建说不出色彩空间的格式 —— 布局认不出，或布局认得出
 # 而传递函数没有可靠来源（10 位包那一条），两种都不敢映射"（7）。
 opt.hdr	HDR 来源怎么处理：auto(默认值，本工具对色彩一个字都不改；这条选项整个没写时结果里不出现色彩那组键) / tonemap(把 HDR 帧按固定 tone mapping 映射成 8 位 SDR 交付) / refuse(核实来源是 HDR 就报错，绝不交一张被硬压成 BGRA8 的发白图)。本构建真兑现得了 tonemap/refuse 的只有 wgc 一条，所以配 printwindow / dwm / bitblt / duplication 在解析期报 capture.hdr_unsupported，绝不改走去读桌面像素的通道；--capture auto 时同一条判据会把兑现不了的通道从回退链里摘掉（各留一条 note.hdr_channel_skipped，一条都不剩就是 env.hdr_unsupported），而 capture.hdr_refused 这类策略结论会让整条链立刻停下。这一条不改变授权；来源色彩空间、位深与实际处理写进结果，判据见 README 与 --capabilities 的 color 段
-opt.hdr_linux	HDR 来源怎么处理：auto(默认值，本工具对色彩一个字都不改；这条选项整个没写时结果里不出现色彩那组键) / tonemap / refuse。本构建唯一的采集通道读不出来源的色彩空间，所以 tonemap 与 refuse 在解析期就报 capture.hdr_unsupported，绝不交一张被硬压成 BGRA8 的发白图；auto 按窗口存储里读到的原样交付，不写色彩那组键。这一条不改变授权
+opt.hdr_linux	HDR 来源怎么处理：auto(默认值，本工具对色彩一个字都不改；这条选项整个没写时结果里不出现色彩那组键) / tonemap / refuse。本构建只有 8 位 SDR 的 X11 路径（xcomposite 窗口存储与 x11desktop 根窗口像素），也不探测或解码广色域桌面来源。tonemap 与 refuse 在解析期就报 capture.hdr_unsupported，绝不交一张被硬压成 BGRA8 的发白图；auto 按取回字节原样交付，不写色彩那组键。这一条不改变授权或显示设置
 cli.hdr_value	--hdr 只能写 auto / tonemap / refuse
 cap.hdr_unsupported	%1 处理做不到：--capture %2 这条路径带不回广色域帧，没有 HDR 可处理；兑现得了的是 %3
 cap.hdr_unsupported_not_implemented	%1 处理做不到：--capture %2 这一步本构建没有实现，所以它交回的一张 8 位帧不能说成"来源就是 SDR"；兑现得了的是 %3
@@ -616,3 +616,23 @@ cli.purpose_too_long	--purpose 太长了
 cli.purpose_too_long_hint	这一句的上限是 %1 个字符；通知那一格放不下更长的一句话
 cli.crop_cancel_conflict_hint	--no-crop 是用来取消**配置文件里那一组**裁剪的，它与本次亲手写的 --roi / --client-area 说的正好相反。去掉 --no-crop，或去掉那一条裁剪
 cli.scale_cancel_conflict_hint	--no-scale 是用来取消**配置文件里那一组**缩放的，与本次写的 --scale 不能同时成立。去掉 --no-scale，或去掉那一条 --scale
+
+# X11 desktop targets / explicit regions
+opt.region	明确桌面区域：x,y,width,height，单位是根窗口/虚拟桌面的物理像素。x、y 可带负号，宽高至少 1、至多 16384；矩形必须完整落在当下桌面根窗口内，空矩形、越界或溢出会在弹框与读像素之前拒绝，绝不裁边或平移。这是独立的屏幕目标，不能与 --monitor、窗口条件、--roi 或 --client-area 混用。它读取桌面像素，所以一定由人确认，--yes 不能跳过
+opt.region_linux	明确 X11 桌面区域：x,y,width,height，单位是根窗口物理像素。X11 根坐标通常从 0,0 起，但共用几何模型仍允许负坐标；任何不在根窗口内的请求会在弹框与读像素之前拒绝，绝不裁边或平移，也绝不会把这些坐标改读成窗口相对裁剪。这是独立的屏幕目标，不能与 --monitor、窗口条件、--roi 或 --client-area 混用。它读取桌面像素，所以一定由人确认，--yes 不能跳过
+match.monitor_desktop_not_a_monitor	desktop 选择器不是单块显示器候选
+match.monitor_desktop_not_a_monitor_hint	--monitor desktop 只能作为屏幕目标使用；按屏过滤窗口必须给具体逻辑显示器，不能拿整个桌面静默替换成某一块屏
+match.region_out_of_range	--region %1 请求（%2x%3）没有完整落在当下桌面根窗口 %4,%5 到 %6,%7 之内
+match.region_out_of_range_hint	区域不会被裁到边界、平移或换成另一块矩形。请重新枚举桌面，再给出完整落在当前根窗口内的 x,y,width,height；坐标是根窗口/虚拟桌面物理像素，平台模型允许时可以为负
+match.region_layout_unavailable	桌面根窗口范围没有量出来，无法校验请求的区域
+match.region_layout_unavailable_hint	这不是“区域在桌面外”。请检查 X11 显示连接与会话，并重新枚举桌面；本次没有读像素、没有弹框
+cli.region_value	--region 需要 x,y,width,height，坐标只认十进制、宽高为正整数
+cli.region_value_hint	x、y 可带前导负号；宽高至少 1、至多 16384；不允许空白、正号、指数、下划线或非 ASCII 数字
+cli.region_conflict	明确的 --region 目标不能与另一个目标或窗口裁剪同时使用
+cli.region_conflict_hint	请单独用 --region 作为桌面目标，或用 --monitor 指定一个逻辑显示器/整个桌面并去掉 --roi / --client-area；本工具不替用户猜目标
+cap.x11.desktop_window_unsupported	x11desktop 读取根窗口桌面像素，不能作为窗口目标使用
+cap.x11.desktop_window_unsupported_hint	取单扇窗口请用 xcomposite 或 auto；窗口内容路径绝不会回退到桌面像素
+cap.x11.root_unavailable	读取 X11 根窗口几何失败
+cap.x11.root_area_invalid	请求的桌面矩形为空，或没有完整落在当前根窗口内
+cap.x11.root_changed	读取根窗口像素期间 X11 桌面布局发生变化，因此丢弃了这一帧
+opt.capture_linux	xcomposite(窗口内容采集：读目标窗口自己的重定向存储) / x11desktop(根窗口桌面像素，用于单逻辑显示器、--monitor desktop 或明确 --region) / auto(窗口目标走 xcomposite，屏幕/桌面目标走 x11desktop，两条路径绝不互相回退)。Windows 专属取值在这里报 cli.platform_unsupported；窗口目标点名 x11desktop 或屏幕目标点名 xcomposite 报 capture.unsupported。桌面像素一定弹人工确认，--yes 不能跳过

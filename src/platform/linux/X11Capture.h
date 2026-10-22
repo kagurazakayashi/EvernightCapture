@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "CliOptions.h"    // Diagnostic
+#include "Consent.h"       // DesktopPermit：根窗口取像素的编译期人工授权凭证
 #include "core/Frame.h"    // CapturedFrame
 #include "WindowMatch.h"   // ReadState / WindowInfo 的字段语义
 
@@ -169,6 +170,17 @@ bool ReadProcessStartTicksForPid(uint32_t pid, uint64_t* ticks, uint32_t* errorC
 bool CaptureWindowStorage(Display* display, Window window, uint32_t timeoutMs,
                           const Deadline& deadline, CapturedFrame* out, Diagnostic* err,
                           bool* childrenIncomplete);
+
+// 从 X11 根窗口读取一块**明确**的桌面区域。area 是根/桌面坐标（可为负的通用模型；
+// X11 根坐标实际通常从 0,0 起），必须完整落在当前根窗口里。本函数不做裁切、不平移、
+// 不预缩放、不再旋转：XRandR 的旋转已经体现在根窗口像素中，交付帧的 rotation 恒为 0。
+// 读回前后各量一次根窗口尺寸；变化时拒绝交帧（避免把热插拔前后的混帧当成功）。
+// DesktopPermit 不是可选的：没有经过 wxWidgets 人工确认并签发的凭证，这个入口在类型上就
+// 调不到；函数内部还会再核一次凭证是否覆盖 area。
+// source/path 由调用方（平台后端登记层）补，或保持空由调用方填。
+bool CaptureRootArea(Display* display, const DesktopPermit& permit, const PhysRect& area,
+                     uint32_t timeoutMs, const Deadline& deadline, CapturedFrame* out,
+                     Diagnostic* err);
 
 // 把一张 XImage 的像素按它自己的通道掩码 / 位深 / 字节序 / 行距转成 BGRA8 自上而下。
 // 单独暴露是为了离线判据能用合成的 XImage 逐种布局核对（15/16/24/32 位、LSB/MSB、

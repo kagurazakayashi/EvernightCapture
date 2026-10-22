@@ -137,6 +137,8 @@ inline constexpr const wchar_t* kSelfDrawnSurface = L"window_self_drawn";
 inline constexpr const wchar_t* kDwmSurface = L"dwm_redirection_surface";
 // 拷屏幕 DC（bitblt 与 dwm 的屏幕退路）：系统指针画在 DC 内容之外
 inline constexpr const wchar_t* kScreenDc = L"screen_dc_has_no_pointer";
+// X11 根窗口 XGetImage 不包含由 X server 单独合成的鼠标指针；本工具也不合成它。
+inline constexpr const wchar_t* kX11RootImage = L"x11_root_image_has_no_pointer";
 // 桌面复制的合成分：按官方说明指针要么**已经画在那幅桌面图像上**，要么由显卡单独叠加，
 // 那两种下场在这一问上分不开（规矩 6）。它说的是"这条路线保证不了"，不是"来源没有光标"。
 inline constexpr const wchar_t* kPointerUnverified = L"desktop_frame_pointer_state_unverified";
@@ -169,6 +171,8 @@ inline constexpr CursorPathEntry kCursorTable[] = {
     // X11 窗口存储（XComposite）里没有指针：指针由 X 服务器单独合成到屏幕上，不写进
     // 任何窗口的重定向位图。所以这条路径保证得回的画面里没有光标，而 include 做不到。
     {paths::kXComposite, CursorCapability::kExcludesCursor, cursor_reason::kSelfDrawnSurface},
+    // X11 根窗口像素同样不含指针；本工具不把 XFixes 指针形状合成进交付图。
+    {paths::kX11Desktop, CursorCapability::kExcludesCursor, cursor_reason::kX11RootImage},
     {paths::kDwmScreen, CursorCapability::kExcludesCursor, cursor_reason::kScreenDc},
     {paths::kBitBltScreen, CursorCapability::kExcludesCursor, cursor_reason::kScreenDc},
     {paths::kScreenBitBlt, CursorCapability::kExcludesCursor, cursor_reason::kScreenDc},
@@ -238,6 +242,7 @@ inline constexpr bool ChannelGuaranteesCursorExclusion(CaptureMethod method) {
         case CaptureMethod::kDwmThumbnail: // 读 DWM 重定向位图，来源没有光标
         case CaptureMethod::kBitBlt:       // 拷屏幕 DC，系统指针画在 DC 内容之外
         case CaptureMethod::kXComposite:   // 读 X11 窗口存储，指针不写在那里
+        case CaptureMethod::kX11Desktop:   // XGetImage(root) 不含独立合成的指针
             return true;
         case CaptureMethod::kDuplication:
         case CaptureMethod::kAuto:

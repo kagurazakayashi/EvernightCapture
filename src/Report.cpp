@@ -198,10 +198,17 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
                 j.Key(L"sourceBitDepth").Value(static_cast<long long>(img.hdr.bitDepth));
         }
         if (img.screen) {
-            // 屏幕目标没有窗口可归属：给屏幕信息，窗口那几个键整个不出现
-            j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
-            OptString(j, L"device", img.deviceName);
-            j.Key(L"primary").Value(img.primary);
+            // 屏幕目标没有窗口可归属。screenKind 把三种目标分开：
+            //   monitor = 一个逻辑显示器，才带 monitor / device / primary；
+            //   desktop = 整个根窗口一张；
+            //   region  = 根坐标里的明确区域（精确范围在 rect / requestedRect / capturedRect）。
+            const std::wstring kind = img.screenKind.empty() ? L"monitor" : img.screenKind;
+            j.Key(L"screenKind").Value(kind);
+            if (kind == L"monitor") {
+                j.Key(L"monitor").Value(static_cast<long long>(img.monitorOrdinal));
+                OptString(j, L"device", img.deviceName);
+                j.Key(L"primary").Value(img.primary);
+            }
         } else {
             OptString(j, L"hwnd", img.hwndHex);
             j.Key(L"pid").Value(static_cast<long long>(img.pid));
@@ -282,6 +289,15 @@ void WriteInputEcho(Json& j, const Options& opt) {
         }
         j.Key(L"monitorKind").Value(MonitorSelectorKindName(opt.monitor));
         j.Key(L"target").Value(opt.ScreenMode() ? L"screen" : L"window");
+    }
+    if (opt.region.given) {
+        j.Key(L"region").Obj();
+        j.Key(L"x").Value(static_cast<long long>(opt.region.x));
+        j.Key(L"y").Value(static_cast<long long>(opt.region.y));
+        j.Key(L"width").Value(static_cast<long long>(opt.region.width));
+        j.Key(L"height").Value(static_cast<long long>(opt.region.height));
+        j.End();
+        j.Key(L"target").Value(L"screen");
     }
     j.Key(L"format").Value(FormatName(opt.format));
     j.Key(L"formatGiven").Value(opt.formatExplicit);

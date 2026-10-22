@@ -12,28 +12,6 @@
 namespace ecapture {
 namespace {
 
-// 只给 ConsentGate 用的拓扑指纹：屏幕数量、设备名、每块屏的矩形都算进去。
-// 拔掉或挪动一台显示器，之前那次"我批准截这块屏幕"就不再成立了。
-uint64_t Fingerprint(const std::vector<ScreenInfo>& screens) {
-    uint64_t h = 1469598103934665603ull;  // FNV-1a
-    auto mix = [&h](uint64_t v) {
-        for (int i = 0; i < 8; ++i) {
-            h ^= (v >> (i * 8)) & 0xFFull;
-            h *= 1099511628211ull;
-        }
-    };
-    for (const ScreenInfo& s : screens) {
-        mix(static_cast<uint64_t>(s.bounds.left));
-        mix(static_cast<uint64_t>(s.bounds.top));
-        mix(static_cast<uint64_t>(s.bounds.right));
-        mix(static_cast<uint64_t>(s.bounds.bottom));
-        mix(s.primary ? 1ull : 0ull);
-        for (wchar_t c : s.deviceName) mix(static_cast<uint64_t>(static_cast<unsigned>(c)));
-    }
-    mix(screens.size());
-    return h;
-}
-
 // 问一次人：这次运行若配了自动预算（GateConfig::autoBudget），就**只在真人等待的这一段**
 // 暂停它 —— 弹框阻塞、以及同意后关闭动画的缓冲（RunMonitoredDialog 里的 Sleep）都在这段
 // 之内。暂停不回填预算：弹框之前已耗尽的预算恢复后照样是零。调用点只在真的要 Ask 时才走到
@@ -169,17 +147,6 @@ ConsentReply RunMonitoredDialog(std::shared_ptr<DialogDriver> driver, uint64_t t
 // DesktopPermit
 // ---------------------------------------------------------------------------
 
-bool DesktopPermit::Covers(const PhysRect& area) const {
-    if (RectIsEmpty(area) || RectIsEmpty(approved_)) return false;
-    // 严格包含、零容差：向外扩任何像素去采样都是把人没批准过的画面带进图里，
-    // "测量误差"不能成为扩大隐私范围的理由。而正常路径本来就量在批准矩形之内：
-    // 批准的是整窗外框（GetWindowRect 那圈含不可见边框的大矩形），从屏幕实际读走的
-    // 是 DWM 的扩展框架矩形（WindowScreenRect），它是前者**内缩**的一块；DWM 升级路径
-    // 授权与采样的都是宿主窗口矩形本身，逐像素相等。真被人挪走或换大的目标会撞在
-    // 这条线上判成 consent_stale —— 那正是要它做的事。
-    return RectContains(approved_, area);
-}
-
 // ---------------------------------------------------------------------------
 // ConsentGate
 // ---------------------------------------------------------------------------
@@ -195,7 +162,11 @@ ConsentGate::ConsentGate(GateConfig config, IConsentPrompt& prompt, TopologyProv
                                                  : SystemAuthState::kNotRequired;
 }
 
-uint64_t ConsentGate::TopologyFingerprint() const { return Fingerprint(topology_()); }
+uint64_t ConsentGate::TopologyFingerprint() const {
+    // 指纹本体只在 ScreenMatch.cpp 一处：根窗口范围、逻辑显示器、输出设备、镜像与旋转
+    // 全部算进去。这样"人确认前后只是换了镜像输出 / 换了旋转但矩形碰巧一样"也会让旧授权失效。
+    return ScreenTopologyFingerprint(topology_());
+}
 
 void ConsentGate::SetTargetArea(const std::wstring& targetKey, const PhysRect& area) {
     for (GateTarget& t : config_.targets) {

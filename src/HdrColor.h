@@ -183,6 +183,7 @@ inline constexpr const wchar_t* kDupDesktop = L"duplication_desktop_surface";   
 inline constexpr const wchar_t* kSelfDrawn8 = L"window_self_drawn_8bit";         // printwindow 自绘
 inline constexpr const wchar_t* kDwmSurface8 = L"dwm_redirection_surface_8bit";  // dwm 读重定向位图
 inline constexpr const wchar_t* kScreenDc8 = L"screen_dc_8bit";                  // bitblt 拷屏幕 DC
+inline constexpr const wchar_t* kX11Root8 = L"x11_root_image_8bit";              // XGetImage(root) 8 位
 inline constexpr const wchar_t* kNotRegistered = L"not_registered";
 // 采集之前那一次只读问答答"这块屏此刻在 HDR 模式"。它进 cap.hdr_refused 的那一个参数位：
 // 那一次拒绝是**在取帧之前**发生的，所以这里说不出这一帧的内存格式（那一句只能等取帧那一步
@@ -227,6 +228,9 @@ inline constexpr HdrPathEntry kHdrTable[] = {
     // 交付，没有广色域 / 浮点帧池，也没有 PQ/HLG 解码。显式 tonemap / refuse 因此
     // 不能落到这条路径上（解析期就报做不到）。
     {paths::kXComposite, HdrCapability::kSdrSourceOnly, hdr_reason::kSelfDrawn8},
+    // X11 根窗口 XGetImage 交回的是服务端深度的整数像素；本构建只做 BGRA8 SDR 交付，
+    // 不探测显示器 HDR 状态、不做 PQ/HLG 解码，也不预缩放。
+    {paths::kX11Desktop, HdrCapability::kSdrSourceOnly, hdr_reason::kX11Root8},
 };
 
 // 整张登记表（只读视图）：--capabilities 的 color.paths 段与离线判据都遍历这一份。

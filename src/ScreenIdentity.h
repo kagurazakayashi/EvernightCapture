@@ -20,11 +20,16 @@
 //            共同点才是要紧的那一条：它只说明"这次枚举里的位置"——既不等于「显示设置」里
 //            那个标识号，也不保证插拔、改分辨率、换接口之后还指同一块屏。
 //
-//   设备名（deviceName）  "本次桌面连接里这块屏叫什么"。两个平台都有这一层，也都能用
-//            `device:` 点名：Windows 是 GDI 视图设备名 `\\.\DISPLAY1`；X11 是 XRandR 输出名
-//            `HDMI-1`（连原子名都取不到时退化成 `X11-<编号>`，那是本工具编的占位名，不是
-//            系统给的）。它比编号稳（同一块屏在本次连接里一直是这个名字），但名字是系统按
-//            连接顺序**发**出去的：拔掉重插、换接口、禁用再启用之后可能发给另一块屏。
+//   设备名（deviceName）  "本次桌面连接里这块逻辑显示器叫什么"。两个平台都有这一层，也都
+//            能用 `device:` 点名：Windows 是 GDI 视图设备名 `\\.\DISPLAY1`；X11 是
+//            XRandR monitor 名（拿不到时退回第一个输出名或 `X11-<编号>`）。它比编号稳
+//            （同一块屏在本次连接里一直是这个名字），但名字是系统按连接顺序**发**出去的：
+//            拔掉重插、换接口、禁用再启用之后可能发给另一块屏。
+//
+//   X11 输出名（outputName）  物理输出设备这一层（`HDMI-1` / `eDP-1`）。镜像模式下多个输出
+//            共享同一个逻辑显示器，`--monitor output:<name>` 因此仍落到那个唯一逻辑范围；
+//            对不上或对上一个以上逻辑范围时照实报歧义，绝不替人挑。该标识只在本次桌面连接
+//            成立；RROutput XID 只在本次 X server 会话内可比较，不作选择器也不跨会话持久化。
 //
 //   ---- 以下三层只有答得上显示配置的平台（当前是 Windows，QueryDisplayConfig）才有 ----
 //
@@ -162,6 +167,9 @@ enum class ScreenSelect {
     kNoMatch,      // 标识写法合语法，但现在没有任何一块屏用它
     kAmbiguous,    // 同一个标识命中多块屏，绝不替调用方挑一块
     kUnverifiable, // 这一问没能给出答案，所以判不出谁对应谁
+    // kDesktop 不是一个候选屏：它必须按根窗口布局单独解析。这条值只用于防止内部把
+    // `SelectScreenCandidates` 误当成整桌面入口。
+    kNotAMonitor,
 };
 
 struct ScreenSelectResult {
@@ -223,11 +231,12 @@ SamplingRecheck RecheckScreenSampling(const ScreenCandidate& approvedTarget,
                                       const std::vector<ScreenCandidate>& current,
                                       ScreenCandidate* fresh);
 
-// 选择器的机器写法：primary / all / 编号（十进制字符串）/ device:X / id:X。
+// 选择器的机器写法：primary / all / desktop / 编号 / device:X / output:X / id:X。
 // hint、-v 的 input 段与窗口查询那一份回显读的都是这一份，不在三处各拼一遍。
 std::wstring MonitorSelectorLabel(const MonitorSelector& sel);
 
-// 选择器是哪**一种**：primary / ordinal / all / device / id（稳定 ASCII 取值，只增不改名）。
+// 选择器是哪**一种**：primary / ordinal / all / desktop / device / output / id
+//（稳定 ASCII 取值，只增不改名）。
 // 与上面那条标签分开写，因为 -v 的 input.monitor 里编号一直是数字（老契约），
 // 而调用方要判"这次到底是按编号还是按标识点的名"，不该靠猜那个字段的类型。
 const wchar_t* MonitorSelectorKindName(const MonitorSelector& sel);

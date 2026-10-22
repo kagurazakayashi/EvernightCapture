@@ -120,6 +120,7 @@ ec_select_target() {
         cli-text-tests|ecapture-cli-text-tests) EC_TARGET_CMAKE="ecapture-cli-text-tests" ;;
         save-tests|ecapture-save-tests) EC_TARGET_CMAKE="ecapture-save-tests" ;;
         crop-tests|ecapture-crop-tests) EC_TARGET_CMAKE="ecapture-crop-tests" ;;
+        desktop-geometry-tests|ecapture-desktop-geometry-tests) EC_TARGET_CMAKE="ecapture-desktop-geometry-tests" ;;
         image-tests|ecapture-image-tests) EC_TARGET_CMAKE="ecapture-image-tests" ;;
         encode-tests|ecapture-encode-tests) EC_TARGET_CMAKE="ecapture-encode-tests" ;;
         ipc-tests|ecapture-ipc-tests) EC_TARGET_CMAKE="ecapture-ipc-tests" ;;
@@ -129,8 +130,8 @@ ec_select_target() {
         gui-probe|ecapture-gui-probe) EC_TARGET_CMAKE="ecapture-gui-probe" ;;
         gui-tests|ecapture-gui-tests) EC_TARGET_CMAKE="ecapture-gui-tests" ;;
         ecapture|ecapture.exe|ECAPTURE.EXE) EC_TARGET_CMAKE="ecapture" ;;
-        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：ecapture x11-window-tests core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests consent-tests session-tests gui-probe gui-tests）" ;;
-        *) ec_die_args "不认识的目标 '$want'（可选：ecapture x11-window-tests core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests image-tests encode-tests consent-tests session-tests gui-probe gui-tests）" ;;
+        "") ec_die_args "要跟一个可执行目标，但没给名字（可选：ecapture x11-window-tests core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests desktop-geometry-tests image-tests encode-tests consent-tests session-tests gui-probe gui-tests）" ;;
+        *) ec_die_args "不认识的目标 '$want'（可选：ecapture x11-window-tests core-tests wgc-tests cli-text-tests save-tests ipc-tests crop-tests desktop-geometry-tests image-tests encode-tests consent-tests session-tests gui-probe gui-tests）" ;;
     esac
     case "$EC_TARGET_CMAKE" in
         ecapture-gui-probe|ecapture-gui-tests) EC_TARGET_LAYER="gui" ;;

@@ -37,6 +37,9 @@ inline constexpr const wchar_t* kScreenDuplication = L"screen.duplication";
 // X11 / XComposite：目标窗口自己的重定向存储（NameWindowPixmap）与它子窗口自己的存储。
 // 这条路径一个像素都不从屏幕上取，所以是窗口内容路径。
 inline constexpr const wchar_t* kXComposite = L"xcomposite";
+// X11 根窗口（桌面）像素。屏幕、整个桌面与明确区域都走这一条真实来源；
+// 它和窗口存储路径是两条独立后端，窗口目标绝不会回退到这里。
+inline constexpr const wchar_t* kX11Desktop = L"x11.desktop";
 inline constexpr const wchar_t* kUnknown = L"unknown";
 }  // namespace paths
 

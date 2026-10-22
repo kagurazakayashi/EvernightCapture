@@ -212,6 +212,60 @@ bool ParseRoiValue(const std::wstring& raw, CropRequest* out) {
     return true;
 }
 
+// --region 的取值：x,y,w,h。前两项是**根窗口/桌面绝对坐标**，允许负值；后两项是物理像素
+// 宽高，至少 1。语法仍不宽容：不要空白、正号、小数点、指数、下划线或非 ASCII 数字。
+// 这里只判"形状与数值范围"；是否完整落在当下桌面由 DesktopGeometry 在目标解析时判，
+// 因为根窗口范围要到运行时才问得到，解析层不猜也不裁。
+bool ParseSignedInt32(const std::wstring& field, int32_t* out) {
+    if (field.empty()) return false;
+    bool negative = false;
+    size_t pos = 0;
+    if (field[0] == L'-') { negative = true; pos = 1; }
+    if (pos >= field.size()) return false;
+    uint64_t value = 0;
+    for (; pos < field.size(); ++pos) {
+        const wchar_t c = field[pos];
+        if (!IsAsciiDigit(c)) return false;
+        const uint64_t digit = static_cast<uint64_t>(c - L'0');
+        if (value > (0x7FFFFFFFull + (negative ? 1ull : 0ull)) / 10ull) return false;
+        value = value * 10ull + digit;
+        if (value > (negative ? 0x80000000ull : 0x7FFFFFFFull)) return false;
+    }
+    *out = negative ? static_cast<int32_t>(-static_cast<int64_t>(value))
+                    : static_cast<int32_t>(value);
+    return true;
+}
+
+bool ParseRegionValue(const std::wstring& raw, RegionRequest* out) {
+    std::wstring fields[4];
+    size_t index = 0;
+    size_t pos = 0;
+    for (;;) {
+        const size_t comma = raw.find(L',', pos);
+        if (index >= 4) return false;
+        fields[index++] = comma == std::wstring::npos ? raw.substr(pos) : raw.substr(pos, comma - pos);
+        if (comma == std::wstring::npos) break;
+        pos = comma + 1;
+    }
+    if (index != 4) return false;
+    int32_t x = 0;
+    int32_t y = 0;
+    uint64_t w = 0;
+    uint64_t h = 0;
+    if (!ParseSignedInt32(fields[0], &x) || !ParseSignedInt32(fields[1], &y)) return false;
+    if (!ParseDecimal(fields[2], 1, cli_limits::kRegionMaxSide, &w) ||
+        !ParseDecimal(fields[3], 1, cli_limits::kRegionMaxSide, &h)) {
+        return false;
+    }
+    out->given = true;
+    out->x = x;
+    out->y = y;
+    out->width = static_cast<uint32_t>(w);
+    out->height = static_cast<uint32_t>(h);
+    out->written = raw;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // --scale 的取值：key=N 的清单，逗号分隔（max-width / max-height / max-pixels）
 // ---------------------------------------------------------------------------
@@ -261,7 +315,7 @@ bool ParseScaleValue(const std::wstring& raw, ScaleRequest* out) {
 
 bool MonitorKeyword(const std::wstring& raw) {
     const std::wstring v = ToLower(Trim(raw));
-    return v == L"all" || v == L"primary";
+    return v == L"all" || v == L"primary" || v == L"desktop";
 }
 
 // "有人想写个数字，只是写坏了"。这一条故意比 DecimalLiteral 宽：宽到能把 1e3 / -1 / 1.5 /
@@ -285,7 +339,8 @@ bool LooksLikeNumberAttempt(const std::wstring& raw) {
 }
 
 // ---------------------------------------------------------------------------
-// --monitor 的标识写法：device:<设备名> 与 id:<监视器 devnode 路径>
+// --monitor 的标识写法：device:<逻辑显示器名>、output:<XRandR 输出名> 与
+// id:<监视器 devnode 路径>。
 // ---------------------------------------------------------------------------
 //
 // 为什么要这一层：在此之前调用方只能拿"本次枚举顺序里的第 n 块屏"来指定目标，而那个 n
@@ -297,7 +352,7 @@ bool LooksLikeNumberAttempt(const std::wstring& raw) {
 // 冒号在 Windows 里还有别的用处（盘符 `D:\`、备用数据流），把任意 `x:y` 都当成标识会让
 // `--monitor D:\shots\a.png` 里的输出路径被吃掉。认不得的前缀照旧不是取值。
 // 取值本体只去首尾空白，内部一字不改 —— devnode 路径是要逐字符比对的。
-enum class MonitorIdKind { kNone, kDevice, kPath, kUnknownKind };
+enum class MonitorIdKind { kNone, kDevice, kOutput, kPath, kUnknownKind };
 
 MonitorIdKind SplitMonitorSelector(const std::wstring& raw, std::wstring* body) {
     const size_t colon = raw.find(L':');
@@ -307,6 +362,10 @@ MonitorIdKind SplitMonitorSelector(const std::wstring& raw, std::wstring* body) 
     if (prefix == L"device") {
         if (body) *body = rest;
         return MonitorIdKind::kDevice;
+    }
+    if (prefix == L"output") {
+        if (body) *body = rest;
+        return MonitorIdKind::kOutput;
     }
     if (prefix == L"id") {
         if (body) *body = rest;
@@ -329,7 +388,7 @@ bool LooksLikeMonitorValue(const std::wstring& raw) {
     const MonitorIdKind kind = SplitMonitorSelector(raw, nullptr);
     return MonitorKeyword(raw) || DecimalLiteral(raw, nullptr) ||
            LooksLikeNumberAttempt(raw) || kind == MonitorIdKind::kDevice ||
-           kind == MonitorIdKind::kPath;
+           kind == MonitorIdKind::kOutput || kind == MonitorIdKind::kPath;
 }
 
 // --list / --inspect 的取值：各自只有一个关键字，写成内联形式（--list=all）。
@@ -411,8 +470,11 @@ constexpr OptionSpec kOptions[] = {
     // 两条标识写法（device: / id:）的取值本体可能长达一百多字符，写在 valueHint 里会把
     // 整张选项目录的列宽拉起来（每一行都要跟着补空格），所以这里只列前缀，
     // 本体形状放在 --screens 那一条与 README 里。
-    {L"monitor", L"m", true, L"target", L"[<n|primary|all|device:|id:>]", nullptr, L"opt.monitor",
-     true},
+    {L"monitor", L"m", true, L"target", L"[<n|primary|all|desktop|device:|output:|id:>]",
+     nullptr, L"opt.monitor", true},
+    // --region 是独立的桌面区域目标：坐标是根窗口/虚拟桌面绝对坐标，允许负值；它不是
+    // 窗口内部裁剪（--roi），也不借用桌面坐标偷偷截窗口。
+    {L"region", L"", true, L"target", L"<x,y,w,h>", nullptr, L"opt.region"},
     // ---- 窗口匹配条件（同类 OR，跨类 AND）----
     {L"hwnd", L"", true, L"match", L"<handle>", nullptr, L"opt.hwnd"},
     {L"pid", L"", true, L"match", L"<pid>", nullptr, L"opt.pid"},
@@ -539,7 +601,9 @@ constexpr OptionSpec kOptions[] = {
 // Windows 上拼出来的仍是原来那一串 `[<n|primary|all|device:|id:>]`，帮助正文逐字节不变。
 std::wstring MonitorValueHint() {
     std::wstring hint = L"[<n|primary|all";
+    if (MonitorDesktopSelectorSupported()) hint += L"|desktop";
     if (MonitorDeviceSelectorSupported()) hint += L"|device:";
+    if (MonitorOutputSelectorSupported()) hint += L"|output:";
     if (MonitorPathSelectorSupported()) hint += L"|id:";
     hint += L">]";
     return hint;
@@ -806,6 +870,14 @@ void ScanPlatformUnsupported(const std::vector<ScannedItem>& items,
         const std::wstring name = it.option.spec->name;
         std::wstring value = it.option.value;
         bool hit = IsWindowsOnlyOption(name);
+        if (!hit && name == L"capture") {
+            // --capture 选项本身在 Linux 上成立（xcomposite / x11desktop / auto），
+            // 但点名字典里只存在于 Windows 的那几条取值时，仍按平台专属说法拒绝；
+            // 不把它伪装成 cli.unknown_capture_method（那会让人以为拼写错了）。
+            const std::wstring v = ToLower(Trim(value));
+            hit = v == L"wgc" || v == L"dwm" || v == L"printwindow" || v == L"bitblt" ||
+                  v == L"duplication";
+        }
         if (!hit && name == L"monitor") {
             // 只看形状，不重判语法：形状坏的那一条由 Apply 报它自己的码，两条不互相顶替。
             // 两条标识写法各读自己那一条平台事实（core/Platform.h）：device: 在两边都成立，
@@ -813,7 +885,15 @@ void ScanPlatformUnsupported(const std::vector<ScannedItem>& items,
             std::wstring body;
             const MonitorIdKind kind = SplitMonitorSelector(value, &body);
             hit = (kind == MonitorIdKind::kDevice && !MonitorDeviceSelectorSupported()) ||
+                  (kind == MonitorIdKind::kOutput && !MonitorOutputSelectorSupported()) ||
                   (kind == MonitorIdKind::kPath && !MonitorPathSelectorSupported());
+        }
+        if (!hit && name == L"monitor") {
+            const std::wstring v = ToLower(Trim(value));
+            hit = v == L"desktop" && !MonitorDesktopSelectorSupported();
+        }
+        if (!hit && name == L"region") {
+            hit = !DesktopRegionTargetSupported();
         }
         if (!hit) continue;
         const std::wstring label = L"--" + name;
@@ -846,8 +926,9 @@ void SelectLanguageFromCommandLine(const CliTokens& tokens) {
 //   * --hwnd   一个 HWND 的数字。X11 的窗口号、Wayland 的 surface 都不是同一个标识，
 //              拿它们接同一个取值就是把一个标识当另一个用（AGENTS.md：目标标识含所属后端）。
 //   * --class  Win32 的窗口类名。别的系统上没有这一层名字。
-//   * --capture  这一组的每一条取值（wgc / dwm / printwindow / bitblt / duplication）都是
-//              Windows 的取图通道；--auto 是"按这条链回退"，链本身也是 Windows 的。
+//   * --capture  这个选项本身跨平台存在（Linux 有 xcomposite / x11desktop），所以不整条隐藏；
+//              但 wgc / dwm / printwindow / bitblt / duplication 这几条具体取值仍只在 Windows
+//              构建里成立，由 ScanPlatformUnsupported 按取值判。
 // 屏幕的两条标识写法（--monitor=device: / id:）不在这张表里：--monitor 这个选项本身在
 // 别的平台上成立（编号与 primary、all 都说得通），而它那两种标识写法各属另一件事，
 // 由 core/Platform.h 的那两条事实（MonitorDeviceSelectorSupported /
@@ -858,7 +939,7 @@ void SelectLanguageFromCommandLine(const CliTokens& tokens) {
 // 这一条判据有两处读它，读的是同一份名单：解析层据此报 cli.platform_unsupported，
 // 帮助层据此把这些行从**本平台**的帮助里省掉（列出来再让人一试就失败，等于把错误当成选项）。
 bool IsWindowsOnlyOption(const std::wstring& name) {
-    static const std::wstring kList[] = {L"hwnd", L"class", L"capture"};
+    static const std::wstring kList[] = {L"hwnd", L"class"};
     for (const std::wstring& n : kList) {
         if (n == name) return true;
     }
@@ -914,6 +995,7 @@ const wchar_t* CaptureMethodName(CaptureMethod m) {
         case CaptureMethod::kBitBlt: return L"bitblt";
         case CaptureMethod::kDuplication: return L"duplication";
         case CaptureMethod::kXComposite: return L"xcomposite";
+        case CaptureMethod::kX11Desktop: return L"x11desktop";
         case CaptureMethod::kAuto: return L"auto";
     }
     return L"?";
@@ -1904,7 +1986,9 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             opt.monitor.written = Trim(value);
             if (value.empty()) return;                                    // 省略取值 = 主屏
             if (MonitorKeyword(value)) {
-                if (ToLower(Trim(value)) == L"all") opt.monitor.kind = MonitorSelector::Kind::kAll;
+                const std::wstring keyword = ToLower(Trim(value));
+                if (keyword == L"all") opt.monitor.kind = MonitorSelector::Kind::kAll;
+                else if (keyword == L"desktop") opt.monitor.kind = MonitorSelector::Kind::kDesktop;
                 return;                                               // primary => 保持 kPrimary
             }
             // 两条标识写法：把 --screens 交回的标识原样收回来。这里只判**形状**
@@ -1912,7 +1996,8 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             // 在那儿判不了主屏兜底，因为兜底就等于替用户挑了一块他没点名的屏。
             std::wstring body;
             const MonitorIdKind idKind = SplitMonitorSelector(value, &body);
-            if (idKind == MonitorIdKind::kDevice || idKind == MonitorIdKind::kPath) {
+            if (idKind == MonitorIdKind::kDevice || idKind == MonitorIdKind::kOutput ||
+                idKind == MonitorIdKind::kPath) {
                 if (body.empty()) {
                     Err(codes::kMonitorSelectorEmpty, Msg(L"cli.monitor_selector_empty"),
                         L"--monitor", value, Msg(L"cli.monitor_selector_empty_hint"));
@@ -1920,7 +2005,8 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
                     return;
                 }
                 opt.monitor.kind = idKind == MonitorIdKind::kDevice ? MonitorSelector::Kind::kDevice
-                                                                    : MonitorSelector::Kind::kPath;
+                                  : idKind == MonitorIdKind::kOutput ? MonitorSelector::Kind::kOutput
+                                                                     : MonitorSelector::Kind::kPath;
                 opt.monitor.id = idKind == MonitorIdKind::kDevice
                                      ? StripScreenDevicePrefix(body)
                                      : body;
@@ -1947,6 +2033,17 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             }
             opt.monitor.kind = MonitorSelector::Kind::kOrdinal;
             opt.monitor.ordinal = static_cast<uint32_t>(n);
+            return;
+        }
+
+        if (name == L"region") {
+            RegionRequest parsed;
+            if (!ParseRegionValue(value, &parsed)) {
+                Err(codes::kInvalidValue, Msg(L"cli.region_value"), L"--region", value,
+                    Msg(L"cli.region_value_hint"));
+                return;
+            }
+            opt.region = std::move(parsed);
             return;
         }
 
@@ -2043,6 +2140,13 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // ---- 取图方式 ----
         if (name == L"capture") {
             const std::wstring v = ToLower(Trim(value));
+            // Windows 专属取值已经由平台预扫描报 cli.platform_unsupported；这里不再补一条
+            // "取值拼错了"的错误。Linux 仍接受 xcomposite / x11desktop / auto。
+            if (BuildPlatform() != PlatformKind::kWindows &&
+                (v == L"wgc" || v == L"dwm" || v == L"printwindow" || v == L"bitblt" ||
+                 v == L"duplication")) {
+                return;
+            }
             const wchar_t* const* allowed = kCaptureValues;
             bool known = false;
             for (; *allowed; ++allowed) {
@@ -2063,6 +2167,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             else if (v == L"bitblt") opt.capture = CaptureMethod::kBitBlt;
             else if (v == L"duplication") opt.capture = CaptureMethod::kDuplication;
             else if (v == L"xcomposite") opt.capture = CaptureMethod::kXComposite;
+            else if (v == L"x11desktop") opt.capture = CaptureMethod::kX11Desktop;
             else opt.capture = CaptureMethod::kAuto;  // 取值已在上面按 kCaptureValues 校验过
             opt.captureExplicit = true;
             return;
@@ -2610,7 +2715,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
     // 给了 --monitor 就不算零条件：那是明确的屏幕目标。
     // 查询命令同理：它本身就是明确的意图，没有窗口条件正是它的正常用法（一次截图都不做）。
     if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.QueryMode() &&
-        !opt.HasAnyCondition() && !opt.monitor.given) {
+        !opt.HasAnyCondition() && !opt.monitor.given && !opt.region.given) {
         opt.showHelp = true;
         opt.helpReason = codes::kNoCondition;
     }
@@ -2623,27 +2728,50 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // 屏幕目标的两条硬规矩，都在解析期定下来，不留到运行期退化：
         // --monitor all 是"每块屏各一张"，与"按屏过滤窗口"没法同时成立；
         // dwm / printwindow 取的是窗口自己的画面，屏幕上没有这样一个窗口可取。
-        if (opt.monitor.given) {
-            if (opt.monitor.kind == MonitorSelector::Kind::kAll && opt.HasAnyCondition()) {
+        // --region 与 --monitor 说的是两个不同的目标选择方式，与任何窗口条件/消歧选项也
+        // 说不通。冲突在解析期报出来，绝不挑一个执行。
+        if (opt.region.given && opt.monitor.given) {
+            Err(codes::kConflictingOptions, Msg(L"cli.region_conflict"), L"",
+                L"--monitor, --region", Msg(L"cli.region_conflict_hint"));
+        }
+        if (opt.region.given && opt.HasAnyCondition()) {
+            Err(codes::kConflictingOptions, Msg(L"cli.region_conflict"), L"",
+                L"--region, window conditions", Msg(L"cli.region_conflict_hint"));
+        }
+        if (opt.region.given && opt.crop.mode != CropMode::kNone) {
+            Err(codes::kConflictingOptions, Msg(L"cli.region_conflict"), L"",
+                L"--region, --roi/--client-area", Msg(L"cli.region_conflict_hint"));
+        }
+        if (opt.monitor.given || opt.region.given) {
+            if (opt.monitor.given && opt.monitor.kind == MonitorSelector::Kind::kAll &&
+                opt.HasAnyCondition()) {
                 Err(codes::kMonitorConflict, Msg(L"cli.monitor_conflict"), L"--monitor", L"all",
                     Msg(L"cli.monitor_conflict_hint"));
             }
+            if (opt.monitor.given && opt.monitor.kind == MonitorSelector::Kind::kDesktop &&
+                opt.HasAnyCondition()) {
+                Err(codes::kMonitorConflict, Msg(L"cli.monitor_conflict"), L"--monitor",
+                    L"desktop", Msg(L"cli.monitor_conflict_hint"));
+            }
             if (opt.ScreenMode() && (opt.capture == CaptureMethod::kDwmThumbnail ||
-                                     opt.capture == CaptureMethod::kPrintWindow)) {
+                                     opt.capture == CaptureMethod::kPrintWindow ||
+                                     opt.capture == CaptureMethod::kXComposite)) {
                 Err(codes::kUnsupported, Msgf(L"cap.unsupported_for_screen", CaptureMethodName(opt.capture)),
                     L"--capture", CaptureMethodName(opt.capture),
                     Msg(L"cap.unsupported_for_screen_hint"));
             }
-            // 整块屏幕的目标上没有"一扇窗口"可以让裁剪坐标相对它的左上角去算。这时候**绝不**
-            // 把 --roi 当成桌面绝对坐标来用：那等于允许一个调用方用一个窗口之外的位置去要一块
-            // 谁都没批准过的画面，也与"相对于目标窗口"这条承诺打脸。照实在解析期报错，
-            // 一个像素都不取、一个文件都不写，也不弹框。
+            // 整块屏幕/桌面区域的目标上没有"一扇窗口"可以让裁剪坐标相对它的左上角去算。
+            // --region 已经是绝对坐标；再给 --roi/--client-area 会在上面报冲突。
             if (opt.ScreenMode() && opt.crop.mode != CropMode::kNone) {
                 const bool clientArea = opt.crop.mode == CropMode::kClientArea;
                 Err(codes::kUnsupported, Msg(L"cap.crop_unsupported_for_screen"),
                     clientArea ? L"--client-area" : L"--roi", clientArea ? L"" : opt.crop.written,
                     Msg(L"cap.crop_unsupported_for_screen_hint"));
             }
+        }
+        if (!opt.ScreenMode() && opt.capture == CaptureMethod::kX11Desktop) {
+            Err(codes::kUnsupported, Msg(L"cap.x11.desktop_window_unsupported"), L"--capture",
+                CaptureMethodName(opt.capture), Msg(L"cap.x11.desktop_window_unsupported_hint"));
         }
 
         // ---- 光标要求与这条通道能不能兑现 ----

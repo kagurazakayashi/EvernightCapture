@@ -226,9 +226,15 @@ public:
     DesktopPermit& operator=(DesktopPermit&&) = default;
 
     // 当时批准的是不是这一块区域：**严格包含，零容差**。向外扩一个像素去采人没批准过的
-    // 画面就是扩大批准的隐私范围，所以没有"测量误差"这回事可以豁免它 ——
-    // 而正常取样的矩形本来就量在批准矩形之内（见 Consent.cpp 里 Covers 的注释）。
-    bool Covers(const PhysRect& area) const;
+    // 画面就是扩大批准的隐私范围，所以没有"测量误差"这回事可以豁免它 —— 而正常取样的矩形
+    // 本来就量在批准矩形之内。写成 inline 是为了让平台层的编译期凭证校验只依赖这个头，
+    // 不必为了一个纯算术判据反向链接整个 Consent.cpp。
+    bool Covers(const PhysRect& area) const {
+        if (RectIsEmpty(area) || RectIsEmpty(approved_)) return false;
+        // 批准的是整窗外框时，从屏幕实际读走的是其内缩一块；桌面/屏幕目标与批准范围相等。
+        // 真被人挪走或换大的目标会撞在这条线上判成 consent_stale —— 那正是要它做的事。
+        return RectContains(approved_, area);
+    }
     const std::wstring& TargetKey() const { return targetKey_; }
     PhysRect Approved() const { return approved_; }
 
