@@ -108,6 +108,9 @@ namespace session_backend {
 // "这条会话能截某扇 X11 窗口"，不是"能截整块屏幕"（见 caveat.kX11WindowStorageOnly）。
 inline constexpr bool kX11CaptureImplemented = true;
 inline constexpr bool kWaylandCaptureImplemented = false;
+// Portal 授权 / 来源选择链已实现（会话 D-Bus + ScreenCast v3+ source_type 校验），
+// 但 PipeWire 帧交付尚未实现，所以 kPortalCaptureImplemented 仍为 false。
+inline constexpr bool kPortalAuthorizationSelectionImplemented = true;
 inline constexpr bool kPortalCaptureImplemented = false;
 inline constexpr bool kPipeWireCaptureImplemented = false;
 }  // namespace session_backend
@@ -131,6 +134,18 @@ inline constexpr const char* kPipewirePrereqNotCapture = "pipewire_prerequisite_
 // 本构建的 X11 通道只交付窗口自己的存储：不读桌面像素、没有整屏路径、指针不在帧里。
 // 这一条拦的是把 x11 的 available 读成"整屏也能截"或"能开关光标"。
 inline constexpr const char* kX11WindowStorageOnly = "x11_captures_window_storage_only";
+// Portal 授权与来源选择链可用，但本步骤不交付 PipeWire 帧；拿到会话不等于截图成功。
+inline constexpr const char* kPortalAuthorizationSelectionOnly =
+    "portal_authorization_selection_only_no_pipewire_frame";
+// 本步骤成功后会关闭 Portal 会话，不留下可继续读取的会话。
+inline constexpr const char* kPortalSessionClosedAfterSelection =
+    "portal_session_closed_after_authorization_probe";
+// 终端 CLI 没有可导出的父窗口，使用接口允许的空 parent_window。
+inline constexpr const char* kPortalParentWindowEmpty =
+    "portal_parent_window_empty_no_exportable_cli_window";
+// 不申请持久授权，不保存 / 打印恢复令牌。
+inline constexpr const char* kPortalNoPersistentGrant =
+    "portal_restore_token_neither_requested_nor_persisted";
 }  // namespace session_caveat
 
 // 一条诊断：code 是稳定的 ASCII（例如 "session.portal.service_not_found"），detail 是

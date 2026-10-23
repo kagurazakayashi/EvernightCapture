@@ -148,7 +148,7 @@ below is the verbatim output of `ECAPTURE.EXE --help`; run `.\scripts\mkreadme.p
 
 <!-- BEGIN ECAPTURE-HELP -->
 ```text
-EvernightCapture (ecapture) - capture a window selected by conditions, built on X11 (XComposite)
+EvernightCapture (ecapture) - capture a window selected by conditions, built on X11 (XComposite) with XDG Desktop Portal authorization/source-selection
 
 Usage: ecapture [conditions...] <output-path>     With no conditions at all => this help
        ecapture [conditions...] --out <path>      "-" means image bytes go to stdout
@@ -189,10 +189,12 @@ Cropping inside the window and proportional shrinking (another crop of the deliv
 
 Capture authorization (a real capture asks first; --yes skips only a verified single window's own image once the capability gate has confirmed the route; system authorization such as a Wayland portal is a separate layer that --yes neither removes nor satisfies)
   --yes, -y                                               Skip the program confirmation only for a single window's own image, and only when the target is a window, the capability gate has confirmed the route, and the target identity was re-checked. Both X11 backends that read desktop pixels (x11desktop for monitor/desktop/--region) always ask; --yes cannot skip them. A batch consent covers only the targets listed in that dialog: a target added later is confirmed again or refused. System authorization (for example a Wayland portal) is a separate layer: --yes neither removes nor satisfies it. --yes=false asks on purpose
+  --portal-authorize <window|monitor>                     Verify the XDG Desktop Portal authorization and source-selection path only: window requests ask the portal for exactly one WINDOW source; monitor requests ask for exactly one MONITOR source. A wxWidgets program-confirmation dialog is always shown (--yes cannot skip it here because an interactive source has no pre-verified identity), then the desktop opens its own system authorization/source picker. Success reports authorization and selection only: no pixels are read, no PipeWire remote is opened, no image is delivered, and the portal session is closed. Title/PID/class and specific-monitor selectors cannot be honoured interactively and are rejected rather than ignored. Restore tokens are neither requested nor stored
 
 Deadlines (a total budget for the automatic stage; waiting for consent is timed separately)
   --timeout-ms <ms>                                       Total budget in milliseconds for the automatic stage: from target selection on, matching, backend retries, frame capture, encoding and writing share this one remaining budget and no step gets a fresh copy. Omitted or 0 = no overall budget, and every isolated call is then still bounded by the built-in 5000 ms limit. Waiting for your consent is not counted here - see --consent-timeout-ms. When the budget runs out, a step that has not started yet is refused and its image is not written (a file that already finished committing is never rolled back); you get match.timeout / capture.timeout / io.timeout per stage
   --consent-timeout-ms <ms>                               How long the consent dialog may wait for an answer, in milliseconds. Omitted or 0 = wait forever. On expiry the capture is refused - never treated as consent - and reported as capture.consent_timeout; a late "yes" arriving after the deadline never turns it into consent. This wait is timed separately and does not consume the --timeout-ms budget; the ~1s dialog close animation after "Yes" is counted here and is never skipped to meet a deadline
+  --portal-timeout-ms <ms>                                How long to wait for the desktop's Portal authorization/source-selection window (milliseconds). 0 means wait indefinitely; the default is 120000. This human wait is timed separately from --timeout-ms (automatic D-Bus setup) and --consent-timeout-ms (the program's own wxWidgets confirmation dialog)
 
 Output
   --out, -o <path|->                                      Output path; the special value - writes the image bytes to stdout. A positional argument works too, and giving no path at all is the same as --out -. Every name for the batch is planned before any frame is taken: two targets resolving to the same name is an error, never a silent overwrite. stdout carries only one image per run, so a batch that resolves to more than one target is a parameter error and nothing is captured
@@ -235,9 +237,9 @@ Output: success and failure are both JSON, holding only captured / images (plus 
        --help / --version and the no-conditions case are plain text
 Exit codes: 0 success / 1 bad arguments / 2 no condition given / 3 --help / 4 no matching window / 5 several matches /
         6 target protected or refused / 7 capture failed / 8 write failed / 9 internal error
-Current build: this Linux build has two independent X11 capture paths. xcomposite reads only the target window's own redirected storage; x11desktop reads exact root-window rectangles for one logical monitor, --monitor desktop, or an explicit --region. Any root-window path is desktop pixels: it always opens the wxWidgets consent dialog, and --yes cannot skip it. Read-only X11 window, monitor and capability queries are available. --list / --inspect enumerate only X11 windows visible to this connection; native Wayland windows are not in that list. XIDs, XRandR output XIDs and the display-session scope are snapshots, not persistent identities. A window's _NET_WM_PID is self-declared, so process attribution is marked declared_unverified. Read-only commands never activate, move or unminimize a window. --help / --version / --show-config / --capabilities / --diagnostics run without a desktop. Windows-only --capture values and switches (--hwnd / --class) are refused as cli.platform_unsupported instead of being silently ignored
+Current build: this Linux build has two independent X11 capture paths. xcomposite reads the target window's own redirected storage; x11desktop reads an exact rectangle from the X11 root window for one logical monitor, --monitor desktop, or an explicit --region. Every root-window path reads desktop pixels: it always shows the wxWidgets program confirmation and --yes cannot skip it. It also contains the XDG Desktop Portal authorization/source-selection action --portal-authorize=window|monitor: that action asks the system portal for exactly one source, verifies the returned source_type on ScreenCast v3+, then closes the session; it does NOT open PipeWire, read pixels, or deliver an image. --list / --inspect enumerate only X11 windows visible to this connection; native Wayland windows are not in that list; XIDs, XRandR output XIDs and display-session scopes are snapshots, not portable identities; _NET_WM_PID is self-declared and process attribution is only declared_unverified. Read-only queries never activate, move or restore windows. --help / --version / --show-config / --capabilities / --diagnostics work without a desktop. Windows-only --capture values and --hwnd / --class report cli.platform_unsupported here instead of being ignored
 Runtime: Linux. --capabilities / --diagnostics connect read-only to X11, Wayland, the session D-Bus (XDG Desktop Portal) and stat the PipeWire socket prerequisite. Environment variables and desktop names are clues only: they never prove a service is reachable or authorized
-Linux preflight: run --capabilities first. It reports the session kind (x11 / wayland / xwayland / headless) and each runtime as compiled / reachable / versionSatisfied / interactionRequired / implemented; a reachable display is not capture - only backends that are really implemented (in this build xcomposite for windows and x11desktop for root-window desktop rectangles) are reported as available, and backend rows list the internal path and its authorization scope
+Linux preflight: run --capabilities first. It reports the session kind (x11 / wayland / xwayland / headless) and each runtime capability's compiled / reachable / versionSatisfied / interactionRequired / implemented fields. Connecting to a display server does not prove capture works; only a truly implemented route is reported available. Portal authorization/source selection is implemented separately, but PipeWire frame delivery is not: a portal session or stream is never reported as a screenshot.
 
 Examples:
   ecapture --process xterm ~/shots/term.png
@@ -1513,10 +1515,12 @@ images follow the window rows above.
   paths pass through `src/core/DisplayText.h`: C0/C1 controls, bidi overrides/isolates, zero-width and format
   characters, line/paragraph separators and noncharacters become `U+FFFD`, and long text is truncated on code-point
   boundaries with an ellipsis - so a crafted title cannot forge extra dialog lines or push the real question away.
-- System authorization (the Wayland portal) is reserved as a separate state (`SystemAuthState`) rather than folded
-  into the program dialog: `--yes` neither removes nor satisfies it, and a build that requires it without a driver
-  refuses the request with `capture.consent_unavailable` instead of treating program confirmation as both layers.
-  Windows and X11 remain program-confirmation-only.
+- System authorization (the Wayland portal) is a separate state (`SystemAuthState`) rather than folded into the
+  program dialog: `--yes` neither removes nor satisfies it. On a platform that requires it without a usable driver,
+  the request still fails closed with `capture.consent_unavailable`; program confirmation is never treated as both
+  layers. The Linux build now contains the real `--portal-authorize` driver described above, but success there still
+  only proves authorization and source selection, not image delivery. Windows and X11 remain
+  program-confirmation-only for actual captures.
 - Honest limit: this is a program-owned wxWidgets dialog, not an OS security boundary. It is mis-click protection for
   cooperative automation — it cannot tell whether a human or a script pressed the button, and it does not defend
   against a same-privilege process that intends to bypass it. What it does guarantee is that a caller following these
@@ -1536,6 +1540,43 @@ with window conditions means "filter windows by monitor" (a window overlapping t
 spanning monitors matches on both), still producing window images, so the window rows of the table above apply.
 `--monitor all` is mutually exclusive with any window **matching** condition (`cli.monitor_conflict`, exit code 1),
 but disambiguation options such as `--all` and `--index` do not count as matching conditions and may accompany it.
+
+## Wayland, XDG Desktop Portal and system authorization
+
+The XDG Desktop Portal path is implemented as an **authorization and source-selection chain**, not yet as image
+delivery. `--portal-authorize=window|monitor` is the explicit action that exercises it:
+
+- It always shows one wxWidgets program-confirmation dialog first. That dialog explains who is asking, why, what
+  source is requested, and that the desktop will then open its own system authorization/source picker. It does not
+  duplicate the picker and does not impersonate it.
+- The system layer is the desktop service's window. The program never creates a fake system authorization box, never
+  clicks or sends keys to the real one, and never treats the program confirmation as system authorization.
+- The request is strict: `window` asks only for the `WINDOW` source type and `monitor` only for `MONITOR`;
+  `multiple=false`; one source only. The implementation requires ScreenCast v3+ so it can verify the returned
+  `source_type`. If the portal does not advertise the requested source type, the version is too low, a response has
+  no `source_type`, or the returned source type is not the requested one, the request stops with a stable diagnostic.
+  It never ignores title/PID/class or a specific-monitor selector: those cannot be proven through an interactive
+  picker, so `--portal-authorize` rejects them before any prompt.
+- `--yes` has no effect here: an interactive source has no verified identity before the system picker, so the program
+  confirmation remains. `--yes` also never changes whether the system layer is required or whether it succeeded.
+- `--timeout-ms` is the automatic D-Bus/setup budget. `--portal-timeout-ms` times only the human system-window wait;
+  `--consent-timeout-ms` times the program's own wxWidgets dialog. They are separate clocks. On timeout or
+  cancellation the request and any created session are closed, and a late successful response is ignored.
+- `Request.Response` may arrive before the method reply. The driver installs the signal match and filter before the
+  call, predicts the `handle_token` request path, buffers an early response by its own object path, verifies the
+  actual returned handle, and associates the two. The offline test exercises that ordering directly.
+- `response=1` only means "the user cancelled the interaction"; the portal does not distinguish cancel from refusal.
+  The result is the accurate merged state `cancelled_or_denied`. Service disappearance, unavailable service,
+  unsupported version/source, timeout, application cancellation and protocol errors remain separate states/codes.
+- No `restore_token`, `persist_mode`, or cross-run grant is requested or stored. No token is logged or written to
+  `MEMORY.md`. The CLI has no exportable parent window, so it passes the interface-allowed empty `parent_window`; it
+  never invents an `x11:` or `wayland:` handle.
+- Success reports only authorization and selection (`captured: 0`, `images: []`, `pixelsRead: false`,
+  `imageDelivered: false`) and then closes the portal session. This build does **not** call `OpenPipeWireRemote` and
+  does not deliver a frame. A portal session or stream is not a screenshot.
+- Mock D-Bus and injected-interface tests prove the state machine and protocol handling only. Real GNOME/KDE Wayland
+  authorization/source selection must be performed by the user; XWayland dialogs or simulated results are not
+  evidence of a successful native system grant.
 
 ## Target identity and handle reuse
 
@@ -2662,9 +2703,9 @@ depends on this machine) - **unverified** (built, never tested by this project i
 | Capability | Windows | Linux X11 | Linux Wayland |
 | ---------- | ------- | --------- | ------------- |
 | Target selection (list and match windows and screens) | implemented | implemented for X11 windows; self-window integration tests pass on the development box, but the full real-WM / XWayland matrix remains unverified. Under XWayland only X11 windows are visible; native Wayland windows are not enumerated | not supported (compositors give clients no global window list; this tool will not fake one) |
-| Window capture (the selected window's own pixels) | implemented | unverified (XComposite `NameWindowPixmap`: the window's own storage, desktop pixels are never read) | planned (via Portal; window-scoped sources are a portal-implementation probe) |
-| Screen capture (desktop pixels of one output, whole desktop, or an explicit region) | implemented, always behind a human confirm | unverified (implemented as `x11desktop`: exact root-window rectangles for `--monitor`, `--monitor desktop` and `--region`; synthetic geometry and authorization state are tested, real multi-monitor/rotation/hotplug is not) | planned (Portal + PipeWire) |
-| Interactive grant | implemented (program dialog only; Windows has no per-call system screen grant) | unverified (shared wxWidgets dialog is wired in; desktop pixels always ask and `--yes` cannot skip; no real human-click record in this step) | planned (program confirm **and** the system Portal grant; neither replaces the other) |
+| Window capture (the selected window's own pixels) | implemented | unverified (XComposite `NameWindowPixmap`: the window's own storage, desktop pixels are never read) | not yet delivered (Portal authorization/source selection is implemented and asks only for a single WINDOW source; PipeWire frame delivery is a later step) |
+| Screen capture (desktop pixels of one output, whole desktop, or an explicit region) | implemented, always behind a human confirm | unverified (implemented as `x11desktop`: exact root-window rectangles for `--monitor`, `--monitor desktop` and `--region`; synthetic geometry and authorization state are tested, real multi-monitor/rotation/hotplug is not) | not yet delivered (Portal authorization/source selection is implemented and asks only for a single MONITOR source; PipeWire frame delivery is a later step) |
+| Interactive grant | implemented (program dialog only; Windows has no per-call system screen grant) | unverified (shared wxWidgets dialog is wired in; desktop pixels always ask and `--yes` cannot skip; no real human-click record in this step) | unverified (program confirm **and** the system Portal grant are both required and neither replaces the other; mock D-Bus/injected tests pass, real GNOME/KDE user authorization is not verified here) |
 | Minimized window pixels | not supported (`--list=all` lists them, they are never captured) | not supported (an unmapped window has no viewable storage; the backend refuses instead of returning a stale pixmap) | not supported (no window list, no handle, nothing to point at) |
 | Cursor (`--cursor`) | runtime probe (the WGC switch has a build floor; duplication paths are registered unprovable) | unverified (both `xcomposite` and `x11desktop` exclude the pointer composited separately by the X server; `include` is refused instead of synthesised) | planned (depends on portal cursor metadata) |
 | HDR (`--hdr`) | unverified (tone mapping implemented and judged offline, but this project has no HDR display) | planned (nothing is asserted about X11 wide gamut) | planned |
@@ -2673,7 +2714,9 @@ depends on this machine) - **unverified** (built, never tested by this project i
 `--capabilities` reports both Linux X11 backends this build actually carries (`backends[]` = `xcomposite`
 for window content and `x11desktop` for root-window desktop pixels; `autoChainWindow` = `xcomposite`,
 `autoChainScreen` = `x11desktop`) and the same session probe results as `x11` in `runtime[]`. The
-remaining "planned" rows above are deliberately **not** rendered into that JSON yet. The matrix,
+remaining "not yet delivered" rows above are deliberately **not** rendered as capture into that JSON yet.
+`--capabilities` does expose a separate `portal.authorizationAndSelection` object: the authorization/source-selection
+chain is implemented, while `imageDeliveryImplemented` and `pipewireFrameDeliveryImplemented` stay false. The matrix,
 this section and the source registry must be changed together.
 
 ### Privacy boundaries (encoded as judgements, not just prose)

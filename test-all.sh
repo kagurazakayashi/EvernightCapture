@@ -64,7 +64,7 @@ EOF
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
 SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text session-probe save-paths worker-ipc consent-state \
- image-ops crop-geometry desktop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
+ portal-state portal-dbus image-ops crop-geometry desktop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -75,7 +75,7 @@ SUITE_PREREQ[core-portability]="$EC_ROOT/scripts/core-portability-check.sh"
 SUITE_LAYER[core-boundary]="offline"
 SUITE_KIND[core-boundary]="cmake"
 SUITE_TARGET[core-boundary]="ecapture-core-tests"
-SUITE_NOTE[core-boundary]="跨平台核心边界判据（CMake 构建出来的那一份，141 条）"
+SUITE_NOTE[core-boundary]="跨平台核心边界判据（CMake 构建出来的那一份，139 条）"
 SUITE_PREREQ[core-boundary]=""
 
 SUITE_LAYER[cli-text]="offline"
@@ -117,8 +117,20 @@ SUITE_PREREQ[worker-ipc]=""
 SUITE_LAYER[consent-state]="offline"
 SUITE_KIND[consent-state]="cmake"
 SUITE_TARGET[consent-state]="ecapture-consent-tests"
-SUITE_NOTE[consent-state]="授权状态机与弹框生命周期（假应答器 + 假拓扑：--yes 边界、拒绝传播、拓扑失效、超时/关框/初始化失败/取消、预算暂停，179 条）"
+SUITE_NOTE[consent-state]="授权状态机与弹框生命周期（假应答器 + 假拓扑：--yes 边界、拒绝传播、拓扑失效、超时/关框/初始化失败/取消、预算暂停、Portal 两层顺序与绑定，307 条）"
 SUITE_PREREQ[consent-state]=""
+
+SUITE_LAYER[portal-state]="offline"
+SUITE_KIND[portal-state]="cmake"
+SUITE_TARGET[portal-state]="ecapture-portal-tests"
+SUITE_NOTE[portal-state]="Portal Request/Response 竞争、取消/超时/迟到成功、单窗口/单显示器来源与系统授权失败分类（注入替身，56 条；不连总线、不取像素）"
+SUITE_PREREQ[portal-state]=""
+
+SUITE_LAYER[portal-dbus]="offline"
+SUITE_KIND[portal-dbus]="script"
+SUITE_TARGET[portal-dbus]="ecapture-portal-dbus-tests"
+SUITE_NOTE[portal-dbus]="模拟会话 D-Bus Portal ScreenCast 服务（私有临时总线，18 条）：先订阅后请求、Response 早于方法回复、handle_token 关联、来源类型核实、超时关闭请求/会话（不连接真实桌面总线、不取像素）"
+SUITE_PREREQ[portal-dbus]="$EC_ROOT/tests/portal-dbus.sh"
 
 SUITE_LAYER[image-ops]="offline"
 SUITE_KIND[image-ops]="cmake"
@@ -270,6 +282,8 @@ print_plan() {
     fi
     ec_note "人工验证层（manual）不在脚本里代跑：需要真人点确认框、真机多屏与 HDR 现场，"
     ec_note "以及 Portal/PipeWire 的系统授权。这一层的结论只能由做的人写，不会被算成通过。"
+    ec_note "Portal 真机验收至少要在 GNOME 或 KDE Wayland 会话里，由用户亲自完成程序确认、"
+    ec_note "系统授权与来源选择；模拟 D-Bus/注入判据只证明协议与状态机，XWayland 弹窗不是原生系统授权。"
 }
 
 if [ "$LIST_ONLY" -eq 1 ]; then
@@ -499,7 +513,8 @@ ec_note "  意外没跑成：$NOTRUN"
 ec_note "  主动没排：${#EXCLUDED[@]}（原因见上面计划段逐条列出，不合并成一个数字）"
 ec_note "  日志目录：$LOG_DIR"
 if [ "$LAYER" = "manual" ] || [ "$LAYER" = "all" ]; then
-    ec_note "  manual 层：本层暂无可跑套件；真实窗口管理器 / 合成器验证待人工，不算通过也不算失败。"
+    ec_note "  manual 层：本层暂无可跑套件；真实窗口管理器 / 合成器、GNOME/KDE Wayland Portal 授权"
+    ec_note "  与 PipeWire 帧交付验证待人工，不算通过也不算失败。"
 fi
 
 if [ "$FAILED" -gt 0 ] || [ "$NOTRUN" -gt 0 ]; then

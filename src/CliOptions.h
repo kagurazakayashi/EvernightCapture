@@ -128,6 +128,11 @@ struct RegionRequest {
 // 取值只增不改名。kNone = 这一次不是窗口查询（截图或环境查询）。
 enum class WindowAction { kNone, kList, kInspect };
 
+// Portal 授权 / 来源选择动作。这不是截图通道：它只验证“程序确认 + 系统授权 + 单一来源选择”
+// 这条链，拿到 Start 的流元数据后立即关闭会话，不打开 PipeWire、不取像素。
+// 取值只增不改名：window = 只申请单个窗口来源；monitor = 只申请单个显示器来源。
+enum class PortalAuthorizeMode { kNone, kWindow, kMonitor };
+
 // ---------------------------------------------------------------------------
 // 窗口内部裁剪（--roi / --client-area）
 // ---------------------------------------------------------------------------
@@ -308,6 +313,8 @@ inline constexpr const wchar_t* kOnOff[] = {L"on", L"off", nullptr};
 // 通知写多细。title 是默认档（带窗口标题），三份词表在 --help、解析层与配置 schema 共用。
 // 配置里不需要额外的"unset"那一档：这条偏好本来就有一个生效档位，关掉通知走 enabled=false。
 inline constexpr const wchar_t* kNotifyDetail[] = {L"title", L"basic", L"minimal", nullptr};
+// Portal 授权动作只接受这两种来源意图。窗口请求绝不夹带 monitor，反之亦然。
+inline constexpr const wchar_t* kPortalSource[] = {L"window", L"monitor", nullptr};
 }  // namespace option_values
 
 struct Options {
@@ -370,6 +377,15 @@ struct Options {
     // --consent-timeout-ms：人工确认框最多等多久。0 = 一直等。到点按"拒绝"处理，
     // 绝不按"默认同意"处理；这段等待不占上面那份自动处理预算。
     uint64_t consentTimeoutMs = 0;
+    // --portal-timeout-ms：Portal 系统授权 / 来源选择窗口最多等多久。0 = 一直等。
+    // 它与 --timeout-ms（自动处理预算）以及 --consent-timeout-ms（程序确认框）分开计时。
+    // 默认 120000（两分钟），避免无人值守时无限挂在系统交互上。
+    uint64_t portalTimeoutMs = 120000;
+    // --portal-authorize=window|monitor：只做 Portal 授权与来源选择验证，不截图。
+    PortalAuthorizeMode portalAuthorize = PortalAuthorizeMode::kNone;
+    // 用户是否写出过 --portal-authorize。即便取值写坏，也不把它误判成“一次普通截图请求”
+    // 而补上 --out 默认值 / 通知等截图期提示。
+    bool portalAuthorizeGiven = false;
 
     bool dryRun = false;              // --dry-run：只解析并打印候选信息（本阶段的默认行为）
     bool yes = false;                 // --yes：免掉"只取所选窗口画面"那条路径的确认，桌面像素路径无效
@@ -475,6 +491,8 @@ struct Options {
     bool ScreenQueryMode() const { return screens; }
     // 只读的窗口查询（--list / --inspect）：额外接受窗口条件、--monitor、--timeout-ms 等
     bool WindowQueryMode() const { return windowAction != WindowAction::kNone; }
+    // Portal 授权 / 来源选择动作：会弹程序确认并打开系统 Portal 窗口，但**不**取像素、不交付图像。
+    bool PortalAuthorizeAction() const { return portalAuthorizeGiven; }
 };
 
 // ---------------------------------------------------------------------------
@@ -532,6 +550,11 @@ inline constexpr const wchar_t* kInternalError = L"cli.internal_error";
 // 理由是这两个意图对流的约定不同：截图可能把图片字节压进 stdout 而让 JSON 整份改走 stderr，
 // 查询则一定把这一份文档写在 stdout。与其替用户猜一个执行，不如把这条用法说清楚。
 inline constexpr const wchar_t* kQueryConflict = L"cli.query_conflict";
+// --portal-authorize 是一次会弹框、会打开系统窗口的授权动作，不是截图也不是只读查询。
+// 与输出路径 / 目标选择 / 取图通道 / 裁剪缩放等截图期选项同时给出会让人误以为本次会出图，
+// 所以一次把冲突写法列全；严格的窗口 / 屏幕选择条件另有更准确的
+// capture.portal_target_conditions_unsupported。
+inline constexpr const wchar_t* kPortalAuthorizeConflict = L"cli.portal_authorize_conflict";
 // 只读的窗口查询（--list / --inspect）有自己的一套允许项：它需要窗口条件与 --monitor 才有意义，
 // 而截图那一级的选项（输出路径、格式、覆盖、--capture、--dry-run、确认框期限）对它一条都不成立，
 // 选择策略那几条还要按实际入口分开判（--inspect 要的正是「多匹配里定哪一扇」，--list 不需要）。
@@ -704,6 +727,33 @@ inline constexpr const wchar_t* kAccessDenied = L"capture.access_denied";
 // 确认框弹不出来（服务会话、计划任务、锁屏：那里没有人能答"是"）。它与"人答了否"分开给码，
 // 调用方才知道该换会话再来，而不是把这次失败当成"用户不让"再问一遍。退出码同样算 6。
 inline constexpr const wchar_t* kConsentUnavailable = L"capture.consent_unavailable";
+// XDG Desktop Portal 系统授权 / 来源选择各档。它们与程序确认失败分开：
+//   capture.portal_cancelled_or_denied —— 系统只报 response=1，无法区分拒绝与取消
+//   capture.portal_timeout             —— 人工等待系统窗口的 --portal-timeout-ms 到点
+//   capture.portal_cancelled           —— 程序主动取消（不是人的回答）
+//   capture.portal_unavailable         —— 会话总线 / 门户服务不可用
+//   capture.portal_unsupported         —— 门户版本 / 接口 / 来源类型能力不支持本次请求
+//   capture.portal_service_lost        —— 请求过程中门户服务消失
+//   capture.portal_protocol_error      —— 回复不完整 / 句柄无法关联 / 来源类型无法核实
+// 这些码都不表示截图成功；即便授权得到，本步骤也只报告授权与选择链。
+inline constexpr const wchar_t* kPortalCancelledOrDenied = L"capture.portal_cancelled_or_denied";
+inline constexpr const wchar_t* kPortalTimeout = L"capture.portal_timeout";
+inline constexpr const wchar_t* kPortalCancelled = L"capture.portal_cancelled";
+inline constexpr const wchar_t* kPortalUnavailable = L"capture.portal_unavailable";
+inline constexpr const wchar_t* kPortalUnsupported = L"capture.portal_unsupported";
+inline constexpr const wchar_t* kPortalServiceLost = L"capture.portal_service_lost";
+inline constexpr const wchar_t* kPortalProtocolError = L"capture.portal_protocol_error";
+inline constexpr const wchar_t* kPortalSourceMismatch = L"capture.portal_source_mismatch";
+inline constexpr const wchar_t* kPortalMultipleStreams = L"capture.portal_multiple_streams";
+// 交互式 Portal 选择不能兑现严格的窗口标题 / PID / 类名条件；不忽略，直接拒绝。
+inline constexpr const wchar_t* kPortalTargetConditionsUnsupported =
+    L"capture.portal_target_conditions_unsupported";
+// --yes 对交互式 Portal 来源选择不适用（来源尚未被身份复核）；这是一条显式提示，
+// 不是错误，也不代表 --yes 能影响系统层。
+inline constexpr const wchar_t* kPortalYesNotApplicable = L"note.portal_yes_not_applicable";
+// 本步骤尚未交付 PipeWire 图像；即使 Start 成功也不报截图成功。
+inline constexpr const wchar_t* kPortalImageDeliveryNotImplemented =
+    L"capture.portal_image_delivery_not_implemented";
 // 确认之后目标又挪了位置或变了大小：要取的矩形已经不在人批准的那一片里，于是不取。
 // 这不是拒绝（那是 capture.access_denied），而是一次可以重来的截图失败：重新枚举、再问一次。
 inline constexpr const wchar_t* kConsentStale = L"capture.consent_stale";
@@ -910,7 +960,8 @@ namespace stages {
 inline constexpr const wchar_t* kParse = L"parse";      // 命令行解析自身（异常兜底）
 inline constexpr const wchar_t* kMatch = L"match";      // 条件求值（枚举窗口 + 正则）
 inline constexpr const wchar_t* kPlan = L"plan";        // 整批输出名规划
-inline constexpr const wchar_t* kConsent = L"consent";  // 整屏截图的人工确认框
+inline constexpr const wchar_t* kConsent = L"consent";  // 程序确认框
+inline constexpr const wchar_t* kPortal = L"portal";    // 系统 Portal 授权 / 来源选择
 inline constexpr const wchar_t* kCapture = L"capture";  // 取帧后端
 inline constexpr const wchar_t* kEncode = L"encode";    // 编码成 png / jpg / ...
 inline constexpr const wchar_t* kWrite = L"write";      // 原子写文件
@@ -1016,6 +1067,7 @@ const wchar_t* NotifyDetailName(NotifyDetail d);  // "title" / "basic" / "minima
 
 // 取图方式的机器名（--capture 的取值）。能力差别写在 --capture 的选项说明里。
 const wchar_t* CaptureMethodName(CaptureMethod m);
+const wchar_t* PortalAuthorizeModeName(PortalAuthorizeMode mode);
 
 // 裁剪方式的机器名（-v 的 input.crop.mode 与 images[].cropMode 都写它）：
 // "none" / "roi" / "client-area"。与 codes 一样只增不改名，调用方按它分支。

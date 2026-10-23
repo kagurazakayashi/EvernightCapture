@@ -27,6 +27,13 @@ holds unchanged; what differs is which routes exist. There are two independent X
   request is refused before any dialog or pixel read and is never clipped, shifted, or replaced by the whole desktop.
 - The two routes never fall back to each other. A window-content failure never turns into a desktop grab, and an
   x11desktop failure never turns into another capture tool.
+- `--portal-authorize=window|monitor` is a separate **authorization/source-selection check**, not a capture route.
+  It shows one wxWidgets program-confirmation prompt, then the desktop's own XDG Desktop Portal picker; it asks the
+  portal for exactly one WINDOW or MONITOR source, verifies `source_type` on ScreenCast v3+, closes the session, and
+  reports `captured: 0` / `imageDelivered: false`. It does not open PipeWire or read pixels. `--yes` does not skip its
+  program prompt, title/PID/class/specific-monitor conditions are rejected instead of ignored, and success is never a
+  screenshot. A real GNOME/KDE authorization still has to be performed by the user; mock D-Bus is not system-grant
+  evidence.
 - `--screens` is read-only and distinguishes a logical monitor, its physical XRandR outputs, mirror groups, rotation
   and the whole desktop root. Copy `device:<logical monitor>` or `output:<output>` into `--monitor`. Output names and
   RROutput XIDs are desktop-attach/server-session facts, not cross-session identities.
@@ -69,6 +76,10 @@ Three kinds of call, and the difference matters:
   `duplication`, DWM's `dwm.screen` fallback, X11 `x11desktop`) - **a person has to answer the wxWidgets dialog**.
   Say what will be captured, start it, and wait for them. `--yes`, `--quiet`, environment variables, a previous
   "yes", a portal token or a remembered desktop layout never replace this human answer.
+- **A Portal authorization/source-selection check** (`--portal-authorize=window|monitor`) - starts with the program
+  dialog, then the desktop's system picker. Do not click the system picker for the user, do not script it, and do not
+  treat its token/session as a screenshot. This build closes the session after verifying selection and delivers no
+  frame; use it only to check whether the two-layer chain is available.
 
 ## Desktop-pixel privacy rule (all platforms)
 
@@ -302,9 +313,14 @@ owner-authorized decision; this tool never does any of it, and it never elevates
   single window's own image, the capability gate confirmed that route in this build, and the target identity was
   re-checked. Missing any of the three falls back to the normal dialog. A batch grant covers only the targets the
   dialog listed; a target added later is confirmed again or refused, never covered by an earlier "yes".
-- System authorization (the Wayland portal) is a **separate layer** reserved as `SystemAuthState`: `--yes` neither
-  removes the requirement nor satisfies it. On Windows / X11 there is no such layer; do not tell a user that
-  `--yes` means "authorized" in general - it only means the program dialog was skipped for a verified window image.
+- System authorization (the Wayland portal) is a **separate layer** in `SystemAuthState`: `--yes` neither removes
+  the requirement nor satisfies it. Linux now has a real `--portal-authorize` driver for authorization/source
+  selection. It maps the portal's `response=1` to the accurate merged state `cancelled_or_denied` (the portal does
+  not distinguish refusal from cancellation), keeps timeout / unavailable / unsupported / service-lost / protocol
+  errors separate, closes the request and session on cancellation or timeout, ignores late success, and never stores
+  a restore token. Success still means only "authorization and selection", not "screenshot". On Windows / X11 there
+  is no per-capture system layer; do not tell a user that `--yes` means "authorized" in general - it only means the
+  program dialog was skipped for a verified window image.
 - **Nothing skips a desktop route**: not `--yes`, not `--quiet`, not an environment variable, not stdin, not who is
   calling. There is no hidden bypass switch and no public `--worker` entry point. The repository does get past the
   dialog in two different ways during testing, and they are not the same thing - do not read one as covering the

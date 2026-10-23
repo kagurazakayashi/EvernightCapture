@@ -432,6 +432,32 @@ if(NOT WIN32)
     ${ECAPTURE_SESSION_PROBE_LIBS} Threads::Threads)
   set_target_properties(ecapture-session-tests PROPERTIES OUTPUT_NAME "ecapture-session-tests")
 
+  # ecapture-portal-tests —— Portal 请求 / 响应关联与系统授权映射的离线判据。
+  # 不连真实会话总线、不弹框、不建 Portal 会话；D-Bus 驱动本身用可注入接口在状态机层判。
+  add_executable(ecapture-portal-tests
+    tests/portal_state.cpp
+    src/PortalScreenCast.cpp
+    src/PortalSystemAuth.cpp)
+  ecapture_apply_common(ecapture-portal-tests)
+  target_compile_definitions(ecapture-portal-tests PRIVATE ${ECAPTURE_SESSION_PROBE_DEFS})
+  target_include_directories(ecapture-portal-tests PRIVATE ${ECAPTURE_SESSION_PROBE_INCLUDES})
+  target_link_libraries(ecapture-portal-tests PRIVATE Threads::Threads)
+  set_target_properties(ecapture-portal-tests PROPERTIES OUTPUT_NAME "ecapture-portal-tests")
+
+  # 真正起一个模拟会话 D-Bus Portal 服务，直接跑生产 DBusPortalScreenCast 驱动。
+  # 只在 libdbus-1 可构建时定义；没有 D-Bus 时 test-all.sh 把这一套记 NOT RUN。
+  if(EC_DBUS_FOUND)
+    add_executable(ecapture-portal-dbus-tests
+      tests/portal_dbus_state.cpp
+      src/PortalScreenCast.cpp
+      src/platform/linux/DBusPortalScreenCast.cpp)
+    ecapture_apply_common(ecapture-portal-dbus-tests)
+    target_compile_definitions(ecapture-portal-dbus-tests PRIVATE ECAPTURE_HAVE_DBUS)
+    target_include_directories(ecapture-portal-dbus-tests PRIVATE ${EC_DBUS_INCLUDE_DIRS})
+    target_link_libraries(ecapture-portal-dbus-tests PRIVATE ${EC_DBUS_LIBRARIES} Threads::Threads)
+    set_target_properties(ecapture-portal-dbus-tests PROPERTIES OUTPUT_NAME "ecapture-portal-dbus-tests")
+  endif()
+
   add_executable(ecapture
     src/platform/linux/EntryLinux.cpp
     src/platform/linux/PosixCliArgs.cpp
@@ -450,6 +476,10 @@ if(NOT WIN32)
     src/Encoder.cpp
     src/Main.cpp
     src/SessionReport.cpp
+    src/PortalScreenCast.cpp
+    src/PortalSystemAuth.cpp
+    src/PortalAuthRun.cpp
+    src/platform/linux/DBusPortalScreenCast.cpp
     src/CliOptions.cpp
     src/CliText.cpp
     src/Json.cpp
@@ -578,6 +608,12 @@ add_executable(ecapture
   src/Notification.cpp
   src/platform/windows/NotificationToast.cpp
   src/Consent.cpp
+  # Portal 授权 / 来源选择动作的共用户外编排、状态映射与 JSON 渲染。Windows 构建里
+  # --portal-authorize 不在选项目录中，也没有平台驱动；这些源文件只为保持 Report.cpp
+  # 的同一条入口可链接，并在被误调时 fail-closed 报 unavailable。
+  src/PortalScreenCast.cpp
+  src/PortalSystemAuth.cpp
+  src/PortalAuthRun.cpp
   # 确认框的文案层（可信 / 不可信来源 + 外部文本净化）与 wxWidgets 实现。
   src/ConsentDialog.cpp
   src/ConsentPrompt.cpp
@@ -1596,12 +1632,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-desktop-geometry-tests, ecapture-consent-tests${_ec_encode_target_note}${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-desktop-geometry-tests, ecapture-consent-tests, ecapture-portal-tests, ecapture-portal-dbus-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-desktop-geometry-tests ecapture-encode-tests ecapture-consent-tests ecapture-gui-probe ecapture-gui-tests)
+  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-desktop-geometry-tests ecapture-encode-tests ecapture-consent-tests ecapture-portal-tests ecapture-portal-dbus-tests ecapture-gui-probe ecapture-gui-tests)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

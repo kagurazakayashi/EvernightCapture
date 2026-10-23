@@ -99,10 +99,10 @@ void CheckModelShapes() {
 #if defined(_WIN32)
     Check(BuildPlatform() == PlatformKind::kWindows, "Windows 构建认得出自己是 Windows");
 #elif defined(__linux__)
-    // Linux 构建只带 X11 单窗口后端，所以编译期就是 linux-x11；"这次是不是原生 Wayland"
-    // 是运行时探测（EnvReport 的会话种类）回答的事，不折进平台族。
+    // Linux 构建的平台族仍是 linux-x11；"这次是不是原生 Wayland"由运行时会话探测回答。
+    // Portal 授权/来源选择驱动已经编进来，但不改变编译期平台族，也不代表 PipeWire 取帧已实现。
     Check(BuildPlatform() == PlatformKind::kLinuxX11,
-          "Linux 构建认得出自己是 linux-x11（原生 Wayland 的 Portal 后端没接进来）");
+          "Linux 构建认得出自己是 linux-x11（Portal 授权选择已接，PipeWire 取帧仍未接）");
 #else
     Check(!PlatformIsKnown(BuildPlatform()), "其它平台如实未知，不猜 X11 / Wayland");
 #endif
@@ -254,7 +254,8 @@ void CheckMatrix() {
         }
     }
     // Linux X11 这一列已编译窗口枚举、窗口存储截图、根窗口桌面截图与 wx 确认四格；
-    // 其余格不许声称已实现，Wayland 那一列整列都不许。
+    // Linux Wayland 已接 Portal 授权/来源选择（交互授权），但画面交付仍未实现，
+    // 所以其余格不许声称已实现。
     Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kTargetListing)),
           "Linux X11 的窗口枚举接了进来");
     Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, MatrixFeature::kWindowCapture)),
@@ -272,8 +273,12 @@ void CheckMatrix() {
             Check(!MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxX11, f)),
                   "Linux X11 除已登记的窗口/屏幕/交互授权外都不许写成已实现");
         }
-        Check(!MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxWayland, f)),
-              "Wayland 那一列本构建一格都没实现");
+        const bool waylandImplemented = f == MatrixFeature::kInteractiveGrant;
+        Check(MatrixIsCompiled(MatrixStatusOf(PlatformKind::kLinuxWayland, f)) ==
+                  waylandImplemented,
+              waylandImplemented
+                  ? "Wayland 的 Portal 授权/来源选择接进了交互授权格"
+                  : "Wayland 除授权/来源选择外交互授权外都不许写成已实现");
     }
     // 没登记过的平台族（kUnknown）不该被误读成"支持"
     Check(MatrixStatusOf(PlatformKind::kUnknown, MatrixFeature::kWindowCapture) ==

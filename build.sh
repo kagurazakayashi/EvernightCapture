@@ -30,6 +30,7 @@ usage() {
                                                 ecapture-session-tests core-tests wgc-tests
                                                 cli-text-tests save-tests ipc-tests crop-tests desktop-geometry-tests
                                                 image-tests encode-tests consent-tests
+                                                portal-tests portal-dbus-tests
                                                 gui-probe gui-tests
   --list-targets                          打印当前平台可构建与暂不可构建的目标清单，不构建
   --clean                                 先删掉这一份构建目录再重新配置（只删 build-linux 下那一个）

@@ -75,6 +75,32 @@ struct YesEligibility {
     }
 };
 
+// 系统授权层的接缝。本头不认识 D-Bus / Portal / wxWidgets：平台驱动把一次系统授权与来源
+// 选择收成一个回答，ConsentGate 只负责"程序确认回答之外还必须有这一层"与状态机绑定。
+// 注意 reply.state == kGranted 也不代表取得图像；它只覆盖授权与来源选择。
+struct SystemAuthRequest {
+    PixelScope scope = PixelScope::kWindowContent;
+    std::wstring path;        // 内部路径名（portal.window / portal.monitor …）
+    std::wstring targetKey;   // 本次清单里的目标键
+};
+
+struct SystemAuthReply {
+    SystemAuthState state = SystemAuthState::kUnavailable;
+    // 稳定诊断码（例如 capture.portal_cancelled_or_denied）。空则由 ConsentGate 按 state 给。
+    std::wstring code;
+    // 稳定 ASCII 原因 token，不随语言变；不得放恢复令牌、对象路径或用户文本。
+    std::wstring detail;
+    NativeErrorCode nativeError = kNativeErrorNone;
+    // 授予所绑定的目标；空 = 不检查（只用于不要求绑定的测试替身）。
+    std::wstring targetKey;
+};
+
+class ISystemAuthorizationProvider {
+public:
+    virtual ~ISystemAuthorizationProvider() = default;
+    virtual SystemAuthReply Authorize(const SystemAuthRequest& request) = 0;
+};
+
 // 授权后、签发之前的绑定核实接缝。窗口内容路径用它做一次身份复核（kCheap），
 // 返回 false 时把 *err 填成 capture.target_* 诊断；不传 = 这一问没有可用的绑定核实，
 // 于是即使人答了是也不会进入 granted（fail-closed）。桌面路径的绑定核实是判定器内部的
@@ -91,6 +117,11 @@ struct ConsentQuestion {
     // 这一次会不会在程序目录下另存一份历史副本（归档根解析得通时为真）。副本这件事要写在人
     // 批准的那段文字里：不能批了一张主输出、事后才发现别处还留着一份持久截图。
     bool historyCopy = false;
+    // 程序确认之后还会打开系统 Portal 授权 / 来源选择窗口。这一段说明必须写在**同一个**
+    // wxWidgets 提示里：系统窗口做什么、请求的是哪一类来源、本程序不会代选代点。
+    bool systemAuthorizationExpected = false;
+    bool systemInteractiveSource = false;
+    std::wstring systemSourceLabel;   // 本地化后的 "单个窗口" / "单个显示器"
 
     // ----- 来源：可信与不可信分开渲染 -----
     // 调用方自述（--purpose 之类）：由调用方提供，本程序无法核实。展示时必须带"未核实"标签，
@@ -257,6 +288,9 @@ private:
 // 不存在"内部矩形更新了、给人看的那行还是旧坐标"这种平行文本过期的形状。
 struct GateTarget {
     bool screen = false;
+    // 交互式系统来源选择：目标由 Portal 的系统窗口选定，本程序没有预选标题 / PID / 矩形。
+    // 这种目标不能显示伪造的 0×0 区域，也不能把"用户会在系统窗口里选择"说成已匹配。
+    bool interactiveSystemSource = false;
     std::wstring key;      // 窗口给 0x…，屏幕给设备名 —— 与诊断里的 target 同形
     std::wstring subject;  // 目标身份那一段文字（DescribeWindow / DescribeScreen），不含区域
     PhysRect area{};           // 该目标当前的屏幕矩形（窗口矩形 / 该屏矩形）
@@ -284,6 +318,13 @@ struct GateConfig {
     // 本平台要求的授权层（RequiredGrantLayers）。默认按编译期平台族取；测试可以显式覆盖，
     // 用来判"只拿到程序确认时 Wayland 的两层要求没有满足"这条判据，而不用真的接 Portal。
     uint32_t requiredGrantLayers = DefaultRequiredGrantLayers();
+    // 系统授权驱动（可为空）。要求系统层却为空时 fail-closed，且**不会**先弹一个会误导人的
+    // 程序确认框。非空时，系统授权在程序确认（以及窗口绑定核实 / 拓扑复核）之后才执行。
+    ISystemAuthorizationProvider* systemAuth = nullptr;
+    // 给共用提示说明"下一步系统窗口要选什么"；为空时只写通用说明。
+    std::wstring systemSourceLabel;
+    // 程序确认与系统授权共享的那一轮是否只做交互式系统来源选择（无预选目标）。
+    bool systemInteractiveSource = false;
 
     // 弹框上"谁在请求"那一段：调用方自述（不可信）+ 程序核实的事实（可信）。
     std::wstring requestSource;
@@ -322,6 +363,16 @@ public:
     bool AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey,
                           const PhysRect& area, std::optional<DesktopPermit>* out,
                           Diagnostic* err);
+
+    // Portal 授权 / 来源选择专用入口：只批准"接下来由系统 Portal 窗口选择并授权一个来源"，
+    // 不签发 DesktopPermit（本步骤不取像素）。程序确认**永远不会**被 --yes 免掉：
+    // 交互式选择的来源在确认之前没有可核实的身份，故不满足 --yes 的资格。
+    // 程序确认通过后再调用注入的系统授权驱动；两层都成功才返回 true。
+    bool AuthorizePortalSource(PixelScope scope, const wchar_t* path,
+                               const std::wstring& targetKey, Diagnostic* err);
+
+    // 系统授权层最后一次的稳定原因 token（用于报告；为空表示没有系统层事件）。
+    const std::wstring& SystemAuthDetail() const { return systemDetail_; }
 
     // 流水线在取帧前量到的目标矩形要能刷新到这里，好让弹框上写的是"现在就在那儿"的矩形。
     // 只影响还没弹出去的那一轮：一旦弹框，本轮问的就是那一刻的快照，之后刷新改不了它。
@@ -380,14 +431,22 @@ private:
     bool WindowGrantedFor(const std::wstring& targetKey) const;
     bool DesktopGrantedFor(const std::wstring& targetKey, const PhysRect& area,
                            PhysRect* approved) const;
+    // 系统层不仅要有 kGranted，还必须绑定到本次目标；不需要系统层的平台返回 true。
+    bool SystemGrantedFor(const std::wstring& targetKey) const;
     // 目标是否在本次请求的清单里（批量授权的范围只限于此）。
     bool ListedTarget(const std::wstring& targetKey) const;
 
     // 把一次界面回答推进到状态机；回答除此之外的一律按机制错误处理。
     static void ApplyAnswer(ConsentStateMachine* machine, ConsentAnswer answer);
-    // 系统授权层是否满足本次要求；不满足时把状态推到对应档并给出诊断。
-    bool EnsureSystemLayer(PixelScope scope, const wchar_t* path, const std::wstring& targetKey,
-                           Diagnostic* err);
+    // 程序确认之前的静态前置：要求系统层但没有可用驱动时 fail-closed，且不弹程序框。
+    bool SystemLayerAvailable(const wchar_t* path, const std::wstring& targetKey,
+                              Diagnostic* err);
+    // 程序确认 / 绑定核实之后真正执行系统授权。只有把 SystemAuthState 推到 kGranted
+    // 且绑定键一致才返回 true。
+    bool AcquireSystemLayer(PixelScope scope, const wchar_t* path, const std::wstring& targetKey,
+                            Diagnostic* err);
+    Diagnostic SystemLayerFailure(const wchar_t* path, const std::wstring& targetKey,
+                                  const SystemAuthReply& reply) const;
 
     GateConfig config_;
     IConsentPrompt& prompt_;
@@ -399,8 +458,11 @@ private:
     ConsentStateMachine window_;
     ConsentStateMachine desktop_;
     // 系统授权层：本构建没有 Portal 驱动时保持 kNotRequired（Windows / X11）或
-    // kNotRequested（需要但未取得，授权 fail-closed）。
+    // kNotRequested（需要但未取得，授权 fail-closed）。kGranted 只绑定 systemGrantKey_。
     SystemAuthState systemState_ = SystemAuthState::kNotRequired;
+    std::wstring systemGrantKey_;
+    std::wstring systemDetail_;
+    SystemAuthReply lastSystemReply_{};
 
     // 拒绝的原因（人答否 / 关框 / 弹不出框 / 期限到点 / 程序取消 / 系统层不可用）要粘住：
     // 后面那些目标不再问第二遍，但它们各自的诊断得说清当初是哪一种。

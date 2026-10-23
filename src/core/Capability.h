@@ -128,15 +128,15 @@ inline const MatrixCell* PlatformMatrixCells(uint32_t* count) {
         {PlatformKind::kLinuxX11, MatrixFeature::kHeadlessSession, MatrixStatus::kPlanned,
          "planned: help/version/config/capabilities must run without DISPLAY; capture must report the real limit"},
 
-        // ---- Linux Wayland：仍无实现，外加两条平台本身不给的路 ----
+        // ---- Linux Wayland：Portal 授权/来源选择已接；PipeWire 帧交付尚未接 ----
         {PlatformKind::kLinuxWayland, MatrixFeature::kTargetListing, MatrixStatus::kNotSupported,
          "compositors do not give clients a global window list; this tool will not fake one"},
         {PlatformKind::kLinuxWayland, MatrixFeature::kWindowCapture, MatrixStatus::kPlanned,
-         "planned via Portal; whether a window-scoped source can be honoured is a runtime probe of the portal implementation"},
+         "Portal authorization and single-WINDOW source selection are implemented; PipeWire frame delivery is not yet implemented"},
         {PlatformKind::kLinuxWayland, MatrixFeature::kScreenCapture, MatrixStatus::kPlanned,
-         "planned via XDG Desktop Portal ScreenShot / Screen Capture plus PipeWire"},
-        {PlatformKind::kLinuxWayland, MatrixFeature::kInteractiveGrant, MatrixStatus::kPlanned,
-         "planned: BOTH layers required (program confirm plus the system Portal grant); neither replaces the other"},
+         "Portal authorization and single-MONITOR source selection are implemented; PipeWire frame delivery is not yet implemented"},
+        {PlatformKind::kLinuxWayland, MatrixFeature::kInteractiveGrant, MatrixStatus::kUnverified,
+         "program confirm plus the system Portal grant are both required and implemented; mock D-Bus tests pass, real GNOME/KDE user authorization is not verified here"},
         {PlatformKind::kLinuxWayland, MatrixFeature::kMinimizedWindow, MatrixStatus::kNotSupported,
          "no window list and no window handles means there is nothing to point a minimized surface at"},
         {PlatformKind::kLinuxWayland, MatrixFeature::kCursorControl, MatrixStatus::kPlanned,

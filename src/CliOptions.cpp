@@ -445,6 +445,7 @@ constexpr const wchar_t* const* kOnOffValues = option_values::kOnOff;
 // --notify-detail 的三档。判据本体在 src/Notification.h：这一档决定**通知里写多少用户数据**，
 // 而通知中心那块地方在锁屏上也读得到，所以词表与 --help 与配置 schema 共用这一份。
 constexpr const wchar_t* const* kNotifyDetailValues = option_values::kNotifyDetail;
+constexpr const wchar_t* const* kPortalSourceValues = option_values::kPortalSource;
 
 struct OptionSpec {
     const wchar_t* name;        // 规范名（不含前导 -）
@@ -522,11 +523,17 @@ constexpr OptionSpec kOptions[] = {
     // ---- 截图授权 ----
     // --yes 只免掉窗口内容路径的确认框；会拍到桌面像素的那几条永远问人（见 src/Consent.h）。
     {L"yes", L"y", false, L"consent", L"", nullptr, L"opt.yes", false, false, true},
+    // ---- Portal 授权 / 来源选择（Linux）----
+    // 这不是截图通道：只验证程序确认 + 系统授权 + 单一来源选择，不打开 PipeWire、不取像素。
+    {L"portal-authorize", L"", true, L"consent", L"<window|monitor>", kPortalSourceValues,
+     L"opt.portal-authorize"},
     // ---- 期限 ----
     // --timeout-ms 是自动处理阶段的总预算，不是"每一步各得一份"；确认框的等待另算
     // （--consent-timeout-ms，到点按拒绝处理）。见 src/Deadline.h 与 src/Worker.h。
     {L"timeout-ms", L"", true, L"timeout", L"<ms>", nullptr, L"opt.timeout-ms"},
     {L"consent-timeout-ms", L"", true, L"timeout", L"<ms>", nullptr, L"opt.consent-timeout-ms"},
+    // Portal 系统窗口的人工等待：与程序确认框、自动处理预算各自计时。
+    {L"portal-timeout-ms", L"", true, L"timeout", L"<ms>", nullptr, L"opt.portal-timeout-ms"},
     // ---- 输出 ----
     {L"out", L"o", true, L"output", L"<path|->", nullptr, L"opt.out"},
     {L"format", L"f", true, L"output", L"<name>", kFormatValues, L"opt.format"},
@@ -999,6 +1006,15 @@ const wchar_t* CaptureMethodName(CaptureMethod m) {
         case CaptureMethod::kAuto: return L"auto";
     }
     return L"?";
+}
+
+const wchar_t* PortalAuthorizeModeName(PortalAuthorizeMode mode) {
+    switch (mode) {
+        case PortalAuthorizeMode::kWindow: return L"window";
+        case PortalAuthorizeMode::kMonitor: return L"monitor";
+        case PortalAuthorizeMode::kNone: return L"none";
+    }
+    return L"none";
 }
 
 const wchar_t* CropModeName(CropMode m) {
@@ -2173,6 +2189,29 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             return;
         }
 
+        // ---- Portal 授权 / 来源选择动作 ----
+        if (name == L"portal-authorize") {
+            opt.portalAuthorizeGiven = true;
+            if (!PortalAuthorizeSupported()) {
+                Err(codes::kPlatformUnsupported, Msg(L"cli.platform_unsupported"),
+                    L"--portal-authorize", value, Msg(L"cli.platform_unsupported_hint"));
+                return;
+            }
+            const std::wstring v = ToLower(Trim(value));
+            if (v == L"window") opt.portalAuthorize = PortalAuthorizeMode::kWindow;
+            else if (v == L"monitor") opt.portalAuthorize = PortalAuthorizeMode::kMonitor;
+            else {
+                std::wstring list;
+                for (const wchar_t* const* p = kPortalSourceValues; *p; ++p) {
+                    if (p != kPortalSourceValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kInvalidValue, Msg(L"cli.portal_source_value"),
+                    L"--portal-authorize", value, list);
+            }
+            return;
+        }
+
         // ---- 光标 ----
         // 取值只认那三个词（忽略大小写与首尾空白，与 --capture / --format 同一套写法）。
         // 认不了就整条不认，不退化成 default：那等于把一次写错的"要不要光标"变成一个没人要的决定。
@@ -2286,15 +2325,16 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // ---- 期限 ----
         // 只认十进制毫秒数：0x 前缀、下划线这种"句柄写法"放到时长上只会让人算错。
         // 0 有含义（= 不设这项期限），所以它下界是 0；空值仍然不算 0。
-        if (name == L"timeout-ms" || name == L"consent-timeout-ms") {
-            const bool consentOnly = name == L"consent-timeout-ms";
+        if (name == L"timeout-ms" || name == L"consent-timeout-ms" ||
+            name == L"portal-timeout-ms") {
             uint64_t ms = 0;
             if (!ParseDecimal(value, 0, kMaxTimeoutMs, &ms)) {
                 Err(codes::kInvalidNumber, Msgf(L"cli.timeout_value", kMaxTimeoutMs),
                     L"--" + name, value, Msg(L"cli.decimal_hint"));
                 return;
             }
-            if (consentOnly) opt.consentTimeoutMs = ms;
+            if (name == L"consent-timeout-ms") opt.consentTimeoutMs = ms;
+            else if (name == L"portal-timeout-ms") opt.portalTimeoutMs = ms;
             else opt.timeoutMs = ms;
             return;
         }
@@ -2689,6 +2729,48 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         }
     }
 
+    // ---- Portal 授权动作的互斥检查 ----
+    // 这一路会弹 wxWidgets 确认并打开系统 Portal 窗口，但**不**取像素、不写图片。
+    // 输出/取图/裁缩那一组与它同时给出会让人误以为本次会出图，一次列全报冲突。
+    if (opt.PortalAuthorizeAction() && !opt.showHelp && !versionFlag) {
+        std::vector<std::wstring> portalConflicts;
+        std::vector<std::wstring> conditions;
+        // 允许项：动作本体、两类人工 / 自动期限、--yes（只用于说明不生效）、--purpose、
+        // 文案详略与配置文件选择。其余截图专用选项都在下面按名字列出来。
+        const auto AllowedWithPortalAuthorize = [](const std::wstring& name) {
+            return name == L"portal-authorize" || name == L"portal-timeout-ms" ||
+                   name == L"timeout-ms" || name == L"consent-timeout-ms" ||
+                   name == L"yes" || name == L"purpose" || name == L"lang" ||
+                   name == L"verbose" || name == L"quiet" || name == L"json" ||
+                   name == L"config" || name == L"no-config" || name == L"portable";
+        };
+        const auto IsConditionName = [](const std::wstring& name) {
+            return name == L"hwnd" || name == L"pid" || name == L"process" || name == L"exe" ||
+                   name == L"title" || name == L"title-contains" || name == L"title-regex" ||
+                   name == L"class" || name == L"monitor" || name == L"region";
+        };
+        for (const ScannedItem& it : items) {
+            if (it.kind != ScannedItem::Kind::kOption || !it.option.spec) continue;
+            const std::wstring& name = it.option.spec->name;
+            if (IsConditionName(name)) {
+                NoteConflict(&conditions, L"--" + name);
+            } else if (!AllowedWithPortalAuthorize(name)) {
+                NoteConflict(&portalConflicts, L"--" + name);
+            }
+        }
+        if (!positional.empty()) NoteConflict(&portalConflicts, L"--out");
+        if (!conditions.empty()) {
+            Err(codes::kPortalTargetConditionsUnsupported,
+                Msg(L"cli.portal_target_conditions_unsupported"), L"--portal-authorize",
+                JoinFlags(conditions), Msg(L"cli.portal_target_conditions_unsupported_hint"));
+        }
+        if (!portalConflicts.empty()) {
+            Err(codes::kPortalAuthorizeConflict, Msg(L"cli.portal_authorize_conflict"),
+                L"--portal-authorize", JoinFlags(portalConflicts),
+                Msg(L"cli.portal_authorize_conflict_hint"));
+        }
+    }
+
     opt.showVersion = versionFlag;
     if (helpFlag) opt.showHelp = true;
 
@@ -2707,15 +2789,16 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             d.detail = std::move(det);
             result.errors.push_back(std::move(d));
         };
-        MergeConfigIntoOptions(opt, snap, cliGiven, !positional.empty(), !opt.QueryMode(),
-                               &cfgFacts, cfgErr);
+        MergeConfigIntoOptions(opt, snap, cliGiven, !positional.empty(),
+                               !opt.QueryMode() && !opt.PortalAuthorizeAction(), &cfgFacts, cfgErr);
     }
 
     // 只有在没有参数错误、且没显式 --help/--version 时，才因为"零条件"返回帮助。
     // 给了 --monitor 就不算零条件：那是明确的屏幕目标。
     // 查询命令同理：它本身就是明确的意图，没有窗口条件正是它的正常用法（一次截图都不做）。
     if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.QueryMode() &&
-        !opt.HasAnyCondition() && !opt.monitor.given && !opt.region.given) {
+        !opt.PortalAuthorizeAction() && !opt.HasAnyCondition() && !opt.monitor.given &&
+        !opt.region.given) {
         opt.showHelp = true;
         opt.helpReason = codes::kNoCondition;
     }
@@ -2724,7 +2807,7 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
     // 查询这一路不进这一段：它没有输出路径要展开，也不该因为"没给 --out"而被记成
     // "隐式 stdout + note.output_defaulted_stdout"（那条 note 说的是图片要挤哪条流，
     // 而查询压根没有图片）。输出路径留空，结果 JSON 因此恒走 stdout。
-    if (!opt.showHelp && !versionFlag && !opt.QueryMode()) {
+    if (!opt.showHelp && !versionFlag && !opt.QueryMode() && !opt.PortalAuthorizeAction()) {
         // 屏幕目标的两条硬规矩，都在解析期定下来，不留到运行期退化：
         // --monitor all 是"每块屏各一张"，与"按屏过滤窗口"没法同时成立；
         // dwm / printwindow 取的是窗口自己的画面，屏幕上没有这样一个窗口可取。

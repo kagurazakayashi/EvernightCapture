@@ -8,7 +8,7 @@
 # 說明文字（由 src/Report.cpp 的 HelpText 排版，縮排寫在每行文字裡）
 # ---------------------------------------------------------------------------
 help.header	EvernightCapture (%exe%) —— 按條件視窗截圖，基於 Windows.Graphics.Capture
-help.header_linux	EvernightCapture (%exe%) —— 依條件擷取視窗，基於 X11（XComposite）
+help.header_linux	EvernightCapture (%exe%) —— 依條件視窗截圖，基於 X11（XComposite）與 XDG Desktop Portal 授權/來源選擇
 help.usage1	用法: %exe% [條件...] <輸出路徑>        不給任何條件 => 顯示本說明
 help.usage2	      %exe% [條件...] --out <路徑>      路徑寫 - 表示把圖片位元組輸出到標準輸出
 help.usage3	      %exe% [條件...]                   不給輸出路徑 => 圖片按 png 寫標準輸出
@@ -21,9 +21,9 @@ help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無
 help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
 help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
 help.system	執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
-help.status_linux	目前建置: 這個 Linux 建置有兩條獨立 X11 取像路徑。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。建置同時提供唯讀的 X11 視窗、螢幕與能力查詢。--list / --inspect 只列舉本連線看得到的 X11 視窗，原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，行程歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不恢復最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡會報 cli.platform_unsupported，不會被默默忽略
+help.status_linux	目前建置：這個 Linux 建置有兩條獨立 X11 取幀路徑。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。建置同時提供 XDG Desktop Portal 授權/來源選擇動作 --portal-authorize=window|monitor：該動作只向系統入口申請一個來源，在 ScreenCast v3+ 上核實回傳的 source_type，然後關閉工作階段；它不開啟 PipeWire、不讀像素、不交付影像。--list / --inspect 只列舉本連線能看到的 X11 視窗；原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，程序歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不還原最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡報 cli.platform_unsupported，不會被悄悄忽略
 help.system_linux	執行環境: Linux。--capabilities / --diagnostics 以唯讀方式連線 X11、Wayland 與工作階段 D-Bus（XDG Desktop Portal），並檢查 PipeWire 套接字前提。環境變數與桌面名稱只是線索：它們不證明服務可用，也不構成授權
-help.linux_query	Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於可以截圖，只有真正實作的後端（本建置是視窗用 xcomposite、根視窗桌面矩形用 x11desktop）才會被報成可用；backends 也會寫出內部路徑與其授權範圍
+help.linux_query	Linux 預檢：先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於能截圖，只有真正實作的路線才會被報成可用。Portal 授權/來源選擇已單獨實作，但 PipeWire 影像交付尚未實作：取得 Portal 工作階段或串流絕不會被報告成截圖成功；backends 裡同時寫出內部路徑與它的授權範圍
 
 help.examples	示例:
 help.example1	%exe% --process notepad.exe D:\shots\epad.png
@@ -476,7 +476,7 @@ consent.denied	使用者拒絕了這次截圖
 consent.denied_hint_window	未截取任何畫面，也沒有寫入檔案。這條路徑只取所選視窗自己的畫面；只有目標與路徑都核實過時，--yes 才免掉確認（會拍到桌面的路徑仍然一定要問）
 consent.denied_hint_desktop	未截取任何畫面，也沒有寫入檔案。這條路徑會拍到桌面像素，--yes 與 --quiet 都跳不過；只要某個視窗的話改用 wgc / printwindow / dwm 並帶 --yes
 consent.unavailable	無法顯示確認對話框，已按拒絕處理
-consent.unavailable_hint	這個工作階段沒有可互動的桌面（服務、排程工作或鎖屏狀態），沒有人能同意截圖。%1
+consent.unavailable_hint	這個工作階段沒有可互動的桌面（服務、排程工作或鎖屏狀態），沒有人能同意截圖
 consent.timeout	確認框在 --consent-timeout-ms 之內沒人回答，已按拒絕處理
 consent.timeout_hint	沒有拍到任何東西，也沒寫檔。這不是「使用者不同意」，只是沒人應答：確認的人還在時可以再來一次
 consent.deadline_line	請在 %1 毫秒內回答；到點仍沒人回答就按「否」處理，不會預設同意。
@@ -619,3 +619,41 @@ cap.x11.root_unavailable	讀取 X11 根視窗幾何失敗
 cap.x11.root_area_invalid	請求的桌面矩形為空，或沒有完整落在目前根視窗內
 cap.x11.root_changed	讀取根視窗像素期間 X11 桌面配置發生變化，因此丟棄了這一幀
 opt.capture_linux	xcomposite（視窗內容擷取：讀目標視窗自己的重定向儲存）/ x11desktop（根視窗桌面像素，用於單一邏輯螢幕、--monitor desktop 或明確 --region）/ auto（視窗目標走 xcomposite，螢幕/桌面目標走 x11desktop，兩條路徑絕不互相回退）。Windows 專屬取值在這裡報 cli.platform_unsupported；視窗目標指定 x11desktop 或螢幕目標指定 xcomposite 報 capture.unsupported。桌面像素一定彈人工確認，--yes 不能跳過
+
+
+# Wayland / XDG Desktop Portal 授權與來源選擇（本步驟不交付 PipeWire 影像）
+opt.portal-authorize	只驗證 XDG Desktop Portal 的系統授權與來源選擇鏈：window 只向入口申請一個 WINDOW 來源，monitor 只申請一個 MONITOR 來源。程式一定先彈出 wxWidgets 確認框（互動式來源在系統選擇前沒有可核實身分，所以這裡的 --yes 不適用），接著桌面會開啟自己的系統授權/來源選擇視窗。成功只表示授權與選擇完成：不讀像素、不開啟 PipeWire remote、不交付影像，並立即關閉 Portal 工作階段。標題/PID/類名與特定螢幕選擇器無法在互動選擇中證明或強制，因此明確拒絕而不是忽略。不申請持久授權，也不保存恢復權杖
+opt.portal-timeout-ms	等待桌面 Portal 授權/來源選擇視窗的時間（毫秒）。0 = 一直等，預設 120000。這段人工等待與 --timeout-ms（D-Bus 自動處理預算）以及 --consent-timeout-ms（程式自己的 wxWidgets 確認框）分開計時
+cli.portal_source_value	--portal-authorize 的取值只能是 window 或 monitor
+cli.portal_target_conditions_unsupported	互動式 Portal 來源選擇無法證明或兌現這個目標條件
+cli.portal_target_conditions_unsupported_hint	Portal 讓人在系統視窗裡選來源，本程式無法在那次選擇之前比對標題、PID、類名、視窗條件或指定螢幕。請去掉這些選擇條件，或改用能在取幀前核實嚴格目標的路徑；這個條件絕不會被靜默忽略
+cli.portal_authorize_conflict	--portal-authorize 是只做授權驗證的動作，不能與截圖/輸出選項同時使用
+cli.portal_authorize_conflict_hint	請去掉列出的截圖、輸出、裁剪或查詢選項。這個動作依設計回傳 captured=0、images=[]，不會截圖
+note.portal_yes_not_applicable	互動式 Portal 來源選擇不能免除程式確認：系統選擇前無法核實將被選中的視窗身分，因此 --yes 不適用。--yes 也永遠不影響系統授權層
+note.portal_authorization_only	Portal 授權與來源選擇鏈成功，但本建置尚未交付 PipeWire 影像
+note.portal_authorization_only_hint	本次沒有讀像素、沒有寫圖片。Portal 工作階段或串流不等於截圖；PipeWire 幀交付屬於後續步驟
+consent.target_line_interactive	由系統視窗選擇的來源：%1（互動選擇，未預先比對標題、PID 或矩形）
+consent.system_portal_source	本次向系統申請的來源：%1
+consent.system_portal_next_interactive	下一步桌面會開啟它自己的 Portal 授權與來源選擇視窗。請在那裡選擇%1並批准；本程式不會替你選擇、點擊或自動批准
+consent.system_portal_next	下一步桌面會開啟它自己的 Portal 授權與來源選擇視窗。請在那裡完成操作；本程式不會替你選擇、點擊或自動批准
+consent.system_portal_no_persistence	本次只申請一個來源，不申請持久授權，也不保存恢復權杖。系統選擇視窗及其授權仍然屬於桌面自己的介面
+consent.system_cancelled_or_denied	桌面沒有批准 Portal 請求：它回報使用者取消了互動。Portal 無法區分取消與拒絕，所以這裡如實記為「取消或拒絕」，不編造更細的原因
+consent.system_cancelled_or_denied_hint	沒有取得系統授權，也沒有截到圖。如果使用者希望批准某個來源，請重新執行並在系統視窗中操作
+consent.system_denied	系統授權被明確拒絕
+consent.system_denied_hint	沒有取得授權。不要為了繞過系統決定而換後端或換介面重試
+consent.system_cancelled	本次系統授權等待被本程式取消
+consent.system_cancelled_hint	Portal 請求與工作階段已關閉，沒有截取任何內容
+consent.system_timeout	Portal 授權/來源選擇視窗沒有在設定的等待時間內完成
+consent.system_timeout_hint	請求與工作階段已關閉，遲到的成功回應會被忽略。只有確實有人能操作時才增大 --portal-timeout-ms；絕不能自動回答系統視窗
+consent.system_unavailable	工作階段 D-Bus 或 XDG Desktop Portal 服務不可用
+consent.system_unavailable_hint	沒有請求系統授權，也沒有讀像素。請在有 xdg-desktop-portal 的桌面工作階段中執行；環境變數存在不能證明服務可用
+consent.system_unsupported	目前 Portal 實作、介面版本或來源能力無法滿足這次請求
+consent.system_unsupported_hint	請求已停止，沒有降級或偷偷改選。請核對 ScreenCast 介面版本與 AvailableSourceTypes；不要用 XWayland 或私有協定替代
+consent.system_service_lost	請求進行期間 XDG Desktop Portal 服務消失了
+consent.system_service_lost_hint	不能聲稱取得授權，也沒有留下工作階段。請檢查桌面工作階段與 portal 服務，然後從頭開始
+consent.system_protocol_error	Portal 交換沒有給出可核實的授權/來源結果
+consent.system_protocol_error_hint	請求已關閉，存在工作階段時也已關閉。這不是使用者拒絕；請檢查 portal 實作與日誌，並用全新請求重試
+portal.source_window	一個視窗
+portal.source_monitor	一個螢幕
+portal.target_window	將在桌面 Portal 視窗中選擇一個應用程式視窗
+portal.target_monitor	將在桌面 Portal 視窗中選擇一個螢幕

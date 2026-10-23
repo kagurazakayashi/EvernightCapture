@@ -13,6 +13,7 @@
 #include "Lang.h"
 #include "Notification.h"  // 交付完成后的那条桌面通知：状态名的本体在那个头文件
 #include "ProcessIntegrity.h"
+#include "PortalAuthRun.h"
 #include "ScreenIdentity.h"   // MonitorSelectorLabel / KindName：选择器的回显只写一处
 #include "ScreenQuery.h"
 #include "SystemCompat.h"
@@ -422,6 +423,19 @@ int BuildResponse(const ParseResult& parse, Response* out) {
         out->toStderr = false;
         return EX_OK;
     }
+    if (opt.PortalAuthorizeAction()) {
+        if (parse.ok) {
+            // 会弹一次程序确认并打开系统 Portal 窗口；成功后也只报告授权与来源选择可用，
+            // captured 恒为 0、imageDelivered 恒为 false（PipeWire 交付是后续步骤）。
+            PortalAuthRunResult pr = RunPortalAuthorization(opt);
+            out->body = std::move(pr.body);
+            if (!out->body.empty() && out->body.back() != L'\n') out->body += L'\n';
+            out->exitCode = pr.exitCode;
+            out->toStderr = false;
+            return pr.exitCode;
+        }
+        // 参数错误照常落到下面的统一错误 JSON；不启动任何 Portal 调用。
+    }
     if (opt.WindowQueryMode()) {
         if (parse.ok) {
             // 只读的窗口发现与检查：一个像素都不取、不弹框、不写文件、不激活任何窗口
@@ -560,7 +574,8 @@ int BuildResponse(const ParseResult& parse, Response* out) {
     WriteImages(j, images);
     // 通知那一格只属于截图这一路。只读查询失败时落下来的也是同一个形状（images 为空、
     // errors 里有那一条），而那几路本来就不发通知，给它添一格等于替查询承诺了一件它不做的事。
-    if (!(opt.EnvQueryMode() || opt.WindowQueryMode() || opt.ConfigViewMode()))
+    if (!(opt.EnvQueryMode() || opt.WindowQueryMode() || opt.ConfigViewMode() ||
+          opt.PortalAuthorizeAction()))
         WriteNotification(j, notify, opt);
     // errors 不受 --quiet 影响：调用方失败时必须能看到原因
     if (!errors.empty()) {

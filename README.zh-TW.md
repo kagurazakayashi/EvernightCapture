@@ -109,7 +109,7 @@ ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 
 <!-- BEGIN ECAPTURE-HELP -->
 ```text
-EvernightCapture (ecapture) —— 依條件擷取視窗，基於 X11（XComposite）
+EvernightCapture (ecapture) —— 依條件視窗截圖，基於 X11（XComposite）與 XDG Desktop Portal 授權/來源選擇
 
 用法: ecapture [條件...] <輸出路徑>        不給任何條件 => 顯示本說明
       ecapture [條件...] --out <路徑>      路徑寫 - 表示把圖片位元組輸出到標準輸出
@@ -150,10 +150,12 @@ EvernightCapture (ecapture) —— 依條件擷取視窗，基於 X11（XComposi
 
 擷取授權（實際擷取預設先詢問；--yes 只在能力閘門確認這條路可用之後，免除單一視窗自身畫面的確認；系統授權層（例如 Wayland 的 Portal）是獨立的一層，--yes 既不能取消它，也不能讓它算完成）
   --yes, -y                                               只在「目標是單一視窗自身畫面、能力閘門確認這條路徑可用、目標身分已複核」三條同時成立時，才免掉這一次程式確認。X11 兩條會讀取桌面像素的路徑（x11desktop 的螢幕 / 全桌面 / --region）一定彈框，--yes 跳不過。一次確認只覆蓋彈框裡列出的那批目標；之後才加入的目標要重新確認或被拒絕。系統授權層（例如 Wayland Portal）是獨立一層：--yes 既不取消也不滿足它。寫 --yes=false 表示明確要問
+  --portal-authorize <window|monitor>                     只驗證 XDG Desktop Portal 的系統授權與來源選擇鏈：window 只向入口申請一個 WINDOW 來源，monitor 只申請一個 MONITOR 來源。程式一定先彈出 wxWidgets 確認框（互動式來源在系統選擇前沒有可核實身分，所以這裡的 --yes 不適用），接著桌面會開啟自己的系統授權/來源選擇視窗。成功只表示授權與選擇完成：不讀像素、不開啟 PipeWire remote、不交付影像，並立即關閉 Portal 工作階段。標題/PID/類名與特定螢幕選擇器無法在互動選擇中證明或強制，因此明確拒絕而不是忽略。不申請持久授權，也不保存恢復權杖
 
 執行期限（自動處理那一段的總預算；人工確認另算，到點按拒絕處理）
   --timeout-ms <ms>                                       自動處理階段的總預算（毫秒）：從選定目標開始，條件求值、後端重試、取幀、編碼、寫檔共用這一份剩餘時間，任何一步都不會重新領一份完整預算。不給或寫 0 = 不設總預算，此時每次隔離呼叫仍受內建上限（5000 毫秒）約束。人工確認的等待不算在這裡，見 --consent-timeout-ms。預算用盡時，尚未開始的階段被拒絕、那一張不落地（已經提交完成的檔案不會被回滾），依階段報 match.timeout / capture.timeout / io.timeout
   --consent-timeout-ms <ms>                               確認框最多等多久（毫秒）。不給或寫 0 = 一直等人回答。到點按「拒絕」處理，絕不按「預設同意」處理，報 capture.consent_timeout；期限之後才落地的「是」也不會改判成同意。這段等待單獨計時，不佔 --timeout-ms 那份自動預算；點「是」之後那約 1 秒的關閉動畫緩衝也算在這一級，不會為了趕期限而省掉
+  --portal-timeout-ms <ms>                                等待桌面 Portal 授權/來源選擇視窗的時間（毫秒）。0 = 一直等，預設 120000。這段人工等待與 --timeout-ms（D-Bus 自動處理預算）以及 --consent-timeout-ms（程式自己的 wxWidgets 確認框）分開計時
 
 輸出
   --out, -o <path|->                                      輸出路徑；特殊值 - 表示把圖片位元組寫到標準輸出。也可用位置參數；完全不給時等同 --out -。整批輸出名在取影格之前一次算好，兩個目標算出同一個名字時整批報錯，不會靜默覆蓋。標準輸出一次只能交付一張影格，命中多個目標時整批報參數錯誤、一張都不截
@@ -196,9 +198,9 @@ EvernightCapture (ecapture) —— 依條件擷取視窗，基於 X11（XComposi
       --help / --version 以及不給條件時是文字
 退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無匹配視窗 / 5 匹配多個視窗 /
         6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
-目前建置: 這個 Linux 建置有兩條獨立 X11 取像路徑。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。建置同時提供唯讀的 X11 視窗、螢幕與能力查詢。--list / --inspect 只列舉本連線看得到的 X11 視窗，原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，行程歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不恢復最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡會報 cli.platform_unsupported，不會被默默忽略
+目前建置：這個 Linux 建置有兩條獨立 X11 取幀路徑。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。建置同時提供 XDG Desktop Portal 授權/來源選擇動作 --portal-authorize=window|monitor：該動作只向系統入口申請一個來源，在 ScreenCast v3+ 上核實回傳的 source_type，然後關閉工作階段；它不開啟 PipeWire、不讀像素、不交付影像。--list / --inspect 只列舉本連線能看到的 X11 視窗；原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，程序歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不還原最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡報 cli.platform_unsupported，不會被悄悄忽略
 執行環境: Linux。--capabilities / --diagnostics 以唯讀方式連線 X11、Wayland 與工作階段 D-Bus（XDG Desktop Portal），並檢查 PipeWire 套接字前提。環境變數與桌面名稱只是線索：它們不證明服務可用，也不構成授權
-Linux 預檢: 先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於可以截圖，只有真正實作的後端（本建置是視窗用 xcomposite、根視窗桌面矩形用 x11desktop）才會被報成可用；backends 也會寫出內部路徑與其授權範圍
+Linux 預檢：先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於能截圖，只有真正實作的路線才會被報成可用。Portal 授權/來源選擇已單獨實作，但 PipeWire 影像交付尚未實作：取得 Portal 工作階段或串流絕不會被報告成截圖成功；backends 裡同時寫出內部路徑與它的授權範圍
 
 示例:
   ecapture --process xterm ~/shots/term.png
@@ -1154,7 +1156,7 @@ HDR 色彩這件事不改變授權：整個處理排在取影之後、編碼之�
 - 介面回傳的只是一個回答，不是授權。`src/core/ConsentState.h` 對每一級各記八個狀態（未請求 / 等待 / 同意 / 拒絕 / 取消 / 逾時 / 失效 / 錯誤），只有 `granted` 才是許可；進入 `granted` 必須同時滿足「人按下允許」與「綁定複核通過」，只答了是而尚未核實的那一檔仍是 `waiting`。期限之後才落地的「是」絕不會變成同意；關框 / 拒絕 / 取消 / 逾時 / 彈不出來各有自己的狀態與診斷碼，而且都會停掉本次請求剩下的擷取（不換後端、不再問第二次）。
 - `--yes` 想跳過程式確認，必須同時成立三件事：目標是單一視窗自身畫面（不是螢幕 / 桌面區域）、能力閘門確認這條路徑在本建置可用、目標身分已複核。少任何一項都退回正常確認。一次確認仍然只是「彈框裡列出的那批目標」的快照：之後才加入的目標要嘛重新確認，要嘛拒絕，絕不沿用先前的「是」。
 - 確認框把「本程式自己核實的事實」（映像路徑、版本、行程號）與「呼叫方自述」分開顯示，後者明確標為未核實。視窗標題、類名、`--purpose`、輸出路徑都先過 `src/core/DisplayText.h`：C0/C1 控制字元、雙向覆蓋 / 隔離、零寬與格式字元、行 / 段分隔符、非字元一律換成 `U+FFFD`，過長文字按碼位截斷並加省略號——精心構造的標題既偽造不出額外的框內行，也擠不掉真正的問題。
-- 系統授權層（Wayland 的 Portal）是**獨立預留**的一檔（`SystemAuthState`），不折進程式確認：`--yes` 既不能取消它、也不能滿足它；需要它而本建置沒有驅動的平台會以 `capture.consent_unavailable` 拒絕請求，而不是拿程式確認冒充兩層。Windows 與 X11 仍只有程式確認這一層。
+- 系統授權層（Wayland 的 Portal）是**獨立**的一檔（`SystemAuthState`），不折進程式確認：`--yes` 既不能取消它、也不能滿足它；需要它而沒有可用驅動的平台會以 `capture.consent_unavailable` fail-closed，而不是拿程式確認冒充兩層。Linux 建置現在已包含上文 `--portal-authorize` 的真實驅動，但那里的成功仍只證明授權與來源選擇，不證明影像交付。Windows 與 X11 的實際截圖仍只有程式確認這一層。
 - 說清楚邊界：這是程式自有的 wxWidgets 確認框，不是作業系統的安全邊界。它是給合作式自動化（人或 AI）準備的誤點防護，既證明不了按下按鈕的是人，
   也擋不住同一個權限等級裡存心要繞過的處理程序。它能保證的是：照這套規矩跑的呼叫端，一定會被問上這一次。
 
@@ -1174,6 +1176,35 @@ HDR 色彩這件事不改變授權：整個處理排在取影之後、編碼之�
 `--monitor <n>` 與視窗條件同時給出＝按螢幕過濾視窗（視窗矩形與該螢幕有重疊即命中，跨螢幕視窗在兩張螢幕上都算），
 出的仍是視窗圖，所以按上面視窗那兩行的規矩授權。`--monitor all` 與任何視窗**匹配**條件互斥
 （報 `cli.monitor_conflict`，退出碼 1），但 `--all` / `--index` 這類消歧選項不算匹配條件，可以和它搭配。
+
+## Wayland、XDG Desktop Portal 與系統授權層
+
+XDG Desktop Portal 路徑已實作為**授權與來源選擇鏈**，但尚未交付影像。`--portal-authorize=window|monitor`
+就是專門驗證這條鏈的動作：
+
+- 先**只彈一次** wxWidgets 程式確認框：說明誰在請求、用途、申請哪種來源，以及下一步桌面會開啟它自己的
+  系統授權/來源選擇視窗。這一段不複製系統視窗，也不冒充它。
+- 系統授權視窗由桌面服務提供；本程式不建立假系統授權框，不自動點擊、不送出按鍵，也不拿程式確認冒充系統授權。
+- 請求是嚴格的：`window` 只申請 `WINDOW` 來源，`monitor` 只申請 `MONITOR`；`multiple=false`，只允許一個來源。
+  實作要求 ScreenCast v3+，以便核實回傳的 `source_type`。入口沒有宣告所請求的來源位、版本過低、回應缺少
+  `source_type`、或回傳類型與請求不符時，都在穩定診斷處停止。標題/PID/類名與特定螢幕選擇器無法透過互動式
+  選擇證明，因此 `--portal-authorize` 在彈框前明確拒絕，絕不靜默忽略。
+- `--yes` 在這裡不生效：互動式來源在系統選擇前沒有可核實身分，程式確認仍然保留；`--yes` 也永遠不改變
+  系統層是否必需或是否成功。
+- `--timeout-ms` 是 D-Bus 自動設定預算；`--portal-timeout-ms` 只計人工等待系統視窗的時間；
+  `--consent-timeout-ms` 只計程式自己的 wxWidgets 確認框。三者分開計時。逾時或取消會關閉相關請求與工作階段，
+  遲到的成功回應一律忽略。
+- `Request.Response` 可能早於方法回覆。驅動在送出呼叫之前先安裝訊號匹配與過濾器，預先生成 `handle_token`
+  對應的請求路徑，依訊號自己的 object path 緩衝早到回應，再核對實際回傳句柄並完成關聯。離線判據直接覆蓋
+  這個順序競爭。
+- `response=1` 只代表「使用者取消了互動」；Portal 不區分取消與拒絕，所以回報準確的合併狀態
+  `cancelled_or_denied`。服務消失、服務不可用、版本/來源不支援、逾時、程式取消與協定錯誤仍各自分開。
+- 不申請 `restore_token` / `persist_mode`，不引入跨執行免互動授權，權杖不寫日誌、不寫 `MEMORY.md`。
+  CLI 沒有可匯出的父視窗，因此使用介面允許的空 `parent_window`，絕不偽造 `x11:` / `wayland:` 識別。
+- 成功只回報授權與來源選擇（`captured: 0`、`images: []`、`pixelsRead: false`、`imageDelivered: false`），
+  然後關閉 Portal 工作階段。本建置**不**呼叫 `OpenPipeWireRemote`、不交付幀。Portal 工作階段或串流不是截圖。
+- 模擬 D-Bus 與可注入介面判據只證明狀態機與協定處理；真實 GNOME/KDE Wayland 授權與來源選擇必須由使用者在
+  真機上完成。XWayland 彈窗或模擬結果都不能當作原生系統授權已驗證。
 
 ## 目標身份與句柄重複使用
 
@@ -1952,15 +1983,15 @@ Windows 那側的原生型別，只在通道內部與輔助進程管道的線上
 | 能力 | Windows | Linux X11 | Linux Wayland |
 | ---- | ------- | --------- | ------------- |
 | 目標選擇（列出視窗與螢幕並按條件命中） | 已實作 | 未驗證（走 X11 視窗查詢；XWayland 下只看得到 X11 視窗，原生 Wayland 視窗看不到） | 明確不做（合成器不給用戶端全域視窗清單，本工具不虛構一個） |
-| 視窗截圖（只含所選視窗自己的畫面） | 已實作 | 未驗證（XComposite 的 `NameWindowPixmap`：讀視窗自己的儲存，絕不讀桌面像素） | 計畫支援（走 Portal；能不能按視窗取要探測入口實作） |
-| 螢幕截圖（單塊輸出、整個桌面或明確區域的桌面像素） | 已實作，必人工確認 | 未驗證（已實作 `x11desktop`：`--monitor`、`--monitor desktop` 與 `--region` 都讀根視窗精確矩形；合成幾何與授權狀態已判，真實多螢幕/旋轉/熱插拔未驗證） | 計畫支援（Portal + PipeWire） |
-| 互動授權 | 已實作（只有程式確認框；Windows 沒有每次呼叫的系統截屏授權） | 未驗證（共用 wxWidgets 確認框已接上；桌面像素一定問人、`--yes` 不能跳過；本步沒有真人點擊紀錄） | 計畫支援（程式確認 + 系統授權**兩層都要**，誰也不替代誰） |
+| 視窗截圖（只含所選視窗自己的畫面） | 已實作 | 未驗證（XComposite 的 `NameWindowPixmap`：讀視窗自己的儲存，絕不讀桌面像素） | 尚未交付影像（Portal 授權/來源選擇已實作，單一視窗只申請一個 WINDOW 來源；PipeWire 幀交付是後續步驟） |
+| 螢幕截圖（單塊輸出、整個桌面或明確區域的桌面像素） | 已實作，必人工確認 | 未驗證（已實作 `x11desktop`：`--monitor`、`--monitor desktop` 與 `--region` 都讀根視窗精確矩形；合成幾何與授權狀態已判，真實多螢幕/旋轉/熱插拔未驗證） | 尚未交付影像（Portal 授權/來源選擇已實作，單一螢幕只申請一個 MONITOR 來源；PipeWire 幀交付是後續步驟） |
+| 互動授權 | 已實作（只有程式確認框；Windows 沒有每次呼叫的系統截屏授權） | 未驗證（共用 wxWidgets 確認框已接上；桌面像素一定問人、`--yes` 不能跳過；本步沒有真人點擊紀錄） | 未驗證（程式確認 + 系統授權**兩層都要**，誰也不替代誰；模擬 D-Bus/注入判據通過，真實 GNOME/KDE 人工授權未在本機驗證） |
 | 最小化視窗的畫面 | 明確不做（`--list=all` 能列出來，但不截取） | 明確不做（未映射視窗沒有可看的儲存；後端如實拒絕，不回一張舊 pixmap） | 明確不做（沒有視窗清單也沒有視窗代碼，沒有可指的對象） |
 | 游標（`--cursor`） | 執行期探測（WGC 那個開關有版本門檻；桌面複製那兩條登錄為不可核實） | 未驗證（`xcomposite` 與 `x11desktop` 的來源都不含 X 伺服器單獨合成的游標：`exclude` 成立，`include` 明確拒絕且不合成） | 計畫支援（取決於入口給不給游標中繼資料） |
 | HDR（`--hdr`） | 未驗證（tone mapping 已實作並離線逐點判過，但本專案沒有能開 HDR 的顯示器實測過） | 計畫支援（對 X11 廣色域不作任何斷言） | 計畫支援 |
 | 無圖形工作階段 | 已實作（說明 / 版本 / 設定 / 能力查詢照跑；桌面像素那幾條如實報 unavailable） | 計畫支援（說明 / 版本 / 設定 / 能力查詢必須能在沒有 `DISPLAY` 時跑；截圖要如實報出限制） | 計畫支援 |
 
-`--capabilities` 已經如實報出本建置實際帶著的兩條 Linux X11 後端（`backends[]`：視窗內容 `xcomposite`、根視窗桌面像素 `x11desktop`；`autoChainWindow` 是 `xcomposite`，`autoChainScreen` 是 `x11desktop`），`runtime[]` 裡 `x11` 那一格也來自同一份工作階段探測。上面剩下的「計畫支援」格暫時**不**寫進那份 JSON。矩陣、本節與原始碼登錄表必須一起改。
+`--capabilities` 已經如實報出本建置實際帶著的兩條 Linux X11 後端（`backends[]`：視窗內容 `xcomposite`、根視窗桌面像素 `x11desktop`；`autoChainWindow` 是 `xcomposite`，`autoChainScreen` 是 `x11desktop`），`runtime[]` 裡 `x11` 那一格也來自同一份工作階段探測。上面剩下的「尚未交付影像」格暫時**不**會被寫成可截圖。`--capabilities` 另有一格 `portal.authorizationAndSelection`：授權/來源選擇鏈已實作，而 `imageDeliveryImplemented` 與 `pipewireFrameDeliveryImplemented` 仍為 false。矩陣、本節與原始碼登錄表必須一起改。
 
 ### 隱私界線（寫進判據，不只是寫在文件裡）
 

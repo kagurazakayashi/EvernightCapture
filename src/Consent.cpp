@@ -1,5 +1,7 @@
 #include "Consent.h"
 
+#include <cwchar>
+
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -207,17 +209,26 @@ ConsentQuestion ConsentGate::MakeQuestion(const wchar_t* path, PixelScope scope,
     // 框上的每一行从快照即时渲染：给人看的坐标与将要冻结进授权的坐标是同一份数，
     // 不存在"文案拼好之后区域又刷新了"的平行文本。
     for (const GateTarget& t : snap.listed) {
-        q.targets.push_back(Msgf(L"consent.target_line", t.subject,
-                                 static_cast<long long>(t.area.left),
-                                 static_cast<long long>(t.area.top),
-                                 static_cast<long long>(t.area.right - t.area.left),
-                                 static_cast<long long>(t.area.bottom - t.area.top)));
+        if (t.interactiveSystemSource) {
+            // 交互式系统来源没有预先匹配的目标：不显示 0×0 或任何伪造坐标。
+            q.targets.push_back(Msgf(L"consent.target_line_interactive", t.subject));
+        } else {
+            q.targets.push_back(Msgf(L"consent.target_line", t.subject,
+                                     static_cast<long long>(t.area.left),
+                                     static_cast<long long>(t.area.top),
+                                     static_cast<long long>(t.area.right - t.area.left),
+                                     static_cast<long long>(t.area.bottom - t.area.top)));
+        }
     }
     q.outputs = snap.outputs;
     // 历史副本这一句与目标清单、区域一起进同一轮问答：人点头批准的是"这些目标、这些输出、
     // 并且程序自己那份目录里还会留一份持久副本"，不是只批准了前两样。它不参与区域与拓扑的
     // 变化判定（一次运行里不会中途变），所以不必进快照那份。
     q.historyCopy = config_.historyCopy;
+    q.systemAuthorizationExpected =
+        SystemAuthorizationRequired() && config_.systemAuth != nullptr;
+    q.systemInteractiveSource = config_.systemInteractiveSource;
+    q.systemSourceLabel = config_.systemSourceLabel;
     // 来源：调用方自述（不可信）与程序核实的事实（可信）分两路交出去，渲染层分别带标签。
     q.requestSource = config_.requestSource;
     q.requestSourceGiven = config_.requestSourceGiven;
@@ -271,41 +282,160 @@ Diagnostic ConsentGate::Stale(const wchar_t* path, const std::wstring& targetKey
     return d;
 }
 
-Diagnostic ConsentGate::SystemLayerUnavailable(const wchar_t* path,
-                                               const std::wstring& targetKey) const {
-    // 这一档不是"人拒绝"，也不是"对话框弹不出来"：这个平台要求系统授权层，而本构建还没有
-    // 那一层驱动（Portal 接入之前）。宁可一张都不截，也不拿程序确认冒充系统授权。
+Diagnostic ConsentGate::SystemLayerFailure(const wchar_t* path,
+                                           const std::wstring& targetKey,
+                                           const SystemAuthReply& reply) const {
     Diagnostic d;
-    d.code = codes::kConsentUnavailable;
-    d.message = Msg(L"consent.system_layer_required");
-    d.option = L"--capture";
+    // 系统层各档的下一步不同：人取消/拒绝、期限到点、服务不可用、版本或来源不支持、
+    // 中途消失、协议错误不能折成同一条。系统分不清拒绝与取消时写准确的合并状态。
+    switch (reply.state) {
+        case SystemAuthState::kCancelledOrDenied:
+            d.code = codes::kPortalCancelledOrDenied;
+            d.message = Msg(L"consent.system_cancelled_or_denied");
+            d.hint = Msg(L"consent.system_cancelled_or_denied_hint");
+            break;
+        case SystemAuthState::kDenied:
+            d.code = codes::kAccessDenied;
+            d.message = Msg(L"consent.system_denied");
+            d.hint = Msg(L"consent.system_denied_hint");
+            break;
+        case SystemAuthState::kCancelled:
+            d.code = codes::kPortalCancelled;
+            d.message = Msg(L"consent.system_cancelled");
+            d.hint = Msg(L"consent.system_cancelled_hint");
+            break;
+        case SystemAuthState::kTimedOut:
+            d.code = codes::kPortalTimeout;
+            d.message = Msg(L"consent.system_timeout");
+            d.hint = Msg(L"consent.system_timeout_hint");
+            break;
+        case SystemAuthState::kUnavailable:
+            d.code = codes::kPortalUnavailable;
+            d.message = Msg(L"consent.system_unavailable");
+            d.hint = Msg(L"consent.system_unavailable_hint");
+            break;
+        case SystemAuthState::kUnsupported:
+            d.code = codes::kPortalUnsupported;
+            d.message = Msg(L"consent.system_unsupported");
+            d.hint = Msg(L"consent.system_unsupported_hint");
+            break;
+        case SystemAuthState::kServiceLost:
+            d.code = codes::kPortalServiceLost;
+            d.message = Msg(L"consent.system_service_lost");
+            d.hint = Msg(L"consent.system_service_lost_hint");
+            break;
+        case SystemAuthState::kStale:
+            d.code = codes::kConsentStale;
+            d.message = Msg(L"cap.consent.stale");
+            d.hint = Msg(L"cap.consent.stale_hint");
+            break;
+        case SystemAuthState::kError:
+            d.code = codes::kPortalProtocolError;
+            d.message = Msg(L"consent.system_protocol_error");
+            d.hint = Msg(L"consent.system_protocol_error_hint");
+            break;
+        case SystemAuthState::kGranted:
+        case SystemAuthState::kNotRequired:
+        case SystemAuthState::kNotRequested:
+        case SystemAuthState::kWaiting:
+            d.code = codes::kConsentUnavailable;
+            d.message = Msg(L"consent.system_layer_required");
+            d.hint = Msg(L"consent.system_layer_hint");
+            break;
+    }
+    if (!reply.code.empty()) d.code = reply.code;
+    const bool portalPath =
+        path && (std::wcscmp(path, paths::kPortalWindow) == 0 ||
+                 std::wcscmp(path, paths::kPortalMonitor) == 0);
+    d.option = portalPath ? L"--portal-authorize" : L"--capture";
     d.value = path ? path : std::wstring();
-    d.hint = Msg(L"consent.system_layer_hint");
     d.target = targetKey;
+    d.detail = reply.detail;
     d.stage = stages::kConsent;
+    d.win32 = reply.nativeError;
     return d;
 }
 
-bool ConsentGate::EnsureSystemLayer(PixelScope scope, const wchar_t* path,
-                                    const std::wstring& targetKey, Diagnostic* err) {
+bool ConsentGate::SystemLayerAvailable(const wchar_t* path, const std::wstring& targetKey,
+                                       Diagnostic* err) {
+    if (!SystemAuthorizationRequired()) {
+        systemState_ = SystemAuthState::kNotRequired;
+        return true;
+    }
+    if (systemState_ == SystemAuthState::kGranted && systemGrantKey_ == targetKey) return true;
+    if (config_.systemAuth == nullptr) {
+        // 要求系统授权却没有驱动：在程序确认之前就失败关闭，不先演一个"人会以为已满足"
+        // 的程序确认框。这一条与 Portal 驱动接入后的真实失败不是同一个原因。
+        systemState_ = SystemAuthState::kUnavailable;
+        systemGrantKey_.clear();
+        systemDetail_ = L"system_authorization_provider_absent";
+        lastSystemReply_ = SystemAuthReply{};
+        lastSystemReply_.state = systemState_;
+        lastSystemReply_.detail = systemDetail_;
+        lastSystemReply_.code = codes::kConsentUnavailable;
+        if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
+        return false;
+    }
+    if (SystemAuthBlocks(systemState_)) {
+        if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
+        return false;
+    }
+    return true;
+}
+
+bool ConsentGate::AcquireSystemLayer(PixelScope scope, const wchar_t* path,
+                                     const std::wstring& targetKey, Diagnostic* err) {
     (void)scope;
     if (!SystemAuthorizationRequired()) {
         systemState_ = SystemAuthState::kNotRequired;
         return true;
     }
-    if (systemState_ == SystemAuthState::kGranted) return true;
-    if (systemState_ == SystemAuthState::kNotRequired) systemState_ = SystemAuthState::kNotRequested;
-    if (systemState_ == SystemAuthState::kUnavailable || systemState_ == SystemAuthState::kError ||
-        SystemAuthBlocks(systemState_)) {
-        if (err) *err = SystemLayerUnavailable(path, targetKey);
+    if (systemState_ == SystemAuthState::kGranted && systemGrantKey_ == targetKey) return true;
+    if (config_.systemAuth == nullptr) return SystemLayerAvailable(path, targetKey, err);
+    if (SystemAuthBlocks(systemState_)) {
+        if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
         return false;
     }
-    // 需要系统授权层但本构建 / 本调用还没有把它取得：fail-closed，绝不把程序确认当两层。
-    // Portal 驱动接进来之后会在同一个状态字段上推进 kWaiting -> kGranted / kDenied / ...
-    systemState_ = SystemAuthState::kUnavailable;
-    lastDenyAnswer_ = ConsentAnswer::kInitFailed;
-    lastDenyNativeError_ = kNativeErrorNone;
-    if (err) *err = SystemLayerUnavailable(path, targetKey);
+
+    systemState_ = SystemAuthState::kWaiting;
+    SystemAuthRequest request;
+    request.scope = scope;
+    request.path = path ? path : std::wstring();
+    request.targetKey = targetKey;
+    SystemAuthReply reply;
+    try {
+        reply = config_.systemAuth->Authorize(request);
+    } catch (...) {
+        systemState_ = SystemAuthState::kError;
+        systemGrantKey_.clear();
+        systemDetail_ = L"system_authorization_provider_exception";
+        lastSystemReply_ = SystemAuthReply{};
+        lastSystemReply_.state = systemState_;
+        lastSystemReply_.detail = systemDetail_;
+        if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
+        return false;
+    }
+    lastSystemReply_ = reply;
+    systemDetail_ = reply.detail;
+    if (reply.state == SystemAuthState::kGranted) {
+        if (reply.targetKey != targetKey) {
+            // 系统层说成功，但它绑定的不是本次目标：不把"某个来源的许可"当成"这个来源"。
+            systemState_ = SystemAuthState::kError;
+            systemGrantKey_.clear();
+            systemDetail_ = L"system_authorization_target_mismatch";
+            lastSystemReply_.state = systemState_;
+            lastSystemReply_.detail = systemDetail_;
+            lastSystemReply_.code = codes::kPortalProtocolError;
+            if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
+            return false;
+        }
+        systemState_ = SystemAuthState::kGranted;
+        systemGrantKey_ = targetKey;
+        return true;
+    }
+    systemState_ = reply.state;
+    systemGrantKey_.clear();
+    if (err) *err = SystemLayerFailure(path, targetKey, reply);
     return false;
 }
 
@@ -337,6 +467,11 @@ bool ConsentGate::WindowGrantedFor(const std::wstring& targetKey) const {
     return false;   // 清单里没有这个目标 = 范围被扩大，重新问
 }
 
+bool ConsentGate::SystemGrantedFor(const std::wstring& targetKey) const {
+    if (!SystemAuthorizationRequired()) return true;
+    return systemState_ == SystemAuthState::kGranted && systemGrantKey_ == targetKey;
+}
+
 bool ConsentGate::DesktopGrantedFor(const std::wstring& targetKey, const PhysRect& area,
                                     PhysRect* approved) const {
     if (!desktop_.granted()) return false;
@@ -355,8 +490,9 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
                                   const ConsentBindingVerifier& verify) {
     Diagnostic scratch;   // 调用方可以不要诊断，但本函数每一档都要写一条
     if (!err) err = &scratch;
-    // 1) 系统授权层先判：需要而不可得时，程序确认做得再好也不授权。
-    if (!EnsureSystemLayer(PixelScope::kWindowContent, path, targetKey, err)) return false;
+    // 1) 系统层驱动是否存在、是否已经失败过：这一步只判前置，不启动系统界面。
+    //    真正的 Portal 授权要在程序确认与绑定核实之后才打开，顺序不能反过来。
+    if (!SystemLayerAvailable(path, targetKey, err)) return false;
     // 2) 已经有人答过否 / 取消 / 超时 / 机制错误：整批停在这里，不重复骚扰。
     if (Refused()) {
         *err = Denied(path, targetKey, PixelScope::kWindowContent, lastDenyAnswer_,
@@ -374,10 +510,8 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
         return false;
     }
     // 4) 已经批准过：只有清单里列过的目标才能复用；清单外 = 范围扩大，重新走确认。
-    if (window_.granted() && WindowGrantedFor(targetKey)) {
-        if (ConsentLayersSatisfy(config_.requiredGrantLayers, window_.state(), systemState_)) {
-            return true;
-        }
+    if (window_.granted() && WindowGrantedFor(targetKey) && SystemGrantedFor(targetKey)) {
+        return true;
     }
     if (window_.granted() && !WindowGrantedFor(targetKey)) window_.Resolve(ConsentEvent::kInvalidated);
 
@@ -390,6 +524,9 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
             if (!err || err->code.empty()) *err = Stale(path, targetKey);
             return false;
         }
+        // --yes 只免程序确认；系统授权仍然必须在本分支里真实取得。取得失败时
+        // 绝不把窗口状态单独推到 granted 冒充两层。
+        if (!AcquireSystemLayer(PixelScope::kWindowContent, path, targetKey, err)) return false;
         // 这里不是"人答了是"：按 yes_window_content 这一种非人来源授予（状态机只接受这一种）。
         window_.GrantWithoutHuman(ConsentBasis::kYesWindowContent);
         GrantSnapshot(TakeSnapshot());
@@ -437,6 +574,7 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
         if (!err || err->code.empty()) *err = Stale(path, targetKey);
         return false;
     }
+    if (!AcquireSystemLayer(PixelScope::kWindowContent, path, targetKey, err)) return false;
     window_.Resolve(ConsentEvent::kVerified);
     GrantSnapshot(snap);
     if (!WindowGrantedFor(targetKey)) {
@@ -445,7 +583,7 @@ bool ConsentGate::AuthorizeWindow(const wchar_t* path, const std::wstring& targe
                       kNativeErrorNone);
         return false;
     }
-    return ConsentLayersSatisfy(config_.requiredGrantLayers, window_.state(), systemState_);
+    return window_.granted() && SystemGrantedFor(targetKey);
 }
 
 bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targetKey,
@@ -453,15 +591,17 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
                                    Diagnostic* err) {
     Diagnostic scratch;   // 同上：诊断指针为空也不在内部解引用空指针
     if (!err) err = &scratch;
-    // 桌面路径永远要人确认：--yes 在这里不参与任何分支。
-    if (!EnsureSystemLayer(PixelScope::kDesktop, path, targetKey, err)) return false;
+    // 桌面路径永远要人确认：--yes 在这里不参与任何分支。系统层驱动前置先判，
+    // 但真正的 Portal 授权与来源选择要等人确认、拓扑复核之后才启动。
+    if (!SystemLayerAvailable(path, targetKey, err)) return false;
     if (Refused()) {   // 这一级或另一级被人否过（也包括弹不出框）：不再问第二遍，也不再截
         *err = Denied(path, targetKey, PixelScope::kDesktop, lastDenyAnswer_,
                       lastDenyNativeError_);
         return false;
     }
     PhysRect approved{};
-    if (desktop_.granted() && DesktopGrantedFor(targetKey, area, &approved)) {
+    if (desktop_.granted() && DesktopGrantedFor(targetKey, area, &approved) &&
+        SystemGrantedFor(targetKey)) {
         if (out) *out = DesktopPermit::Issue(targetKey, approved);
         return true;
     }
@@ -505,6 +645,7 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
         *err = Stale(path, targetKey);
         return false;
     }
+    if (!AcquireSystemLayer(PixelScope::kDesktop, path, targetKey, err)) return false;
     desktop_.Resolve(ConsentEvent::kVerified);
     GrantSnapshot(snap);
     if (!DesktopGrantedFor(targetKey, area, &approved)) {
@@ -515,7 +656,78 @@ bool ConsentGate::AuthorizeDesktop(const wchar_t* path, const std::wstring& targ
         return false;
     }
     if (out) *out = DesktopPermit::Issue(targetKey, approved);
-    return ConsentLayersSatisfy(config_.requiredGrantLayers, desktop_.state(), systemState_);
+    return desktop_.granted() && SystemGrantedFor(targetKey);
+}
+
+bool ConsentGate::AuthorizePortalSource(PixelScope scope, const wchar_t* path,
+                                        const std::wstring& targetKey, Diagnostic* err) {
+    Diagnostic scratch;
+    if (!err) err = &scratch;
+    if (!SystemAuthorizationRequired()) {
+        // 这条入口只在"系统授权层 + 程序确认"两层都要求的 Portal 流程里使用。
+        systemState_ = SystemAuthState::kUnsupported;
+        systemDetail_ = L"portal_flow_requires_system_authorization_layer";
+        lastSystemReply_ = SystemAuthReply{};
+        lastSystemReply_.state = systemState_;
+        lastSystemReply_.detail = systemDetail_;
+        if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
+        return false;
+    }
+    const bool pathMatches =
+        (scope == PixelScope::kWindowContent && path && std::wcscmp(path, paths::kPortalWindow) == 0) ||
+        (scope == PixelScope::kDesktop && path && std::wcscmp(path, paths::kPortalMonitor) == 0);
+    if (!pathMatches) {
+        systemState_ = SystemAuthState::kError;
+        systemDetail_ = L"portal_path_scope_mismatch";
+        lastSystemReply_ = SystemAuthReply{};
+        lastSystemReply_.state = systemState_;
+        lastSystemReply_.detail = systemDetail_;
+        if (err) *err = SystemLayerFailure(path, targetKey, lastSystemReply_);
+        return false;
+    }
+    if (!SystemLayerAvailable(path, targetKey, err)) return false;
+    if (Refused()) {
+        *err = Denied(path, targetKey, scope, lastDenyAnswer_, lastDenyNativeError_);
+        return false;
+    }
+
+    ConsentStateMachine* machine = scope == PixelScope::kDesktop ? &desktop_ : &window_;
+    if (machine->granted()) {
+        // 交互式来源选择的一次授权只对应本次系统窗口选出的那一个来源；同一次动作不静默
+        // 复用一份"可能来自另一个来源"的旧许可。
+        machine->Resolve(ConsentEvent::kInvalidated);
+    }
+    if (!machine->can_request()) {
+        *err = Denied(path, targetKey, scope, lastDenyAnswer_, lastDenyNativeError_);
+        return false;
+    }
+
+    machine->Request();
+    if (scope == PixelScope::kDesktop) ++desktopAsks_;
+    else ++windowAsks_;
+    const ConsentSnapshot snap = TakeSnapshot();
+    const ConsentQuestion q = MakeQuestion(path, scope, snap);
+    ConsentReply reply;
+    try {
+        reply = AskWithBudgetPause(config_.autoBudget, prompt_, q);
+    } catch (...) {
+        machine->Reset();
+        throw;
+    }
+    ApplyAnswer(machine, reply.answer);
+    if (!machine->waiting() || !machine->accepted_pending()) {
+        lastDenyAnswer_ = reply.answer;
+        lastDenyNativeError_ = reply.nativeError;
+        *err = Denied(path, targetKey, scope, lastDenyAnswer_, lastDenyNativeError_);
+        return false;
+    }
+
+    // 程序确认不能替代系统授权：这里才打开 Portal 的系统授权与来源选择窗口。
+    // 本步骤没有预选的窗口身份 / 屏幕矩形可复核，所以不签发 DesktopPermit、不取像素。
+    if (!AcquireSystemLayer(scope, path, targetKey, err)) return false;
+    machine->Resolve(ConsentEvent::kVerified);
+    GrantSnapshot(snap);
+    return machine->granted() && SystemGrantedFor(targetKey);
 }
 
 }  // namespace ecapture

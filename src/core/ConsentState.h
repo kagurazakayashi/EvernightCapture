@@ -226,24 +226,29 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// 系统授权层（Wayland / XDG Desktop Portal）的预留状态。
+// 系统授权层（Wayland / XDG Desktop Portal）。
 //
 // 这一层与程序确认并列，不是它的替代：Wayland 的 RequiredGrantLayers 同时含两层，
-// 任何一层缺失都不能授权。Windows 与 X11 目前只有程序确认，所以本机默认是 kNotRequired。
-// kNotRequested 表示"这个平台需要它，但本构建还没有系统授权驱动"——此时授权必须失败关闭
-// （不能拿程序确认冒充系统授权）；Portal 驱动接进来之后由那一层把状态推到 kGranted。
-// ---------------------------------------------------------------------------
+// 任何一层缺失都不能授权。Windows 与 X11 默认是 kNotRequired；显式走 Portal 授权流程时
+// 则两层都要求。Portal 驱动由平台层注入，状态只在本进程、本次请求内有效。
+//
+// kCancelledOrDenied 是**合并状态**：XDG Desktop Portal 的 Request.Response 只用
+// response=1 报"用户取消了交互"，系统并不告诉客户端那是拒绝还是取消。驱动不能把
+// 它拆成 kDenied / kCancelled 再编一个原因。
 enum class SystemAuthState : uint32_t {
-    kNotRequired = 0,   // 这个平台不需要系统授权（Windows / X11）
-    kNotRequested = 1,  // 需要，但还没有开始（或本构建还没有驱动）
-    kWaiting = 2,       // 系统授权界面在世 / 等待用户操作
-    kGranted = 3,       // 系统授权已取得（Portal 会话 / 令牌），且仍是本次请求的那一份
-    kDenied = 4,        // 用户在系统界面上拒绝
-    kCancelled = 5,     // 程序取消
-    kTimedOut = 6,      // 系统授权等待到点
-    kUnavailable = 7,   // 本构建 / 本会话没有系统授权能力
-    kStale = 8,         // 系统授权绑定失效（来源 / 会话变了）
-    kError = 9,         // 机制错误
+    kNotRequired = 0,       // 这个平台 / 这次请求不需要系统授权
+    kNotRequested = 1,      // 需要，但还没有开始
+    kWaiting = 2,           // 系统授权 / 来源选择界面在世
+    kGranted = 3,           // 系统授权与来源选择已取得，且绑定本次目标
+    kDenied = 4,            // 系统明确报告拒绝（接口能区分时才使用）
+    kCancelledOrDenied = 5, // 系统无法区分拒绝与取消：准确的合并状态
+    kCancelled = 6,         // 程序主动取消（不是人的回答）
+    kTimedOut = 7,          // 等待系统授权到点
+    kUnavailable = 8,       // 会话总线 / 门户服务不可用
+    kUnsupported = 9,       // 当前门户接口、版本或来源能力不支持本次请求
+    kServiceLost = 10,      // 门户服务在请求中途消失
+    kStale = 11,            // 系统授权绑定失效（来源 / 会话 / 目标变了）
+    kError = 12,            // 协议或机制错误（不等同于用户拒绝）
 };
 
 inline const char* SystemAuthStateName(SystemAuthState state) {
@@ -253,9 +258,12 @@ inline const char* SystemAuthStateName(SystemAuthState state) {
         case SystemAuthState::kWaiting: return "waiting";
         case SystemAuthState::kGranted: return "granted";
         case SystemAuthState::kDenied: return "denied";
+        case SystemAuthState::kCancelledOrDenied: return "cancelled_or_denied";
         case SystemAuthState::kCancelled: return "cancelled";
         case SystemAuthState::kTimedOut: return "timed_out";
         case SystemAuthState::kUnavailable: return "unavailable";
+        case SystemAuthState::kUnsupported: return "unsupported";
+        case SystemAuthState::kServiceLost: return "service_lost";
         case SystemAuthState::kStale: return "stale";
         case SystemAuthState::kError: return "error";
     }
@@ -271,8 +279,13 @@ inline bool SystemAuthSatisfied(SystemAuthState state) {
 // 系统授权层这一档会不会停掉整批请求。kStale 与 kNotRequested 不停（前者要重新取，后者是
 // "本构建没有驱动"——由调用点立刻判失败，见 ConsentGate）。
 inline bool SystemAuthBlocks(SystemAuthState state) {
-    return state == SystemAuthState::kDenied || state == SystemAuthState::kCancelled ||
-           state == SystemAuthState::kTimedOut || state == SystemAuthState::kUnavailable ||
+    return state == SystemAuthState::kDenied ||
+           state == SystemAuthState::kCancelledOrDenied ||
+           state == SystemAuthState::kCancelled ||
+           state == SystemAuthState::kTimedOut ||
+           state == SystemAuthState::kUnavailable ||
+           state == SystemAuthState::kUnsupported ||
+           state == SystemAuthState::kServiceLost ||
            state == SystemAuthState::kError;
 }
 

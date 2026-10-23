@@ -40,6 +40,11 @@ inline constexpr const wchar_t* kXComposite = L"xcomposite";
 // X11 根窗口（桌面）像素。屏幕、整个桌面与明确区域都走这一条真实来源；
 // 它和窗口存储路径是两条独立后端，窗口目标绝不会回退到这里。
 inline constexpr const wchar_t* kX11Desktop = L"x11.desktop";
+// XDG Desktop Portal 的授权 / 来源选择流程。它们在本步骤只做到系统授权与来源校验，
+// 不取像素、不交付图像；因此不登记进 RegisteredCapturePaths() 那张“实际取帧路径”表。
+// kPortalWindow 只申请单个窗口来源，kPortalMonitor 只申请单个显示器来源。
+inline constexpr const wchar_t* kPortalWindow = L"portal.window";
+inline constexpr const wchar_t* kPortalMonitor = L"portal.monitor";
 inline constexpr const wchar_t* kUnknown = L"unknown";
 }  // namespace paths
 

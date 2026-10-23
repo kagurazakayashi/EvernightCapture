@@ -64,6 +64,9 @@ struct Asked {
     size_t targets;
     size_t outputs;
     std::vector<std::wstring> targetLines;   // 框上渲染出的每一行（"展示什么批准什么"要比文字）
+    bool systemAuthExpected = false;
+    bool systemInteractive = false;
+    std::wstring systemSourceLabel;
 };
 
 class FakePrompt final : public IConsentPrompt {
@@ -71,7 +74,8 @@ public:
     ConsentReply Ask(const ConsentQuestion& q) override {
         ++asks;
         asked.push_back(Asked{q.scope, q.path, q.yesGiven, q.targets.size(), q.outputs.size(),
-                               q.targets});
+                               q.targets, q.systemAuthorizationExpected,
+                               q.systemInteractiveSource, q.systemSourceLabel});
         // 真人等待那一段由回调推进假时钟（F04 判据），顺带记录"框挂着时"看到的剩余预算
         if (onAsk) onAsk();
         if (throwInAsk) throw std::runtime_error("fake prompt blew up");
@@ -91,6 +95,29 @@ public:
     std::function<void()> onAsk;          // 弹框在世时执行：推进假时钟 / 探测预算冻结
     bool throwInAsk = false;              // 应答器抛异常：判暂停作用域的异常退栈恢复
 };
+
+// 系统授权层的可注入替身：记录顺序与绑定键，不连 D-Bus、不弹任何系统窗口。
+class FakeSystemAuth final : public ISystemAuthorizationProvider {
+public:
+    SystemAuthReply reply;
+    int calls = 0;
+    SystemAuthRequest seen;
+    std::function<void()> onAuthorize;
+
+    SystemAuthReply Authorize(const SystemAuthRequest& request) override {
+        ++calls;
+        seen = request;
+        if (onAuthorize) onAuthorize();
+        return reply;
+    }
+};
+
+SystemAuthReply GrantedReply(const std::wstring& targetKey) {
+    SystemAuthReply r;
+    r.state = SystemAuthState::kGranted;
+    r.targetKey = targetKey;
+    return r;
+}
 
 // ---------------------------------------------------------------------------
 // 假屏幕拓扑：判据要能自己改布局，看看已给出的授权还作不作数
@@ -1341,6 +1368,109 @@ int main() {
     }
 
     // =========================================================================
+    // =========================================================================
+    Section("20) Portal 程序确认 + 系统授权：顺序、绑定与 --yes 边界");
+    // =========================================================================
+    {
+        auto makeConfig = [](bool yes, FakeSystemAuth& system) {
+            GateConfig c = Config(yes, {Target(L"portal.window", R(0, 0, 0, 0))});
+            c.requiredGrantLayers = kGrantProgramConfirm | kGrantSystemAuthorization;
+            c.systemAuth = &system;
+            c.systemInteractiveSource = true;
+            c.systemSourceLabel = L"one window";
+            GateTarget t;
+            t.interactiveSystemSource = true;
+            t.key = L"portal.window";
+            t.subject = L"interactive window";
+            t.area = R(0, 0, 0, 0);
+            c.targets = {t};
+            return c;
+        };
+        FakePrompt prompt;
+        FakeSystemAuth system;
+        system.reply = GrantedReply(L"portal.window");
+        bool programAnswered = false;
+        int systemCallsAtPrompt = -1;
+        prompt.onAsk = [&] {
+            programAnswered = true;
+            systemCallsAtPrompt = system.calls;
+        };
+        system.onAuthorize = [&] {
+            Check(programAnswered, "系统授权一定在程序确认人答了是之后才启动");
+        };
+        GateConfig cfg = makeConfig(false, system);
+        cfg.systemAuth = &system;
+        GateTarget target;
+        target.interactiveSystemSource = true;
+        target.key = L"portal.window";
+        target.subject = L"interactive window";
+        target.area = R(0, 0, 0, 0);
+        cfg.targets = {target};
+        ConsentGate gate(std::move(cfg), prompt, FakeTopology);
+        Diagnostic err;
+        Check(gate.AuthorizePortalSource(PixelScope::kWindowContent, paths::kPortalWindow,
+                                         L"portal.window", &err),
+              "程序确认 + 系统授权两层齐：Portal 授权动作放行");
+        Check(system.calls == 1 && systemCallsAtPrompt == 0,
+              "系统授权在一次程序确认之后才调用");
+        Check(prompt.asks == 1 && prompt.asked[0].systemAuthExpected &&
+                  prompt.asked[0].systemInteractive,
+              "wxWidgets 提示包含系统 Portal 下一步说明");
+        Check(prompt.asked[0].targetLines.size() == 1 &&
+                  prompt.asked[0].targetLines[0].find(L"0") == std::wstring::npos,
+              "交互式来源不伪造 0×0 矩形");
+        Check(system.seen.targetKey == L"portal.window" && system.seen.path == paths::kPortalWindow,
+              "系统授权绑定本次目标与 Portal 内部路径");
+        Check(gate.WindowState() == ConsentState::kGranted &&
+                  gate.SystemState() == SystemAuthState::kGranted,
+              "两层状态都记 granted");
+    }
+    {
+        FakePrompt prompt;
+        FakeSystemAuth system;
+        system.reply.state = SystemAuthState::kCancelledOrDenied;
+        system.reply.code = codes::kPortalCancelledOrDenied;
+        system.reply.detail = L"portal_user_cancelled_or_denied";
+        system.reply.targetKey = L"portal.window";
+        GateConfig cfg = Config(true, {Target(L"portal.window", R(0, 0, 0, 0))});
+        cfg.requiredGrantLayers = kGrantProgramConfirm | kGrantSystemAuthorization;
+        cfg.systemAuth = &system;
+        cfg.systemInteractiveSource = true;
+        GateTarget target;
+        target.interactiveSystemSource = true;
+        target.key = L"portal.window";
+        target.subject = L"interactive window";
+        cfg.targets = {target};
+        ConsentGate gate(std::move(cfg), prompt, FakeTopology);
+        Diagnostic err;
+        Check(!gate.AuthorizePortalSource(PixelScope::kWindowContent, paths::kPortalWindow,
+                                          L"portal.window", &err),
+              "系统合并取消/拒绝时两层不成立");
+        Check(prompt.asks == 1, "即使 --yes，交互式 Portal 来源仍要程序确认");
+        Check(CodeIs(err, codes::kPortalCancelledOrDenied), "合并状态有独立稳定码");
+        Check(gate.SystemState() == SystemAuthState::kCancelledOrDenied,
+              "系统层保留 cancelled_or_denied");
+    }
+    {
+        FakePrompt prompt;
+        FakeSystemAuth system;
+        system.reply = GrantedReply(L"another.target");
+        GateConfig cfg = Config(false, {Target(L"portal.window", R(0, 0, 0, 0))});
+        cfg.requiredGrantLayers = kGrantProgramConfirm | kGrantSystemAuthorization;
+        cfg.systemAuth = &system;
+        GateTarget target;
+        target.interactiveSystemSource = true;
+        target.key = L"portal.window";
+        target.subject = L"interactive window";
+        cfg.targets = {target};
+        ConsentGate gate(std::move(cfg), prompt, FakeTopology);
+        Diagnostic err;
+        Check(!gate.AuthorizePortalSource(PixelScope::kWindowContent, paths::kPortalWindow,
+                                          L"portal.window", &err),
+              "系统授权绑定到另一个目标时拒绝");
+        Check(CodeIs(err, codes::kPortalProtocolError), "绑定不符按协议错误处理");
+    }
+
     std::printf("\nconsent-state: %d 条通过，%d 条失败\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

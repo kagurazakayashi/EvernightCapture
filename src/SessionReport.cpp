@@ -375,6 +375,12 @@ SessionReport BuildSessionReport(const SessionFacts& facts) {
                       L"this query never opens the portal source picker",
                       SessionSeverity::kInfo);
     }
+    if (session_backend::kPortalAuthorizationSelectionImplemented) {
+        AddDiagnostic(&report, L"session.portal.authorization_selection_only",
+                      L"no_pipewire_frame_delivery",
+                      L"the portal authorization and source-selection chain exists, but this build does not deliver a PipeWire frame",
+                      SessionSeverity::kInfo);
+    }
     if (!facts.captureSessionCreated) {
         AddDiagnostic(&report, L"session.portal.capture_session_not_created",
                       L"read_only_query",
@@ -414,6 +420,12 @@ SessionReport BuildSessionReport(const SessionFacts& facts) {
     // 与 --capabilities 里 backends[].paths 那一段（xcomposite 的 scope=window）同源。
     if (session_backend::kX11CaptureImplemented) {
         report.caveats.push_back(W(session_caveat::kX11WindowStorageOnly));
+    }
+    if (session_backend::kPortalAuthorizationSelectionImplemented) {
+        report.caveats.push_back(W(session_caveat::kPortalAuthorizationSelectionOnly));
+        report.caveats.push_back(W(session_caveat::kPortalSessionClosedAfterSelection));
+        report.caveats.push_back(W(session_caveat::kPortalParentWindowEmpty));
+        report.caveats.push_back(W(session_caveat::kPortalNoPersistentGrant));
     }
 
     return report;
@@ -529,6 +541,21 @@ void WriteSessionObject(Json& j, const SessionReport& report, bool verbose) {
     j.End();
     j.Key(L"sourceSelectionRequested").Value(false);
     j.Key(L"captureSessionCreated").Value(false);
+    j.Key(L"authorizationAndSelection").Obj();
+    j.Key(L"implemented").Value(session_backend::kPortalAuthorizationSelectionImplemented);
+    j.Key(L"minimumVersion").Value(3);
+    j.Key(L"imageDeliveryImplemented").Value(session_backend::kPortalCaptureImplemented);
+    j.Key(L"pipewireFrameDeliveryImplemented").Value(session_backend::kPipeWireCaptureImplemented);
+    j.Key(L"interactionRequired").Value(true);
+    Tri sourceVersionOk = Tri::kUnknown;
+    if (report.portal.screenCastVersionKnown) {
+        sourceVersionOk = report.portal.screenCastVersion >= 3 ? Tri::kYes : Tri::kNo;
+    }
+    WriteTri(j, L"versionSatisfied", sourceVersionOk);
+    j.Key(L"strictSourceTypeVerification").Value(true);
+    j.Key(L"singleSourceOnly").Value(true);
+    j.Key(L"restoreTokenPersisted").Value(false);
+    j.End();
     j.End();
 
     j.Key(L"pipewire").Obj();

@@ -7,7 +7,7 @@
 # ヘルプ本文（src/Report.cpp の HelpText が描画、レイアウトはコード側）
 # ---------------------------------------------------------------------------
 help.header	EvernightCapture (%exe%) —— 条件でウィンドウを選び Windows.Graphics.Capture で画面を取得
-help.header_linux	EvernightCapture (%exe%) - 条件で選んだウィンドウをキャプチャします（X11 / XComposite ベース）
+help.header_linux	EvernightCapture (%exe%) — 条件で選んだウィンドウを撮影。X11（XComposite）と XDG Desktop Portal の認可/ソース選択に対応
 help.usage1	使い方: %exe% [条件...] <出力パス>          条件を一切与えない => このヘルプ
 help.usage2	          %exe% [条件...] --out <パス>      パスに - は画像バイトを標準出力へ
 help.usage3	          %exe% [条件...]                      出力パスなし => png を標準出力へ
@@ -20,9 +20,9 @@ help.exit1	終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --
 help.exit2	        6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
 help.status	現在のビルド: --capture の値はすべて実装済み（wgc / dwm / printwindow / bitblt / duplication、auto は wgc-dwm-printwindow-bitblt の順にフォールバック；モニタ全体は wgc-duplication-bitblt）；出力ディレクトリは既存であること；引き渡せた画像はプログラムがある場所の history にもコピーを1枚残します（自動消去はしません）
 help.system	実行環境: 64 ビット版 Windows、宣言上の下限はビルド 18362（Windows 10 version 1903）、実測はビルド 19045 のみ。この機のバージョンでは提供されない経路は、取得も確認表示も前に env.os_too_old / env.channel_unsupported として報告します（前者は経路を変えても変わりません）。--verbose の input.osBuild と input.captureChain に今回の利用可能な経路が出力されます
-help.status_linux	現在のビルド: この Linux ビルドには独立した X11 取得経路が 2 つあります。xcomposite は対象ウィンドウ自身のリダイレクト ストレージだけを読み、x11desktop は X11 ルートウィンドウから正確な矩形を読みます（単一論理モニター、--monitor desktop のデスクトップ全体、明示的な --region）。ルートウィンドウ経路はデスクトップ画素なので、必ず wxWidgets の人的確認を出し、--yes では省略できません。読み取り専用の X11 ウィンドウ・モニター・能力照会も提供します。--list / --inspect はこの接続で見える X11 ウィンドウだけを列挙し、ネイティブ Wayland ウィンドウは含みません。XID、XRandR 出力 XID、表示セッション作用域はスナップショットで、セッションをまたぐ永久識別子ではありません。_NET_WM_PID はウィンドウの自己申告で、プロセス帰属は declared_unverified です。読み取り専用照会はウィンドウをアクティブ化・移動・最小化解除しません。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで実行できます。Windows 専用の --capture 値と --hwnd / --class は cli.platform_unsupported として拒否されます
+help.status_linux	現在のビルド：この Linux ビルドには独立した X11 撮影経路が 2 つあります。xcomposite は対象ウィンドウ自身のリダイレクトストレージを読み、x11desktop は単一論理モニター、--monitor desktop、明示 --region に対して X11 ルートウィンドウの正確な矩形を読みます。ルートウィンドウ経路はデスクトップ画素なので、必ず wxWidgets のプログラム確認を表示し、--yes では省略できません。さらに XDG Desktop Portal の認可/ソース選択だけを行う --portal-authorize=window|monitor があります。この動作はシステム入口に単一ソースだけを要求し、ScreenCast v3+ の source_type を検証してからセッションを閉じます。PipeWire を開かず、画素も読まず、画像も納品しません。--list / --inspect はこの接続で見える X11 ウィンドウだけを列挙し、ネイティブ Wayland ウィンドウは含みません。XID、XRandR 出力 XID、表示セッションスコープはスナップショットであり移植可能な身元ではありません。_NET_WM_PID は自己申告で、プロセス帰属は declared_unverified だけです。読み取り専用クエリはウィンドウをアクティブ化、移動、復元しません。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで動作します。Windows 専用の --capture 値と --hwnd / --class は黙って無視せず cli.platform_unsupported を返します
 help.system_linux	実行環境: Linux。--capabilities / --diagnostics は X11・Wayland・セッション D-Bus（XDG Desktop Portal）へ読み取り専用で接続し、PipeWire ソケットの前提を確認します。環境変数とデスクトップ名は手がかりにすぎません: サービスが到達可能であることも、認可済みであることも証明しません
-help.linux_query	Linux の事前確認: まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各ランタイムの compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。表示サーバーに接続できても撮影できることにはなりません。実装済みのバックエンド（ウィンドウ用 xcomposite、ルートウィンドウ用 x11desktop）だけが available と報告され、backends には内部パスと認可範囲も出ます
+help.linux_query	Linux 事前確認：まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各実行能力の compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。表示サーバーに接続できても撮影できる証拠にはならず、本当に実装された経路だけが available になります。Portal の認可/ソース選択は別途実装済みですが、PipeWire フレーム納品は未実装です。Portal のセッションやストリームをスクリーンショットとして報告することはありません。
 
 help.examples	例:
 help.example1	%exe% --process notepad.exe D:\shots\epad.png
@@ -476,7 +476,7 @@ consent.denied	ユーザーがこの撮影を拒否しました
 consent.denied_hint_window	何も撮影せず、ファイルも書きませんでした。この経路は選択したウィンドウ自身の画像だけなので、対象と経路の確認が済んでいる場合に限り --yes で確認を省略します（デスクトップを読む経路は必ず確認します）
 consent.denied_hint_desktop	何も撮影せず、ファイルも書きませんでした。この経路はデスクトップのピクセルを読むため --yes でも --quiet でも省略できません。一つのウィンドウだけなら wgc / printwindow / dwm に --yes を付けてください
 consent.unavailable	確認ダイアログを表示できないため、拒否として扱いました
-consent.unavailable_hint	このセッションには対話できるデスクトップがありません（サービス、タスクスケジューラ、ロック状態など）。同意できる人がいません。%1
+consent.unavailable_hint	このセッションには対話できるデスクトップがありません（サービス、タスクスケジューラ、ロック状態など）。同意できる人がいません。
 consent.timeout	承諾ダイアログに --consent-timeout-ms 以内に応答がなかったため、拒否として扱いました
 consent.timeout_hint	何も撮影せず、ファイルも書きませんでした。「ユーザーが反対した」のではなく応答が無いだけです。確認できる人がいる状況ならもう一度お試しください
 consent.deadline_line	%1 ミリ秒以内にご回答ください。応答が無ければ期限時点で「いいえ」として扱い、既定で同意にはしません。
@@ -618,3 +618,41 @@ cap.x11.root_unavailable	X11 ルートウィンドウのジオメトリを取得
 cap.x11.root_area_invalid	要求されたデスクトップ矩形が空か、現在のルートウィンドウ内に完全に入っていません
 cap.x11.root_changed	ルート画素の読み取り中に X11 デスクトップ配置が変わり、フレームを破棄しました
 opt.capture_linux	xcomposite（ウィンドウ内容：対象ウィンドウ自身のリダイレクト ストレージを読む）/ x11desktop（ルートウィンドウのデスクトップ画素。単一論理モニター、--monitor desktop、明示 --region 用）/ auto（ウィンドウ対象は xcomposite、画面/デスクトップ対象は x11desktop。互いにフォールバックしない）。Windows 専用の値は cli.platform_unsupported、ウィンドウ対象に x11desktop / 画面対象に xcomposite は capture.unsupported。デスクトップ画素は必ず人的確認を出し、--yes では省略できない
+
+
+# Wayland / XDG Desktop Portal の認可とソース選択（この段階では PipeWire フレームを納品しない）
+opt.portal-authorize	XDG Desktop Portal の認可とソース選択だけを検証する。window は WINDOW ソースを 1 つだけ、monitor は MONITOR ソースを 1 つだけ要求する。wxWidgets のプログラム確認は必ず表示され、--yes では省略できない（対話的に選ばれるソースには確認前の検証済み身元がない）。その後デスクトップ自身のシステム認可・ソース選択画面が開く。成功しても認可と選択だけを報告し、画素は読まず、PipeWire remote も開かず、画像も納品せず、Portal セッションは閉じる。タイトル/PID/クラスや特定モニターの条件は対話選択では保証できないため、無視せず拒否する。復元トークンは要求も保存もしない
+opt.portal-timeout-ms	デスクトップの Portal 認可・ソース選択画面を待つ時間（ミリ秒）。0 は無期限、既定値は 120000。この人的待ちは --timeout-ms（D-Bus の自動処理）と --consent-timeout-ms（プログラム確認）とは別に計時する
+cli.portal_source_value	--portal-authorize の値は window または monitor のみ
+cli.portal_target_conditions_unsupported	対話的な Portal ソース選択では、このターゲット条件を証明・強制できない
+cli.portal_target_conditions_unsupported_hint	Portal では人がソースを選ぶため、その選択前にタイトル、PID、クラス、ウィンドウ条件、特定モニターを照合できない。条件を外すか、撮影前に厳密な対象を検証できる別の経路を使ってください。条件を黙って無視することはない
+cli.portal_authorize_conflict	--portal-authorize は認可だけを行う操作で、撮影・出力オプションとは併用できない
+cli.portal_authorize_conflict_hint	指定された撮影、出力、裁剪、クエリのオプションを外してください。この操作は設計上 captured=0、images=[] を返し、スクリーンショットを撮りません
+note.portal_yes_not_applicable	対話的な Portal ソース選択ではプログラム確認を省略できない。システム選択前に選ばれるウィンドウの身元が検証されていないため、--yes の条件を満たさない。システム認可は --yes の影響を受けない
+note.portal_authorization_only	Portal の認可とソース選択の経路は成功したが、このビルドは PipeWire フレームを納品しない
+note.portal_authorization_only_hint	画素は読まず、画像も書き出していない。Portal のセッション/ストリームはスクリーンショットではない。PipeWire のフレーム納品は後続の段階
+consent.target_line_interactive	システムが選ぶソース：%1（対話的に選択。タイトル、PID、矩形の事前照合はしない）
+consent.system_portal_source	システムに要求するソース：%1
+consent.system_portal_next_interactive	次にデスクトップが Portal の認可・ソース選択画面を開きます。そこで %1 を 1 つ選び、承認してください。本プログラムが代わりに選んだりクリックしたりすることはありません
+consent.system_portal_next	次にデスクトップが Portal の認可・ソース選択画面を開きます。そこで操作を完了してください。本プログラムが代わりに選んだりクリックしたりすることはありません
+consent.system_portal_no_persistence	要求するソースは 1 つだけ、永続的な認可は要求せず、復元トークンも保存しない。システム選択画面とその認可はデスクトップ自身の UI のまま
+consent.system_cancelled_or_denied	デスクトップは Portal 要求を認可しなかった。ユーザーが操作を取り消したと報告された。Portal は取消と拒否を区別しないため、理由を捏造せず cancelled-or-denied として報告する
+consent.system_cancelled_or_denied_hint	システム認可は得られず、画像も撮っていない。必要なら人がもう一度実行し、システム画面でソースを承認してください
+consent.system_denied	システム認可が明示的に拒否された
+consent.system_denied_hint	認可は得られていない。システムの判断を回避するために別のバックエンドへ切り替えないこと
+consent.system_cancelled	本プログラムがシステム認可の待機をキャンセルした
+consent.system_cancelled_hint	Portal 要求とセッションは閉じた。何も撮っていない
+consent.system_timeout	Portal の認可・ソース選択画面が設定された待ち時間内に完了しなかった
+consent.system_timeout_hint	要求とセッションを閉じ、遅れて届く成功は無視した。人が応答できる場合にだけ --portal-timeout-ms を増やしてください。システムダイアログを自動で操作してはいけない
+consent.system_unavailable	セッション D-Bus または XDG Desktop Portal サービスが利用できない
+consent.system_unavailable_hint	システム認可は要求しておらず、画素も読んでいない。xdg-desktop-portal のあるデスクトップセッションを開始してください。環境変数だけではサービス存在の証明にならない
+consent.system_unsupported	この Portal 実装、インターフェース版、またはソース能力では要求を満たせない
+consent.system_unsupported_hint	要求を格下げしたり黙って変更したりせず停止した。ScreenCast の版と AvailableSourceTypes を確認してください。XWayland や私的プロトコルで代替してはいけない
+consent.system_service_lost	要求の途中で XDG Desktop Portal サービスが消えた
+consent.system_service_lost_hint	認可を主張できず、セッションも残していない。デスクトップセッションと portal サービスを確認して最初からやり直してください
+consent.system_protocol_error	Portal のやり取りから検証可能な認可・ソース結果が得られなかった
+consent.system_protocol_error_hint	要求を閉じ、セッションが存在すれば閉じた。これはユーザー拒否ではない。portal 実装/ログを確認し、新しい要求でやり直してください
+portal.source_window	1 つのウィンドウ
+portal.source_monitor	1 つのモニター
+portal.target_window	デスクトップの Portal 画面で選択する 1 つのアプリケーションウィンドウ
+portal.target_monitor	デスクトップの Portal 画面で選択する 1 つのモニター

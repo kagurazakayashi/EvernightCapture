@@ -47,6 +47,17 @@ GuiDialogRequest BuildConsentDialogRequest(const ConsentQuestion& q, uint64_t ti
     // 免得承诺一份根本不会存在的拷贝。
     if (q.historyCopy) request.paragraphs.push_back(Msg(L"consent.history"));
 
+    // 系统 Portal 的说明与程序确认放在同一个框里：先说下一步系统窗口会让你选什么、批准什么，
+    // 并说明本程序不会代选代点、不会申请持久授权。系统窗口本身仍然由桌面服务提供。
+    if (q.systemAuthorizationExpected) {
+        request.paragraphs.push_back(
+            Msgf(L"consent.system_portal_source", SafeLine(q.systemSourceLabel)));
+        request.paragraphs.push_back(Msg(q.systemInteractiveSource
+                                             ? L"consent.system_portal_next_interactive"
+                                             : L"consent.system_portal_next"));
+        request.paragraphs.push_back(Msg(L"consent.system_portal_no_persistence"));
+    }
+
     // 谁在请求：两段分开写，标签也不同（可信 / 不可信），不把两种来源揉成一句话。
     request.paragraphs.push_back(
         Msgf(L"consent.program_facts", SafeLine(q.programPath), SafeLine(q.programVersion),

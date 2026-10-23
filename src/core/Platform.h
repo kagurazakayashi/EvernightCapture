@@ -154,6 +154,17 @@ inline bool MonitorPathSelectorSupported() {
 #endif
 }
 
+// --portal-authorize 使用的 XDG Desktop Portal 驱动只在本 Linux 构建里链接。
+// 这是本构建是否有那条驱动的**编译期**事实，不代表运行时 D-Bus 服务一定可用；
+// 后者由驱动器真实连接会话总线、读取接口版本与来源能力来决定。
+inline bool PortalAuthorizeSupported() {
+#if defined(__linux__) && !defined(_WIN32)
+    return true;
+#else
+    return false;
+#endif
+}
+
 // "这次枚举里的第几块"这个编号在本平台是谁给的（--screens 的 identity.ordinal.kind）。
 //
 // 编号本身两个平台都有、`--monitor <n>` 两边都收，但**给出这个顺序的枚举**不是同一个东西：
