@@ -416,7 +416,9 @@ if(NOT WIN32)
   if(EC_PIPEWIRE_FOUND)
     list(APPEND ECAPTURE_SESSION_PROBE_DEFS ECAPTURE_HAVE_PIPEWIRE)
     list(APPEND ECAPTURE_SESSION_PROBE_INCLUDES ${EC_PIPEWIRE_INCLUDE_DIRS})
-    list(APPEND ECAPTURE_SESSION_PROBE_LIBS ${EC_PIPEWIRE_LIBRARIES})
+    # LINK_LIBRARIES 是 CMake 从 pkg-config 交回的完整库路径集合（含非标准前缀），
+    # 不能只用 LIBRARIES 那串裸 -l 名字，否则开发包在 /tmp 或自定义前缀时链接阶段必挂。
+    list(APPEND ECAPTURE_SESSION_PROBE_LIBS ${EC_PIPEWIRE_LINK_LIBRARIES})
   endif()
 
   add_executable(ecapture-session-tests
@@ -479,7 +481,10 @@ if(NOT WIN32)
     src/PortalScreenCast.cpp
     src/PortalSystemAuth.cpp
     src/PortalAuthRun.cpp
+    src/PortalCaptureRun.cpp
+    src/PipeWireCapture.cpp
     src/platform/linux/DBusPortalScreenCast.cpp
+    src/platform/linux/PipeWireCaptureLinux.cpp
     src/CliOptions.cpp
     src/CliText.cpp
     src/Json.cpp
@@ -1494,6 +1499,19 @@ add_executable(ecapture-crop-tests
 ecapture_apply_common(ecapture-crop-tests)
 set_target_properties(ecapture-crop-tests PROPERTIES OUTPUT_NAME "ecapture-crop-tests")
 
+# ecapture-pipewire-tests —— Portal 授权流到 CPU 帧的纯判据（两个平台同一条定义）。
+# 用合成 buffer 生产者逐条判：唯一授权流校验、窗口/屏幕来源不互换、8 种 packed RGB
+# 布局、行距 / chunk offset / size / maxsize、坏帧 / 空 chunk、请求前缓存帧、尺寸变化、
+# VideoTransform 与旋转后的朝向。不需要 PipeWire 服务、不连 D-Bus、不取一个真实像素。
+add_executable(ecapture-pipewire-tests
+  tests/pipewire_state.cpp
+  src/PipeWireCapture.cpp
+  src/ImageOps.cpp
+  ${ECAPTURE_LANG_SOURCES})
+ecapture_apply_common(ecapture-pipewire-tests)
+target_link_libraries(ecapture-pipewire-tests PRIVATE Threads::Threads)
+set_target_properties(ecapture-pipewire-tests PROPERTIES OUTPUT_NAME "ecapture-pipewire-tests")
+
 # ecapture-desktop-geometry-tests —— X11 显示器 / 全桌面 / 明确区域的纯几何与状态判据
 #（两个平台同一条定义；测试自己提供空的 EnumScreens 桩，不连接任何显示服务器、不取像素）。
 add_executable(ecapture-desktop-geometry-tests
@@ -1632,12 +1650,12 @@ endif()
 if(NOT WIN32)
   list(JOIN ECAPTURE_WINDOWS_ONLY_TARGETS ", " _ec_win_only_text)
   message(STATUS "以下目标只在 Windows 分支定义，Linux 上暂不可构建（截图后端与文案资源尚未迁移）：${_ec_win_only_text}")
-  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-desktop-geometry-tests, ecapture-consent-tests, ecapture-portal-tests, ecapture-portal-dbus-tests${_ec_encode_target_note}${_ec_gui_target_note}")
+  message(STATUS "Linux 本步可构建目标：ecapture, ecapture-x11-window-tests, ecapture-session-tests, ecapture-core-tests, ecapture-wgc-tests, ecapture-cli-text-tests, ecapture-save-tests, ecapture-ipc-tests, ecapture-crop-tests, ecapture-image-tests, ecapture-desktop-geometry-tests, ecapture-consent-tests, ecapture-portal-tests, ecapture-portal-dbus-tests, ecapture-pipewire-tests${_ec_encode_target_note}${_ec_gui_target_note}")
 
   # 给入口脚本读的那一份清单（./build.sh --list-targets 与 ./test-all.sh 的"这个目标本平台到底有没有"）。
   # 由 CMake 生成，而不是在 shell 里再抄一份名单：两边各写一处迟早对不上。
   set(_ec_buildable_report "")
-  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-desktop-geometry-tests ecapture-encode-tests ecapture-consent-tests ecapture-portal-tests ecapture-portal-dbus-tests ecapture-gui-probe ecapture-gui-tests)
+  foreach(_ec_t IN ITEMS ecapture ecapture-x11-window-tests ecapture-session-tests ecapture-core-tests ecapture-wgc-tests ecapture-cli-text-tests ecapture-save-tests ecapture-ipc-tests ecapture-crop-tests ecapture-image-tests ecapture-desktop-geometry-tests ecapture-encode-tests ecapture-consent-tests ecapture-portal-tests ecapture-portal-dbus-tests ecapture-pipewire-tests ecapture-gui-probe ecapture-gui-tests)
     if(TARGET ${_ec_t})
       string(APPEND _ec_buildable_report "target=${_ec_t} artifact=$<TARGET_FILE:${_ec_t}>\n")
     endif()

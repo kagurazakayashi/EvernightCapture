@@ -14,6 +14,9 @@
 #include "Notification.h"  // 交付完成后的那条桌面通知：状态名的本体在那个头文件
 #include "ProcessIntegrity.h"
 #include "PortalAuthRun.h"
+#if defined(__linux__) && !defined(_WIN32)
+#include "PortalCaptureRun.h"
+#endif
 #include "ScreenIdentity.h"   // MonitorSelectorLabel / KindName：选择器的回显只写一处
 #include "ScreenQuery.h"
 #include "SystemCompat.h"
@@ -197,6 +200,47 @@ void WriteImages(Json& j, const std::vector<CapturedImage>& images) {
             OptString(j, L"sourceColorSpace", img.hdr.sourceColorSpace);
             if (img.hdr.bitDepthKnown)
                 j.Key(L"sourceBitDepth").Value(static_cast<long long>(img.hdr.bitDepth));
+        }
+        // Portal + PipeWire 的事实：逻辑尺寸（Portal 的 compositor 坐标）与缓冲区像素尺寸分开；
+        // nodeId 明写只在本会话有效，serial 可用时另有 targetBasis。这里不输出 session handle、
+        // request handle、remote fd 或任何恢复令牌。
+        if (img.portal.written) {
+            j.Key(L"portal").Obj();
+            OptString(j, L"sourceType", img.portal.sourceType);
+            OptString(j, L"targetBasis", img.portal.targetBasis);
+            j.Key(L"nodeId").Value(static_cast<long long>(img.portal.nodeId));
+            j.Key(L"nodeIdScope").Value(L"portal_session");
+            if (img.portal.serialKnown)
+                j.Key(L"pipewireSerial").Value(static_cast<long long>(img.portal.serial));
+            if (img.portal.logicalSizeKnown) {
+                j.Key(L"logicalSize").Obj();
+                if (img.portal.logicalPositionKnown) {
+                    j.Key(L"x").Value(img.portal.logicalX).Key(L"y").Value(img.portal.logicalY);
+                }
+                j.Key(L"width").Value(static_cast<long long>(img.portal.logicalWidth))
+                    .Key(L"height").Value(static_cast<long long>(img.portal.logicalHeight))
+                    .End();
+            }
+            j.Key(L"bufferSize").Obj()
+                .Key(L"width").Value(static_cast<long long>(img.portal.bufferWidth))
+                .Key(L"height").Value(static_cast<long long>(img.portal.bufferHeight))
+                .End();
+            if (img.portal.rotationCw != 0)
+                j.Key(L"rotationCw").Value(static_cast<long long>(img.portal.rotationCw));
+            j.Key(L"sizeChangedWhileWaiting").Value(img.portal.sizeChangedWhileWaiting);
+            if (img.portal.sizeChanges != 0)
+                j.Key(L"sizeChanges").Value(static_cast<long long>(img.portal.sizeChanges));
+            j.Key(L"frameTimestampKnown").Value(img.portal.frameTimestampKnown);
+            j.Key(L"frameTimestampVerified").Value(img.portal.frameTimestampVerified);
+            OptString(j, L"memoryType", img.portal.memoryType);
+            OptString(j, L"pixelFormat", img.portal.pixelFormat);
+            j.Key(L"colorSpaceVerified").Value(img.portal.colorSpaceVerified);
+            j.Key(L"droppedEmptyChunks").Value(static_cast<long long>(img.portal.emptyChunks));
+            j.Key(L"droppedCorruptedChunks")
+                .Value(static_cast<long long>(img.portal.corruptedChunks));
+            j.Key(L"droppedStaleFrames").Value(static_cast<long long>(img.portal.staleFrames));
+            j.Key(L"droppedInvalidFrames").Value(static_cast<long long>(img.portal.invalidFrames));
+            j.End();
         }
         if (img.screen) {
             // 屏幕目标没有窗口可归属。screenKind 把三种目标分开：
@@ -521,8 +565,18 @@ int BuildResponse(const ParseResult& parse, Response* out) {
     NotifyOutcome notify;
 
     if (parse.ok) {
-        // --capture 的取值在解析期就已限定为已实现的通道，这里不再做能力判断
-        CaptureOutcome outcome = RunCapture(opt);
+        // --capture 的取值在解析期就已限定为已实现的通道，这里不再做能力判断。
+        // Portal + PipeWire 是独立的授权来源动作：它不复用 X11/Windows 的目标选择器，
+        // 但取到帧后仍走同一份裁剪、缩放、编码、主交付与历史副本。
+        CaptureOutcome outcome;
+#if defined(__linux__) && !defined(_WIN32)
+        if (opt.PortalCaptureAction()) {
+            outcome = RunPortalCapture(opt);
+        } else
+#endif
+        {
+            outcome = RunCapture(opt);
+        }
         images = std::move(outcome.images);
         for (auto& e : outcome.errors) errors.push_back(std::move(e));
         for (auto& n : outcome.notes) notes.push_back(std::move(n));

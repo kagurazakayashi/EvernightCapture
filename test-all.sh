@@ -64,7 +64,7 @@ EOF
 declare -A SUITE_LAYER SUITE_KIND SUITE_TARGET SUITE_NOTE SUITE_PREREQ
 
 SUITE_ORDER="core-portability core-boundary wgc-geometry cli-text session-probe save-paths worker-ipc consent-state \
- portal-state portal-dbus image-ops crop-geometry desktop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
+ portal-state portal-dbus pipewire-frames image-ops crop-geometry desktop-geometry codec-encode x11-window-query gui-probe-init gui-runtime"
 
 SUITE_LAYER[core-portability]="offline"
 SUITE_KIND[core-portability]="script"
@@ -131,6 +131,12 @@ SUITE_KIND[portal-dbus]="script"
 SUITE_TARGET[portal-dbus]="ecapture-portal-dbus-tests"
 SUITE_NOTE[portal-dbus]="模拟会话 D-Bus Portal ScreenCast 服务（私有临时总线，18 条）：先订阅后请求、Response 早于方法回复、handle_token 关联、来源类型核实、超时关闭请求/会话（不连接真实桌面总线、不取像素）"
 SUITE_PREREQ[portal-dbus]="$EC_ROOT/tests/portal-dbus.sh"
+
+SUITE_LAYER[pipewire-frames]="offline"
+SUITE_KIND[pipewire-frames]="cmake"
+SUITE_TARGET[pipewire-frames]="ecapture-pipewire-tests"
+SUITE_NOTE[pipewire-frames]="Portal 授权流 -> CPU 帧的纯判据（合成帧生产器：唯一来源与来源类型、8 种 packed RGB、行距/offset/size/maxsize、空/损坏 chunk、请求前缓存帧、取消/断流/超时竞争、尺寸变化、旋转；不连 D-Bus/PipeWire、不取真实像素）"
+SUITE_PREREQ[pipewire-frames]=""
 
 SUITE_LAYER[image-ops]="offline"
 SUITE_KIND[image-ops]="cmake"

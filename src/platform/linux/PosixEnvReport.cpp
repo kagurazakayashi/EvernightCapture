@@ -519,6 +519,19 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
         p.excludeState = TriWord(Tri::kYes);
         r.cursor.paths.push_back(std::move(p));
     }
+    const bool portalCaptureBuildable =
+        probe.session.portal.compiled && probe.session.pipewire.compiled;
+    for (const wchar_t* portalPath : {paths::kPortalWindow, paths::kPortalMonitor}) {
+        CursorPathReport p;
+        p.path = portalPath;
+        p.capability = CursorCapabilityName(CursorCapabilityOfPath(p.path.c_str()));
+        p.reason = CursorReasonOfPath(p.path.c_str());
+        // cursor_mode 是 SelectSources 的契约参数；没有把 PipeWire 客户端和 Portal 驱动
+        // 同时编译进来时这条路径根本走不到，所以 include/exclude 都只能报 no。
+        p.includeState = TriWord(portalCaptureBuildable ? Tri::kYes : Tri::kNo);
+        p.excludeState = TriWord(portalCaptureBuildable ? Tri::kYes : Tri::kNo);
+        r.cursor.paths.push_back(std::move(p));
+    }
 
     // ---- HDR 色彩处理（--hdr）----
     r.hdr.option = L"--hdr";
@@ -546,6 +559,14 @@ EnvReport BuildEnvReport(const EnvProbe& probe, EnvQueryKind kind) {
     {
         HdrPathReport p;
         p.path = paths::kX11Desktop;
+        p.capability = HdrCapabilityName(HdrCapabilityOfPath(p.path.c_str()));
+        p.reason = HdrReasonOfPath(p.path.c_str());
+        p.honorsExplicitPolicy = HdrPathHonorsPolicy(p.path.c_str());
+        r.hdr.paths.push_back(std::move(p));
+    }
+    for (const wchar_t* portalPath : {paths::kPortalWindow, paths::kPortalMonitor}) {
+        HdrPathReport p;
+        p.path = portalPath;
         p.capability = HdrCapabilityName(HdrCapabilityOfPath(p.path.c_str()));
         p.reason = HdrReasonOfPath(p.path.c_str());
         p.honorsExplicitPolicy = HdrPathHonorsPolicy(p.path.c_str());

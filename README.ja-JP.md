@@ -51,6 +51,13 @@ Windows 11 の `magnification.dll` はもはや `MagGetImage` をエクスポー
   記録し、各画面取得の試行の前、および人工の確認に答えたあとにもう一度確認する。対象が破棄された、ハンドルが別プロセスに
   再利用された、もしくは当初それを選んだ条件を満たさなくなったときには、誰も承諾していない絵ではなく
   `capture.target_gone` / `capture.target_changed` / `capture.target_unverifiable` を返す
+- **Portal + PipeWire によるネイティブ Wayland 撮影**：`--portal-capture=window|monitor` は最初にプログラム確認と
+  システム認可を行い、その Portal セッションの `OpenPipeWireRemote()` が返した fd だけで唯一の認可ストリームへ
+  接続します（v6 は `pipewire-serial`、古い Portal のみセッション内 node id にフォールバック）。システム registry は
+  列挙しません。MemPtr/MemFd と 8 種の packed 8 ビット RGB に対応し、システムバッファを再キューする前に BGRA8
+  へ複製します。ストライド、offset/size/maxsize、空/破損/古いフレーム、サイズ変更、切断、タイムアウト、キャンセルを
+  明示的に処理します。DMA-BUF、平面/10 ビット/FP16/HDR、`--client-area` は初版の制限で、レイアウト推測、カーソル
+  の二重合成、未証明の tone mapping は行いません
 - **守られる実行期限**：`--timeout-ms` は自動処理区間（条件マッチ、バックエンド再試行、フレーム待ち、エンコード、
   ファイル書き込み）全体で共有する 1 つの予算で、`--consent-timeout-ms` は確認ダイアログを別枠で時間測定します。
   他のプロセスを待たせる呼び出し（`PrintWindow`、DWM の読み戻し、正規表現評価）はツールが止められるヘルパー
@@ -126,7 +133,7 @@ ECAPTURE.EXE --monitor all --out "D:\shots\screen_%i.png"
 
 <!-- BEGIN ECAPTURE-HELP -->
 ```text
-EvernightCapture (ecapture) — 条件で選んだウィンドウを撮影。X11（XComposite）と XDG Desktop Portal の認可/ソース選択に対応
+EvernightCapture (ecapture) — 条件で選んだウィンドウを撮影。X11（XComposite）と XDG Desktop Portal + PipeWire に対応
 
 使い方: ecapture [条件...] <出力パス>          条件を一切与えない => このヘルプ
           ecapture [条件...] --out <パス>      パスに - は画像バイトを標準出力へ
@@ -167,7 +174,8 @@ EvernightCapture (ecapture) — 条件で選んだウィンドウを撮影。X11
 
 キャプチャの承認（実際のキャプチャはまず確認します。--yes は能力ゲートが経路を確認済みのときに、単一ウィンドウ自身の画像についてだけ確認を省きます。Wayland の Portal のようなシステム承認は別の層で、--yes はそれを取り消すことも満たすこともできません）
   --yes, -y                                               単一ウィンドウ自身の画像で、対象がウィンドウであり、能力ゲートが経路を確認し、対象同一性を再確認した場合に限りプログラム確認を省略する。X11 のデスクトップ画素を読む経路（x11desktop のモニター / デスクトップ全体 / --region）は必ず確認を出し、--yes では省略できない。バッチ同意はダイアログに列挙された対象だけを覆う。システム認可（Wayland Portal など）は別レイヤーで、--yes はそれを消さないし満たさない。--yes=false は明示的に質問する
-  --portal-authorize <window|monitor>                     XDG Desktop Portal の認可とソース選択だけを検証する。window は WINDOW ソースを 1 つだけ、monitor は MONITOR ソースを 1 つだけ要求する。wxWidgets のプログラム確認は必ず表示され、--yes では省略できない（対話的に選ばれるソースには確認前の検証済み身元がない）。その後デスクトップ自身のシステム認可・ソース選択画面が開く。成功しても認可と選択だけを報告し、画素は読まず、PipeWire remote も開かず、画像も納品せず、Portal セッションは閉じる。タイトル/PID/クラスや特定モニターの条件は対話選択では保証できないため、無視せず拒否する。復元トークンは要求も保存もしない
+  --portal-authorize <window|monitor>                     XDG Desktop Portal の認可とソース選択だけを検証する。window は WINDOW ソースを 1 つだけ、monitor は MONITOR ソースを 1 つだけ要求する。wxWidgets のプログラム確認は必ず表示され、--yes では省略できない（対話的に選ばれるソースには確認前の検証済み身元がない）。その後デスクトップ自身のシステム認可・ソース選択画面が開く。成功しても認可と選択だけを報告し、画素は読まず、PipeWire remote も開かず、画像も納品せず、Portal セッションは閉じる。実際に画像を取るには --portal-capture を使う。タイトル/PID/クラスや特定モニターの条件は対話選択では保証できないため、無視せず拒否する。復元トークンは要求も保存もしない
+  --portal-capture <window|monitor>                       XDG Desktop Portal 経由で対話選択された 1 つのソースを認可して撮影する。window は WINDOW ソースを 1 つだけ、monitor は MONITOR ソースを 1 つだけ要求する。プログラム確認とシステム認可の後、そのセッションの OpenPipeWireRemote() が返した fd だけから PipeWire ストリームを作る。v6 の pipewire-serial を優先し、古い Portal ではそのセッション内の node id だけにフォールバックする。SPA_DATA_MemPtr / SPA_DATA_MemFd と BGRA/RGBA/BGRx/RGBx/xRGB/xBGR/ARGB/ABGR の packed 8 ビット布局に対応し、システムバッファを再キューする前に BGRA8 へ複製してから、共通のクロップ、スケール、エンコード、主出力、履歴を再利用する。DMA-BUF、平面/10 ビット/FP16/HDR と tone mapping は初版の明示的な非対応で、--client-area は客户区幾何を検証できないため拒否する。--yes は対話ソースのプログラム確認を省略できず、システム認可にも影響しない。node id は現在のセッション内だけ有効。出力、--roi、--scale、--cursor、--hdr auto/refuse、--timeout-ms、履歴設定は使用できる
 
 実行期限（自動処理区間の総予算。承諾を待つ時間は別計算で、期限切れは拒否として扱います）
   --timeout-ms <ms>                                       自動処理区間の総予算（ミリ秒）。対象の選択に成功した時点から、条件評価・バックエンド再試行・フレーム取得・エンコード・ファイル書き込みが同じ残り時間を共有し、どの段階も予算を新しく受け取り直すことはありません。指定なしまたは 0 = 総予算なし。その場合も隔離実行は組み込み上限（5000 ミリ秒）で抑えます。承諾ダイアログを待つ時間はここには含めません（--consent-timeout-ms を参照）。予算を使い切った時点で、まだ始まっていない段階は拒否されその画像は書き出されません（すでにコミットを終えたファイルは巻き戻しません）。段階に応じ match.timeout / capture.timeout / io.timeout を返します
@@ -215,9 +223,9 @@ EvernightCapture (ecapture) — 条件で選んだウィンドウを撮影。X11
           --help / --version、および条件なしのときはテキスト
 終了コード: 0 成功 / 1 引数エラー / 2 条件なし / 3 --help / 4 一致ウィンドウなし / 5 複数一致 /
         6 対象が保護か拒否 / 7 画面取得失敗 / 8 ファイル書き出し失敗 / 9 内部エラー
-現在のビルド：この Linux ビルドには独立した X11 撮影経路が 2 つあります。xcomposite は対象ウィンドウ自身のリダイレクトストレージを読み、x11desktop は単一論理モニター、--monitor desktop、明示 --region に対して X11 ルートウィンドウの正確な矩形を読みます。ルートウィンドウ経路はデスクトップ画素なので、必ず wxWidgets のプログラム確認を表示し、--yes では省略できません。さらに XDG Desktop Portal の認可/ソース選択だけを行う --portal-authorize=window|monitor があります。この動作はシステム入口に単一ソースだけを要求し、ScreenCast v3+ の source_type を検証してからセッションを閉じます。PipeWire を開かず、画素も読まず、画像も納品しません。--list / --inspect はこの接続で見える X11 ウィンドウだけを列挙し、ネイティブ Wayland ウィンドウは含みません。XID、XRandR 出力 XID、表示セッションスコープはスナップショットであり移植可能な身元ではありません。_NET_WM_PID は自己申告で、プロセス帰属は declared_unverified だけです。読み取り専用クエリはウィンドウをアクティブ化、移動、復元しません。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで動作します。Windows 専用の --capture 値と --hwnd / --class は黙って無視せず cli.platform_unsupported を返します
+現在のビルド：この Linux ビルドには独立した X11 撮影経路 2 つと、XDG Desktop Portal のシステム認可/ソース選択チェーンがあります。xcomposite は対象ウィンドウ自身のリダイレクトストレージを読み、x11desktop は単一論理モニター、--monitor desktop、明示 --region に対して X11 ルートウィンドウの正確な矩形を読みます。ルートウィンドウ経路はデスクトップ画素なので、必ず wxWidgets のプログラム確認を表示し、--yes では省略できません。--portal-authorize=window|monitor はプログラム確認、システム認可、単一ソース選択だけを検証し、成功後にセッションを閉じます。PipeWire を開かず、画素も読まず、画像も納品しません。--portal-capture=window|monitor は同じ Portal セッションで OpenPipeWireRemote を呼び、返された pipewire-serial（古い Portal ではセッション内 node id）で唯一の認可ストリームを特定します。MemPtr/MemFd と packed 8 ビット RGB だけを受け入れ、システムバッファを再キューする前に BGRA8 へ複製し、共通のクロップ、スケール、エンコード、主交付、履歴に渡します。システムノードを列挙せず、ウィンドウ要求は monitor ソースを受け入れず、DMA-BUF、未対応レイアウト、HDR/tone mapping は初版の明示的な制限として報告します。--list / --inspect はこの接続で見える X11 ウィンドウだけを列挙し、ネイティブ Wayland ウィンドウは含みません。XID、XRandR 出力 XID、表示セッションスコープはスナップショットであり移植可能な身元ではありません。_NET_WM_PID は自己申告で、プロセス帰属は declared_unverified だけです。読み取り専用クエリはウィンドウをアクティブ化、移動、復元しません。--help / --version / --show-config / --capabilities / --diagnostics はデスクトップなしで動作します。Windows 専用の --capture 値と --hwnd / --class は黙って無視せず cli.platform_unsupported を返します
 実行環境: Linux。--capabilities / --diagnostics は X11・Wayland・セッション D-Bus（XDG Desktop Portal）へ読み取り専用で接続し、PipeWire ソケットの前提を確認します。環境変数とデスクトップ名は手がかりにすぎません: サービスが到達可能であることも、認可済みであることも証明しません
-Linux 事前確認：まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各実行能力の compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。表示サーバーに接続できても撮影できる証拠にはならず、本当に実装された経路だけが available になります。Portal の認可/ソース選択は別途実装済みですが、PipeWire フレーム納品は未実装です。Portal のセッションやストリームをスクリーンショットとして報告することはありません。
+Linux 事前確認：まず --capabilities を実行してください。セッション種別（x11 / wayland / xwayland / headless）と、各実行能力の compiled / reachable / versionSatisfied / interactionRequired / implemented を報告します。表示サーバーに接続できても撮影できる証拠にはなりません。Portal 認可/ソース選択と現在のセッションの PipeWire フレーム納品は実装済みですが、毎回人がプログラム確認とシステム認可を完了する必要があります。Portal セッション、remote fd、ストリームメタデータを得ただけではスクリーンショット成功として報告しません。PipeWire バックエンドはそのセッションの唯一の認可ストリーム、MemPtr/MemFd、packed 8 ビット sRGB だけを受け入れ、DMA-BUF、未認識形式、HDR tone mapping は初版の明示的な制限です。実機 GNOME/KDE Wayland での手動認可と撮影は別途検証が必要です
 
 例:
   ecapture --process xterm ~/shots/term.png
@@ -1379,38 +1387,42 @@ HDR 色処理は認可を変えません。この処理全体はフレーム取�
 
 ## Wayland、XDG Desktop Portal、システム認可層
 
-XDG Desktop Portal 経路は**認可とソース選択のチェーン**として実装済みで、まだ画像納品は行いません。
-`--portal-authorize=window|monitor` がそのチェーンだけを検証する明示的な操作です：
+Linux には 2 つの異なる Portal 操作があります。`--portal-authorize=window|monitor` は認可だけを検証する
+プローブで、`WINDOW` または `MONITOR` ソースを 1 つだけ要求し、返された `source_type` を確認してセッションを
+閉じ、`captured: 0` を報告します。`--portal-capture=window|monitor` が実際の画像納品を追加します。
 
-- 最初に wxWidgets のプログラム確認を**1 回だけ**表示し、誰が何のためにどのソースを要求するか、次にデスクトップが
-  自身のシステム認可・ソース選択画面を開くことを説明します。システム画面を複製せず、偽装もしません。
-- システム認可画面はデスクトップサービス自身のものです。本プログラムは偽のシステム認可框を作らず、自動クリックや
-  キー送信をせず、プログラム確認をシステム認可の代わりにもしません。
-- 要求は厳密です：`window` は `WINDOW` ソースだけ、`monitor` は `MONITOR` だけを要求し、`multiple=false` で
-  単一ソースに限定します。実装は返された `source_type` を検証するため ScreenCast v3+ を要求します。要求した
-  ソース種別が提供されない、版が低い、応答に `source_type` がない、返された種別が一致しない場合は、安定した
-  診断で停止します。タイトル/PID/クラスや特定モニターの選択子は対話選択では証明できないため、
-  `--portal-authorize` はプロンプト前に明示的に拒否し、黙って無視しません。
-- `--yes` はここでは無効です。対話的に選ぶソースはシステム選択前に検証済み身元を持たないためプログラム確認は
-  残ります。`--yes` はシステム層の要否や成功を変えることもありません。
-- `--timeout-ms` は D-Bus 自動設定の予算、`--portal-timeout-ms` は人がシステム画面を操作する時間、
-  `--consent-timeout-ms` は本プログラムの wxWidgets 確認框の時間で、それぞれ別に計時します。タイムアウトや
-  取消では要求と作成済みセッションを閉じ、遅れて届いた成功応答は無視します。
-- `Request.Response` はメソッド応答より先に届くことがあります。ドライバは呼び出し前にシグナル一致とフィルターを
-  設置し、`handle_token` から要求パスを予測し、早着した応答を自身の object path でバッファし、実際に返された
-  ハンドルを確認して関連付けます。オフライン判据はこの競合順序を直接検証します。
-- `response=1` は「ユーザーが操作を取り消した」だけを意味し、Portal は取消と拒否を区別しません。結果は正確な
-  合成状態 `cancelled_or_denied` として報告します。サービス消失、サービス利用不可、版/ソース非対応、
-  タイムアウト、プログラム取消、プロトコルエラーは別々の状態/コードのままです。
-- `restore_token` / `persist_mode` を要求せず、実行をまたぐ無操作認可も導入しません。トークンはログにも
-  `MEMORY.md` にも書きません。CLI にはエクスポート可能な親ウィンドウがないため、インターフェースが許す空の
-  `parent_window` を渡し、`x11:` / `wayland:` ハンドルを偽造しません。
-- 成功時は認可とソース選択だけを報告し（`captured: 0`、`images: []`、`pixelsRead: false`、
-  `imageDelivered: false`）、Portal セッションを閉じます。このビルドは `OpenPipeWireRemote` を呼ばず、
-  フレームも納品しません。Portal のセッションやストリームはスクリーンショットではありません。
-- 模擬 D-Bus と注入インターフェースの判据は状態機械とプロトコル処理だけを証明します。実際の GNOME/KDE
-  Wayland 認可・ソース選択はユーザーが実機で行う必要があります。XWayland のダイアログや模擬結果を
-  ネイティブのシステム認可が検証済みだとする証拠にはできません。
+- 最初に wxWidgets のプログラム確認を 1 回だけ表示し、その後デスクトップ自身のシステム認可・ソース選択画面を
+  開きます。`--yes` はどちらの層も省略できず、対話式ソースには事前検証済みのタイトル/PID/クラス身元がありません。
+  `window` は `WINDOW` だけ、`monitor` は `MONITOR` だけを要求し、常に `multiple=false` を送ります。
+- PipeWire 接続は、現在の ScreenCast セッションの `OpenPipeWireRemote()` が返した fd **だけ**から作ります。
+  バックエンドはシステム registry を列挙せず、そのセッションの Start 結果にないノードへ接続しません。stream は
+  ちょうど 1 つで、`source_type` が要求と一致しなければ停止します。
+- ScreenCast v6 では `PW_KEY_TARGET_OBJECT` + `pipewire-serial` で対象を特定します。古い Portal ではその
+  セッション内の node id にだけフォールバックし、結果に `portal_session_node_id_fallback` と明記します。どちらも
+  永久の身元として扱いません。
+- 対応メモリ種別は `SPA_DATA_MemPtr` / `SPA_DATA_MemFd` のみです。対応 packed 8 ビット布局は
+  BGRA/RGBA/BGRx/RGBx/xRGB/xBGR/ARGB/ABGR で、ソースバッファのマップ中に BGRA8 へ複製します。DMA-BUF、
+  MemId、SyncObj、平面 YUV、10 ビット packed、FP16、未認識形式は安定した明示的エラーになります。
+- ストライド、chunk offset/size、`spa_data.maxsize`、64 ビット溢れ、空/破損 chunk、payload 不足、バッファ
+  所有権を納品前に検証します。複製は `pw_stream_queue_buffer()` の**前**に完了し、再キュー後の PipeWire
+  メモリを指す `CapturedFrame` は残しません。`pw_buffer.time` が今回のストリーム開始より古いフレームは
+  キャッシュとして拒否し、サイズ変更とドロップ数は `images[].portal` に記録します。
+- `--cursor include` は Portal の Embedded、`--cursor exclude` は Hidden、`--cursor default` は Portal の
+  文書化された Hidden 既定をそのまま使います。本ツールはカーソルを合成しないため、埋め込みカーソルを二重に
+  描きません。要求モードが `AvailableCursorModes` にない場合はセッションを停止します。
+- 交渉された VideoTransform を交付画像へ適用してから `--roi` と `--scale` を実行します。Portal の `size` は
+  コンポジタの論理座標であり、PipeWire の実バッファ画素寸法とは別に報告します。Portal のウィンドウソースは
+  客户区幾何を検証しないため `--client-area` は明示的に拒否し、オフセットを推測しません。
+- 初版は packed 8 ビット RGB だけを交渉し、sRGB/full-range RGB メタデータを確認します。`--hdr tonemap` は
+  取帧前に拒否し、`--hdr refuse` は色彩空間を確認できない場合に停止します。`hdrEffective` は `unverified` の
+  ままとし、コンポジタが 8 ビット化したフレームを「元が SDR」と偽らず、未証明の tone mapping も行いません。
+- すべての終了経路で PipeWire stream/loop/context/connection、一時マップ、remote fd（または
+  `pw_context_connect_fd` へ一度だけ移譲）、Portal セッションを解放します。停止/破棄後の遅延コールバックは
+  スクリーンショットを納品できません。
+- オフライン証拠は、制御可能な合成フレーム生産器、私有モック D-Bus Portal、実際にビルド済みの libpipewire を
+  使ったコンパイル検証です。実機 GNOME/KDE Wayland では人がプログラム確認とシステム選択を完了する必要があり、
+  本機ではその手動経路を**検証済みとは主張しません**。XWayland のダイアログやモックはネイティブ Wayland の
+  システム認可ではありません。
 
 ## 対象の身元とハンドルの再利用
 
@@ -2025,6 +2037,15 @@ Skill を入れるのは「何ができるか」をツールに伝えるだけ�
 
 ## ビルドとテスト（メンテナー向け）
 
+Linux の Wayland Portal 側は 2 層で検証します。`./test-all.sh --only portal-state,portal-dbus,pipewire-frames`
+は、注入可能な Portal リクエスト相関器、私有モックセッション D-Bus ScreenCast サービス
+（`OpenPipeWireRemote()` の fd 所有権と明示的な `Session.Close` を含む）、制御可能な合成フレーム生産器
+（唯一ソース選択、8 種の packed RGB、ストライド/offset/size/maxsize、空/破損/古いフレーム、サイズ変更、
+VideoTransform）を実行します。`src/platform/linux/PipeWireCaptureLinux.cpp` はさらに実際の libpipewire ヘッダーと
+ライブラリに対して別ビルドでコンパイル・リンクし、API/ABI と fd/stream の後始末経路が通ることを示します。これは
+実機コンポジタがフレームを納品した証拠ではありません。実機 GNOME/KDE Wayland では、ユーザー自身がプログラム
+確認とシステム選択を完了する必要があり、その結果は別に記録します。
+
 | コマンド                    | 何を証明するか                                                                                                                                                                                                                                                                                                                             |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `.\build.ps1`               | Release ビルド、成果物 `build\ecapture.exe`。`-Config Debug`、`-Clean` が選べる                                                                                                                                                                                                                                                            |
@@ -2308,17 +2329,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%UserProfile%\src\Evernight
 | 能力 | Windows | Linux X11 | Linux Wayland |
 | ---- | ------- | --------- | ------------- |
 | 対象の選択（ウィンドウと画面を列挙し条件で当てる） | 実装済み | 未検証（X11 のウィンドウ問い合わせ。XWayland では X11 ウィンドウしか見えず、ネイティブ Wayland のウィンドウは見えません） | 対応しない（コンポジタはクライアントに全体のウィンドウ一覧を与えない。本作は捏造しません） |
-| ウィンドウ撮影（選んだウィンドウ自体の画素） | 実装済み | 未検証（XComposite の `NameWindowPixmap`。ウィンドウ自身のストレージを読み、デスクトップ画素は決して読みません） | 画像納品は未実装（Portal の認可/ソース選択は実装済みで、単一ウィンドウには WINDOW ソースだけを要求。PipeWire のフレーム納品は後続段階） |
-| 画面撮影（単一出力・デスクトップ全体・明示領域のデスクトップ画素） | 実装済み、必ず人手の確認 | 未検証（`x11desktop` として実装。`--monitor` / `--monitor desktop` / `--region` がルートウィンドウの正確な矩形を読む。合成幾何と認可状態は判定済み、実機の複数モニター/回転/ホットプラグは未検証） | 画像納品は未実装（Portal の認可/ソース選択は実装済みで、単一モニターには MONITOR ソースだけを要求。PipeWire のフレーム納品は後続段階） |
+| ウィンドウ撮影（選んだウィンドウ自体の画素） | 実装済み | 未検証（XComposite の `NameWindowPixmap`。ウィンドウ自身のストレージを読み、デスクトップ画素は決して読みません） | 未検証（実装は `--portal-capture=window` は現在の Portal セッションの唯一の WINDOW ストリームだけを使用。合成フレーム、モック D-Bus、実際の libpipewire リンクは検証済み、GNOME/KDE の手動認可は未検証） |
+| 画面撮影（単一出力・デスクトップ全体・明示領域のデスクトップ画素） | 実装済み、必ず人の確認 | 未検証（`x11desktop` として実装：`--monitor`、`--monitor desktop`、`--region` がルートウィンドウの正確な矩形を読む。合成幾何と認可状態は判定済み、実機のマルチモニター/回転/ホットプラグは未検証） | 未検証（実装は `--portal-capture=monitor`；対話選択される 1 つの MONITOR ストリーム。デスクトップ画素には引き続き 2 層の人の認可が必要） |
 | 対話型の認可 | 実装済み（アプリ自身の確認のみ。Windows には呼び出し毎のシステム画面認可がない） | 未検証（共通 wxWidgets 確認ダイアログを接続済み。デスクトップ画素は必ず確認し `--yes` では省略できない。本次の実人クリック記録はない） | 未検証（アプリ確認 + システム認可の**両方**が必須。どちらも他方を置き換えられません。模擬 D-Bus/注入判据は通過したが、実機 GNOME/KDE の人手認可は未検証） |
 | 最小化ウィンドウの画素 | 対応しない（`--list=all` には出ますが撮影しません） | 対応しない（未マップのウィンドウには見られるストレージがなく、古い pixmap を返さず正直に拒否） | 対応しない（ウィンドウ一覧もハンドルもなく、指せる対象がありません） |
-| カーソル（`--cursor`） | 実行時プローブ（WGC のスイッチにはバージョン下限があり、デスクトップ複製の 2 経路は検証不能として登録） | 未検証（`xcomposite` と `x11desktop` の来源は X サーバが別合成するポインタを含まない。`exclude` は成立、`include` は合成せず明確に拒否） | 計画中（portal がカーソルのメタデータを与えるかに依存） |
-| HDR（`--hdr`） | 未検証（tone mapping は実装しオフラインで 1 点ずつ判定済みですが、本作には HDR 表示器がありません） | 計画中（X11 の広色域については何も断言しません） | 計画中 |
-| グラフィックなしのセッション | 実装済み（help / version / config / capabilities は動きます。デスクトップ画素の経路は unavailable を正直に報告） | 計画中（help / version / config / capabilities は `DISPLAY` なしで動く必要があり、撮影は実際の制限を報告します） | 計画中 |
+| カーソル（`--cursor`） | 実行時プローブ（WGC のスイッチにはバージョン下限があり、デスクトップ複製の 2 経路は検証不能として登録） | 未検証（`xcomposite` と `x11desktop` の来源は X サーバが別合成するポインタを含まない。`exclude` は成立、`include` は合成せず明確に拒否） | 実装済み（Portal `cursor_mode` で Hidden / Embedded を選択。本ツールは二重合成しない。実機コンポジタ描画は未検証） |
+| HDR（`--hdr`） | 未検証（tone mapping は実装しオフラインで 1 点ずつ判定済みですが、本作には HDR 表示器がありません） | 計画中（X11 の広色域については何も断言しません） | 初版は packed 8 ビット sRGB のみ。`tonemap` は明確に拒否し、色彩空間を確認できない場合の `refuse` は停止。実機 HDR は未検証 |
+| グラフィックなしのセッション | 実装済み（help / version / config / capabilities は動きます。デスクトップ画素の経路は unavailable を正直に報告） | 実装済み（help / version / config / capabilities は `DISPLAY` なしで動き、撮影は実際の制限を報告します） | 実装済み（同じ CLI 事前確認はコンポジタなしでも動き、Portal 撮影は成功を偽らず unavailable を報告） |
 
-`--capabilities` は、このビルドが実際に持つ 2 つの Linux X11 バックエンドを正直に報告します（`backends[]`：ウィンドウ内容 `xcomposite`、ルートウィンドウのデスクトップ画素 `x11desktop`。`autoChainWindow` は `xcomposite`、`autoChainScreen` は `x11desktop`）。`runtime[]` の `x11` のマスも同じセッション プローブの結果です。上の「画像納品は未実装」のマスは当面、撮影可能としては JSON に載せません。`--capabilities` には別に
-`portal.authorizationAndSelection` があり、認可/ソース選択チェーンは実装済み、`imageDeliveryImplemented` と
-`pipewireFrameDeliveryImplemented` は false のままです。マトリクス、本節、ソースの登録表は必ず同時に更新してください。
+`--capabilities` は、このビルドの Linux X11 バックエンド、Portal 認可/ソース選択の事実、そして
+`session.portal.authorizationAndSelection` の `imageDeliveryImplemented: true`、
+`pipewireFrameDeliveryImplemented: true`、対応する MemPtr/MemFd、8 つの packed 形式、
+`dmaBufSupported: false`、`hdrToneMappingImplemented: false` を報告します。`session.runtime[]` は
+compiled / reachable / versionSatisfied / interactionRequired / implemented を分離したままにし、Portal と
+Wayland は `needs_interaction` のままで、人が 2 層の認可を完了しない限り `canCapture: true` を返しません。
+マトリクス、本節、ソースの登録表は必ず同時に更新してください。
 
 ### プライバシーの境界（文章ではなく判定式として）
 
@@ -2417,13 +2442,13 @@ Linux エンコード経路の依存とライセンスは下の[ライセンス]
 | `.\tests\gui.ps1` | Windows デスクトップ層：`build\ecapture-gui-tests.exe` が同じ GUI ライフサイクル／コンポーネント判定を実行します。プログラム自身のダイアログだけを開いて自分で閉じ、画素も取らず、実際の認可ウィンドウにも答えません。このマシンには MSVC / Windows デスクトップが無いため、Windows GUI 判定は未検証と記録します |
 
 両エントリは 1 つの同じソースファイルを使っており、それは `windows.h` を 1 も include しません。
-今回のステップで意図的に手を入れなかったもの（後続ステップ）：X11 / Wayland バックエンド、
-統一 wx 通知インターフェースを「撮影完了後に何を送るか」の方針へ接続すること（インターフェースはありますが、
-撮影完了経路は既存の WinRT toast のままです）、Portal + PipeWire の接続、
-`std::wstring` そのものを符号化を担った型へ乗り換えること（約束はすでに `src/core/TextCoding.h` 1 所に書いて
-あり、型がまだ追随していません）、ワーカー ワイヤー形式からの `RECT` / `HRESULT` の除去、そして
-`Report.h` の残りの分割（stdout 書き出しはプラットフォーム サービス `src/OutputStream.h` に移りましたが、
-応答の組み立てとデスクトップ照会の描画は依然 Windows 側にあります）。
+今回のステップで意図的に手を入れなかったもの（後続ステップ）：統一 wx 通知インターフェースを
+「撮影完了後に何を送るか」の方針へ接続すること（インターフェースはありますが、撮影完了経路は既存の
+WinRT toast のままです）、`std::wstring` そのものを符号化を担った型へ乗り換えること（約束はすでに
+`src/core/TextCoding.h` 1 所に書いてあり、型がまだ追随していません）、ワーカー ワイヤー形式からの
+`RECT` / `HRESULT` の除去、そして `Report.h` の残りの分割（stdout 書き出しはプラットフォーム サービス
+`src/OutputStream.h` に移りましたが、応答の組み立てとデスクトップ照会の描画は依然 Windows 側にあります）。
+X11 / Wayland バックエンドと Portal + PipeWire 画像経路は、この延期リストにはありません。
 
 ## ライセンス
 

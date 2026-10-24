@@ -34,6 +34,38 @@ struct HistoryRecord {
 // 状态的机器名（进 JSON）。与 codes 一样只增不改名，调用方按它分支而不读 message。
 const wchar_t* HistoryStateName(HistoryRecord::State state);
 
+// Portal + PipeWire 取帧留下的事实。它只描述“这个 stream 是怎么被定位、怎么被读出来的”，
+// 不保存 session handle / remote fd / 恢复令牌。逻辑尺寸与缓冲区像素尺寸分开写：Portal 的
+// size 是合成器坐标空间，可能和 PipeWire 实际帧尺寸不同。
+struct PortalImageFacts {
+    bool written = false;
+    std::wstring sourceType;           // "window" / "monitor"
+    std::wstring targetBasis;          // "pipewire_serial" / "portal_session_node_id_fallback"
+    bool serialKnown = false;
+    uint64_t serial = 0;
+    uint32_t nodeId = 0;               // 仅本次会话有效，不是永久身份
+    bool logicalSizeKnown = false;
+    bool logicalPositionKnown = false;
+    int32_t logicalX = 0;
+    int32_t logicalY = 0;
+    int32_t logicalWidth = 0;
+    int32_t logicalHeight = 0;
+    uint32_t bufferWidth = 0;          // 旋转前
+    uint32_t bufferHeight = 0;
+    uint32_t rotationCw = 0;
+    bool sizeChangedWhileWaiting = false;
+    uint32_t sizeChanges = 0;
+    bool frameTimestampKnown = false;
+    bool frameTimestampVerified = false;
+    std::wstring memoryType;
+    std::wstring pixelFormat;
+    bool colorSpaceVerified = false;
+    uint32_t emptyChunks = 0;
+    uint32_t corruptedChunks = 0;
+    uint32_t staleFrames = 0;
+    uint32_t invalidFrames = 0;
+};
+
 struct CapturedImage {
     std::wstring file;         // 已展开占位符的绝对路径；"-" 表示写到标准输出
     uint64_t bytes = 0;
@@ -107,6 +139,7 @@ struct CapturedImage {
     uint32_t monitorOrdinal = 0;
     std::wstring deviceName;
     bool primary = false;
+    PortalImageFacts portal;
 };
 
 struct CaptureOutcome {

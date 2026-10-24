@@ -79,6 +79,10 @@ enum class CursorCapability {
     // 而 default / 没写这条选项时图照旧交，只在结果里把这一问答 unverified。
     // 它与下面 kUnregistered 的区别就是"知道保证不了"与"根本没查过"（规矩 5）。
     kPointerStateUnverified,
+    // Portal ScreenCast 的 cursor_mode 是系统契约的一部分：Hidden 明确不嵌入，Embedded 明确
+    // 由合成器嵌入。本工具不自行合成光标，所以不会重复合成；这两个结论来自 SelectSources
+    // 的请求与 Portal 接受，而不是靠图像修补。
+    kPortalControlled,
     // 没登记的名字。include 做不到，exclude **不敢声称**（宁可报无法核实，也不把没查过的事说成查过）。
     kUnregistered,
 };
@@ -90,6 +94,7 @@ inline const wchar_t* CursorCapabilityName(CursorCapability capability) {
         case CursorCapability::kSettable: return L"settable";
         case CursorCapability::kExcludesCursor: return L"excludes_cursor";
         case CursorCapability::kPointerStateUnverified: return L"pointer_state_unverified";
+        case CursorCapability::kPortalControlled: return L"portal_cursor_mode";
         case CursorCapability::kUnregistered: return L"unregistered";
     }
     return L"unregistered";
@@ -124,6 +129,9 @@ inline constexpr const wchar_t* kPropertyUnavailable = L"wgc_cursor_property_una
 // 所以同样不作任何断言。它与 kPathPointerUnverified（"查过来源，这一问没有答案"）的区别
 // 就是规矩 5："没查过"不等于"已知保证不了"，两者也给调用方不同的下一步。
 inline constexpr const wchar_t* kPathNotRegistered = L"path_capability_not_registered";
+inline constexpr const wchar_t* kPortalModeHidden = L"portal_cursor_mode_hidden";
+inline constexpr const wchar_t* kPortalModeEmbedded = L"portal_cursor_mode_embedded";
+inline constexpr const wchar_t* kPortalModeUnverified = L"portal_cursor_mode_unverified";
 }  // namespace cursor_basis
 
 // 每条路径"光标这件事的根据"那一个 ASCII token（进 note.cursor_channel_skipped 的 message
@@ -149,6 +157,8 @@ inline constexpr const wchar_t* kPointerUnverified = L"desktop_frame_pointer_sta
 inline constexpr const wchar_t* kExcludeUnprovable = L"duplication_cursor_exclusion_unprovable";
 // 没登记（新增通道忘了登记 = 更严而不是更松）
 inline constexpr const wchar_t* kNotRegistered = L"not_registered";
+// Portal ScreenCast 的 cursor_mode：来源选择阶段会写进 SelectSources，由合成器履行。
+inline constexpr const wchar_t* kPortalCursorMode = L"portal_select_sources_cursor_mode";
 // 本机内部版本低于 os_floor::kWgcCursor，那个开关问不到
 inline constexpr const wchar_t* kOsBelowMin = L"os_below_min_build";
 }  // namespace cursor_reason
@@ -181,6 +191,9 @@ inline constexpr CursorPathEntry kCursorTable[] = {
     // 这一问根本没有答案的那一种。见上面规矩 1、5、6。
     {paths::kDuplicationFrame, CursorCapability::kPointerStateUnverified, cursor_reason::kPointerUnverified},
     {paths::kScreenDuplication, CursorCapability::kPointerStateUnverified, cursor_reason::kPointerUnverified},
+    // Portal ScreenCast：cursor_mode 的 Hidden / Embedded 是请求契约的一部分；本工具不合成光标。
+    {paths::kPortalWindow, CursorCapability::kPortalControlled, cursor_reason::kPortalCursorMode},
+    {paths::kPortalMonitor, CursorCapability::kPortalControlled, cursor_reason::kPortalCursorMode},
 };
 
 // 整张登记表（只读视图）：--capabilities 的 cursor.paths 段与离线判据都遍历这一份，
@@ -304,6 +317,17 @@ inline CursorReport MakeCursorReport(const CursorRequest& request, const std::ws
         // 只可能是 default 或 exclude 两种请求，而两种都成立在来源这件事上。
         report.effective = cursor_effective::kExclude;
         report.basis = cursor_basis::kPathExcludes;
+        return report;
+    }
+    if (capability == CursorCapability::kPortalControlled) {
+        if (!frameStateKnown) {
+            report.effective = cursor_effective::kUnverified;
+            report.basis = cursor_basis::kPortalModeUnverified;
+            return report;
+        }
+        report.effective = frameCursorIn ? cursor_effective::kInclude : cursor_effective::kExclude;
+        report.basis = frameCursorIn ? cursor_basis::kPortalModeEmbedded
+                                     : cursor_basis::kPortalModeHidden;
         return report;
     }
     if (capability == CursorCapability::kPointerStateUnverified) {

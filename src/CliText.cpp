@@ -70,7 +70,8 @@ std::wstring HelpText() {
     // 是同一个 IsWindowsOnlyOption）。省掉而不是标一句"不可用"：一行注定失败的写法不算选项。
     const auto listed = [](const OptionInfo& o) {
         if (o.name == L"region" && !DesktopRegionTargetSupported()) return false;
-        if (o.name == L"portal-authorize" && !PortalAuthorizeSupported()) return false;
+        if ((o.name == L"portal-authorize" || o.name == L"portal-capture") &&
+            !PortalAuthorizeSupported()) return false;
         return BuildPlatform() == PlatformKind::kWindows || !IsWindowsOnlyOption(o.name);
     };
     size_t width = 0;

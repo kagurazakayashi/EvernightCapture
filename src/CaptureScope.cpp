@@ -27,6 +27,11 @@ constexpr PathScopeEntry kTable[] = {
     {paths::kScreenWgc, PixelScope::kDesktop},
     {paths::kScreenBitBlt, PixelScope::kDesktop},
     {paths::kScreenDuplication, PixelScope::kDesktop},
+    // XDG Desktop Portal + PipeWire：窗口请求只接受单一的 window 来源，屏幕请求只接受单一的
+    // monitor 来源。前者不保证是“目标窗口自身”以外的桌面像素；两者都由 Portal 系统授权
+    // 先行批准。窗口路径仍是窗口内容，monitor 路径仍是桌面像素。
+    {paths::kPortalWindow, PixelScope::kWindowContent},
+    {paths::kPortalMonitor, PixelScope::kDesktop},
     {paths::kUnknown, PixelScope::kDesktop},
 };
 

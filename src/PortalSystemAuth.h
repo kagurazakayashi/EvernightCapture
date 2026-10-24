@@ -19,7 +19,9 @@ class PortalSystemAuthProvider final : public ISystemAuthorizationProvider {
 public:
     PortalSystemAuthProvider(portal::IPortalScreenCast& portal, portal::SourceKind source,
                              uint64_t automaticTimeoutMs, uint64_t interactionTimeoutMs,
-                             portal::CancelToken* cancelToken = nullptr);
+                             portal::CancelToken* cancelToken = nullptr,
+                             bool closeSessionOnSuccess = true,
+                             portal::CursorMode cursorMode = portal::CursorMode::kDefault);
 
     SystemAuthReply Authorize(const SystemAuthRequest& request) override;
 
@@ -32,6 +34,8 @@ private:
     uint64_t automaticTimeoutMs_ = 5000;
     uint64_t interactionTimeoutMs_ = 0;
     portal::CancelToken* cancelToken_ = nullptr;
+    bool closeSessionOnSuccess_ = true;
+    portal::CursorMode cursorMode_ = portal::CursorMode::kDefault;
     portal::AuthorizationResult last_{};
 };
 

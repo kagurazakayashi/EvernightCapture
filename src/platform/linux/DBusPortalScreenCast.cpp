@@ -8,9 +8,9 @@
 //   * org.freedesktop.portal.Session：Close() 与 Closed 信号；
 //   * Window Identifiers：没有可导出的父窗口时 parent_window 传空字符串是允许的。
 //
-// 本文件只做到 Start 成功、核实 stream 的 source_type、然后关闭会话。它不发
-// OpenPipeWireRemote、不创建 PipeWire 流、不读像素。错误原因只写稳定 token，不记录对象
-// 路径、恢复令牌或用户输入。
+// 授权成功后：auth-only 请求立即关闭会话；PipeWire 交付请求保留同一会话并允许调用方
+// 通过 OpenPipeWireRemote() 取 fd。本文件读不到像素，也不枚举 PipeWire registry；错误原因
+// 只写稳定 token，不记录对象路径、恢复令牌或用户输入。
 
 #include "DBusPortalScreenCast.h"
 
@@ -25,6 +25,8 @@
 #include <random>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "PortalScreenCast.h"
 
@@ -342,8 +344,16 @@ DBusHandlerResult PortalFilter(DBusConnection* connection, DBusMessage* message,
 
 class DBusPortalScreenCast final : public IPortalScreenCast {
 public:
+    ~DBusPortalScreenCast() override { CloseSession(); }
+
     AuthorizationResult AuthorizeAndSelect(const Request& request) override {
         AuthorizationResult result;
+        if (heldConnection_) {
+            // 一个驱动实例只持有一次授权会话；复用会让来源与目标绑定变得不可核实。
+            result.outcome = Outcome::kProtocolError;
+            result.reason = reason::kProtocolError;
+            return result;
+        }
         result.requestedSourceMask = SourceKindMask(request.source);
         result.selection.requested = request.source;
 
@@ -431,6 +441,23 @@ public:
             result.outcome = Outcome::kUnsupported;
             result.reason = reason::kSourceTypeNotOffered;
             return result;
+        }
+
+        const PropertyAnswer cursorModes =
+            ReadUint32Property(connection, kScreenCastInterface, "AvailableCursorModes",
+                               automaticDeadline);
+        result.cursorModesKnown = cursorModes.known;
+        result.availableCursorModes = cursorModes.known ? cursorModes.value : 0;
+        result.requestedCursorMode = request.cursorMode;
+        result.cursorModeRequested = request.cursorMode != CursorMode::kDefault;
+        if (result.cursorModeRequested) {
+            const uint32_t wanted = static_cast<uint32_t>(request.cursorMode);
+            if (!cursorModes.known || (cursorModes.value & wanted) == 0) {
+                CleanupConnection(connection, nullptr, nullptr, false);
+                result.outcome = Outcome::kUnsupported;
+                result.reason = reason::kCursorModeUnavailable;
+                return result;
+            }
         }
 
         WaitContext ctx;
@@ -550,6 +577,10 @@ public:
             AppendDictString(&dict, "handle_token", selectToken);
             AppendDictUint32(&dict, "types", result.requestedSourceMask);
             AppendDictBool(&dict, "multiple", FALSE);
+            if (result.cursorModeRequested) {
+                AppendDictUint32(&dict, "cursor_mode",
+                                 static_cast<uint32_t>(request.cursorMode));
+            }
             FinishOptions(&root, &dict);
         }
         bool selectMethodOk = false;
@@ -657,19 +688,100 @@ public:
         }
         result.requestCompleted = true;
 
-        // 授权与来源选择成功。本步骤没有 PipeWire 交付，按请求关闭会话，绝不留下可用会话。
-        if (request.closeSessionOnSuccess) {
-            CloseSession(connection, sessionHandle);
-            result.sessionClosed = true;
-        }
+        // 授权与来源选择成功。auth-only 动作按请求立即关闭；PipeWire 交付动作保留同一个
+        // 会话，供 OpenPipeWireRemote() 使用。两种路径都不会留下“拿到了但没人负责”的连接。
         result.sessionClosedByPortal = ctx.sessionClosedByPortal;
         result.outcome = Outcome::kGranted;
         result.reason = reason::kGranted;
         result.pixelsRead = false;
         result.imageDelivered = false;
         result.restoreTokenPersisted = false;
-        CleanupConnection(connection, &startTracker, &ctx, true);
+        if (request.closeSessionOnSuccess) {
+            CloseSession(connection, sessionHandle);
+            result.sessionClosed = true;
+            RemoveFilterAndMatches(connection, &ctx);
+            dbus_connection_close(connection);
+            dbus_connection_unref(connection);
+        } else {
+            // 先把临时过滤器的回调引用彻底摘掉，再把连接移交给 heldConnection_。
+            // 此后迟到信号不会再访问栈上的 ctx / tracker。
+            RemoveFilterAndMatches(connection, &ctx);
+            heldConnection_ = connection;
+            heldSessionHandle_ = sessionHandle;
+        }
         return result;
+    }
+
+    bool OpenPipeWireRemote(int* fd, uint64_t timeoutMs, std::string* reasonOut) override {
+        if (fd) *fd = -1;
+        if (!heldConnection_ || heldSessionHandle_.empty()) {
+            if (reasonOut) *reasonOut = reason::kPipeWireRemoteUnavailable;
+            return false;
+        }
+        DBusMessage* call = dbus_message_new_method_call(
+            kPortalService, kPortalPath, kScreenCastInterface, "OpenPipeWireRemote");
+        if (!call) {
+            if (reasonOut) *reasonOut = reason::kProtocolError;
+            return false;
+        }
+        DBusMessageIter root;
+        DBusMessageIter dict;
+        dbus_message_iter_init_append(call, &root);
+        const char* session = heldSessionHandle_.c_str();
+        dbus_message_iter_append_basic(&root, DBUS_TYPE_OBJECT_PATH, &session);
+        dbus_message_iter_open_container(&root, DBUS_TYPE_ARRAY, "{sv}", &dict);
+        dbus_message_iter_close_container(&root, &dict);
+
+        DBusError error;
+        dbus_error_init(&error);
+        int waitMs = 5000;
+        if (timeoutMs != 0) waitMs = static_cast<int>(std::min<uint64_t>(timeoutMs, 60000));
+        DBusMessage* reply =
+            dbus_connection_send_with_reply_and_block(heldConnection_, call, waitMs, &error);
+        dbus_message_unref(call);
+        if (!reply) {
+            if (reasonOut) {
+                *reasonOut = error.name && std::strstr(error.name, "ServiceUnknown")
+                                 ? reason::kServiceLost
+                                 : reason::kPipeWireRemoteUnavailable;
+            }
+            dbus_error_free(&error);
+            return false;
+        }
+        if (dbus_message_get_type(reply) == DBUS_MESSAGE_TYPE_ERROR) {
+            if (reasonOut) *reasonOut = reason::kPipeWireRemoteUnavailable;
+            dbus_message_unref(reply);
+            return false;
+        }
+        DBusMessageIter it;
+        if (!dbus_message_iter_init(reply, &it) ||
+            dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_UNIX_FD) {
+            if (reasonOut) *reasonOut = reason::kProtocolError;
+            dbus_message_unref(reply);
+            return false;
+        }
+        int remote = -1;
+        // libdbus 对 DBUS_TYPE_UNIX_FD 的 get_basic 会 dup 一份，所有权归调用方。
+        dbus_message_iter_get_basic(&it, &remote);
+        dbus_message_unref(reply);
+        if (remote < 0) {
+            if (reasonOut) *reasonOut = reason::kProtocolError;
+            return false;
+        }
+        if (fd) *fd = remote;
+        else close(remote);
+        return true;
+    }
+
+    void CloseSession() override {
+        if (!heldConnection_) return;
+        if (!heldSessionHandle_.empty()) {
+            CloseSession(heldConnection_, heldSessionHandle_);
+        }
+        dbus_connection_close(heldConnection_);
+        dbus_connection_unref(heldConnection_);
+        heldConnection_ = nullptr;
+        heldSessionHandle_.clear();
     }
 
 private:
@@ -978,11 +1090,7 @@ private:
         dbus_connection_flush(connection);
     }
 
-    static void CleanupConnection(DBusConnection* connection, RequestTracker* tracker,
-                                  WaitContext* ctx, bool completedSuccessfully) {
-        (void)tracker;
-        (void)ctx;
-        (void)completedSuccessfully;
+    static void RemoveFilterAndMatches(DBusConnection* connection, WaitContext* ctx) {
         if (!connection) return;
         dbus_connection_remove_filter(connection, PortalFilter, ctx);
         DBusError error;
@@ -1006,9 +1114,20 @@ private:
             "arg0='org.freedesktop.portal.Desktop'",
             &error);
         dbus_error_free(&error);
+    }
+
+    static void CleanupConnection(DBusConnection* connection, RequestTracker* tracker,
+                                  WaitContext* ctx, bool completedSuccessfully) {
+        (void)tracker;
+        (void)completedSuccessfully;
+        if (!connection) return;
+        RemoveFilterAndMatches(connection, ctx);
         dbus_connection_close(connection);
         dbus_connection_unref(connection);
     }
+
+    DBusConnection* heldConnection_ = nullptr;
+    std::string heldSessionHandle_;
 };
 
 #endif  // ECAPTURE_HAVE_DBUS

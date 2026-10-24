@@ -29,12 +29,16 @@ PortalSystemAuthProvider::PortalSystemAuthProvider(portal::IPortalScreenCast& po
                                                    portal::SourceKind source,
                                                    uint64_t automaticTimeoutMs,
                                                    uint64_t interactionTimeoutMs,
-                                                   portal::CancelToken* cancelToken)
+                                                   portal::CancelToken* cancelToken,
+                                                   bool closeSessionOnSuccess,
+                                                   portal::CursorMode cursorMode)
     : portal_(portal),
       source_(source),
       automaticTimeoutMs_(automaticTimeoutMs),
       interactionTimeoutMs_(interactionTimeoutMs),
-      cancelToken_(cancelToken) {}
+      cancelToken_(cancelToken),
+      closeSessionOnSuccess_(closeSessionOnSuccess),
+      cursorMode_(cursorMode) {}
 
 SystemAuthReply PortalSystemAuthProvider::Authorize(const SystemAuthRequest& request) {
     portal::Request portalRequest;
@@ -46,8 +50,10 @@ SystemAuthReply PortalSystemAuthProvider::Authorize(const SystemAuthRequest& req
         automaticTimeoutMs_ == 0 ? 5000 : automaticTimeoutMs_;
     portalRequest.interactionTimeoutMs = interactionTimeoutMs_;
     portalRequest.cancelToken = cancelToken_;
-    // 本步骤只验证授权 / 选择链：会话必须关闭，绝不留下一个可继续读取的会话。
-    portalRequest.closeSessionOnSuccess = true;
+    // auth-only 动作按旧语义关闭会话；PipeWire 交付动作保留同一会话，由调用方
+    // 开 remote fd 并在自己的清理路径上关闭。
+    portalRequest.closeSessionOnSuccess = closeSessionOnSuccess_;
+    portalRequest.cursorMode = cursorMode_;
 
     last_ = portal_.AuthorizeAndSelect(portalRequest);
     const std::wstring detail = W(last_.reason.c_str());

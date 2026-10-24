@@ -20,6 +20,8 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 #include <dbus/dbus.h>
 
 #include "../src/PortalScreenCast.h"
@@ -221,6 +223,7 @@ public:
     std::atomic<int> createCalls{0};
     std::atomic<int> selectCalls{0};
     std::atomic<int> startCalls{0};
+    std::atomic<int> openRemoteCalls{0};
     std::atomic<uint32_t> requestedMask{0};
     std::atomic<bool> serviceLost{false};
 
@@ -335,6 +338,24 @@ private:
             dbus_connection_send(conn, reply, nullptr);
             dbus_message_unref(reply);
             dbus_connection_flush(conn);
+            return DBUS_HANDLER_RESULT_HANDLED;
+        }
+
+        if (memberStr == "OpenPipeWireRemote") {
+            ++openRemoteCalls;
+            // 只回一个可关闭的普通 pipe fd；本判据不读像素，只验证 fd 协议、所有权与
+            // “保留当前会话 -> OpenRemote -> 显式 CloseSession”的生命周期。
+            int fds[2] = {-1, -1};
+            if (pipe(fds) != 0) return DBUS_HANDLER_RESULT_HANDLED;
+            DBusMessage* reply = dbus_message_new_method_return(msg);
+            DBusMessageIter root;
+            dbus_message_iter_init_append(reply, &root);
+            dbus_message_iter_append_basic(&root, DBUS_TYPE_UNIX_FD, &fds[0]);
+            dbus_connection_send(conn, reply, nullptr);
+            dbus_message_unref(reply);
+            dbus_connection_flush(conn);
+            close(fds[0]);
+            close(fds[1]);
             return DBUS_HANDLER_RESULT_HANDLED;
         }
 
@@ -477,6 +498,37 @@ int main() {
                                         SourceKind::kWindow, 1000);
         Check(c.result.outcome == Outcome::kServiceLost, "服务消失 -> service_lost");
         Check(!c.result.imageDelivered, "没有图像");
+    }
+    Section("6) 保留当前会话：OpenPipeWireRemote fd 与显式 CloseSession 生命周期");
+    {
+        MockPortalService service(MockPortalService::Mode::kSuccess);
+        Check(service.Start(), "模拟 Portal 服务启动");
+        auto driver = ecapture::portal::CreateDBusPortalScreenCast();
+        Request request;
+        request.source = SourceKind::kWindow;
+        request.automaticTimeoutMs = 2500;
+        request.interactionTimeoutMs = 3000;
+        request.closeSessionOnSuccess = false;
+        const AuthorizationResult result = driver->AuthorizeAndSelect(request);
+        Check(result.outcome == Outcome::kGranted && result.sessionCreated,
+              "授权成功并保留当前会话");
+        Check(!result.sessionClosed, "closeSessionOnSuccess=false 时不提前关闭");
+        int fd = -1;
+        std::string reason;
+        Check(driver->OpenPipeWireRemote(&fd, 1000, &reason),
+              "只从当前会话 OpenPipeWireRemote() 取得 fd");
+        Check(fd >= 0, "fd 非负且所有权交给调用方");
+        if (fd >= 0) close(fd);
+        Check(service.openRemoteCalls.load() == 1, "模拟服务收到一次 OpenPipeWireRemote");
+        driver->CloseSession();
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+        while (std::chrono::steady_clock::now() < until &&
+               service.sessionCloses.load() == 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        Check(service.sessionCloses.load() > 0, "显式清理时发送 Session.Close");
+        Check(!driver->OpenPipeWireRemote(&fd, 1000, &reason),
+              "会话关闭后不能再次打开 remote");
     }
 
     std::printf("\nportal-dbus: %d passed, %d failed\n", g_passed, g_failed);

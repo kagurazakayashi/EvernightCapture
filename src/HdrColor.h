@@ -192,6 +192,11 @@ inline constexpr const wchar_t* kDisplayInHdrMode = L"display_in_hdr_mode";
 // 被显式 HDR 策略筛掉时，桌面复制那两条写的**这一条**原因：来源可能有广色域，但本构建没实现
 // 兑现策略那几步（见 kWideGamutUnverified）。它说的是"没做/没核实"，不是"结构上不可能"。
 inline constexpr const wchar_t* kDupPolicyUnverified = L"duplication_hdr_policy_not_implemented";
+// Portal + PipeWire 的首版只协商 packed 8 位 RGB 并核实 sRGB/full-range RGB；但合成器是否
+// 已经把 HDR 内容压成 8 位，本工具没有独立证据。因此既不能声称“来源本来就是 SDR”，
+// 也没有实现 tone mapping，--hdr tonemap 在解析期拒绝。
+inline constexpr const wchar_t* kPortalStreamUnverified =
+    L"portal_stream_color_space_unverified";
 }  // namespace hdr_reason
 
 // capability 的机器名（--capabilities 用它；截图那份 JSON 写的是 effective/basis 那一组，不写它）。
@@ -231,6 +236,8 @@ inline constexpr HdrPathEntry kHdrTable[] = {
     // X11 根窗口 XGetImage 交回的是服务端深度的整数像素；本构建只做 BGRA8 SDR 交付，
     // 不探测显示器 HDR 状态、不做 PQ/HLG 解码，也不预缩放。
     {paths::kX11Desktop, HdrCapability::kSdrSourceOnly, hdr_reason::kX11Root8},
+    {paths::kPortalWindow, HdrCapability::kWideGamutUnverified, hdr_reason::kPortalStreamUnverified},
+    {paths::kPortalMonitor, HdrCapability::kWideGamutUnverified, hdr_reason::kPortalStreamUnverified},
 };
 
 // 整张登记表（只读视图）：--capabilities 的 color.paths 段与离线判据都遍历这一份。

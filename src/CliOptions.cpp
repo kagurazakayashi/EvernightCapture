@@ -527,6 +527,10 @@ constexpr OptionSpec kOptions[] = {
     // 这不是截图通道：只验证程序确认 + 系统授权 + 单一来源选择，不打开 PipeWire、不取像素。
     {L"portal-authorize", L"", true, L"consent", L"<window|monitor>", kPortalSourceValues,
      L"opt.portal-authorize"},
+    // 同一把系统授权钥匙的另一半：授权完成后，只从当前 Portal 会话的 OpenPipeWireRemote()
+    // 取一帧，走统一裁剪 / 缩放 / 编码 / 主交付 / 历史副本。
+    {L"portal-capture", L"", true, L"consent", L"<window|monitor>", kPortalSourceValues,
+     L"opt.portal-capture"},
     // ---- 期限 ----
     // --timeout-ms 是自动处理阶段的总预算，不是"每一步各得一份"；确认框的等待另算
     // （--consent-timeout-ms，到点按拒绝处理）。见 src/Deadline.h 与 src/Worker.h。
@@ -2212,6 +2216,29 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             return;
         }
 
+        // ---- Portal + PipeWire 截图动作 ----
+        if (name == L"portal-capture") {
+            opt.portalCaptureGiven = true;
+            if (!PortalAuthorizeSupported()) {
+                Err(codes::kPlatformUnsupported, Msg(L"cli.platform_unsupported"),
+                    L"--portal-capture", value, Msg(L"cli.platform_unsupported_hint"));
+                return;
+            }
+            const std::wstring v = ToLower(Trim(value));
+            if (v == L"window") opt.portalCapture = PortalAuthorizeMode::kWindow;
+            else if (v == L"monitor") opt.portalCapture = PortalAuthorizeMode::kMonitor;
+            else {
+                std::wstring list;
+                for (const wchar_t* const* p = kPortalSourceValues; *p; ++p) {
+                    if (p != kPortalSourceValues) list += L", ";
+                    list += *p;
+                }
+                Err(codes::kInvalidValue, Msg(L"cli.portal_source_value"),
+                    L"--portal-capture", value, list);
+            }
+            return;
+        }
+
         // ---- 光标 ----
         // 取值只认那三个词（忽略大小写与首尾空白，与 --capture / --format 同一套写法）。
         // 认不了就整条不认，不退化成 default：那等于把一次写错的"要不要光标"变成一个没人要的决定。
@@ -2738,11 +2765,12 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         // 允许项：动作本体、两类人工 / 自动期限、--yes（只用于说明不生效）、--purpose、
         // 文案详略与配置文件选择。其余截图专用选项都在下面按名字列出来。
         const auto AllowedWithPortalAuthorize = [](const std::wstring& name) {
-            return name == L"portal-authorize" || name == L"portal-timeout-ms" ||
-                   name == L"timeout-ms" || name == L"consent-timeout-ms" ||
-                   name == L"yes" || name == L"purpose" || name == L"lang" ||
-                   name == L"verbose" || name == L"quiet" || name == L"json" ||
-                   name == L"config" || name == L"no-config" || name == L"portable";
+            return name == L"portal-authorize" || name == L"portal-capture" ||
+                   name == L"portal-timeout-ms" || name == L"timeout-ms" ||
+                   name == L"consent-timeout-ms" || name == L"yes" || name == L"purpose" ||
+                   name == L"lang" || name == L"verbose" || name == L"quiet" ||
+                   name == L"json" || name == L"config" || name == L"no-config" ||
+                   name == L"portable";
         };
         const auto IsConditionName = [](const std::wstring& name) {
             return name == L"hwnd" || name == L"pid" || name == L"process" || name == L"exe" ||
@@ -2771,6 +2799,72 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
         }
     }
 
+    // ---- Portal + PipeWire 截图动作的互斥检查 ----
+    // 交互式 Portal 来源没有可预先核实的窗口标题 / PID / 类名 / 具体显示器，因此目标选择器
+    // 一律拒绝。输出、格式、裁剪、缩放、光标、HDR、历史等交付偏好是允许的：它们作用在已经
+    // 授权并取回的帧上，不会改变系统授权选中的来源。
+    if (opt.PortalCaptureAction() && !opt.showHelp && !versionFlag) {
+        std::vector<std::wstring> portalConflicts;
+        std::vector<std::wstring> conditions;
+        const auto AllowedWithPortalCapture = [](const std::wstring& name) {
+            return name == L"portal-capture" || name == L"portal-timeout-ms" ||
+                   name == L"timeout-ms" || name == L"consent-timeout-ms" ||
+                   name == L"yes" || name == L"purpose" || name == L"lang" ||
+                   name == L"verbose" || name == L"quiet" || name == L"json" ||
+                   name == L"config" || name == L"no-config" || name == L"portable" ||
+                   name == L"out" || name == L"format" || name == L"quality" ||
+                   name == L"no-overwrite" || name == L"roi" || name == L"client-area" ||
+                   name == L"no-crop" || name == L"no-scale" || name == L"scale" ||
+                   name == L"cursor" || name == L"hdr" || name == L"history" ||
+                   name == L"notify" || name == L"notify-merge" ||
+                   name == L"notify-detail" || name == L"integrity-hints";
+        };
+        const auto IsConditionName = [](const std::wstring& name) {
+            return name == L"hwnd" || name == L"pid" || name == L"process" || name == L"exe" ||
+                   name == L"title" || name == L"title-contains" || name == L"title-regex" ||
+                   name == L"class" || name == L"monitor" || name == L"region" ||
+                   name == L"index" || name == L"topmost-match" ||
+                   name == L"bottommost-match" || name == L"newest" || name == L"oldest" ||
+                   name == L"all";
+        };
+        if (opt.PortalAuthorizeAction()) {
+            NoteConflict(&portalConflicts, L"--portal-authorize");
+        }
+        for (const ScannedItem& it : items) {
+            if (it.kind != ScannedItem::Kind::kOption || !it.option.spec) continue;
+            const std::wstring& name = it.option.spec->name;
+            if (IsConditionName(name)) {
+                NoteConflict(&conditions, L"--" + name);
+            } else if (!AllowedWithPortalCapture(name)) {
+                NoteConflict(&portalConflicts, L"--" + name);
+            }
+        }
+        if (!positional.empty() && opt.output != positional.front())
+            NoteConflict(&portalConflicts, L"--out");
+        if (!conditions.empty()) {
+            Err(codes::kPortalTargetConditionsUnsupported,
+                Msg(L"cli.portal_target_conditions_unsupported"), L"--portal-capture",
+                JoinFlags(conditions), Msg(L"cli.portal_target_conditions_unsupported_hint"));
+        }
+        if (!portalConflicts.empty()) {
+            Err(codes::kPortalCaptureConflict, Msg(L"cli.portal_capture_conflict"),
+                L"--portal-capture", JoinFlags(portalConflicts),
+                Msg(L"cli.portal_capture_conflict_hint"));
+        }
+    }
+
+    if (opt.PortalCaptureAction() && !opt.showHelp && !versionFlag) {
+        if (opt.crop.mode == CropMode::kClientArea) {
+            Err(codes::kPortalClientAreaUnsupported, Msg(L"cap.portal_client_area_unsupported"),
+                L"--client-area", L"",
+                Msg(L"cap.portal_client_area_unsupported_hint"));
+        }
+        if (opt.hdr.given && opt.hdr.policy == HdrPolicy::kToneMap) {
+            Err(codes::kPortalHdrUnsupported, Msg(L"cap.portal_hdr_unsupported"),
+                L"--hdr", L"tonemap", Msg(L"cap.portal_hdr_unsupported_hint"));
+        }
+    }
+
     opt.showVersion = versionFlag;
     if (helpFlag) opt.showHelp = true;
 
@@ -2790,15 +2884,16 @@ ParseResult ParseCommandLine(const CliTokens& tokens) {
             result.errors.push_back(std::move(d));
         };
         MergeConfigIntoOptions(opt, snap, cliGiven, !positional.empty(),
-                               !opt.QueryMode() && !opt.PortalAuthorizeAction(), &cfgFacts, cfgErr);
+                               !opt.QueryMode() && !opt.PortalAuthorizeAction(),
+                               &cfgFacts, cfgErr);
     }
 
     // 只有在没有参数错误、且没显式 --help/--version 时，才因为"零条件"返回帮助。
     // 给了 --monitor 就不算零条件：那是明确的屏幕目标。
     // 查询命令同理：它本身就是明确的意图，没有窗口条件正是它的正常用法（一次截图都不做）。
     if (result.errors.empty() && !opt.showHelp && !versionFlag && !opt.QueryMode() &&
-        !opt.PortalAuthorizeAction() && !opt.HasAnyCondition() && !opt.monitor.given &&
-        !opt.region.given) {
+        !opt.PortalAuthorizeAction() && !opt.PortalCaptureAction() &&
+        !opt.HasAnyCondition() && !opt.monitor.given && !opt.region.given) {
         opt.showHelp = true;
         opt.helpReason = codes::kNoCondition;
     }

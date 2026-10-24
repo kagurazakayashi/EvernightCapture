@@ -129,7 +129,8 @@ void WritePortalObject(Json& j, PortalAuthorizeMode mode,
     j.Key(L"pipeWireRemoteOpened").Value(false);
     j.Key(L"imageDelivered").Value(false);
     j.Key(L"authorizationAndSelectionAvailable").Value(granted);
-    j.Key(L"nextStep").Value(granted ? L"pipewire_frame_delivery_not_implemented"
+    j.Key(L"frameDeliveryImplementedElsewhere").Value(true);
+    j.Key(L"nextStep").Value(granted ? L"use_portal_capture_for_frame_delivery"
                                      : L"resolve_portal_failure");
     j.End();
 }

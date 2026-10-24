@@ -8,7 +8,7 @@
 # 說明文字（由 src/Report.cpp 的 HelpText 排版，縮排寫在每行文字裡）
 # ---------------------------------------------------------------------------
 help.header	EvernightCapture (%exe%) —— 按條件視窗截圖，基於 Windows.Graphics.Capture
-help.header_linux	EvernightCapture (%exe%) —— 依條件視窗截圖，基於 X11（XComposite）與 XDG Desktop Portal 授權/來源選擇
+help.header_linux	EvernightCapture (%exe%) —— 依條件視窗截圖，基於 X11（XComposite）與 XDG Desktop Portal + PipeWire
 help.usage1	用法: %exe% [條件...] <輸出路徑>        不給任何條件 => 顯示本說明
 help.usage2	      %exe% [條件...] --out <路徑>      路徑寫 - 表示把圖片位元組輸出到標準輸出
 help.usage3	      %exe% [條件...]                   不給輸出路徑 => 圖片按 png 寫標準輸出
@@ -21,9 +21,9 @@ help.exit1	退出碼: 0 成功 / 1 參數錯 / 2 未給條件 / 3 --help / 4 無
 help.exit2	        6 目標受保護或被拒絕 / 7 截圖失敗 / 8 寫檔案失敗 / 9 內部異常
 help.status	目前建置: --capture 的取值全部已實現（wgc / dwm / printwindow / bitblt / duplication，auto 按 wgc-dwm-printwindow-bitblt 退回；整張螢幕只用 wgc-duplication-bitblt）；輸出目錄必須已存在；每張成功交付的圖另存一份到程式目錄的 history 下（不會自動清理）
 help.system	執行環境: 64 位元 Windows，聲明的最低內部版本 18362（Windows 10 版本 1903），只在內部版本 19045 上實測過；本機版本提供不了的路線在取影格、彈框之前就報 env.os_too_old / env.channel_unsupported（前者換通道也沒用），--verbose 的 input.osBuild 與 input.captureChain 回顯這一次能走哪幾條
-help.status_linux	目前建置：這個 Linux 建置有兩條獨立 X11 取幀路徑。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。建置同時提供 XDG Desktop Portal 授權/來源選擇動作 --portal-authorize=window|monitor：該動作只向系統入口申請一個來源，在 ScreenCast v3+ 上核實回傳的 source_type，然後關閉工作階段；它不開啟 PipeWire、不讀像素、不交付影像。--list / --inspect 只列舉本連線能看到的 X11 視窗；原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，程序歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不還原最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡報 cli.platform_unsupported，不會被悄悄忽略
+help.status_linux	目前建置：這個 Linux 建置有兩條獨立 X11 取幀路徑，以及 XDG Desktop Portal 的系統授權/來源選擇鏈。xcomposite 只讀目標視窗自己的重定向儲存；x11desktop 從 X11 根視窗讀取精確矩形，用於單一邏輯螢幕、--monitor desktop 全桌面與明確的 --region。任何根視窗路徑都屬於桌面像素：一定彈出 wxWidgets 人工確認，--yes 跳不過。--portal-authorize=window|monitor 只驗證程式確認、系統授權與單一來源選擇，成功後關閉工作階段，不開啟 PipeWire、不讀像素、不交付影像。--portal-capture=window|monitor 透過同一個 Portal 工作階段呼叫 OpenPipeWireRemote，依回傳的 pipewire-serial / 工作階段內 node id 定位唯一授權串流，只接受 MemPtr/MemFd 與 packed 8 位元 RGB，複製成 BGRA8 後重用統一裁剪、縮放、編碼、主交付與歷史副本；它不會列舉系統節點，視窗請求絕不接受 monitor 來源，DMA-BUF/HDR/tone mapping 首版明確報限制。--list / --inspect 只列舉本連線能看到的 X11 視窗；原生 Wayland 視窗不在其中；XID、XRandR 輸出 XID 與顯示工作階段作用域都是快照，不是可跨工作階段保存的永久識別；_NET_WM_PID 是視窗自述，程序歸屬只標 declared_unverified。唯讀查詢不啟用、不移動、不還原最小化視窗。--help / --version / --show-config / --capabilities / --diagnostics 不需要桌面即可執行。--capture 裡只屬於 Windows 的取值以及 --hwnd / --class 在這裡報 cli.platform_unsupported，不會被悄悄忽略
 help.system_linux	執行環境: Linux。--capabilities / --diagnostics 以唯讀方式連線 X11、Wayland 與工作階段 D-Bus（XDG Desktop Portal），並檢查 PipeWire 套接字前提。環境變數與桌面名稱只是線索：它們不證明服務可用，也不構成授權
-help.linux_query	Linux 預檢：先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於能截圖，只有真正實作的路線才會被報成可用。Portal 授權/來源選擇已單獨實作，但 PipeWire 影像交付尚未實作：取得 Portal 工作階段或串流絕不會被報告成截圖成功；backends 裡同時寫出內部路徑與它的授權範圍
+help.linux_query	Linux 預檢：先跑 --capabilities。它報告工作階段種類（x11 / wayland / xwayland / headless），以及每條執行能力的 compiled / reachable / versionSatisfied / interactionRequired / implemented；顯示伺服器連得上不等於能截圖。Portal 授權/來源選擇與目前工作階段的 PipeWire 幀交付均已實作，但每次都必須由人完成程式確認與系統授權；取得 Portal 工作階段、remote fd 或串流中繼資料都不會被報告成截圖成功。PipeWire 後端只接受該工作階段唯一授權串流、MemPtr/MemFd 與 packed 8 位元 sRGB，DMA-BUF、未識別格式與 HDR tone mapping 首版明確不支援。真實 GNOME/KDE Wayland 上的人工授權與截圖仍需單獨驗證
 
 help.examples	示例:
 help.example1	%exe% --process notepad.exe D:\shots\epad.png
@@ -622,16 +622,16 @@ opt.capture_linux	xcomposite（視窗內容擷取：讀目標視窗自己的重�
 
 
 # Wayland / XDG Desktop Portal 授權與來源選擇（本步驟不交付 PipeWire 影像）
-opt.portal-authorize	只驗證 XDG Desktop Portal 的系統授權與來源選擇鏈：window 只向入口申請一個 WINDOW 來源，monitor 只申請一個 MONITOR 來源。程式一定先彈出 wxWidgets 確認框（互動式來源在系統選擇前沒有可核實身分，所以這裡的 --yes 不適用），接著桌面會開啟自己的系統授權/來源選擇視窗。成功只表示授權與選擇完成：不讀像素、不開啟 PipeWire remote、不交付影像，並立即關閉 Portal 工作階段。標題/PID/類名與特定螢幕選擇器無法在互動選擇中證明或強制，因此明確拒絕而不是忽略。不申請持久授權，也不保存恢復權杖
+opt.portal-authorize	只驗證 XDG Desktop Portal 的系統授權與來源選擇鏈：window 只向入口申請一個 WINDOW 來源，monitor 只申請一個 MONITOR 來源。程式一定先彈出 wxWidgets 確認框（互動式來源在系統選擇前沒有可核實身分，所以這裡的 --yes 不適用），接著桌面會開啟自己的系統授權/來源選擇視窗。成功只表示授權與選擇完成：不讀像素、不開啟 PipeWire remote、不交付影像，並立即關閉 Portal 工作階段。要真正取圖請用 --portal-capture。標題/PID/類名與特定螢幕選擇器無法在互動選擇中證明或強制，因此明確拒絕而不是忽略。不申請持久授權，也不保存恢復權杖
 opt.portal-timeout-ms	等待桌面 Portal 授權/來源選擇視窗的時間（毫秒）。0 = 一直等，預設 120000。這段人工等待與 --timeout-ms（D-Bus 自動處理預算）以及 --consent-timeout-ms（程式自己的 wxWidgets 確認框）分開計時
-cli.portal_source_value	--portal-authorize 的取值只能是 window 或 monitor
+cli.portal_source_value	--portal-authorize 與 --portal-capture 的取值只能是 window 或 monitor
 cli.portal_target_conditions_unsupported	互動式 Portal 來源選擇無法證明或兌現這個目標條件
 cli.portal_target_conditions_unsupported_hint	Portal 讓人在系統視窗裡選來源，本程式無法在那次選擇之前比對標題、PID、類名、視窗條件或指定螢幕。請去掉這些選擇條件，或改用能在取幀前核實嚴格目標的路徑；這個條件絕不會被靜默忽略
 cli.portal_authorize_conflict	--portal-authorize 是只做授權驗證的動作，不能與截圖/輸出選項同時使用
 cli.portal_authorize_conflict_hint	請去掉列出的截圖、輸出、裁剪或查詢選項。這個動作依設計回傳 captured=0、images=[]，不會截圖
 note.portal_yes_not_applicable	互動式 Portal 來源選擇不能免除程式確認：系統選擇前無法核實將被選中的視窗身分，因此 --yes 不適用。--yes 也永遠不影響系統授權層
-note.portal_authorization_only	Portal 授權與來源選擇鏈成功，但本建置尚未交付 PipeWire 影像
-note.portal_authorization_only_hint	本次沒有讀像素、沒有寫圖片。Portal 工作階段或串流不等於截圖；PipeWire 幀交付屬於後續步驟
+note.portal_authorization_only	Portal 授權與來源選擇鏈成功；--portal-authorize 依設計只驗證授權，不交付影像
+note.portal_authorization_only_hint	本次沒有讀像素、沒有寫圖片。要實際取圖並重用統一編碼與歷史交付，請改用 --portal-capture=window|monitor；Portal 工作階段或串流本身永遠不等於截圖成功
 consent.target_line_interactive	由系統視窗選擇的來源：%1（互動選擇，未預先比對標題、PID 或矩形）
 consent.system_portal_source	本次向系統申請的來源：%1
 consent.system_portal_next_interactive	下一步桌面會開啟它自己的 Portal 授權與來源選擇視窗。請在那裡選擇%1並批准；本程式不會替你選擇、點擊或自動批准
@@ -657,3 +657,24 @@ portal.source_window	一個視窗
 portal.source_monitor	一個螢幕
 portal.target_window	將在桌面 Portal 視窗中選擇一個應用程式視窗
 portal.target_monitor	將在桌面 Portal 視窗中選擇一個螢幕
+opt.portal-capture	經 XDG Desktop Portal 授權並截取一個互動選擇的來源：window 只向入口申請一個 WINDOW 來源，monitor 只申請一個 MONITOR 來源。程式確認與系統授權之後，只對目前工作階段 OpenPipeWireRemote 交回的 fd 建立 PipeWire 串流，優先使用 v6 的 pipewire-serial、舊版僅回退到該工作階段的 node id 定位唯一授權串流。支援 SPA_DATA_MemPtr / SPA_DATA_MemFd 與 BGRA/RGBA/BGRx/RGBx/xRGB/xBGR/ARGB/ABGR 八種 packed 8 位元布局，在緩衝重新入隊前複製成 BGRA8，再重用統一裁剪、縮放、編碼、主輸出與歷史副本。DMA-BUF、平面/10 位元/FP16/HDR 與 tone mapping 首版明確不支援；--client-area 無法核實客戶區幾何所以拒絕。--yes 不能跳過互動式來源的程式確認，也不影響系統授權；node id 只在目前工作階段有效。輸出、--roi、--scale、--cursor、--hdr auto/refuse、--timeout-ms 與歷史設定可用
+cli.portal_capture_conflict	--portal-capture 不能與目標選擇器、--capture 或 --dry-run 同時使用
+cli.portal_capture_conflict_hint	互動式 Portal 來源在授權前沒有可核實的標題/PID/類名/特定螢幕，也不能預選視窗編號；請去掉列出的選擇器。輸出、格式、裁剪、縮放、游標、HDR auto/refuse、期限與歷史選項可以保留。本工具不會默默忽略一個目標約束
+cap.portal_capture_failed	Portal + PipeWire 截圖沒有完成
+cap.portal_capture_failed_hint	結果裡的 detail 是穩定的協定原因。請先看 errors[].code：取消/拒絕、逾時、服務不可用、來源不符與幀格式不支援需要不同的下一步；不要只因為 Portal 授權成功就認為已取得影像
+cap.portal_client_area_unsupported	Portal 串流沒有可核實的客戶區幾何，--client-area 首版不支援
+cap.portal_client_area_unsupported_hint	互動式 Portal 視窗來源只保證「使用者選擇的來源」，不提供標題/PID/裝飾或客戶區矩形。--roi 仍可用於已取回影像的像素座標；無法確定客戶區時本工具不會猜一個偏移
+cap.portal_hdr_unsupported	Portal + PipeWire 的首版不能兌現這個 HDR 策略
+cap.portal_hdr_unsupported_hint	首版只協商 packed 8 位元 RGB 並核實 sRGB/full-range RGB；不實作 PQ/HLG/FP16 解碼或 tone mapping。請用 --hdr auto 或 --hdr refuse，並如實讀取 images[].portal.colorSpaceVerified 與 hdrEffective；本工具不會用未經證明的映射掩蓋問題
+cap.portal_pipewire_unavailable	目前 Portal 工作階段沒能開啟 PipeWire remote
+cap.portal_pipewire_unavailable_hint	只有目前 ScreenCast 工作階段的 OpenPipeWireRemote() 回傳的 fd 才可使用；不會改連系統 registry 裡的其它節點。檢查 xdg-desktop-portal 與 PipeWire 服務、工作階段是否被關閉，以及建置是否連結了 libpipewire-0.3
+cap.portal_no_frame	在期限內沒有取得符合約束的 Portal/PipeWire 幀
+cap.portal_no_frame_hint	螢幕可能靜止且合成器沒有產出新緩衝、串流可能被關閉，或只收到空/損壞/請求開始前的舊幀。查看 images 不存在時的 errors[].detail 與 dropped* 計數；本工具不會把請求前的快取幀當成最新結果，也不會交出未完整寫入的幀
+cap.portal_memory_unsupported	PipeWire 只提供了本首版不支援的記憶體類型
+cap.portal_format_unsupported	PipeWire 協商出的視訊格式本首版不支援
+cap.portal_memory_unsupported_hint	本後端只接受 SPA_DATA_MemPtr 與 SPA_DATA_MemFd（CPU 可讀、可在複製後安全歸還的緩衝），明確拒絕 DMA-BUF、MemId、SyncObj 等 GPU/顯式同步類型。不會把 DmaBuf fd 當普通記憶體硬映射
+cap.portal_format_unsupported_hint	首版只支援 BGRA/RGBA/BGRx/RGBx/xRGB/xBGR/ARGB/ABGR 八種 packed 8 位元布局與可核實的 sRGB/full-range RGB 色彩屬性；平面 YUV、10 位元封裝、FP16 與未識別格式會明確報錯，而不是按 4 位元組猜布局
+cap.portal_stream_lost	PipeWire 串流或 Portal 工作階段在取幀期間斷開
+cap.portal_stream_lost_hint	連線中斷後不會繼續交付遲到的緩衝，也不會重連任意系統節點。重新執行一次會產生新的程式確認與系統授權；不要把上一次的 node id 或 remote fd 當永久身分
+cap.portal_frame_invalid	PipeWire 幀形狀或緩衝區邊界不自洽
+cap.portal_frame_invalid_hint	檢查 detail 與 dropped* 計數。行距、chunk offset/size、data.maxsize、尺寸上限或旋轉中繼資料中任意一項說不通，本工具都不會讀越界或交出半幀；請把這份穩定原因報給工具維護者

@@ -157,7 +157,7 @@ void TestXWayland() {
 }
 
 void TestWaylandPortal() {
-    Section("4) 原生 Wayland + Portal：版本/来源类型分开报，仍不可截图");
+    Section("4) 原生 Wayland + Portal：版本/来源类型分开报，截图需要人完成两层授权");
     SessionFacts f = XWaylandSession();
     f.x11 = X11Facts{};   // 只有 Wayland
     f.environment.displaySet = false;
@@ -191,11 +191,20 @@ void TestWaylandPortal() {
     Check(portal && portal->reachable == Tri::kYes, "portal reachable=yes");
     Check(portal && portal->versionSatisfied == Tri::kYes, "portal 版本满足");
     Check(portal && portal->interactionRequired == Tri::kYes, "portal 需要用户交互");
-    Check(portal && portal->implemented == Tri::kNo, "portal 未实现");
-    Check(portal && portal->status == RuntimeStatus::kNotImplemented, "portal=not_implemented");
-    Check(portal && !portal->canCapture, "portal 不回答可以截图");
+    Check(portal && portal->implemented == Tri::kYes,
+          "portal 授权 + PipeWire 帧交付已实现");
+    Check(portal && portal->status == RuntimeStatus::kNeedsInteraction,
+          "portal=needs_interaction（永不回答可无交互截图）");
+    Check(portal && !portal->canCapture, "portal 不会因为服务可用就回答可以截图");
+    const auto* wayland = r.RuntimeOf(L"wayland");
+    Check(wayland && wayland->implemented == Tri::kYes && !wayland->canCapture,
+          "Wayland 原生截图只经 Portal，需交互，canCapture=false");
     Check(Has(r.caveats, L"no_portal_source_selection_performed"), "没有触发来源选择");
     Check(Has(r.caveats, L"no_portal_capture_session_created"), "没有创建捕获会话");
+    Check(Has(r.caveats, L"portal_capture_requires_program_confirmation_and_system_grant"),
+          "明确写出两层人工授权是前置");
+    Check(Has(r.caveats, L"portal_pipewire_v1_accepts_only_packed_8bit_srgb_and_does_not_tonemap_hdr"),
+          "明确写出首版格式与 HDR 限制");
 }
 
 void TestHeadlessAndSsh() {

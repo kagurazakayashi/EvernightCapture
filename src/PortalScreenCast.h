@@ -5,9 +5,9 @@
 // 不持有对象路径或文件描述符，也不读一个像素。真实 D-Bus 驱动在
 // src/platform/linux/DBusPortalScreenCast.cpp；测试可注入 IPortalScreenCast 的假实现。
 //
-// 本步骤只做到 Start 成功、校验来源类型并关闭会话，不调用 OpenPipeWireRemote，
-// 也不创建 PipeWire 流。Portal 返回会话/流不等于取得图像：报告里必须继续写
-// pixelsRead=false、imageDelivered=false。
+// auth-only 动作只做到 Start 成功、校验来源类型并关闭会话；--portal-capture 则在
+// closeSessionOnSuccess=false 时保留同一会话，随后调用 OpenPipeWireRemote() 并把 fd
+// 交给 PipeWire 后端。Portal 返回会话/流不等于取得图像：只有有效帧完成交付后才算成功。
 //
 // 关键约束（与 AGENTS.md《Wayland 提示与系统权限》同源）：
 //   * 单窗口请求只申请 WINDOW 来源；屏幕请求只申请 MONITOR 来源，二者不互相冒充。
@@ -100,6 +100,8 @@ inline constexpr const char* kSourceMismatch = "selected_source_type_mismatch";
 inline constexpr const char* kMultipleStreams = "multiple_streams_not_requested";
 inline constexpr const char* kStreamSourceUnverifiable = "stream_source_type_unverifiable";
 inline constexpr const char* kSessionMissing = "session_handle_missing";
+inline constexpr const char* kCursorModeUnavailable = "portal_cursor_mode_not_offered";
+inline constexpr const char* kPipeWireRemoteUnavailable = "portal_open_pipewire_remote_failed";
 }  // namespace reason
 
 // Start 返回的元数据。不保存恢复令牌；nodeId 只在本会话内有效。
@@ -124,6 +126,24 @@ struct Selection {
     std::vector<StreamInfo> streams;
 };
 
+// SelectSources 的 cursor_mode 位值。kDefault 表示不设置该选项（Portal 官方默认 Hidden）。
+enum class CursorMode : uint32_t {
+    kDefault = 0u,
+    kHidden = 1u,
+    kEmbedded = 2u,
+    kMetadata = 4u,
+};
+
+inline const char* CursorModeName(CursorMode mode) {
+    switch (mode) {
+        case CursorMode::kHidden: return "hidden";
+        case CursorMode::kEmbedded: return "embedded";
+        case CursorMode::kMetadata: return "metadata";
+        case CursorMode::kDefault: return "default";
+    }
+    return "default";
+}
+
 struct AuthorizationResult {
     Outcome outcome = Outcome::kUnavailable;
     std::string reason = reason::kServiceUnavailable;
@@ -132,6 +152,8 @@ struct AuthorizationResult {
     bool versionKnown = false;
     uint32_t availableSourceTypes = 0;
     bool sourceTypesKnown = false;
+    uint32_t availableCursorModes = 0;
+    bool cursorModesKnown = false;
     uint32_t requestedSourceMask = 0;
 
     bool sessionCreated = false;
@@ -140,6 +162,9 @@ struct AuthorizationResult {
     bool requestClosed = false;
     bool sessionClosed = false;
     bool sessionClosedByPortal = false;
+    bool pipeWireRemoteOpened = false;
+    CursorMode requestedCursorMode = CursorMode::kDefault;
+    bool cursorModeRequested = false;
     // 只在驱动内部记账：超时 / 取消之后到达的成功响应一律忽略，不改变 outcome。
     bool lateResponseIgnored = false;
 
@@ -171,6 +196,8 @@ struct Request {
     // 系统来源选择 / 授权窗口的人工等待预算。0 = 不限。它与 automaticTimeoutMs 分开计时。
     uint64_t interactionTimeoutMs = 0;
     CancelToken* cancelToken = nullptr;
+    // 交互来源选择的 cursor_mode。kDefault 时不发送该选项，由 Portal 官方默认（Hidden）决定。
+    CursorMode cursorMode = CursorMode::kDefault;
     // 本步骤结束即关闭会话。后续 PipeWire 交付步骤应传 false 并在流建立后自行关闭。
     bool closeSessionOnSuccess = true;
 };
@@ -179,6 +206,19 @@ class IPortalScreenCast {
 public:
     virtual ~IPortalScreenCast() = default;
     virtual AuthorizationResult AuthorizeAndSelect(const Request& request) = 0;
+
+    // 取得当前授权会话的 PipeWire remote fd（>= 0，调用方拥有并负责 close）。
+    // 默认实现用于注入替身 / 不支持这条路的驱动：不伪装成功。
+    virtual bool OpenPipeWireRemote(int* fd, uint64_t timeoutMs, std::string* reason) {
+        (void)timeoutMs;
+        if (fd) *fd = -1;
+        if (reason) *reason = reason::kPipeWireRemoteUnavailable;
+        return false;
+    }
+
+    // 关闭 AuthorizeAndSelect 成功且 closeSessionOnSuccess=false 时保留的会话。
+    // 默认空操作，保持旧替身与 auth-only 路径的编译/语义不变。
+    virtual void CloseSession() {}
 };
 
 // ---------------------------------------------------------------------------

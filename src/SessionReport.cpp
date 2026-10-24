@@ -201,7 +201,10 @@ SessionReport BuildSessionReport(const SessionFacts& facts) {
         r.name = L"wayland";
         r.compiled = facts.wayland.compiled;
         r.implemented = session_backend::kWaylandCaptureImplemented ? Tri::kYes : Tri::kNo;
-        r.interactionRequired = Tri::kNo;
+        // Wayland 上的原生截图必须经 Portal 的系统授权与来源选择；这条 capability 不是
+        // “连接成功即可截图”。真正的 canCapture 仍由 xdg-portal/pipewire 那几条事实支撑，
+        // 且这里的 needs_interaction 不会回答 canCapture=true。
+        r.interactionRequired = Tri::kYes;
         if (facts.wayland.compiled) {
             r.reachable = facts.wayland.attempted
                               ? (facts.wayland.connected ? Tri::kYes : Tri::kNo)
@@ -376,9 +379,9 @@ SessionReport BuildSessionReport(const SessionFacts& facts) {
                       SessionSeverity::kInfo);
     }
     if (session_backend::kPortalAuthorizationSelectionImplemented) {
-        AddDiagnostic(&report, L"session.portal.authorization_selection_only",
-                      L"no_pipewire_frame_delivery",
-                      L"the portal authorization and source-selection chain exists, but this build does not deliver a PipeWire frame",
+        AddDiagnostic(&report, L"session.portal.capture_interaction_required",
+                      L"portal_capture_requires_program_confirmation_and_system_grant",
+                      L"a person must complete the program confirmation and the system source picker before any PipeWire frame is read",
                       SessionSeverity::kInfo);
     }
     if (!facts.captureSessionCreated) {
@@ -422,10 +425,14 @@ SessionReport BuildSessionReport(const SessionFacts& facts) {
         report.caveats.push_back(W(session_caveat::kX11WindowStorageOnly));
     }
     if (session_backend::kPortalAuthorizationSelectionImplemented) {
-        report.caveats.push_back(W(session_caveat::kPortalAuthorizationSelectionOnly));
-        report.caveats.push_back(W(session_caveat::kPortalSessionClosedAfterSelection));
         report.caveats.push_back(W(session_caveat::kPortalParentWindowEmpty));
         report.caveats.push_back(W(session_caveat::kPortalNoPersistentGrant));
+    }
+    if (session_backend::kPortalCaptureImplemented) {
+        report.caveats.push_back(W(session_caveat::kPortalCaptureRequiresInteraction));
+        report.caveats.push_back(W(session_caveat::kPortalPipeWireSessionScoped));
+        report.caveats.push_back(W(session_caveat::kPortalFrameColorSpaceLimited));
+        report.caveats.push_back(W(session_caveat::kPortalCaptureVerifiedScope));
     }
 
     return report;
@@ -546,6 +553,21 @@ void WriteSessionObject(Json& j, const SessionReport& report, bool verbose) {
     j.Key(L"minimumVersion").Value(3);
     j.Key(L"imageDeliveryImplemented").Value(session_backend::kPortalCaptureImplemented);
     j.Key(L"pipewireFrameDeliveryImplemented").Value(session_backend::kPipeWireCaptureImplemented);
+    j.Key(L"framePath").Value(L"portal_open_pipewire_remote_then_pw_stream");
+    j.Key(L"memoryTypes").Arr().Value(L"spa_data_mem_ptr").Value(L"spa_data_mem_fd").End();
+    j.Key(L"packedPixelFormats")
+        .Arr()
+        .Value(L"BGRA")
+        .Value(L"RGBA")
+        .Value(L"BGRx")
+        .Value(L"RGBx")
+        .Value(L"xRGB")
+        .Value(L"xBGR")
+        .Value(L"ARGB")
+        .Value(L"ABGR")
+        .End();
+    j.Key(L"dmaBufSupported").Value(false);
+    j.Key(L"hdrToneMappingImplemented").Value(false);
     j.Key(L"interactionRequired").Value(true);
     Tri sourceVersionOk = Tri::kUnknown;
     if (report.portal.screenCastVersionKnown) {

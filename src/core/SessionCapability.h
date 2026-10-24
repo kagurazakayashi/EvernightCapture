@@ -107,12 +107,13 @@ namespace session_backend {
 // 不取桌面像素、不做整屏捕获、不把指针合成进帧。所以 canCapture=yes 说的是
 // "这条会话能截某扇 X11 窗口"，不是"能截整块屏幕"（见 caveat.kX11WindowStorageOnly）。
 inline constexpr bool kX11CaptureImplemented = true;
-inline constexpr bool kWaylandCaptureImplemented = false;
-// Portal 授权 / 来源选择链已实现（会话 D-Bus + ScreenCast v3+ source_type 校验），
-// 但 PipeWire 帧交付尚未实现，所以 kPortalCaptureImplemented 仍为 false。
+// Wayland 的原生截图不再走全局枚举：唯一受支持的路线是 Portal 授权后读取该会话的
+// PipeWire 流。kWaylandCaptureImplemented=true 说的是这条路线已实现，不是说不需要人授权。
+inline constexpr bool kWaylandCaptureImplemented = true;
+// Portal 授权 / 来源选择链 + 当前会话 OpenPipeWireRemote() + PipeWire 帧交付均已实现。
 inline constexpr bool kPortalAuthorizationSelectionImplemented = true;
-inline constexpr bool kPortalCaptureImplemented = false;
-inline constexpr bool kPipeWireCaptureImplemented = false;
+inline constexpr bool kPortalCaptureImplemented = true;
+inline constexpr bool kPipeWireCaptureImplemented = true;
 }  // namespace session_backend
 
 namespace session_caveat {
@@ -146,6 +147,15 @@ inline constexpr const char* kPortalParentWindowEmpty =
 // 不申请持久授权，不保存 / 打印恢复令牌。
 inline constexpr const char* kPortalNoPersistentGrant =
     "portal_restore_token_neither_requested_nor_persisted";
+// 本文本只描述当前实现的边界，不把“实现了 PipeWire”读成“已经授权或已经验证”。
+inline constexpr const char* kPortalCaptureRequiresInteraction =
+    "portal_capture_requires_program_confirmation_and_system_grant";
+inline constexpr const char* kPortalPipeWireSessionScoped =
+    "pipewire_node_id_and_remote_fd_are_scoped_to_the_current_portal_session";
+inline constexpr const char* kPortalFrameColorSpaceLimited =
+    "portal_pipewire_v1_accepts_only_packed_8bit_srgb_and_does_not_tonemap_hdr";
+inline constexpr const char* kPortalCaptureVerifiedScope =
+    "portal_pipewire_verified_by_synthetic_frames_offline_protocol_tests_and_libpipewire_compile_only";
 }  // namespace session_caveat
 
 // 一条诊断：code 是稳定的 ASCII（例如 "session.portal.service_not_found"），detail 是

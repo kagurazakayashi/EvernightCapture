@@ -386,6 +386,10 @@ struct Options {
     // 用户是否写出过 --portal-authorize。即便取值写坏，也不把它误判成“一次普通截图请求”
     // 而补上 --out 默认值 / 通知等截图期提示。
     bool portalAuthorizeGiven = false;
+    // --portal-capture=window|monitor：授权/来源选择成功后，只从当前 Portal 会话的
+    // OpenPipeWireRemote() 取一帧，再走统一裁剪 / 缩放 / 编码 / 主交付 / 历史副本。
+    PortalAuthorizeMode portalCapture = PortalAuthorizeMode::kNone;
+    bool portalCaptureGiven = false;
 
     bool dryRun = false;              // --dry-run：只解析并打印候选信息（本阶段的默认行为）
     bool yes = false;                 // --yes：免掉"只取所选窗口画面"那条路径的确认，桌面像素路径无效
@@ -493,6 +497,8 @@ struct Options {
     bool WindowQueryMode() const { return windowAction != WindowAction::kNone; }
     // Portal 授权 / 来源选择动作：会弹程序确认并打开系统 Portal 窗口，但**不**取像素、不交付图像。
     bool PortalAuthorizeAction() const { return portalAuthorizeGiven; }
+    // Portal + PipeWire 截图动作：程序确认、系统授权、单一来源校验、PipeWire 取帧与统一交付。
+    bool PortalCaptureAction() const { return portalCaptureGiven; }
 };
 
 // ---------------------------------------------------------------------------
@@ -751,9 +757,30 @@ inline constexpr const wchar_t* kPortalTargetConditionsUnsupported =
 // --yes 对交互式 Portal 来源选择不适用（来源尚未被身份复核）；这是一条显式提示，
 // 不是错误，也不代表 --yes 能影响系统层。
 inline constexpr const wchar_t* kPortalYesNotApplicable = L"note.portal_yes_not_applicable";
-// 本步骤尚未交付 PipeWire 图像；即使 Start 成功也不报截图成功。
+// 保留旧稳定码：--portal-authorize 是只做授权/来源选择验证的动作，即使 Start 成功也不报
+// 截图成功。真正的图像交付由 --portal-capture 走另一条动作；这里不改这个已发布的码值。
 inline constexpr const wchar_t* kPortalImageDeliveryNotImplemented =
     L"capture.portal_image_delivery_not_implemented";
+// Portal + PipeWire 取帧阶段的稳定失败码。每一种都对应一个可核实的失败位置，
+// 不把“拿到会话”或“拿到 fd”当成已经交付图像。
+inline constexpr const wchar_t* kPortalPipeWireUnavailable =
+    L"capture.portal_pipewire_unavailable";
+inline constexpr const wchar_t* kPortalPipeWireNoFrame =
+    L"capture.portal_no_frame";
+inline constexpr const wchar_t* kPortalFrameInvalid =
+    L"capture.portal_frame_invalid";
+inline constexpr const wchar_t* kPortalFormatUnsupported =
+    L"capture.portal_format_unsupported";
+inline constexpr const wchar_t* kPortalMemoryUnsupported =
+    L"capture.portal_memory_unsupported";
+inline constexpr const wchar_t* kPortalStreamLost =
+    L"capture.portal_stream_lost";
+inline constexpr const wchar_t* kPortalHdrUnsupported =
+    L"capture.portal_hdr_unsupported";
+inline constexpr const wchar_t* kPortalClientAreaUnsupported =
+    L"capture.portal_client_area_unsupported";
+inline constexpr const wchar_t* kPortalCaptureConflict =
+    L"cli.portal_capture_conflict";
 // 确认之后目标又挪了位置或变了大小：要取的矩形已经不在人批准的那一片里，于是不取。
 // 这不是拒绝（那是 capture.access_denied），而是一次可以重来的截图失败：重新枚举、再问一次。
 inline constexpr const wchar_t* kConsentStale = L"capture.consent_stale";
